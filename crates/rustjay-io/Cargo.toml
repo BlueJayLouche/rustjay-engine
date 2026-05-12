@@ -2,6 +2,11 @@
 name = "rustjay-io"
 version = "0.1.0"
 edition = "2021"
+description = "Video input and output for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "ndi", "syphon", "spout"]
+categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 rustjay-core = { workspace = true }

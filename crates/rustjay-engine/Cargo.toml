@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "High-performance cross-platform VJ engine"
 license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "graphics", "wgpu", "real-time"]
+categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 rustjay-core    = { workspace = true }

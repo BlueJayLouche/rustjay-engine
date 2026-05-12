@@ -2,6 +2,11 @@
 name = "rustjay-presets"
 version = "0.1.0"
 edition = "2021"
+description = "Preset save/load for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "presets", "settings"]
+categories = ["graphics", "config"]
 
 [dependencies]
 rustjay-core  = { workspace = true }

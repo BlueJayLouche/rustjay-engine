@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# rustjay-new — scaffold a new rustjay-engine effect project
+#
+# Usage: ./rustjay-new <project-name>
+# Example: ./rustjay-new my-effect
+
+set -euo pipefail
+
+PROJECT_NAME="${1:-}"
+if [ -z "$PROJECT_NAME" ]; then
+    echo "Usage: $0 <project-name>"
+    exit 1
+fi
+
+if [ -e "$PROJECT_NAME" ]; then
+    echo "Error: '$PROJECT_NAME' already exists"
+    exit 1
+fi
+
+echo "Creating $PROJECT_NAME..."
+
+mkdir -p "$PROJECT_NAME/src/shaders"
+
+cat > "$PROJECT_NAME/Cargo.toml" <<'TOML'
+[package]
+name = "__NAME__"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-engine = "0.1"
+bytemuck = { version = "1.21", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+env_logger = "0.11"
+TOML
+
+sed -i.bak "s/__NAME__/${PROJECT_NAME}/g" "$PROJECT_NAME/Cargo.toml"
+rm "$PROJECT_NAME/Cargo.toml.bak"
+
+cat > "$PROJECT_NAME/src/shaders/effect.wgsl" <<'WGSL'
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) texcoord: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.texcoord = texcoord;
+    return out;
+}
+
+struct Uniforms {
+    param_a: f32,
+};
+
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var input_sampler: sampler;
+@group(1) @binding(0) var<uniform> u: Uniforms;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let col = textureSample(input_tex, input_sampler, in.texcoord);
+    return col;
+}
+WGSL
+
+cat > "$PROJECT_NAME/src/main.rs" <<'RUST'
+use rustjay_engine::prelude::*;
+
+struct MyEffect;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MyUniforms {
+    param_a: f32,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct MyState {
+    param_a: f32,
+}
+
+impl EffectPlugin for MyEffect {
+    type State = MyState;
+    type Uniforms = MyUniforms;
+
+    fn app_name(&self) -> &str {
+        env!("CARGO_PKG_NAME")
+    }
+
+    fn shader_source(&self) -> &'static str {
+        include_str!("shaders/effect.wgsl")
+    }
+
+    fn build_uniforms(&self, s: &MyState, _engine: &EngineState) -> MyUniforms {
+        MyUniforms { param_a: s.param_a }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_default_env()
+        .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
+        .filter_module("naga", log::LevelFilter::Warn)
+        .filter_module("wgpu_core", log::LevelFilter::Warn)
+        .filter_module("winit", log::LevelFilter::Warn)
+        .init();
+
+    rustjay_engine::run(MyEffect)
+}
+RUST
+
+cat > "$PROJECT_NAME/.gitignore" <<'GITIGNORE'
+/target
+Cargo.lock
+GITIGNORE
+
+echo "✅ Project '$PROJECT_NAME' created."
+echo ""
+echo "Next steps:"
+echo "  cd $PROJECT_NAME"
+echo "  cargo run --release"

@@ -2,6 +2,11 @@
 name = "rustjay-control"
 version = "0.1.0"
 edition = "2021"
+description = "MIDI, OSC, and web remote control for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "midi", "osc", "websocket"]
+categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 rustjay-core = { workspace = true }

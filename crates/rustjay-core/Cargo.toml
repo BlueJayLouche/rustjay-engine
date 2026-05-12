@@ -2,6 +2,11 @@
 name = "rustjay-core"
 version = "0.1.0"
 edition = "2021"
+description = "Shared types, traits, and state for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "graphics", "wgpu", "real-time"]
+categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 serde      = { workspace = true }

@@ -2,6 +2,11 @@
 name = "rustjay-audio"
 version = "0.1.0"
 edition = "2021"
+description = "Real-time audio analysis for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "audio", "fft", "real-time"]
+categories = ["graphics", "multimedia::audio"]
 
 [dependencies]
 rustjay-core = { workspace = true }
