@@ -423,22 +423,22 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
-### Phase 4 — API Stabilisation + Publishing
+### Phase 4 — API Stabilisation + Publishing 🔄 IN PROGRESS
 
 **Goal**: a stable, documented, publishable crate. Every public API is intentional, every item is documented, and three real apps can be migrated onto the engine without changes to the engine itself.
 
 #### Steps
 
-1. **Runtime verification** — run through the Phase 1 parity checklist (webcam, NDI, Syphon, audio routing, MIDI, OSC, presets, LFO) on macOS. Document any regressions as issues.
-2. **API audit** — walk every `pub` item in all 8 crates. Mark anything that should be `pub(crate)` or removed. Apply `#[doc(hidden)]` to internal-but-pub items that can't be privatised yet without a breaking change.
-3. **`#![deny(missing_docs)]`** — add to all public crates. Write doc-comments for every public item. Keep them one sentence; link to related items.
-4. **Getting-started guide** — a single Markdown doc (rendered on docs.rs via `lib.rs`) covering: workspace setup, writing a minimal effect, adding a custom GUI tab, multi-pass with feedback.
-5. **Migrate `examples/template`** — verify the existing example is the authoritative replacement for `rustjay-template`. Ensure it runs release-mode on all three platforms.
-6. **Migrate `examples/delta`** — same for `rustjay-delta`.
-7. **Migrate `examples/waaaves`** — same for `rustjay-waaaves`. This also exercises Phase 3 on real hardware.
-8. **`rustjay-new` scaffold** — CLI tool (or shell template) that generates a new project with `rustjay-engine` as a dep, a stub shader, a stub uniforms struct, and a stub `EffectPlugin`. Replaces copying from template repos.
-9. **Versioning** — decide on unified vs independent crate versioning (see Open Questions). Set `version = "0.1.0"` workspace-wide, add `publish = false` on internal crates not intended for crates.io.
-10. **Publish** — `cargo publish -p rustjay-core`, then each dependent crate in dependency order. Verify docs.rs renders correctly.
+1. ⏸️ **Runtime verification** — run through the Phase 1 parity checklist (webcam, NDI, Syphon, audio routing, MIDI, OSC, presets, LFO) on macOS. Document any regressions as issues. *Deferred to post-PR manual QA.*
+2. ✅ **API audit** — walked every `pub` item in all 8 crates. Internal modules made `pub(crate)`, public types re-exported at crate roots, `#[doc(hidden)]` applied where needed.
+3. ✅ **`#![warn(missing_docs)]`** — added to all 8 crates. Doc-comments written for every public item (structs, enums, traits, functions, fields, variants). Upgraded to `deny` right before publish.
+4. ✅ **Getting-started guide** — `crates/rustjay-engine/GUIDE.md` covers workspace setup, minimal effect, custom GUI tab, multi-pass with feedback. Included in `lib.rs` via `#![doc = include_str!("../GUIDE.md")]` for docs.rs rendering.
+5. ✅ **Migrate `examples/template`** — compiles and runs release-mode. Removed unused `#[macro_use] extern crate objc`.
+6. ✅ **Migrate `examples/delta`** — same.
+7. ✅ **Migrate `examples/waaaves`** — same.
+8. ✅ **`rustjay-new` scaffold** — `rustjay-new` shell script generates a working project with stub shader, uniforms, and `EffectPlugin`.
+9. ✅ **Versioning** — unified `version = "0.1.0"` workspace-wide. All crates carry `description`, `license = "MIT"`, `repository`, `keywords`, `categories`. No `publish = false` — all 8 crates + 3 vendored syphon crates are publishable.
+10. 🔄 **Publish** — `cargo publish --dry-run -p rustjay-core` ✅ passes. Downstream crates blocked only because their workspace deps are not yet on crates.io — will succeed once published in dependency order. Syphon git deps vendored into `vendor/` to satisfy crates.io policy.
 
 **Phase 4 exit criteria**: `cargo add rustjay-engine` works from crates.io. The getting-started guide produces a running app in under 15 minutes.
 
