@@ -275,3 +275,41 @@ impl InputTexture {
             .unwrap_or((1920, 1080))
     }
 }
+
+/// Texture that holds the previous frame's output for feedback effects.
+pub struct PreviousFrameTexture {
+    pub texture: Texture,
+}
+
+impl PreviousFrameTexture {
+    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        Self {
+            texture: Texture::create_render_target(device, width, height, "Previous Frame"),
+        }
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        self.texture = Texture::create_render_target(device, width, height, "Previous Frame");
+    }
+
+    /// Copy the contents of `source` into this feedback texture.
+    pub fn copy_from(&self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::Texture) {
+        let width = self.texture.width.min(source.width());
+        let height = self.texture.height.min(source.height());
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: source,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+    }
+}

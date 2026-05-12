@@ -10,8 +10,9 @@ pub mod app;
 pub mod config;
 
 // Re-export the most useful types so app authors only need `rustjay_engine::*`
-pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand};
+pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput};
 pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+pub use rustjay_render::PreviousFrameTexture;
 
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
@@ -61,8 +62,9 @@ pub mod prelude {
         LfoState, LfoBank, Lfo, Waveform, LfoTarget,
         InputCommand, OutputCommand, AudioCommand, MidiCommand, OscCommand, PresetCommand, WebCommand,
         GuiTab, InputType,
+        RenderGraph, Pass, PassInput,
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
-    pub use rustjay_render::{WgpuEngine, Texture, InputTexture};
+    pub use rustjay_render::{WgpuEngine, Texture, InputTexture, PreviousFrameTexture};
     pub use crate::{run, run_with_tabs};
 }

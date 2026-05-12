@@ -7,7 +7,7 @@ use rustjay_core::{EffectPlugin, EngineState, Vertex};
 use rustjay_io::output::OutputManager;
 use crate::blit::BlitPipeline;
 use crate::plugin_renderer::PluginRenderer;
-use crate::texture::{InputTexture, Texture};
+use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ pub struct WgpuEngine<P: EffectPlugin> {
 
     pub render_target: Texture,
     pub input_texture: InputTexture,
+    pub previous_frame: Option<PreviousFrameTexture>,
 
     vertex_buffer: wgpu::Buffer,
     blit_bind_group: wgpu::BindGroup,
@@ -115,6 +116,12 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         let plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
         drop(engine_state);
 
+        let previous_frame = if plugin_renderer.plugin.render_graph().map(|g| g.feedback).unwrap_or(false) {
+            Some(PreviousFrameTexture::new(&device, 1920, 1080))
+        } else {
+            None
+        };
+
         Ok(Self {
             instance: instance.clone(),
             adapter,
@@ -129,6 +136,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             blit_pipeline,
             render_target,
             input_texture,
+            previous_frame,
             vertex_buffer,
             blit_bind_group,
             frame_count: 0,
@@ -219,11 +227,17 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             &self.device,
             &self.queue,
             &self.input_texture,
+            self.previous_frame.as_ref(),
             &self.render_target,
             app_state,
             &engine_state,
             &self.vertex_buffer,
         );
+
+        // Copy render target to feedback texture for next frame
+        if let Some(ref feedback) = self.previous_frame {
+            feedback.copy_from(&mut encoder, &self.render_target.texture);
+        }
 
         self.queue.submit(std::iter::once(encoder.finish()));
 

@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 upcoming
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 upcoming
 
 ---
 
@@ -365,30 +365,52 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
-### Phase 3 — Multi-Pass / Feedback Rendering (Waaaves-Style)
+### Phase 3 — Multi-Pass / Feedback Rendering (Waaaves-Style) ✅ COMPLETE
 
 **Goal**: support multi-stage pipelines where the output of one pass feeds into the next, and where previous frames feed back into the current frame.
 
-`rustjay-waaaves` has three shader blocks running in sequence with cross-block feedback. This pattern (TouchDesigner-style feedback loops) is fundamental to VJ aesthetics and needs first-class engine support.
+**What was built**:
 
-**Design sketch** (to be finalised after Phase 2 feedback):
+#### Design decision: lightweight `RenderGraph` in `rustjay-core`
 
-Option A — `MultiPassPlugin` extending `EffectPlugin` with a `passes()` method returning an ordered list of `RenderPass` descriptors.
+- `RenderGraph` — linear multi-pass descriptor with `.passes: Vec<Pass>` and `.feedback: bool`
+- `Pass` — `label`, `shader` (WGSL source), `input: PassInput` (`EngineInput`, `PreviousPass`, `Feedback`)
+- Builder API: `RenderGraph::new().with_pass(...).with_feedback()`
 
-Option B — A `RenderGraph` type that `EffectPlugin::configure_graph()` populates. Nodes are passes; edges declare which texture one pass's output feeds into as another's input.
+#### `EffectPlugin` extensions
 
-Option B aligns better with wgpu's mental model and scales to complex graphs (waaaves's 3-pass feedback, mapper's mesh warping). Evaluate after Phase 2.
+- `fn render_graph(&self) -> Option<RenderGraph>` — default `None` keeps single-pass plugins unchanged
+- `fn build_pass_uniforms(&self, pass_index, state, engine) -> Self::Uniforms` — default delegates to `build_uniforms()`, so simple multi-pass effects can reuse one uniform block
 
-**Steps**
+#### `rustjay-render` multi-pass implementation
 
-1. Design `RenderGraph` API (informed by Phase 2 lessons)
-2. Extend `rustjay-render` with multi-pass support
-3. Add `PreviousFrameTexture` resource (the feedback mechanism)
-4. Implement `WaaavesEffect` with 3 chained passes
-5. Port waaaves shader blocks as WGSL
-6. Implement `WaaavesTab` (feedback amount, mix controls)
+- Unified texture bind group layout with 4 entries:
+  - `@binding(0/1)` — primary input texture + sampler
+  - `@binding(2/3)` — feedback texture + sampler (bound to dummy 1×1 black when unused)
+  - Single-pass shaders simply omit bindings 2/3 — valid in wgpu
+- `PluginRenderer` manages:
+  - `graph_pipelines: Vec<wgpu::RenderPipeline>` — one per pass, lazily created from graph
+  - `intermediate_textures: Vec<Texture>` — `passes.len() - 1` textures for pass outputs
+  - `dummy_feedback: Texture` — 1×1 black for unused feedback slot
+- `PreviousFrameTexture` — helper type that copies render target → feedback texture after each frame
+- `WgpuEngine` creates `previous_frame: Option<PreviousFrameTexture>` when `graph.feedback == true`
 
-**Phase 3 exit criteria**: `cargo run -p waaaves --release` works. Single-pass apps (template, delta) are unaffected.
+#### `examples/waaaves`
+
+- `WaaavesEffect` with 3-pass graph + feedback enabled
+- Block A: mixes engine input with feedback, applies radial warp
+- Block B: box blur + trail decay
+- Block C: HSB color grading
+- `WaaavesTab` custom GUI with all 8 parameters
+- `WaaavesUniforms` (32 bytes) shared across all 3 passes
+
+**Key decisions from Phase 3**:
+- `RenderGraph` lives in `rustjay-core` (not `rustjay-render`) to keep the trait definition co-located with its associated types
+- Linear graph execution (not full DAG) is sufficient for waaaves and keeps the API simple; DAG can be added later without breaking changes
+- Feedback is opt-in per graph; single-pass apps pay no cost
+- Per-pass uniform override is possible but defaults to shared uniforms for convenience
+
+**Phase 3 exit criteria**: `cargo run -p waaaves --release` works. Single-pass apps (template, delta) are unaffected. ✅
 
 ---
 

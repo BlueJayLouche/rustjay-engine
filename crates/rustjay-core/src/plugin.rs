@@ -5,6 +5,62 @@
 
 use crate::EngineState;
 
+/// Describes a linear multi-pass render pipeline.
+///
+/// Passes execute in declaration order. Each pass reads from a single
+/// input source and writes to either an intermediate texture or the
+/// final render target.
+///
+/// The last pass always writes to the render target; all preceding passes
+/// write to intermediate textures that the engine manages automatically.
+#[derive(Clone, Debug, Default)]
+pub struct RenderGraph {
+    pub passes: Vec<Pass>,
+    /// If true, the engine maintains a feedback texture containing the
+    /// previous frame's output and binds it at `@group(0) @binding(2/3)`.
+    pub feedback: bool,
+}
+
+impl RenderGraph {
+    /// Create a new empty graph.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a pass to the graph.
+    pub fn with_pass(mut self, pass: Pass) -> Self {
+        self.passes.push(pass);
+        self
+    }
+
+    /// Enable the feedback texture.
+    pub fn with_feedback(mut self) -> Self {
+        self.feedback = true;
+        self
+    }
+}
+
+/// One fullscreen pass inside a [`RenderGraph`].
+#[derive(Clone, Debug)]
+pub struct Pass {
+    pub label: &'static str,
+    /// WGSL source. Must declare `vs_main` and `fs_main`.
+    pub shader: &'static str,
+    /// Which texture this pass samples from.
+    pub input: PassInput,
+}
+
+/// Input source for a render-graph pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassInput {
+    /// The engine's live video input (webcam / NDI / Syphon / etc).
+    EngineInput,
+    /// The output of the previous pass in the graph.
+    PreviousPass,
+    /// The previous frame's feedback texture.
+    Feedback,
+}
+
 /// App-authored effect that the engine renders each frame.
 ///
 /// The engine provides:
@@ -64,6 +120,35 @@ pub trait EffectPlugin: Send + Sync + 'static {
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
+    }
+
+    /// Optional multi-pass configuration.
+    ///
+    /// When `Some`, the engine executes the [`RenderGraph`] instead of the
+    /// default single-pass pipeline. Each pass gets its own shader, and
+    /// intermediate textures are managed automatically.
+    ///
+    /// The texture bind group layout for graph passes includes a **feedback**
+    /// texture at `@group(0) @binding(2)` / `@binding(3)` when
+    /// `graph.feedback` is `true`. Shaders that don't use feedback simply
+    /// omit those bindings.
+    fn render_graph(&self) -> Option<RenderGraph> {
+        None
+    }
+
+    /// Build uniforms for a specific pass in the render graph.
+    ///
+    /// `pass_index` corresponds to `render_graph().passes[pass_index]`.
+    /// The default implementation delegates to [`build_uniforms`](Self::build_uniforms),
+    /// so single-pass plugins work unchanged and simple multi-pass effects
+    /// can reuse the same uniform block for every pass.
+    fn build_pass_uniforms(
+        &self,
+        _pass_index: usize,
+        app_state: &Self::State,
+        engine: &EngineState,
+    ) -> Self::Uniforms {
+        self.build_uniforms(app_state, engine)
     }
 
     /// Optional custom render pass. If this returns `true`, the engine skips

@@ -4,4 +4,4 @@ pub mod renderer;
 pub mod texture;
 
 pub use renderer::WgpuEngine;
-pub use texture::{Texture, InputTexture};
+pub use texture::{Texture, InputTexture, PreviousFrameTexture};
