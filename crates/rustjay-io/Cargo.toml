@@ -26,8 +26,8 @@ grafton-ndi = { version = "0.11", optional = true }
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-syphon-core      = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-core" }
-syphon-wgpu      = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-wgpu" }
+syphon-core = { workspace = true }
+syphon-wgpu = { workspace = true }
 metal            = "0.33"
 cocoa            = "0.26"
 objc             = "0.2"

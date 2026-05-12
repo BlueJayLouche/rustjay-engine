@@ -20,8 +20,8 @@ image        = { workspace = true }
 pollster     = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-syphon-core = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-core" }
-syphon-wgpu = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-wgpu" }
+syphon-core = { workspace = true }
+syphon-wgpu = { workspace = true }
 metal       = "0.33"
 
 [target.'cfg(target_os = "windows")'.dependencies]

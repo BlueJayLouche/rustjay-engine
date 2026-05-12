@@ -8,6 +8,9 @@ members = [
     "crates/rustjay-gui",
     "crates/rustjay-render",
     "crates/rustjay-engine",
+    "vendor/syphon-core",
+    "vendor/syphon-metal",
+    "vendor/syphon-wgpu",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -59,11 +62,14 @@ instant = "0.1"
 dirs    = "6.0"
 
 # Workspace-internal crates
-rustjay-core    = { path = "crates/rustjay-core" }
-rustjay-audio   = { path = "crates/rustjay-audio" }
-rustjay-io      = { path = "crates/rustjay-io" }
-rustjay-control = { path = "crates/rustjay-control" }
-rustjay-presets = { path = "crates/rustjay-presets" }
-rustjay-gui     = { path = "crates/rustjay-gui" }
-rustjay-render  = { path = "crates/rustjay-render" }
-rustjay-engine  = { path = "crates/rustjay-engine" }
+rustjay-core    = { path = "crates/rustjay-core", version = "0.1.0" }
+rustjay-audio   = { path = "crates/rustjay-audio", version = "0.1.0" }
+rustjay-io      = { path = "crates/rustjay-io", version = "0.1.0" }
+rustjay-control = { path = "crates/rustjay-control", version = "0.1.0" }
+rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
+rustjay-gui     = { path = "crates/rustjay-gui", version = "0.1.0" }
+rustjay-render  = { path = "crates/rustjay-render", version = "0.1.0" }
+rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
+syphon-core     = { path = "vendor/syphon-core", version = "0.1.0" }
+syphon-metal    = { path = "vendor/syphon-metal", version = "0.1.0" }
+syphon-wgpu     = { path = "vendor/syphon-wgpu", version = "0.1.0" }

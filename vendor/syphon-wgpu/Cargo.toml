@@ -1,0 +1,35 @@
+[package]
+name = "syphon-wgpu"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "High-level wgpu integration for Syphon"
+license = "MIT"
+repository = "https://github.com/yourusername/rusty-404"
+
+[dependencies]
+syphon-core = { workspace = true }
+syphon-metal = { workspace = true, features = ["wgpu"] }
+wgpu = "29.0"
+wgpu-hal = "29.0"
+log = "0.4"
+bytemuck = "1.16"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.33"
+objc = "0.2"
+io-surface = "0.16"
+core-foundation = "0.10"
+cocoa = "0.26"
+pollster = "0.4"
+
+[dev-dependencies]
+env_logger = "0.11"
+pollster = "0.4"
+
+[features]
+default = []
+# Enable detailed logging (disabled by default for performance)
+logging = ["log/release_max_level_warn", "syphon-core/logging"]
+# Maximum performance - disables all logging in release builds
+max_perf = ["log/release_max_level_off", "syphon-core/max_perf"]

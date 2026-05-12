@@ -1,0 +1,35 @@
+[package]
+name = "syphon-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "Core Objective-C bindings for Syphon on macOS"
+license = "MIT"
+repository = "https://github.com/yourusername/rusty-404"
+
+[dependencies]
+log = "0.4"
+thiserror = "2.0"
+
+# macOS-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+objc_id = "0.1"
+objc-foundation = "0.1"
+core-foundation = "0.10"
+core-graphics = "0.25"
+io-surface = "0.16"
+cocoa = "0.26"
+block = "0.1"
+libc = "0.2"
+
+[dev-dependencies]
+env_logger = "0.11"
+crossbeam = "0.8"
+
+[features]
+default = []
+# Enable detailed logging (disabled by default for performance)
+logging = ["log/release_max_level_warn"]
+# Maximum performance - disables all logging in release builds
+max_perf = ["log/release_max_level_off"]
