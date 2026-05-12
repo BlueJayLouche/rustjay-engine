@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 fn default_fft_size() -> usize {
-    rustjay_audio::fft::DEFAULT_FFT_SIZE
+    rustjay_audio::DEFAULT_FFT_SIZE
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MidiMappingConfig {
+pub(crate) struct MidiMappingConfig {
     pub cc: u8,
     pub channel: u8,
     pub param_path: String,
@@ -18,7 +18,7 @@ pub struct MidiMappingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OscConfig {
+pub(crate) struct OscConfig {
     pub port: u16,
     pub enabled: bool,
     pub base_address: String,
@@ -31,7 +31,7 @@ impl Default for OscConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppSettings {
+pub(crate) struct AppSettings {
     pub output_width: u32,
     pub output_height: u32,
     pub internal_width: u32,
@@ -79,7 +79,7 @@ impl Default for AppSettings {
             audio_smoothing: 0.5,
             audio_normalize: true,
             audio_pink_noise: false,
-            audio_fft_size: rustjay_audio::fft::DEFAULT_FFT_SIZE,
+            audio_fft_size: rustjay_audio::DEFAULT_FFT_SIZE,
             audio_device: None,
             #[cfg(feature = "ndi")]
             ndi_stream_name: "RustJay".to_string(),
@@ -215,7 +215,7 @@ impl AppSettings {
     }
 }
 
-pub struct ConfigManager {
+pub(crate) struct ConfigManager {
     pub settings: AppSettings,
     pub app_name: String,
 }

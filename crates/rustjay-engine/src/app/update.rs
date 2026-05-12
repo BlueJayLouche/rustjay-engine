@@ -92,7 +92,6 @@ impl<P: EffectPlugin> App<P> {
                     state.audio.selected_device.clone()
                 };
                 log::warn!("[Audio] Stream error — attempting reconnect (device: {:?})", device);
-                drop(analyzer);
                 if let Some(ref mut analyzer) = self.audio_analyzer {
                     match analyzer.start_with_device(device.as_deref()) {
                         Ok(actual_name) => {

@@ -4,7 +4,7 @@
 use rustjay_core::{EffectPlugin, EngineState, PassInput, Vertex};
 use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
 
-pub struct PluginRenderer<P: EffectPlugin> {
+pub(crate) struct PluginRenderer<P: EffectPlugin> {
     pub plugin: P,
     pub pipeline: wgpu::RenderPipeline,
     pub pipeline_layout: wgpu::PipelineLayout,

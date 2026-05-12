@@ -99,7 +99,7 @@ impl ControlGui {
 
             // FFT Size dropdown
             {
-                use rustjay_audio::fft::{FFT_SIZES, FFT_SIZE_LABELS};
+                use rustjay_audio::{FFT_SIZES, FFT_SIZE_LABELS};
                 let mut selected_idx = FFT_SIZES.iter().position(|&s| s == current_fft_size).unwrap_or(2);
                 let labels: Vec<&str> = FFT_SIZE_LABELS.iter().copied().collect();
                 ui.text("FFT Size");

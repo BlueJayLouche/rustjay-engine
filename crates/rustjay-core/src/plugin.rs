@@ -15,6 +15,7 @@ use crate::EngineState;
 /// write to intermediate textures that the engine manages automatically.
 #[derive(Clone, Debug, Default)]
 pub struct RenderGraph {
+    /// Ordered list of render passes.
     pub passes: Vec<Pass>,
     /// If true, the engine maintains a feedback texture containing the
     /// previous frame's output and binds it at `@group(0) @binding(2/3)`.
@@ -43,6 +44,7 @@ impl RenderGraph {
 /// One fullscreen pass inside a [`RenderGraph`].
 #[derive(Clone, Debug)]
 pub struct Pass {
+    /// Human-readable label for debugging and profiling.
     pub label: &'static str,
     /// WGSL source. Must declare `vs_main` and `fs_main`.
     pub shader: &'static str,

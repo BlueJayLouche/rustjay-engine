@@ -5,15 +5,22 @@
 
 use std::sync::Arc;
 
+/// A GPU texture with its view, sampler, and dimensions.
 pub struct Texture {
+    /// Underlying wgpu texture.
     pub texture: wgpu::Texture,
+    /// Default view of the texture.
     pub view: wgpu::TextureView,
+    /// Sampler for the texture.
     pub sampler: wgpu::Sampler,
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
 }
 
 impl Texture {
+    /// Wrap an existing wgpu texture.
     pub fn from_wgpu_texture(
         texture: wgpu::Texture,
         device: &wgpu::Device,
@@ -33,6 +40,7 @@ impl Texture {
         Self { texture, view, sampler, width, height }
     }
 
+    /// Create a texture from raw BGRA pixel data.
     pub fn from_bgra(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -82,6 +90,7 @@ impl Texture {
         Self { texture, view, sampler, width, height }
     }
 
+    /// Create a render-target texture with the given dimensions.
     pub fn create_render_target(device: &wgpu::Device, width: u32, height: u32, label: &str) -> Self {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -110,6 +119,7 @@ impl Texture {
         Self { texture, view, sampler, width, height }
     }
 
+    /// Update the texture contents from raw pixel data.
     pub fn update(&self, queue: &wgpu::Queue, data: &[u8]) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -128,23 +138,28 @@ impl Texture {
         );
     }
 
+    /// Fill the texture with black.
     pub fn clear_to_black(&self, queue: &wgpu::Queue) {
         let black = vec![0u8; (self.width * self.height * 4) as usize];
         self.update(queue, &black);
     }
 }
 
+/// Wrapper that manages engine input textures, including external sources.
 pub struct InputTexture {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    /// Owned texture, if any.
     pub texture: Option<Texture>,
     has_data: bool,
     ext_view: Option<wgpu::TextureView>,
     ext_sampler: Option<wgpu::Sampler>,
+    /// Generation counter bumped when the texture changes.
     pub texture_generation: u64,
 }
 
 impl InputTexture {
+    /// Create a new input texture manager.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
         Self {
             device,
@@ -157,6 +172,7 @@ impl InputTexture {
         }
     }
 
+    /// Ensure the backing texture exists at the given size.
     pub fn ensure_size(&mut self, width: u32, height: u32) {
         match &self.texture {
             Some(tex) if tex.width == width && tex.height == height => {}
@@ -175,6 +191,7 @@ impl InputTexture {
         }
     }
 
+    /// Upload raw pixel data, resizing if necessary.
     pub fn update(&mut self, data: &[u8], width: u32, height: u32) {
         if self.ext_view.is_some() {
             self.ext_view = None;
@@ -187,6 +204,7 @@ impl InputTexture {
         }
     }
 
+    /// Take ownership of an existing wgpu texture.
     pub fn swap_texture(&mut self, source: wgpu::Texture) {
         let width = source.width();
         let height = source.height();
@@ -195,6 +213,7 @@ impl InputTexture {
         self.texture_generation += 1;
     }
 
+    /// Copy contents from another wgpu texture.
     pub fn update_from_texture(&mut self, source: &wgpu::Texture) {
         let width = source.width();
         let height = source.height();
@@ -223,6 +242,7 @@ impl InputTexture {
         }
     }
 
+    /// Use an external texture as the input source.
     pub fn set_external_texture(&mut self, tex: &wgpu::Texture) {
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -240,34 +260,41 @@ impl InputTexture {
         self.texture_generation += 1;
     }
 
+    /// Clear the external texture reference.
     pub fn clear_external_texture(&mut self) {
         self.ext_view = None;
         self.ext_sampler = None;
         self.texture_generation += 1;
     }
 
+    /// Return the texture view to bind in shaders.
     pub fn binding_view(&self) -> Option<&wgpu::TextureView> {
         self.ext_view.as_ref()
             .or_else(|| self.texture.as_ref().map(|t| &t.view))
     }
 
+    /// Return the sampler to bind in shaders.
     pub fn binding_sampler(&self) -> Option<&wgpu::Sampler> {
         self.ext_sampler.as_ref()
             .or_else(|| self.texture.as_ref().map(|t| &t.sampler))
     }
 
+    /// Return the owned texture's view, if any.
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.texture.as_ref().map(|t| &t.view)
     }
 
+    /// Whether an external texture is currently set.
     pub fn has_external_texture(&self) -> bool {
         self.ext_view.is_some()
     }
 
+    /// Whether any input data has been provided.
     pub fn has_data(&self) -> bool {
         self.has_data
     }
 
+    /// Return the resolution of the input texture, defaulting to 1920x1080.
     pub fn resolution(&self) -> (u32, u32) {
         self.texture
             .as_ref()
@@ -278,16 +305,19 @@ impl InputTexture {
 
 /// Texture that holds the previous frame's output for feedback effects.
 pub struct PreviousFrameTexture {
+    /// The underlying texture.
     pub texture: Texture,
 }
 
 impl PreviousFrameTexture {
+    /// Create a new feedback texture with the given dimensions.
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         Self {
             texture: Texture::create_render_target(device, width, height, "Previous Frame"),
         }
     }
 
+    /// Resize the feedback texture.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         self.texture = Texture::create_render_target(device, width, height, "Previous Frame");
     }

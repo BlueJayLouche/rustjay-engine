@@ -36,14 +36,20 @@ pub fn beat_division_to_hz(division: usize, bpm: f32) -> f32 {
 /// LFO Waveforms
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Waveform {
+    /// Sinusoidal wave.
     Sine = 0,
+    /// Triangle wave.
     Triangle = 1,
-    Ramp = 2,    // Upward ramp
-    Saw = 3,     // Downward saw
+    /// Upward ramp (0 → 1).
+    Ramp = 2,
+    /// Downward saw (1 → -1).
+    Saw = 3,
+    /// Square wave.
     Square = 4,
 }
 
 impl Waveform {
+    /// Human-readable waveform name.
     pub fn name(&self) -> &'static str {
         match self {
             Waveform::Sine => "Sine",
@@ -54,6 +60,7 @@ impl Waveform {
         }
     }
     
+    /// All supported waveforms.
     pub fn all() -> &'static [Waveform] {
         &[
             Waveform::Sine,
@@ -74,13 +81,18 @@ impl Default for Waveform {
 /// Target parameter for LFO modulation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LfoTarget {
+    /// No modulation target.
     None = -1,
+    /// Modulate hue shift.
     HueShift = 0,
+    /// Modulate saturation.
     Saturation = 1,
+    /// Modulate brightness.
     Brightness = 2,
 }
 
 impl LfoTarget {
+    /// Human-readable target name.
     pub fn name(&self) -> &'static str {
         match self {
             LfoTarget::None => "None",
@@ -90,6 +102,7 @@ impl LfoTarget {
         }
     }
     
+    /// All supported modulation targets.
     pub fn all() -> &'static [LfoTarget] {
         &[
             LfoTarget::HueShift,
@@ -246,12 +259,15 @@ impl Default for Lfo {
 }
 
 /// Collection of 3 LFOs
+/// Collection of three LFOs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LfoBank {
+    /// The three LFOs.
     pub lfos: [Lfo; 3],
 }
 
 impl LfoBank {
+    /// Create a new bank with three default LFOs.
     pub fn new() -> Self {
         Self {
             lfos: [
@@ -316,15 +332,18 @@ impl Default for LfoBank {
 }
 
 /// LFO state for the app
+/// LFO state container.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct LfoState {
+    /// The three LFOs.
     pub bank: LfoBank,
-    /// Whether LFO window is shown
+    /// Whether the LFO control window is visible.
     #[serde(skip)]
     pub show_window: bool,
 }
 
 impl LfoState {
+    /// Create a new LFO state with default settings.
     pub fn new() -> Self {
         Self {
             bank: LfoBank::new(),

@@ -6,7 +6,7 @@ use rustjay_core::{HsbParams, LfoBank, EngineState, RoutingMatrix, PresetCommand
 use serde::{Deserialize, Serialize};
 
 fn default_fft_size() -> usize {
-    rustjay_audio::fft::DEFAULT_FFT_SIZE
+    rustjay_audio::DEFAULT_FFT_SIZE
 }
 
 use std::collections::HashMap;
@@ -24,32 +24,45 @@ pub struct Preset {
     pub description: String,
     
     // Color parameters
+    /// Base HSB color parameters.
     pub hsb_params: HsbParams,
+    /// Whether color processing is enabled.
     pub color_enabled: bool,
-    
+
     // Audio parameters
+    /// Global audio amplitude multiplier.
     pub audio_amplitude: f32,
+    /// Audio smoothing factor.
     pub audio_smoothing: f32,
+    /// Whether audio normalization is enabled.
     pub audio_normalize: bool,
+    /// Whether pink noise shaping is applied.
     pub audio_pink_noise: bool,
+    /// FFT size for audio analysis.
     #[serde(default = "default_fft_size")]
     pub audio_fft_size: usize,
 
     // Resolution
+    /// Internal render width.
     pub internal_width: u32,
+    /// Internal render height.
     pub internal_height: u32,
-    
+
     // LFO settings
+    /// Bank of LFOs for modulation.
     #[serde(default)]
     pub lfo_bank: LfoBank,
 
     // Audio routing settings
+    /// Matrix mapping audio features to parameters.
     #[serde(default)]
     pub routing_matrix: RoutingMatrix,
+    /// Whether audio-driven parameter routing is active.
     #[serde(default)]
     pub audio_routing_enabled: bool,
 
     // Custom parameters (for extensibility)
+    /// Custom user-defined parameter values.
     #[serde(default)]
     pub custom_values: HashMap<String, f32>,
 }
@@ -148,6 +161,7 @@ pub struct PresetBank {
 }
 
 impl PresetBank {
+    /// Create a new preset bank backed by the given directory.
     pub fn new(presets_dir: PathBuf) -> Self {
         let mut bank = Self {
             presets: Vec::new(),

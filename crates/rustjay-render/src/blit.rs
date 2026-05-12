@@ -2,7 +2,7 @@
 
 use rustjay_core::Vertex;
 
-pub struct BlitPipeline {
+pub(crate) struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,

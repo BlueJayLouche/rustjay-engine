@@ -337,6 +337,7 @@ impl OutputManager {
         self.spout_output.is_some()
     }
 
+    /// Whether Spout output is active (always `false` on non-Windows).
     #[cfg(not(target_os = "windows"))]
     pub fn is_spout_active(&self) -> bool {
         false
@@ -366,6 +367,7 @@ impl OutputManager {
         self.v4l2_output.is_some()
     }
 
+    /// Whether V4L2 output is active (always `false` on non-Linux).
     #[cfg(not(target_os = "linux"))]
     pub fn is_v4l2_active(&self) -> bool {
         false

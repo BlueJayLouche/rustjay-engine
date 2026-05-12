@@ -233,6 +233,7 @@ pub struct MidiManager {
 }
 
 impl MidiManager {
+    /// Create a new MIDI manager with the given shared state.
     pub fn new(state: Arc<Mutex<MidiState>>) -> anyhow::Result<Self> {
         let mut input = MidiInput::new("RustJay MIDI")?;
         input.ignore(Ignore::None);

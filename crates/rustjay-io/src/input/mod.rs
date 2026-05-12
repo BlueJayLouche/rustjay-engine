@@ -78,9 +78,11 @@ pub use spout_input::{SpoutInputReceiver, SpoutSenderInfo};
 // A separate v4l2_input module is only needed if nokhwa proves insufficient.
 
 /// Placeholder type on non-Windows platforms — the real struct lives in spout_input.rs
+/// Placeholder type on non-Windows platforms.
 #[cfg(not(target_os = "windows"))]
 #[derive(Debug, Clone)]
 pub struct SpoutSenderInfo {
+    /// Sender name.
     pub name: String,
 }
 
@@ -503,6 +505,7 @@ impl InputManager {
         Ok(())
     }
 
+    /// Start Spout input (stub on non-Windows).
     #[cfg(not(target_os = "windows"))]
     pub fn start_spout(&mut self, _sender_name: impl Into<String>) -> Result<()> {
         Err(anyhow::anyhow!("Spout is only available on Windows"))
@@ -514,6 +517,7 @@ impl InputManager {
         self.spout_senders.as_deref().unwrap_or(&[])
     }
 
+    /// Get cached list of Spout senders (empty on non-Windows).
     #[cfg(not(target_os = "windows"))]
     pub fn spout_senders(&self) -> &[SpoutSenderInfo] {
         &[]

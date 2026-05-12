@@ -3,10 +3,6 @@
 //! Demonstrates a second effect running through the same engine
 //! with a different shader, different uniforms, and a custom GUI tab.
 
-#[cfg(target_os = "macos")]
-#[macro_use]
-extern crate objc;
-
 use rustjay_engine::prelude::*;
 
 struct DeltaEffect;

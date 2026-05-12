@@ -3,10 +3,6 @@
 //! Demonstrates single video input with HSB color manipulation,
 //! audio reactivity, LFO, MIDI, OSC, and web server.
 
-#[cfg(target_os = "macos")]
-#[macro_use]
-extern crate objc;
-
 use rustjay_engine::prelude::*;
 
 struct HsbEffect;

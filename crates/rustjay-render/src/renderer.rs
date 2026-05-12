@@ -4,7 +4,7 @@
 //! their own shader, uniforms, and GPU resources.
 
 use rustjay_core::{EffectPlugin, EngineState, Vertex};
-use rustjay_io::output::OutputManager;
+use rustjay_io::OutputManager;
 use crate::blit::BlitPipeline;
 use crate::plugin_renderer::PluginRenderer;
 use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
@@ -14,11 +14,15 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+/// The main wgpu rendering engine.
 pub struct WgpuEngine<P: EffectPlugin> {
     #[allow(dead_code)]
     instance: wgpu::Instance,
+    /// GPU adapter used by the engine.
     pub adapter: wgpu::Adapter,
+    /// Logical device handle.
     pub device: Arc<wgpu::Device>,
+    /// Command queue handle.
     pub queue: Arc<wgpu::Queue>,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -31,8 +35,11 @@ pub struct WgpuEngine<P: EffectPlugin> {
     plugin_renderer: PluginRenderer<P>,
     blit_pipeline: BlitPipeline,
 
+    /// Main render target texture.
     pub render_target: Texture,
+    /// Input texture received from the IO layer.
     pub input_texture: InputTexture,
+    /// Optional feedback texture for previous frame effects.
     pub previous_frame: Option<PreviousFrameTexture>,
 
     vertex_buffer: wgpu::Buffer,
@@ -47,6 +54,7 @@ pub struct WgpuEngine<P: EffectPlugin> {
 }
 
 impl<P: EffectPlugin> WgpuEngine<P> {
+    /// Create a new `WgpuEngine` with the given window, state, and plugin.
     pub async fn new(
         instance: &wgpu::Instance,
         window: Arc<Window>,
@@ -147,6 +155,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         })
     }
 
+    /// Resize the surface to the given dimensions.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.window_width = width;
@@ -158,48 +167,57 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         }
     }
 
+    /// Start NDI output with the given name.
     pub fn start_ndi_output(&mut self, name: &str, include_alpha: bool) -> anyhow::Result<()> {
         self.output_manager.start_ndi(name, self.render_target.width, self.render_target.height, include_alpha)?;
         Ok(())
     }
 
+    /// Stop NDI output.
     pub fn stop_ndi_output(&mut self) {
         self.output_manager.stop_ndi();
     }
 
     #[cfg(target_os = "macos")]
+    /// Start Syphon output (macOS only).
     pub fn start_syphon_output(&mut self, server_name: &str) -> anyhow::Result<()> {
         self.output_manager.start_syphon(server_name, Arc::clone(&self.device), Arc::clone(&self.queue))?;
         Ok(())
     }
 
     #[cfg(target_os = "macos")]
+    /// Stop Syphon output (macOS only).
     pub fn stop_syphon_output(&mut self) {
         self.output_manager.stop_syphon();
     }
 
     #[cfg(target_os = "windows")]
+    /// Start Spout output (Windows only).
     pub fn start_spout_output(&mut self, sender_name: &str) -> anyhow::Result<()> {
         self.output_manager.start_spout(sender_name)?;
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
+    /// Stop Spout output (Windows only).
     pub fn stop_spout_output(&mut self) {
         self.output_manager.stop_spout();
     }
 
     #[cfg(target_os = "linux")]
+    /// Start V4L2 output (Linux only).
     pub fn start_v4l2_output(&mut self, device_path: &str) -> anyhow::Result<()> {
         self.output_manager.start_v4l2(device_path, self.render_target.width, self.render_target.height)?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
+    /// Stop V4L2 output (Linux only).
     pub fn stop_v4l2_output(&mut self) {
         self.output_manager.stop_v4l2();
     }
 
+    /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
         let engine_state = match self.shared_state.lock() {
             Ok(s) => s,
@@ -282,6 +300,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.frame_count += 1;
     }
 
+    /// Drain any pending GPU readback operations.
     pub fn drain_readback(&mut self) {
         self.output_manager.drain_readback(&self.device);
     }

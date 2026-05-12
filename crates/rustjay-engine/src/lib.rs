@@ -1,10 +1,8 @@
+#![warn(missing_docs)]
+
 //! rustjay-engine — high-performance cross-platform VJ engine
 //!
 //! The engine facade. App authors implement `EffectPlugin` and call `run()`.
-
-#[cfg(target_os = "macos")]
-#[macro_use]
-extern crate objc;
 
 pub mod app;
 pub mod config;

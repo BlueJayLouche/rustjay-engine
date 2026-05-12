@@ -1,107 +1,252 @@
+//! Engine state and command enums.
+//!
+//! [`EngineState`] is the central mutable state that the engine manages and
+//! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
+
 use serde::{Deserialize, Serialize};
 use crate::lfo::LfoState;
 use crate::routing::AudioRoutingState;
 
 // ── Command enums ──────────────────────────────────────────────────────────
 
+/// Commands sent to the input subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputCommand {
+    /// No-op.
     None,
-    StartWebcam { device_index: usize, width: u32, height: u32, fps: u32 },
+    /// Start capturing from a webcam.
+    StartWebcam {
+        /// Device index in the discovered list.
+        device_index: usize,
+        /// Requested capture width.
+        width: u32,
+        /// Requested capture height.
+        height: u32,
+        /// Requested capture frame rate.
+        fps: u32,
+    },
+    /// Start receiving from an NDI source (NDI feature only).
     #[cfg(feature = "ndi")]
-    StartNdi { source_name: String },
+    StartNdi {
+        /// NDI source name to connect to.
+        source_name: String,
+    },
+    /// Start receiving from a Syphon server (macOS only).
     #[cfg(target_os = "macos")]
-    StartSyphon { server_name: String, server_uuid: String },
+    StartSyphon {
+        /// Syphon server name.
+        server_name: String,
+        /// Syphon server UUID.
+        server_uuid: String,
+    },
+    /// Start receiving from a Spout sender (Windows only).
     #[cfg(target_os = "windows")]
-    StartSpout { sender_name: String },
+    StartSpout {
+        /// Spout sender name.
+        sender_name: String,
+    },
+    /// Start capturing from a V4L2 device (Linux only).
     #[cfg(target_os = "linux")]
-    StartV4l2 { device_path: String },
+    StartV4l2 {
+        /// V4L2 device path (e.g. `/dev/video0`).
+        device_path: String,
+    },
+    /// Stop the current input.
     StopInput,
+    /// Refresh the list of available input devices.
     RefreshDevices,
 }
 
-impl Default for InputCommand { fn default() -> Self { Self::None } }
+impl Default for InputCommand {
+    fn default() -> Self { Self::None }
+}
 
+/// Commands sent to the output subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputCommand {
+    /// No-op.
     None,
+    /// Start NDI output streaming (NDI feature only).
     #[cfg(feature = "ndi")]
     StartNdi,
+    /// Stop NDI output streaming (NDI feature only).
     #[cfg(feature = "ndi")]
     StopNdi,
+    /// Start Syphon output server (macOS only).
     #[cfg(target_os = "macos")]
     StartSyphon,
+    /// Stop Syphon output server (macOS only).
     #[cfg(target_os = "macos")]
     StopSyphon,
+    /// Start Spout output sender (Windows only).
     #[cfg(target_os = "windows")]
-    StartSpout { sender_name: String },
+    StartSpout {
+        /// Spout sender name.
+        sender_name: String,
+    },
+    /// Stop Spout output sender (Windows only).
     #[cfg(target_os = "windows")]
     StopSpout,
+    /// Start V4L2 loopback output (Linux only).
     #[cfg(target_os = "linux")]
-    StartV4l2 { device_path: String },
+    StartV4l2 {
+        /// V4L2 loopback device path.
+        device_path: String,
+    },
+    /// Stop V4L2 loopback output (Linux only).
     #[cfg(target_os = "linux")]
     StopV4l2,
+    /// Re-initialize outputs after a resolution change.
     ResizeOutput,
 }
 
-impl Default for OutputCommand { fn default() -> Self { Self::None } }
+impl Default for OutputCommand {
+    fn default() -> Self { Self::None }
+}
 
+/// Commands sent to the audio subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
-    None, Start, Stop, RefreshDevices, SelectDevice(String), SetFftSize(usize),
+    /// No-op.
+    None,
+    /// Start audio capture and analysis.
+    Start,
+    /// Stop audio capture.
+    Stop,
+    /// Refresh the list of audio devices.
+    RefreshDevices,
+    /// Select an audio input device by name.
+    SelectDevice(String),
+    /// Change the FFT analysis window size.
+    SetFftSize(usize),
 }
-impl Default for AudioCommand { fn default() -> Self { Self::None } }
 
+impl Default for AudioCommand {
+    fn default() -> Self { Self::None }
+}
+
+/// Commands sent to the MIDI subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiCommand {
+    /// No-op.
     None,
+    /// Refresh the list of MIDI devices.
     RefreshDevices,
+    /// Select a MIDI input device by name.
     SelectDevice(String),
-    StartLearn { param_path: String, param_name: String },
+    /// Enter CC-learn mode for the given parameter.
+    StartLearn {
+        /// Hierarchical path used to identify the parameter.
+        param_path: String,
+        /// Human-readable parameter name.
+        param_name: String,
+    },
+    /// Cancel CC-learn mode.
     CancelLearn,
+    /// Clear all CC mappings.
     ClearMappings,
 }
-impl Default for MidiCommand { fn default() -> Self { Self::None } }
 
+impl Default for MidiCommand {
+    fn default() -> Self { Self::None }
+}
+
+/// Commands sent to the OSC subsystem.
 #[derive(Debug, Clone, PartialEq)]
-pub enum OscCommand { None, Start, Stop, SetPort(u16), RefreshAddresses }
-impl Default for OscCommand { fn default() -> Self { Self::None } }
+pub enum OscCommand {
+    /// No-op.
+    None,
+    /// Start the OSC server.
+    Start,
+    /// Stop the OSC server.
+    Stop,
+    /// Change the OSC listen port.
+    SetPort(u16),
+    /// Re-scan for auto-generated OSC addresses.
+    RefreshAddresses,
+}
 
+impl Default for OscCommand {
+    fn default() -> Self { Self::None }
+}
+
+/// Commands sent to the preset subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresetCommand {
+    /// No-op.
     None,
-    Save { name: String },
+    /// Save the current state as a new preset.
+    Save {
+        /// Preset name.
+        name: String,
+    },
+    /// Load a preset by index.
     Load(usize),
+    /// Delete a preset by index.
     Delete(usize),
+    /// Apply the preset assigned to a quick slot.
     ApplySlot(usize),
-    AssignSlot { preset_index: usize, slot: usize },
+    /// Assign a preset to a quick slot.
+    AssignSlot {
+        /// Index of the preset to assign.
+        preset_index: usize,
+        /// Quick slot number (1–8).
+        slot: usize,
+    },
+    /// Refresh the preset list from disk.
     Refresh,
 }
-impl Default for PresetCommand { fn default() -> Self { Self::None } }
 
+impl Default for PresetCommand {
+    fn default() -> Self { Self::None }
+}
+
+/// Commands sent to the web remote subsystem.
 #[derive(Debug, Clone, PartialEq)]
-pub enum WebCommand { None, Start, Stop, SetPort(u16) }
-impl Default for WebCommand { fn default() -> Self { Self::None } }
+pub enum WebCommand {
+    /// No-op.
+    None,
+    /// Start the web remote server.
+    Start,
+    /// Stop the web remote server.
+    Stop,
+    /// Change the web server port.
+    SetPort(u16),
+}
+
+impl Default for WebCommand {
+    fn default() -> Self { Self::None }
+}
 
 // ── Input type ─────────────────────────────────────────────────────────────
 
+/// Discriminant for the active video input source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputType {
+    /// No input active.
     None,
+    /// Webcam / capture device.
     Webcam,
+    /// NDI network source (NDI feature only).
     #[cfg(feature = "ndi")]
     Ndi,
+    /// Syphon frame receiver (macOS only).
     #[cfg(target_os = "macos")]
     Syphon,
+    /// Spout frame receiver (Windows only).
     #[cfg(target_os = "windows")]
     Spout,
+    /// V4L2 capture device (Linux only).
     #[cfg(target_os = "linux")]
     V4l2,
 }
 
-impl Default for InputType { fn default() -> Self { Self::None } }
+impl Default for InputType {
+    fn default() -> Self { Self::None }
+}
 
 impl InputType {
+    /// Human-readable name for display in the UI.
     pub fn name(&self) -> &'static str {
         match self {
             InputType::None   => "None",
@@ -120,48 +265,79 @@ impl InputType {
 
 // ── Sub-states ─────────────────────────────────────────────────────────────
 
+/// Live state of the video input device.
 #[derive(Debug, Clone, Default)]
 pub struct InputState {
+    /// Active input source type.
     pub input_type: InputType,
+    /// Name or identifier of the current source.
     pub source_name: String,
+    /// Whether the input is currently streaming.
     pub is_active: bool,
+    /// Capture width in pixels.
     pub width: u32,
+    /// Capture height in pixels.
     pub height: u32,
+    /// Capture frame rate (may be approximate).
     pub fps: f32,
 }
 
+/// HSB (Hue / Saturation / Brightness) colour adjustment parameters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct HsbParams {
+    /// Hue shift in degrees (-180 to 180).
     pub hue_shift: f32,
+    /// Saturation multiplier (0 to 2).
     pub saturation: f32,
+    /// Brightness multiplier (0 to 2).
     pub brightness: f32,
 }
 
 impl Default for HsbParams {
-    fn default() -> Self { Self { hue_shift: 0.0, saturation: 1.0, brightness: 1.0 } }
+    fn default() -> Self {
+        Self { hue_shift: 0.0, saturation: 1.0, brightness: 1.0 }
+    }
 }
 
 impl HsbParams {
+    /// Reset to defaults (no shift, unity saturation and brightness).
     pub fn reset(&mut self) { *self = Self::default(); }
 }
 
+/// Live state of the audio analysis subsystem.
 #[derive(Debug, Clone)]
 pub struct AudioState {
+    /// Per-band FFT magnitudes (8 bands, 0–1).
     pub fft: [f32; 8],
+    /// Overall volume level (0–1).
     pub volume: f32,
+    /// True if a beat was detected this frame.
     pub beat: bool,
+    /// Estimated beats-per-minute.
     pub bpm: f32,
+    /// Current position within a beat cycle (0–1).
     pub beat_phase: f32,
+    /// Whether audio analysis is active.
     pub enabled: bool,
+    /// Input gain applied before FFT.
     pub amplitude: f32,
+    /// Smoothing factor for FFT output (0–1).
     pub smoothing: f32,
+    /// Name of the selected audio device, if any.
     pub selected_device: Option<String>,
+    /// Names of all discovered audio devices.
     pub available_devices: Vec<String>,
+    /// Whether automatic peak normalisation is enabled.
     pub normalize: bool,
+    /// Whether pink-noise compensation shaping is enabled.
     pub pink_noise_shaping: bool,
+    /// FFT window size (1024, 2048, 4096, or 8192).
     pub fft_size: usize,
+    /// Recent tap-tempo timestamps (seconds since epoch).
     pub tap_times: Vec<f64>,
+    /// Timestamp of the most recent tap.
     pub last_tap_time: f64,
+    /// Human-readable tap-tempo feedback message.
     pub tap_tempo_info: String,
 }
 
@@ -188,29 +364,56 @@ impl Default for AudioState {
     }
 }
 
+/// NDI output configuration (available when the `ndi` feature is enabled).
 #[cfg(feature = "ndi")]
 #[derive(Debug, Clone, Default)]
 pub struct NdiOutputState {
+    /// Stream name advertised on the network.
     pub stream_name: String,
+    /// Whether the NDI output is currently streaming.
     pub is_active: bool,
+    /// Whether to include an alpha channel.
     pub include_alpha: bool,
 }
 
+/// Syphon output configuration (macOS only).
 #[derive(Debug, Clone, Default)]
-pub struct SyphonOutputState { pub server_name: String, pub enabled: bool }
+pub struct SyphonOutputState {
+    /// Syphon server name.
+    pub server_name: String,
+    /// Whether the Syphon output is active.
+    pub enabled: bool,
+}
 
+/// Spout output configuration (Windows only).
 #[derive(Debug, Clone, Default)]
-pub struct SpoutOutputState { pub sender_name: String, pub enabled: bool }
+pub struct SpoutOutputState {
+    /// Spout sender name.
+    pub sender_name: String,
+    /// Whether the Spout output is active.
+    pub enabled: bool,
+}
 
+/// V4L2 loopback output configuration (Linux only).
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Default)]
-pub struct V4l2OutputState { pub device_path: String, pub enabled: bool }
+pub struct V4l2OutputState {
+    /// V4L2 loopback device path.
+    pub device_path: String,
+    /// Whether the V4L2 output is active.
+    pub enabled: bool,
+}
 
+/// Internal rendering and input resolution.
 #[derive(Debug, Clone)]
 pub struct ResolutionState {
+    /// Internal render target width.
     pub internal_width: u32,
+    /// Internal render target height.
     pub internal_height: u32,
+    /// Width of the active input texture.
     pub input_width: u32,
+    /// Height of the active input texture.
     pub input_height: u32,
 }
 
@@ -220,15 +423,41 @@ impl Default for ResolutionState {
     }
 }
 
+/// Frame-rate and frame-time metrics.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PerformanceMetrics { pub fps: f32, pub frame_time_ms: f32 }
+pub struct PerformanceMetrics {
+    /// Current frames per second.
+    pub fps: f32,
+    /// Average frame time in milliseconds.
+    pub frame_time_ms: f32,
+}
 
+/// Built-in tabs rendered by the engine's control GUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GuiTab {
-    #[default] Input, Color, Audio, Output, Presets, Midi, Osc, Web, Settings,
+    /// Video input selection.
+    #[default]
+    Input,
+    /// Colour / HSB adjustment.
+    Color,
+    /// Audio analysis and routing.
+    Audio,
+    /// Video output configuration.
+    Output,
+    /// Preset save / load.
+    Presets,
+    /// MIDI device and mapping.
+    Midi,
+    /// OSC server settings.
+    Osc,
+    /// Web remote settings.
+    Web,
+    /// General application settings.
+    Settings,
 }
 
 impl GuiTab {
+    /// Human-readable tab label.
     pub fn name(&self) -> &'static str {
         match self {
             GuiTab::Input    => "Input",
@@ -246,62 +475,101 @@ impl GuiTab {
 
 // ── EngineState ────────────────────────────────────────────────────────────
 
+/// Central mutable state managed by the engine.
+///
+/// App plugins receive an `&EngineState` in
+/// [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms) so they
+/// can react to audio, LFO, and input data.
 #[derive(Debug)]
 pub struct EngineState {
+    /// Whether the output window is fullscreen.
     pub output_fullscreen: bool,
+    /// Output window width in pixels.
     pub output_width: u32,
+    /// Output window height in pixels.
     pub output_height: u32,
 
+    /// Current video input state.
     pub input: InputState,
+    /// Pending input command.
     pub input_command: InputCommand,
 
+    /// HSB colour parameters.
     pub hsb_params: HsbParams,
+    /// Whether HSB colour adjustment is enabled.
     pub color_enabled: bool,
 
+    /// Audio analysis state.
     pub audio: AudioState,
+    /// Pending audio command.
     pub audio_command: AudioCommand,
+    /// Audio-to-parameter routing matrix.
     pub audio_routing: AudioRoutingState,
 
+    /// LFO bank state.
     pub lfo: LfoState,
 
+    /// NDI output state (NDI feature only).
     #[cfg(feature = "ndi")]
     pub ndi_output: NdiOutputState,
+    /// Pending output command.
     pub output_command: OutputCommand,
 
+    /// Syphon output state (macOS only).
     #[cfg(target_os = "macos")]
     pub syphon_output: SyphonOutputState,
 
+    /// Spout output state (Windows only).
     #[cfg(target_os = "windows")]
     pub spout_output: SpoutOutputState,
 
+    /// V4L2 output state (Linux only).
     #[cfg(target_os = "linux")]
     pub v4l2_output: V4l2OutputState,
 
+    /// Rendering resolution.
     pub resolution: ResolutionState,
+    /// Performance metrics.
     pub performance: PerformanceMetrics,
 
+    /// Whether preview windows are shown.
     pub show_preview: bool,
+    /// UI scale factor.
     pub ui_scale: f32,
+    /// Currently selected GUI tab.
     pub current_tab: GuiTab,
 
+    /// Pending MIDI command.
     pub midi_command: MidiCommand,
+    /// Pending OSC command.
     pub osc_command: OscCommand,
+    /// Whether the OSC server is running.
     pub osc_enabled: bool,
+    /// OSC server listen port.
     pub osc_port: u16,
 
+    /// Pending preset command.
     pub preset_command: PresetCommand,
+    /// Names of all saved presets.
     pub preset_names: Vec<String>,
+    /// Names assigned to quick slots 1–8.
     pub preset_quick_slot_names: [Option<String>; 8],
 
+    /// Set to `true` when settings should be persisted on exit.
     pub save_settings_requested: bool,
+    /// Whether background input device discovery is running.
     pub input_discovering: bool,
 
+    /// Pending web server command.
     pub web_command: WebCommand,
+    /// Whether the web remote server is running.
     pub web_enabled: bool,
+    /// Web server listen port.
     pub web_port: u16,
 }
 
 impl EngineState {
+    /// Create a new state with sensible defaults.
     pub fn new() -> Self {
         Self {
             output_fullscreen: false,
@@ -344,6 +612,7 @@ impl EngineState {
         }
     }
 
+    /// Toggle fullscreen mode on the output window.
     pub fn toggle_fullscreen(&mut self) {
         self.output_fullscreen = !self.output_fullscreen;
     }

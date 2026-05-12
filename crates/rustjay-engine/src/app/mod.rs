@@ -1,12 +1,12 @@
 //! Dual-window application handler implementing winit's ApplicationHandler.
 
 use rustjay_audio::AudioAnalyzer;
-use rustjay_control::midi::{MidiManager, MidiState};
-use rustjay_control::osc::OscServer;
-use rustjay_control::web::{WebServer, WebConfig, WebCommand as WebServerCommand};
+use rustjay_control::{MidiManager, MidiState};
+use rustjay_control::OscServer;
+use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 use rustjay_core::EngineState;
 use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
-use rustjay_io::input::InputManager;
+use rustjay_io::InputManager;
 use rustjay_presets::{PresetBank, default_presets_dir};
 use rustjay_render::WgpuEngine;
 use crate::config::{AppSettings, ConfigManager};
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
-pub fn run_app<P: EffectPlugin>(
+pub(crate) fn run_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,

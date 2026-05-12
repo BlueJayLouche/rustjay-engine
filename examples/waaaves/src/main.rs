@@ -7,10 +7,6 @@
 //!
 //! Demonstrates `RenderGraph`, `PreviousFrameTexture`, and per-pass uniforms.
 
-#[cfg(target_os = "macos")]
-#[macro_use]
-extern crate objc;
-
 use rustjay_engine::prelude::*;
 
 struct WaaavesEffect;

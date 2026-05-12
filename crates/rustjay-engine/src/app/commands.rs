@@ -2,8 +2,8 @@ use super::App;
 use rustjay_core::EffectPlugin;
 use rustjay_audio::list_audio_devices;
 use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand};
-use rustjay_control::osc::OscServer;
-use rustjay_control::web::{WebServer, WebConfig, WebCommand as WebServerCommand};
+use rustjay_control::OscServer;
+use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 
 fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, EngineState> {
     state.lock().unwrap_or_else(|e| e.into_inner())

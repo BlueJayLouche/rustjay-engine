@@ -9,17 +9,26 @@ use std::collections::HashMap;
 /// FFT frequency bands (8-band spectrum)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FftBand {
-    SubBass = 0,    // 20-60 Hz
-    Bass = 1,       // 60-120 Hz
-    LowMid = 2,     // 120-250 Hz
-    Mid = 3,        // 250-500 Hz
-    HighMid = 4,    // 500-2000 Hz
-    High = 5,       // 2000-4000 Hz
-    VeryHigh = 6,   // 4000-8000 Hz
-    Presence = 7,   // 8000-16000 Hz
+    /// 20–60 Hz.
+    SubBass = 0,
+    /// 60–120 Hz.
+    Bass = 1,
+    /// 120–250 Hz.
+    LowMid = 2,
+    /// 250–500 Hz.
+    Mid = 3,
+    /// 500–2000 Hz.
+    HighMid = 4,
+    /// 2000–4000 Hz.
+    High = 5,
+    /// 4000–8000 Hz.
+    VeryHigh = 6,
+    /// 8000–16000 Hz.
+    Presence = 7,
 }
 
 impl FftBand {
+    /// Human-readable band name.
     pub fn name(&self) -> &'static str {
         match self {
             FftBand::SubBass => "Sub Bass",
@@ -33,6 +42,7 @@ impl FftBand {
         }
     }
     
+    /// Abbreviated band name for compact UIs.
     pub fn short_name(&self) -> &'static str {
         match self {
             FftBand::SubBass => "Sub",
@@ -46,6 +56,7 @@ impl FftBand {
         }
     }
     
+    /// All frequency bands in order.
     pub fn all() -> &'static [FftBand] {
         &[
             FftBand::SubBass,
@@ -59,6 +70,7 @@ impl FftBand {
         ]
     }
     
+    /// Convert a band index (0–7) to an `FftBand`.
     pub fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(FftBand::SubBass),
@@ -77,22 +89,28 @@ impl FftBand {
 /// Parameters that can be modulated by audio
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModulationTarget {
-    // HSB Color parameters
+    /// Hue shift parameter.
     HueShift,
+    /// Saturation parameter.
     Saturation,
+    /// Brightness parameter.
     Brightness,
-    // Resolution modulation
+    /// Internal render width.
     InternalWidth,
+    /// Internal render height.
     InternalHeight,
-    // Other effects
+    /// Audio input gain.
     AudioAmplitude,
+    /// Audio smoothing factor.
     AudioSmoothing,
-    // Input/output mix
+    /// Input texture opacity.
     InputOpacity,
+    /// Output texture opacity.
     OutputOpacity,
 }
 
 impl ModulationTarget {
+    /// Human-readable target name.
     pub fn name(&self) -> &'static str {
         match self {
             ModulationTarget::HueShift => "Hue Shift",
@@ -107,6 +125,7 @@ impl ModulationTarget {
         }
     }
     
+    /// All supported modulation targets.
     pub fn all() -> &'static [ModulationTarget] {
         &[
             ModulationTarget::HueShift,
@@ -390,6 +409,7 @@ impl Default for AudioRoutingState {
 }
 
 impl AudioRoutingState {
+    /// Create a new routing state with default routes and disabled modulation.
     pub fn new() -> Self {
         Self {
             matrix: RoutingMatrix::with_defaults(),

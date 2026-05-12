@@ -59,13 +59,15 @@ pub struct WebParameter {
 }
 
 /// Web server state shared between handlers
+/// Shared state for the web server.
 pub struct WebServerState {
+    /// Server configuration.
     pub config: WebConfig,
-    /// All available parameters
+    /// All available parameters.
     pub parameters: HashMap<String, WebParameter>,
-    /// Channel for broadcasting updates to all connected clients
+    /// Channel for broadcasting updates to all connected clients.
     pub broadcast_tx: broadcast::Sender<WebMessage>,
-    /// Channel for receiving updates from clients
+    /// Channel for receiving updates from clients.
     pub command_tx: tokio::sync::mpsc::Sender<WebCommand>,
 }
 
@@ -84,20 +86,30 @@ pub enum WebMessage {
 /// Commands received from web clients
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type")]
+/// Commands received from web clients.
 pub enum WebCommand {
+    /// Set a parameter value.
     #[serde(rename = "set")]
-    Set { id: String, value: f32 },
+    Set {
+        /// Parameter identifier.
+        id: String,
+        /// New value.
+        value: f32,
+    },
 }
 
-/// Web server handle
+/// Web server handle.
 pub struct WebServer {
+    /// Shared server state.
     pub state: Arc<Mutex<WebServerState>>,
+    /// Channel receiving commands from web clients.
     pub command_rx: tokio::sync::mpsc::Receiver<WebCommand>,
     handle: Option<std::thread::JoinHandle<()>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl WebServer {
+    /// Create a new web server and its command channel.
     pub fn new(config: WebConfig) -> (Self, tokio::sync::mpsc::Sender<WebCommand>) {
         let (broadcast_tx, _) = broadcast::channel(100);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);

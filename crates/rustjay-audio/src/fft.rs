@@ -73,7 +73,9 @@ impl AudioConfig {
 // Available FFT sizes
 // ---------------------------------------------------------------------------
 
+/// Supported FFT window sizes.
 pub const FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
+/// Default FFT window size (4096 samples).
 pub const DEFAULT_FFT_SIZE: usize = 4096;
 
 /// Human-readable labels for the FFT size dropdown

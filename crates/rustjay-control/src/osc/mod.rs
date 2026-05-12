@@ -251,6 +251,7 @@ pub struct OscServer {
 }
 
 impl OscServer {
+    /// Create a new OSC server (not started until [`start`](Self::start) is called).
     pub fn new(port: u16, base_address: &str) -> Self {
         let state = Arc::new(Mutex::new(OscState::new(port, base_address)));
         let running = Arc::new(AtomicBool::new(false));

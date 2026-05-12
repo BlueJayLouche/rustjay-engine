@@ -5,7 +5,7 @@
 #![allow(deprecated)]
 
 use rustjay_core::{GuiTab, InputCommand, EngineState};
-use rustjay_io::input::InputManager;
+use rustjay_io::InputManager;
 use std::sync::{Arc, Mutex};
 
 use crate::AnyGuiTab;
@@ -19,7 +19,7 @@ pub struct ControlGui {
     #[cfg(feature = "ndi")]
     pub(crate) ndi_sources: Vec<String>,
     #[cfg(target_os = "macos")]
-    pub(crate) syphon_servers: Vec<rustjay_io::input::SyphonServerInfo>,
+    pub(crate) syphon_servers: Vec<rustjay_io::SyphonServerInfo>,
     pub(crate) audio_devices: Vec<String>,
 
     // Selection state
@@ -40,7 +40,7 @@ pub struct ControlGui {
 
     // Spout sender list and selection (Windows)
     #[cfg(target_os = "windows")]
-    pub(crate) spout_senders: Vec<rustjay_io::input::SpoutSenderInfo>,
+    pub(crate) spout_senders: Vec<rustjay_io::SpoutSenderInfo>,
     #[cfg(target_os = "windows")]
     pub(crate) selected_spout: usize,
     #[cfg(target_os = "windows")]
@@ -48,9 +48,9 @@ pub struct ControlGui {
 
     // V4L2 devices (Linux)
     #[cfg(target_os = "linux")]
-    pub(crate) v4l2_capture_devices: Vec<rustjay_io::v4l2_devices::V4l2DeviceInfo>,
+    pub(crate) v4l2_capture_devices: Vec<rustjay_io::V4l2DeviceInfo>,
     #[cfg(target_os = "linux")]
-    pub(crate) v4l2_output_devices: Vec<rustjay_io::v4l2_devices::V4l2DeviceInfo>,
+    pub(crate) v4l2_output_devices: Vec<rustjay_io::V4l2DeviceInfo>,
     #[cfg(target_os = "linux")]
     pub(crate) selected_v4l2_capture: usize,
     #[cfg(target_os = "linux")]
@@ -59,7 +59,9 @@ pub struct ControlGui {
     pub(crate) v4l2_device_path: String,
 
     // Preview texture IDs
+    /// ImGui texture ID for the input preview.
     pub input_preview_texture_id: Option<imgui::TextureId>,
+    /// ImGui texture ID for the output preview.
     pub output_preview_texture_id: Option<imgui::TextureId>,
 
     // Pending resolution changes
@@ -73,8 +75,9 @@ pub struct ControlGui {
     pub(crate) saving_preset: bool,
 
     // Custom tabs provided by the active effect plugin
+    /// Custom tabs provided by the active effect plugin.
     pub custom_tabs: Vec<Box<dyn AnyGuiTab>>,
-    pub custom_tab_active: Option<usize>,
+    pub(crate) custom_tab_active: Option<usize>,
 }
 
 impl ControlGui {
@@ -391,7 +394,7 @@ impl ControlGui {
     }
 }
 
-/// Get local IP address helper
+/// Returns the local IP address, if available.
 pub fn get_local_ip() -> Option<String> {
     use std::net::UdpSocket;
     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
