@@ -410,20 +410,37 @@ fn main() -> anyhow::Result<()> {
 - Feedback is opt-in per graph; single-pass apps pay no cost
 - Per-pass uniform override is possible but defaults to shared uniforms for convenience
 
+#### Code-review fixes applied after initial implementation
+
+1. ✅ **Per-pass uniform buffers** — initial impl used a single `wgpu::Buffer`; all `queue.write_buffer()` calls for different passes raced/overwrote each other. Fixed by adding `graph_uniform_buffers: Vec<wgpu::Buffer>` and `graph_uniform_bind_groups: Vec<wgpu::BindGroup>` (one per pass) in `PluginRenderer`.
+2. ✅ **`mix_original` unimplemented** — `block_c.wgsl` declared the field in `WaaavesUniforms` but never used it. Fixed: `fs_main` now blends the HSB-graded result back toward the pre-graded input with `mix(graded, pre_grade, u.mix_original)`.
+3. ✅ **`PassInput::PreviousPass` on pass 0** — silent undefined behaviour (used dummy texture without warning). Fixed: explicit match arm + `log::warn!` emitted at pipeline rebuild time.
+4. ✅ **Shader dirty check by count only** — pipeline rebuild only triggered when pass count changed; shader edits were silently ignored. Fixed: `graph_shader_sources: Vec<&'static str>` cached and compared via `std::ptr::eq` each rebuild check.
+5. ✅ **Unused feedback bindings** — `block_b.wgsl` and `block_c.wgsl` declared `@group(0) @binding(2/3)` for `feedback_tex`/`feedback_sampler` but never sampled them. Removed to avoid confusing wgpu validation warnings.
+6. ✅ **`render_graph()` called per frame** — `WgpuEngine` called `plugin_renderer.plugin.render_graph()` on every frame to check `feedback` flag (heap allocation each time). Fixed: `cached_graph: Option<RenderGraph>` stored in `PluginRenderer` at construction; `renderer.rs` reads `plugin_renderer.cached_graph.as_ref()`.
+
 **Phase 3 exit criteria**: `cargo run -p waaaves --release` works. Single-pass apps (template, delta) are unaffected. ✅
 
 ---
 
 ### Phase 4 — API Stabilisation + Publishing
 
-**Goal**: a stable, documented, publishable crate.
+**Goal**: a stable, documented, publishable crate. Every public API is intentional, every item is documented, and three real apps can be migrated onto the engine without changes to the engine itself.
 
-- Audit all public APIs for semver soundness
-- `#![deny(missing_docs)]` on all public items
-- Write a guide (docs.rs-hosted) covering: getting started, writing an effect, writing a custom tab, multi-pass effects
-- Update `rustjay-new` project generator to scaffold against `rustjay-engine`
-- Evaluate whether existing standalone apps (`rustjay-template`, `rustjay-delta`) should become thin wrappers over their engine examples
-- Publish to crates.io
+#### Steps
+
+1. **Runtime verification** — run through the Phase 1 parity checklist (webcam, NDI, Syphon, audio routing, MIDI, OSC, presets, LFO) on macOS. Document any regressions as issues.
+2. **API audit** — walk every `pub` item in all 8 crates. Mark anything that should be `pub(crate)` or removed. Apply `#[doc(hidden)]` to internal-but-pub items that can't be privatised yet without a breaking change.
+3. **`#![deny(missing_docs)]`** — add to all public crates. Write doc-comments for every public item. Keep them one sentence; link to related items.
+4. **Getting-started guide** — a single Markdown doc (rendered on docs.rs via `lib.rs`) covering: workspace setup, writing a minimal effect, adding a custom GUI tab, multi-pass with feedback.
+5. **Migrate `examples/template`** — verify the existing example is the authoritative replacement for `rustjay-template`. Ensure it runs release-mode on all three platforms.
+6. **Migrate `examples/delta`** — same for `rustjay-delta`.
+7. **Migrate `examples/waaaves`** — same for `rustjay-waaaves`. This also exercises Phase 3 on real hardware.
+8. **`rustjay-new` scaffold** — CLI tool (or shell template) that generates a new project with `rustjay-engine` as a dep, a stub shader, a stub uniforms struct, and a stub `EffectPlugin`. Replaces copying from template repos.
+9. **Versioning** — decide on unified vs independent crate versioning (see Open Questions). Set `version = "0.1.0"` workspace-wide, add `publish = false` on internal crates not intended for crates.io.
+10. **Publish** — `cargo publish -p rustjay-core`, then each dependent crate in dependency order. Verify docs.rs renders correctly.
+
+**Phase 4 exit criteria**: `cargo add rustjay-engine` works from crates.io. The getting-started guide produces a running app in under 15 minutes.
 
 ---
 
