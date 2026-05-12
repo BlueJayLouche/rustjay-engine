@@ -1,0 +1,14 @@
+[package]
+name = "rustjay-audio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-core = { workspace = true }
+serde        = { workspace = true }
+log          = { workspace = true }
+anyhow       = { workspace = true }
+cpal         = { workspace = true }
+rustfft      = { workspace = true }
+realfft      = { workspace = true }
+crossbeam    = { workspace = true }

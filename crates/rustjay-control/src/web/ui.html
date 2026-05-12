@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RustJay Template Remote</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            color: #fff;
+            padding: 16px;
+            touch-action: manipulation;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #333;
+        }
+        .header h1 {
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .status {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 4px;
+        }
+        .status.connected { color: #0f0; }
+        .status.disconnected { color: #f00; }
+        
+        .category {
+            margin-bottom: 24px;
+        }
+        .category-title {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #00d4ff;
+            margin-bottom: 12px;
+            padding-left: 4px;
+        }
+        
+        .control {
+            background: #151520;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .control-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .control-name {
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+        .control-value {
+            font-size: 0.85rem;
+            color: #888;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+            height: 40px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-track {
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
+            border-radius: 50%;
+            margin-top: -9px;
+            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
+        }
+        input[type="range"]::-moz-range-track {
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
+            border-radius: 50%;
+            border: none;
+            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
+        }
+
+        select {
+            width: 100%;
+            padding: 10px 12px;
+            background: #1e1e2e;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        select:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .toggle-btn {
+            width: 56px;
+            height: 32px;
+            background: #333;
+            border-radius: 16px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .toggle-btn.active {
+            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
+        }
+        .toggle-btn::after {
+            content: '';
+            position: absolute;
+            width: 26px;
+            height: 26px;
+            background: #fff;
+            border-radius: 50%;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.3s;
+        }
+        .toggle-btn.active::after {
+            transform: translateX(24px);
+        }
+        
+        .url-display {
+            text-align: center;
+            margin-top: 20px;
+            padding: 12px;
+            background: #151520;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #888;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>RustJay Template Remote</h1>
+        <div class="status disconnected" id="status">Connecting...</div>
+    </div>
+    
+    <div id="controls"></div>
+    
+    <div class="url-display" id="url-display"></div>
+    
+    <script>
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = wsProtocol + '//' + window.location.host + window.location.pathname + '/ws';
+        const ws = new WebSocket(wsUrl);
+        let params = {};
+        
+        document.getElementById('url-display').textContent = window.location.href;
+        
+        ws.onopen = () => {
+            document.getElementById('status').textContent = 'Connected';
+            document.getElementById('status').className = 'status connected';
+        };
+        
+        ws.onclose = () => {
+            document.getElementById('status').textContent = 'Disconnected - Refresh to reconnect';
+            document.getElementById('status').className = 'status disconnected';
+        };
+        
+        ws.onerror = (err) => {
+            console.error('WebSocket error:', err);
+            document.getElementById('status').textContent = 'Connection Error';
+            document.getElementById('status').className = 'status disconnected';
+        };
+        
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            
+            if (msg.type === 'params') {
+                params = {};
+                msg.params.forEach(p => params[p.id] = p);
+                renderControls(msg.params);
+            } else if (msg.type === 'update') {
+                if (params[msg.id]) {
+                    params[msg.id].value = msg.value;
+                    updateControlUI(msg.id, msg.value);
+                }
+            }
+        };
+        
+        function renderControls(paramsList) {
+            const container = document.getElementById('controls');
+            container.innerHTML = '';
+            
+            // Group by category
+            const categories = {};
+            paramsList.forEach(p => {
+                if (!categories[p.category]) categories[p.category] = [];
+                categories[p.category].push(p);
+            });
+            
+            Object.entries(categories).forEach(([catName, catParams]) => {
+                const catDiv = document.createElement('div');
+                catDiv.className = 'category';
+                
+                const title = document.createElement('div');
+                title.className = 'category-title';
+                title.textContent = catName;
+                catDiv.appendChild(title);
+                
+                catParams.forEach(p => {
+                    const control = createControl(p);
+                    catDiv.appendChild(control);
+                });
+                
+                container.appendChild(catDiv);
+            });
+        }
+        
+        function createControl(param) {
+            const div = document.createElement('div');
+            div.className = 'control';
+            div.dataset.id = param.id;
+
+            const isToggle = param.step >= 1 && (param.max - param.min) <= 1;
+            const isSelect = param.options && param.options.length > 0;
+
+            if (isSelect) {
+                const opts = param.options.map((o, i) =>
+                    `<option value="${i}" ${Math.round(param.value) === i ? 'selected' : ''}>${o}</option>`
+                ).join('');
+                div.innerHTML = `
+                    <div class="control-header">
+                        <span class="control-name">${param.name}</span>
+                    </div>
+                    <select onchange="updateParam('${param.id}', this.value)">${opts}</select>
+                `;
+            } else if (isToggle) {
+                div.innerHTML = `
+                    <div class="toggle">
+                        <span class="control-name">${param.name}</span>
+                        <div class="toggle-btn ${param.value > 0.5 ? 'active' : ''}"
+                             onclick="toggleParam('${param.id}')">
+                        </div>
+                    </div>
+                `;
+            } else {
+                div.innerHTML = `
+                    <div class="control-header">
+                        <span class="control-name">${param.name}</span>
+                        <span class="control-value" id="val-${param.id}">${formatValue(param.value)}</span>
+                    </div>
+                    <input type="range"
+                           min="${param.min}"
+                           max="${param.max}"
+                           step="${param.step}"
+                           value="${param.value}"
+                           oninput="updateParam('${param.id}', this.value)">
+                `;
+            }
+
+            return div;
+        }
+        
+        function formatValue(val) {
+            if (Math.abs(val) >= 100) return val.toFixed(0);
+            if (Math.abs(val) >= 10) return val.toFixed(1);
+            return val.toFixed(2);
+        }
+        
+        function updateParam(id, value) {
+            const numValue = parseFloat(value);
+            params[id].value = numValue;
+            
+            const valDisplay = document.getElementById(`val-${id}`);
+            if (valDisplay) valDisplay.textContent = formatValue(numValue);
+            
+            ws.send(JSON.stringify({ type: 'set', id, value: numValue }));
+        }
+        
+        function toggleParam(id) {
+            const param = params[id];
+            const newValue = param.value > 0.5 ? 0 : 1;
+            param.value = newValue;
+            
+            const btn = document.querySelector(`[data-id="${id}"] .toggle-btn`);
+            if (btn) btn.classList.toggle('active', newValue > 0.5);
+            
+            ws.send(JSON.stringify({ type: 'set', id, value: newValue }));
+        }
+        
+        function updateControlUI(id, value) {
+            const control = document.querySelector(`[data-id="${id}"]`);
+            if (!control) return;
+
+            const select = control.querySelector('select');
+            if (select && document.activeElement !== select) {
+                select.value = Math.round(value);
+            }
+
+            const input = control.querySelector('input[type="range"]');
+            if (input && document.activeElement !== input) {
+                input.value = value;
+            }
+
+            const valDisplay = document.getElementById(`val-${id}`);
+            if (valDisplay) valDisplay.textContent = formatValue(value);
+
+            const toggle = control.querySelector('.toggle-btn');
+            if (toggle) toggle.classList.toggle('active', value > 0.5);
+        }
+    </script>
+</body>
+</html>

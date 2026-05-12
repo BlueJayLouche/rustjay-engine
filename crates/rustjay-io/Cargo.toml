@@ -1,0 +1,50 @@
+[package]
+name = "rustjay-io"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-core = { workspace = true }
+log          = { workspace = true }
+anyhow       = { workspace = true }
+wgpu         = { workspace = true }
+bytemuck     = { workspace = true }
+crossbeam    = { workspace = true }
+tokio        = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+
+# NDI (optional)
+grafton-ndi = { version = "0.11", optional = true }
+
+# Webcam (optional)
+nokhwa = { version = "0.10", features = ["input-native"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+syphon-core      = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-core" }
+syphon-wgpu      = { git = "https://github.com/BlueJayLouche/syphon-rs", package = "syphon-wgpu" }
+metal            = "0.33"
+cocoa            = "0.26"
+objc             = "0.2"
+core-foundation  = "0.10"
+core-graphics    = "0.25"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = "0.14"
+
+[features]
+default = ["webcam", "ndi"]
+webcam  = ["nokhwa"]
+ndi     = ["grafton-ndi"]

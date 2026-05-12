@@ -1,0 +1,21 @@
+[package]
+name = "template"
+version = "0.1.0"
+edition = "2021"
+description = "HSB color template — reference example for rustjay-engine"
+
+[dependencies]
+rustjay-engine = { workspace = true }
+bytemuck       = { workspace = true }
+serde          = { workspace = true }
+anyhow         = { workspace = true }
+log            = { workspace = true }
+env_logger     = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[features]
+default = ["ndi", "webcam"]
+ndi     = ["rustjay-engine/ndi"]
+webcam  = ["rustjay-engine/webcam"]

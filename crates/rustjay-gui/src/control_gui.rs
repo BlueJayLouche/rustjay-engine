@@ -1,0 +1,364 @@
+//! # Control GUI
+//!
+//! Main ImGui interface for controlling the application.
+
+#![allow(deprecated)]
+
+use rustjay_core::{GuiTab, InputCommand, EngineState};
+use rustjay_io::input::InputManager;
+use std::sync::{Arc, Mutex};
+
+/// Main control GUI
+pub struct ControlGui {
+    pub(crate) shared_state: Arc<Mutex<EngineState>>,
+
+    // Device lists
+    pub(crate) webcam_devices: Vec<String>,
+    #[cfg(feature = "ndi")]
+    pub(crate) ndi_sources: Vec<String>,
+    #[cfg(target_os = "macos")]
+    pub(crate) syphon_servers: Vec<rustjay_io::input::SyphonServerInfo>,
+    pub(crate) audio_devices: Vec<String>,
+
+    // Selection state
+    pub(crate) selected_webcam: usize,
+    #[cfg(feature = "ndi")]
+    pub(crate) selected_ndi: usize,
+    #[cfg(target_os = "macos")]
+    pub(crate) selected_syphon: usize,
+    pub(crate) selected_audio_device: usize,
+
+    // NDI output name
+    #[cfg(feature = "ndi")]
+    pub(crate) ndi_output_name: String,
+
+    // Syphon output name (macOS)
+    #[cfg(target_os = "macos")]
+    pub(crate) syphon_output_name: String,
+
+    // Spout sender list and selection (Windows)
+    #[cfg(target_os = "windows")]
+    pub(crate) spout_senders: Vec<rustjay_io::input::SpoutSenderInfo>,
+    #[cfg(target_os = "windows")]
+    pub(crate) selected_spout: usize,
+    #[cfg(target_os = "windows")]
+    pub(crate) spout_output_name: String,
+
+    // V4L2 devices (Linux)
+    #[cfg(target_os = "linux")]
+    pub(crate) v4l2_capture_devices: Vec<rustjay_io::v4l2_devices::V4l2DeviceInfo>,
+    #[cfg(target_os = "linux")]
+    pub(crate) v4l2_output_devices: Vec<rustjay_io::v4l2_devices::V4l2DeviceInfo>,
+    #[cfg(target_os = "linux")]
+    pub(crate) selected_v4l2_capture: usize,
+    #[cfg(target_os = "linux")]
+    pub(crate) selected_v4l2_output: usize,
+    #[cfg(target_os = "linux")]
+    pub(crate) v4l2_device_path: String,
+
+    // Preview texture IDs
+    pub input_preview_texture_id: Option<imgui::TextureId>,
+    pub output_preview_texture_id: Option<imgui::TextureId>,
+
+    // Pending resolution changes
+    pub(crate) pending_internal_width: u32,
+    pub(crate) pending_internal_height: u32,
+    pub(crate) pending_output_width: u32,
+    pub(crate) pending_output_height: u32,
+
+    // Preset save inline form
+    pub(crate) preset_name_buffer: String,
+    pub(crate) saving_preset: bool,
+}
+
+impl ControlGui {
+    /// Create a new control GUI
+    pub fn new(shared_state: Arc<Mutex<EngineState>>) -> anyhow::Result<Self> {
+        let (ndi_name, syphon_name) = {
+            let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            #[cfg(target_os = "macos")]
+            let syphon = state.syphon_output.server_name.clone();
+            #[cfg(not(target_os = "macos"))]
+            let syphon = String::new();
+            #[cfg(feature = "ndi")]
+            let ndi = state.ndi_output.stream_name.clone();
+            #[cfg(not(feature = "ndi"))]
+            let ndi = String::new();
+            (ndi, syphon)
+        };
+
+        // Initialize pending resolutions from current state
+        let (internal_w, internal_h, output_w, output_h) = {
+            let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.resolution.internal_width,
+                state.resolution.internal_height,
+                state.output_width,
+                state.output_height,
+            )
+        };
+
+        Ok(Self {
+            shared_state,
+            webcam_devices: Vec::new(),
+            #[cfg(feature = "ndi")]
+            ndi_sources: Vec::new(),
+            #[cfg(target_os = "macos")]
+            syphon_servers: Vec::new(),
+            audio_devices: Vec::new(),
+            selected_webcam: 0,
+            #[cfg(feature = "ndi")]
+            selected_ndi: 0,
+            #[cfg(target_os = "macos")]
+            selected_syphon: 0,
+            selected_audio_device: 0,
+            #[cfg(feature = "ndi")]
+            ndi_output_name: ndi_name,
+            #[cfg(target_os = "macos")]
+            syphon_output_name: syphon_name,
+            #[cfg(target_os = "windows")]
+            spout_senders: Vec::new(),
+            #[cfg(target_os = "windows")]
+            selected_spout: 0,
+            #[cfg(target_os = "windows")]
+            spout_output_name: "RustJay Template".to_string(),
+            #[cfg(target_os = "linux")]
+            v4l2_capture_devices: Vec::new(),
+            #[cfg(target_os = "linux")]
+            v4l2_output_devices: Vec::new(),
+            #[cfg(target_os = "linux")]
+            selected_v4l2_capture: 0,
+            #[cfg(target_os = "linux")]
+            selected_v4l2_output: 0,
+            #[cfg(target_os = "linux")]
+            v4l2_device_path: "/dev/video12".to_string(),
+            input_preview_texture_id: None,
+            output_preview_texture_id: None,
+            pending_internal_width: internal_w,
+            pending_internal_height: internal_h,
+            pending_output_width: output_w,
+            pending_output_height: output_h,
+            preset_name_buffer: String::new(),
+            saving_preset: false,
+        })
+    }
+
+    /// Set input preview texture ID
+    pub fn set_input_preview_texture(&mut self, texture_id: imgui::TextureId) {
+        self.input_preview_texture_id = Some(texture_id);
+    }
+
+    /// Set output preview texture ID
+    pub fn set_output_preview_texture(&mut self, texture_id: imgui::TextureId) {
+        self.output_preview_texture_id = Some(texture_id);
+    }
+
+    /// Update FPS counter (deprecated - FPS now tracked in output engine)
+    #[allow(dead_code)]
+    pub fn update_fps(&mut self) {
+        // FPS is now tracked in WgpuEngine and stored in EngineState.performance
+    }
+
+    /// Sync GUI device lists from the current InputManager state.
+    ///
+    /// Call this after [`poll_device_discovery`](the engine App::poll_device_discovery)
+    /// returns `true` (i.e. background discovery has finished).
+    pub fn update_device_lists(&mut self, input_manager: &InputManager) {
+        self.webcam_devices = input_manager.webcam_devices().to_vec();
+        #[cfg(feature = "ndi")]
+        {
+            self.ndi_sources = input_manager.ndi_sources().to_vec();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.syphon_servers = input_manager.syphon_servers().to_vec();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.spout_senders = input_manager.spout_senders().to_vec();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.v4l2_capture_devices = input_manager.v4l2_capture_devices().to_vec();
+            self.v4l2_output_devices = input_manager.v4l2_output_devices().to_vec();
+            // If the current v4l2_device_path matches a discovered output device,
+            // align the combo selection with it.
+            if let Some(pos) = self
+                .v4l2_output_devices
+                .iter()
+                .position(|d| d.path == self.v4l2_device_path)
+            {
+                self.selected_v4l2_output = pos;
+            } else if !self.v4l2_output_devices.is_empty() {
+                self.selected_v4l2_output = 0;
+                self.v4l2_device_path = self.v4l2_output_devices[0].path.clone();
+            }
+            if self.selected_v4l2_capture >= self.v4l2_capture_devices.len() {
+                self.selected_v4l2_capture = 0;
+            }
+        }
+
+        // Audio device list is fast — refresh synchronously alongside the others
+        self.audio_devices = rustjay_audio::list_audio_devices();
+        log::info!("[GUI] Found {} audio device(s)", self.audio_devices.len());
+        for device in &self.audio_devices {
+            log::info!("  - {}", device);
+        }
+
+        if let Ok(mut state) = self.shared_state.lock() {
+            state.audio.available_devices = self.audio_devices.clone();
+        }
+    }
+
+    /// Build the ImGui UI
+    pub fn build_ui(&mut self, ui: &mut imgui::Ui) {
+        let window_size = ui.io().display_size;
+
+        // Main control window
+        ui.window("RustJay Template - Controls")
+            .position([10.0, 10.0], imgui::Condition::FirstUseEver)
+            .size([400.0, window_size[1] - 20.0], imgui::Condition::FirstUseEver)
+            .movable(false)
+            .collapsible(false)
+            .resizable(true)
+            .menu_bar(true)
+            .build(|| {
+                self.build_menu_bar(ui);
+                self.build_tabs(ui);
+            });
+
+        // Preview windows — only rendered when enabled
+        let show_preview = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.show_preview
+        };
+
+        if show_preview {
+            let preview_pos = [420.0, 10.0];
+            let preview_size = [
+                (window_size[0] - preview_pos[0] - 10.0).max(200.0),
+                (window_size[1] / 2.0 - 15.0).max(200.0),
+            ];
+
+            ui.window("Input Preview")
+                .position(preview_pos, imgui::Condition::FirstUseEver)
+                .size(preview_size, imgui::Condition::FirstUseEver)
+                .build(|| {
+                    self.build_input_preview(ui);
+                });
+
+            let output_preview_pos = [420.0, window_size[1] / 2.0 + 5.0];
+            let output_preview_size = [
+                (window_size[0] - output_preview_pos[0] - 10.0).max(200.0),
+                (window_size[1] / 2.0 - 15.0).max(200.0),
+            ];
+
+            ui.window("Output Preview")
+                .position(output_preview_pos, imgui::Condition::FirstUseEver)
+                .size(output_preview_size, imgui::Condition::FirstUseEver)
+                .build(|| {
+                    self.build_output_preview(ui);
+                });
+        }
+
+        // LFO Control Window (conditional)
+        let show_lfo = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.lfo.show_window
+        };
+
+        if show_lfo {
+            self.build_lfo_window(ui);
+        }
+    }
+
+    /// Build the menu bar
+    fn build_menu_bar(&mut self, ui: &imgui::Ui) {
+        ui.menu_bar(|| {
+            ui.menu("File", || {
+                if ui.menu_item("Exit") {
+                    // Signal exit - handled by app
+                }
+            });
+
+            ui.menu("View", || {
+                let show_preview = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.show_preview
+                };
+                if ui.menu_item_config("Show Previews").selected(show_preview).build() {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.show_preview = !state.show_preview;
+                }
+            });
+
+            ui.menu("Devices", || {
+                if ui.menu_item("Refresh All") {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.input_command = InputCommand::RefreshDevices;
+                }
+            });
+        });
+    }
+
+    /// Build the main tabs
+    fn build_tabs(&mut self, ui: &imgui::Ui) {
+        let tabs = [
+            GuiTab::Input,
+            GuiTab::Color,
+            GuiTab::Audio,
+            GuiTab::Output,
+            GuiTab::Presets,
+            GuiTab::Midi,
+            GuiTab::Osc,
+            GuiTab::Web,
+            GuiTab::Settings,
+        ];
+
+        let current_tab = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.current_tab
+        };
+
+        if let Some(_tab_bar) = ui.tab_bar("##main_tabs") {
+            for tab in &tabs {
+                let is_selected = current_tab == *tab;
+                if let Some(_tab_item) = ui.tab_item(tab.name()) {
+                    if !is_selected {
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.current_tab = *tab;
+                    }
+                }
+            }
+        }
+
+        ui.separator();
+
+        // Build content for current tab
+        match current_tab {
+            GuiTab::Input => self.build_input_tab(ui),
+            GuiTab::Color => self.build_color_tab(ui),
+            GuiTab::Audio => self.build_audio_tab(ui),
+            GuiTab::Output => self.build_output_tab(ui),
+            GuiTab::Presets => self.build_presets_tab(ui),
+            GuiTab::Midi => self.build_midi_tab(ui),
+            GuiTab::Osc => self.build_osc_tab(ui),
+            GuiTab::Web => self.build_web_tab(ui),
+            GuiTab::Settings => self.build_settings_tab(ui),
+        }
+    }
+}
+
+/// Get local IP address helper
+pub fn get_local_ip() -> Option<String> {
+    use std::net::UdpSocket;
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = socket.local_addr() {
+                return Some(addr.ip().to_string());
+            }
+        }
+    }
+    None
+}
+

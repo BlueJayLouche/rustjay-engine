@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "crates/rustjay-core",
+    "crates/rustjay-audio",
+    "crates/rustjay-io",
+    "crates/rustjay-control",
+    "crates/rustjay-presets",
+    "crates/rustjay-gui",
+    "crates/rustjay-render",
+    "crates/rustjay-engine",
+    "examples/template",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Core utilities
+serde       = { version = "1.0",  features = ["derive"] }
+serde_json  = "1.0"
+log         = "0.4"
+anyhow      = "1.0"
+thiserror   = "2.0"
+
+# GPU / windowing
+wgpu        = { version = "29.0", features = ["spirv"] }
+winit       = "0.30"
+pollster    = "0.4"
+bytemuck    = { version = "1.21", features = ["derive"] }
+glam        = { version = "0.32", features = ["bytemuck", "serde"] }
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# GUI
+imgui               = "0.12"
+imgui-wgpu          = "0.28"
+imgui-winit-support = "0.13"
+
+# Audio
+cpal    = "0.17"
+rustfft = "6.2"
+realfft = "3.4"
+
+# Async / threading
+tokio     = { version = "1.42", features = ["rt-multi-thread", "sync", "net"] }
+crossbeam = "0.8"
+
+# Control protocols
+midir = "0.11"
+rosc  = "0.11"
+
+# Web server
+axum       = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+
+# Config / serialisation helpers
+toml    = "1.0"
+chrono  = { version = "0.4", features = ["serde"] }
+instant = "0.1"
+dirs    = "6.0"
+
+# Workspace-internal crates
+rustjay-core    = { path = "crates/rustjay-core" }
+rustjay-audio   = { path = "crates/rustjay-audio" }
+rustjay-io      = { path = "crates/rustjay-io" }
+rustjay-control = { path = "crates/rustjay-control" }
+rustjay-presets = { path = "crates/rustjay-presets" }
+rustjay-gui     = { path = "crates/rustjay-gui" }
+rustjay-render  = { path = "crates/rustjay-render" }
+rustjay-engine  = { path = "crates/rustjay-engine" }

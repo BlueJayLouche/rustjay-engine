@@ -1,0 +1,16 @@
+[package]
+name = "rustjay-control"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-core = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+log          = { workspace = true }
+anyhow       = { workspace = true }
+tokio        = { workspace = true }
+midir        = { workspace = true }
+rosc         = { workspace = true }
+axum         = { workspace = true }
+tower-http   = { workspace = true }

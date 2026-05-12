@@ -1,0 +1,46 @@
+[package]
+name = "rustjay-engine"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance cross-platform VJ engine"
+license = "MIT"
+
+[dependencies]
+rustjay-core    = { workspace = true }
+rustjay-audio   = { workspace = true }
+rustjay-io      = { workspace = true }
+rustjay-control = { workspace = true }
+rustjay-presets = { workspace = true }
+rustjay-gui     = { workspace = true }
+rustjay-render  = { workspace = true }
+log             = { workspace = true }
+anyhow          = { workspace = true }
+wgpu            = { workspace = true }
+winit           = { workspace = true }
+bytemuck        = { workspace = true }
+pollster        = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+dirs            = { workspace = true }
+tokio           = { workspace = true }
+env_logger      = "0.11"
+imgui           = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[features]
+default = ["ndi", "webcam"]
+ndi     = ["rustjay-io/ndi"]
+webcam  = ["rustjay-io/webcam"]
+spout   = []
+v4l2    = []
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
+
+[profile.dev]
+opt-level = 1

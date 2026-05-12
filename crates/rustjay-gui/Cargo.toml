@@ -1,0 +1,26 @@
+[package]
+name = "rustjay-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-core    = { workspace = true }
+rustjay-audio   = { workspace = true }
+rustjay-io      = { workspace = true }
+rustjay-control = { workspace = true }
+rustjay-presets = { workspace = true }
+log             = { workspace = true }
+anyhow          = { workspace = true }
+wgpu            = { workspace = true }
+winit           = { workspace = true }
+bytemuck        = { workspace = true }
+imgui               = { workspace = true }
+imgui-wgpu          = { workspace = true }
+imgui-winit-support = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+pollster        = { workspace = true }
+
+[features]
+default = ["ndi"]
+ndi     = ["rustjay-core/ndi"]

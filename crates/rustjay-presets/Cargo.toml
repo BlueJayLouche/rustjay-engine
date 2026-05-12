@@ -1,0 +1,13 @@
+[package]
+name = "rustjay-presets"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustjay-core  = { workspace = true }
+rustjay-audio = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+log           = { workspace = true }
+anyhow        = { workspace = true }
+dirs          = { workspace = true }
