@@ -8,6 +8,8 @@ use rustjay_core::{GuiTab, InputCommand, EngineState};
 use rustjay_io::input::InputManager;
 use std::sync::{Arc, Mutex};
 
+use crate::AnyGuiTab;
+
 /// Main control GUI
 pub struct ControlGui {
     pub(crate) shared_state: Arc<Mutex<EngineState>>,
@@ -69,6 +71,10 @@ pub struct ControlGui {
     // Preset save inline form
     pub(crate) preset_name_buffer: String,
     pub(crate) saving_preset: bool,
+
+    // Custom tabs provided by the active effect plugin
+    pub custom_tabs: Vec<Box<dyn AnyGuiTab>>,
+    pub custom_tab_active: Option<usize>,
 }
 
 impl ControlGui {
@@ -140,6 +146,8 @@ impl ControlGui {
             pending_output_height: output_h,
             preset_name_buffer: String::new(),
             saving_preset: false,
+            custom_tabs: Vec::new(),
+            custom_tab_active: None,
         })
     }
 
@@ -211,7 +219,7 @@ impl ControlGui {
     }
 
     /// Build the ImGui UI
-    pub fn build_ui(&mut self, ui: &mut imgui::Ui) {
+    pub fn build_ui(&mut self, ui: &mut imgui::Ui, app_state: &mut dyn std::any::Any) {
         let window_size = ui.io().display_size;
 
         // Main control window
@@ -224,7 +232,7 @@ impl ControlGui {
             .menu_bar(true)
             .build(|| {
                 self.build_menu_bar(ui);
-                self.build_tabs(ui);
+                self.build_tabs(ui, app_state);
             });
 
         // Preview windows — only rendered when enabled
@@ -302,31 +310,59 @@ impl ControlGui {
     }
 
     /// Build the main tabs
-    fn build_tabs(&mut self, ui: &imgui::Ui) {
-        let tabs = [
-            GuiTab::Input,
-            GuiTab::Color,
-            GuiTab::Audio,
-            GuiTab::Output,
-            GuiTab::Presets,
-            GuiTab::Midi,
-            GuiTab::Osc,
-            GuiTab::Web,
-            GuiTab::Settings,
+    fn build_tabs(&mut self, ui: &imgui::Ui, app_state: &mut dyn std::any::Any) {
+        let builtin_tabs = [
+            GuiTab::Input, GuiTab::Color, GuiTab::Audio, GuiTab::Output,
+            GuiTab::Presets, GuiTab::Midi, GuiTab::Osc, GuiTab::Web, GuiTab::Settings,
         ];
 
         let current_tab = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.current_tab
         };
+        let custom_tab_active = self.custom_tab_active;
+
+        // Snapshot (index, name, replaces) so we can mutate self.custom_tab_active
+        // inside the loop without borrow conflicts.
+        let custom_info: Vec<(usize, String, Option<GuiTab>)> = self.custom_tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, t.name().to_string(), t.replaces()))
+            .collect();
 
         if let Some(_tab_bar) = ui.tab_bar("##main_tabs") {
-            for tab in &tabs {
-                let is_selected = current_tab == *tab;
-                if let Some(_tab_item) = ui.tab_item(tab.name()) {
-                    if !is_selected {
-                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.current_tab = *tab;
+            for builtin in &builtin_tabs {
+                // If a custom tab replaces this slot, render it here instead.
+                if let Some((idx, name, _)) = custom_info.iter()
+                    .find(|(_, _, r)| *r == Some(*builtin))
+                {
+                    let idx = *idx;
+                    let is_selected = custom_tab_active == Some(idx);
+                    if let Some(_item) = ui.tab_item(name.as_str()) {
+                        if !is_selected {
+                            self.custom_tab_active = Some(idx);
+                        }
+                    }
+                } else {
+                    let is_selected = current_tab == *builtin && custom_tab_active.is_none();
+                    if let Some(_item) = ui.tab_item(builtin.name()) {
+                        if !is_selected {
+                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.current_tab = *builtin;
+                            self.custom_tab_active = None;
+                        }
+                    }
+                }
+            }
+
+            // Append custom tabs that don't replace any built-in.
+            for (idx, name, replaces) in &custom_info {
+                if replaces.is_none() {
+                    let is_selected = custom_tab_active == Some(*idx);
+                    if let Some(_item) = ui.tab_item(name.as_str()) {
+                        if !is_selected {
+                            self.custom_tab_active = Some(*idx);
+                        }
                     }
                 }
             }
@@ -334,17 +370,23 @@ impl ControlGui {
 
         ui.separator();
 
-        // Build content for current tab
-        match current_tab {
-            GuiTab::Input => self.build_input_tab(ui),
-            GuiTab::Color => self.build_color_tab(ui),
-            GuiTab::Audio => self.build_audio_tab(ui),
-            GuiTab::Output => self.build_output_tab(ui),
-            GuiTab::Presets => self.build_presets_tab(ui),
-            GuiTab::Midi => self.build_midi_tab(ui),
-            GuiTab::Osc => self.build_osc_tab(ui),
-            GuiTab::Web => self.build_web_tab(ui),
-            GuiTab::Settings => self.build_settings_tab(ui),
+        if let Some(idx) = self.custom_tab_active {
+            if let Some(tab) = self.custom_tabs.get_mut(idx) {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                tab.draw(ui, app_state, &mut state);
+            }
+        } else {
+            match current_tab {
+                GuiTab::Input => self.build_input_tab(ui),
+                GuiTab::Color => self.build_color_tab(ui),
+                GuiTab::Audio => self.build_audio_tab(ui),
+                GuiTab::Output => self.build_output_tab(ui),
+                GuiTab::Presets => self.build_presets_tab(ui),
+                GuiTab::Midi => self.build_midi_tab(ui),
+                GuiTab::Osc => self.build_osc_tab(ui),
+                GuiTab::Web => self.build_web_tab(ui),
+                GuiTab::Settings => self.build_settings_tab(ui),
+            }
         }
     }
 }

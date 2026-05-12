@@ -1,4 +1,5 @@
 use super::App;
+use rustjay_core::EffectPlugin;
 use rustjay_audio::list_audio_devices;
 use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand};
 use rustjay_control::osc::OscServer;
@@ -8,7 +9,7 @@ fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, Engi
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-impl App {
+impl<P: EffectPlugin> App<P> {
     pub(super) fn dispatch_commands(&mut self) {
         self.process_input_commands();
         self.process_output_commands();

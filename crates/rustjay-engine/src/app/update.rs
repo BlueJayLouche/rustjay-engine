@@ -1,7 +1,8 @@
 use super::App;
+use rustjay_core::EffectPlugin;
 use rustjay_core::InputType;
 
-impl App {
+impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
         if let Some(ref mut manager) = self.input_manager {
             #[cfg(feature = "ndi")]

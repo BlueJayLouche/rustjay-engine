@@ -19,8 +19,6 @@ pub trait AnyGuiTab: Send + Sync {
     );
 }
 
-/// The set of built-in tabs the engine renders by default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinTab {
-    Input, Color, Audio, Output, Presets, Midi, Osc, Web, Settings,
-}
+/// Alias for `rustjay_core::GuiTab` — the set of built-in tabs the engine renders.
+/// Used as the return type of `AnyGuiTab::replaces()`.
+pub use rustjay_core::GuiTab as BuiltinTab;

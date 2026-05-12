@@ -5,28 +5,33 @@ use rustjay_control::midi::{MidiManager, MidiState};
 use rustjay_control::osc::OscServer;
 use rustjay_control::web::{WebServer, WebConfig, WebCommand as WebServerCommand};
 use rustjay_core::EngineState;
-use rustjay_gui::{ControlGui, ImGuiRenderer};
+use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
 use rustjay_io::input::InputManager;
 use rustjay_presets::{PresetBank, default_presets_dir};
 use rustjay_render::WgpuEngine;
 use crate::config::{AppSettings, ConfigManager};
+use rustjay_core::EffectPlugin;
 
 use anyhow::Result;
 use std::sync::Arc;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
-pub fn run_app(shared_state: Arc<std::sync::Mutex<EngineState>>, app_name: &str) -> Result<()> {
+pub fn run_app<P: EffectPlugin>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    tabs: Vec<Box<dyn AnyGuiTab>>,
+) -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(shared_state, app_name);
+    let mut app = App::new(shared_state, plugin, tabs);
     event_loop.run_app(&mut app)?;
 
     Ok(())
 }
 
-pub(crate) struct App {
+pub(crate) struct App<P: EffectPlugin> {
     pub(crate) shared_state: Arc<std::sync::Mutex<EngineState>>,
 
     pub(crate) wgpu_instance: Option<wgpu::Instance>,
@@ -35,7 +40,7 @@ pub(crate) struct App {
     pub(crate) wgpu_queue: Option<Arc<wgpu::Queue>>,
 
     pub(crate) output_window: Option<Arc<Window>>,
-    pub(crate) output_engine: Option<WgpuEngine>,
+    pub(crate) output_engine: Option<WgpuEngine<P>>,
 
     pub(crate) control_window: Option<Arc<Window>>,
     pub(crate) control_gui: Option<ControlGui>,
@@ -55,11 +60,22 @@ pub(crate) struct App {
     pub(crate) output_occluded: bool,
     pub(crate) last_frame_time: std::time::Instant,
     pub(crate) frame_delta_time: f32,
+
+    // Plugin state
+    pub(crate) plugin: Option<P>,
+    pub(crate) app_state: P::State,
+    pub(crate) custom_tabs: Vec<Box<dyn AnyGuiTab>>,
 }
 
-impl App {
-    pub(crate) fn new(shared_state: Arc<std::sync::Mutex<EngineState>>, app_name: &str) -> Self {
-        let config_manager = ConfigManager::new(app_name);
+impl<P: EffectPlugin> App<P> {
+    pub(crate) fn new(
+        shared_state: Arc<std::sync::Mutex<EngineState>>,
+        plugin: P,
+        tabs: Vec<Box<dyn AnyGuiTab>>,
+    ) -> Self {
+        let app_name = plugin.app_name().to_string();
+        let initial_state = plugin.default_state();
+        let config_manager = ConfigManager::new(&app_name);
         if let Ok(mut state) = shared_state.lock() {
             config_manager.settings.apply_to_state(&mut state);
             log::info!("Applied saved settings to state");
@@ -128,7 +144,7 @@ impl App {
         let (web_server, web_command_tx) = {
             let config = WebConfig {
                 port: web_port,
-                app_name: "rustjay".to_string(),
+                app_name: app_name.clone(),
                 enabled: false,
             };
             let (mut server, cmd_tx) = WebServer::new(config);
@@ -160,6 +176,9 @@ impl App {
             output_occluded: false,
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,
+            plugin: Some(plugin),
+            app_state: initial_state,
+            custom_tabs: tabs,
         }
     }
 

@@ -6,8 +6,9 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowAttributes;
+use rustjay_core::EffectPlugin;
 
-impl ApplicationHandler for App {
+impl<P: EffectPlugin> ApplicationHandler for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.wgpu_instance.is_none() {
             let backends = if cfg!(target_os = "macos") {
@@ -20,7 +21,7 @@ impl ApplicationHandler for App {
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             }));
         }
-        let Some(instance) = self.wgpu_instance.as_ref() else { return; };
+        let Some(instance) = self.wgpu_instance.as_ref() else { return };
 
         if self.output_window.is_none() {
             let (output_width, output_height, fullscreen) = {
@@ -50,7 +51,8 @@ impl ApplicationHandler for App {
             self.output_window = Some(Arc::clone(&window));
 
             let shared_state = Arc::clone(&self.shared_state);
-            match pollster::block_on(WgpuEngine::new(instance, window, shared_state)) {
+            let plugin = self.plugin.take().expect("plugin already consumed");
+            match pollster::block_on(WgpuEngine::new(instance, window, shared_state, plugin)) {
                 Ok(engine) => {
                     log::info!("Output engine initialized");
                     self.wgpu_adapter = Some(engine.adapter.clone());
@@ -113,6 +115,10 @@ impl ApplicationHandler for App {
                                 gui.set_input_preview_texture(input_preview_id);
                                 gui.set_output_preview_texture(output_preview_id);
                                 log::info!("Created preview textures");
+
+                                // Move custom tabs into the GUI
+                                gui.custom_tabs = std::mem::take(&mut self.custom_tabs);
+
                                 self.control_gui = Some(gui);
                                 {
                                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,7 +293,7 @@ impl ApplicationHandler for App {
         }
 
         if let Some(ref mut engine) = self.output_engine {
-            engine.render(self.output_occluded);
+            engine.render(self.output_occluded, &mut self.app_state);
             self.update_preview_textures();
         }
 
@@ -300,7 +306,8 @@ impl ApplicationHandler for App {
             let logical_height = window_size.height as f32 / scale_factor as f32;
             renderer.set_display_size(logical_width, logical_height);
 
-            if let Err(err) = renderer.render_frame(|ui| gui.build_ui(ui)) {
+            let app_state = &mut self.app_state as &mut dyn std::any::Any;
+            if let Err(err) = renderer.render_frame(|ui| gui.build_ui(ui, app_state)) {
                 log::error!("ImGui render error: {}", err);
             }
         }

@@ -1,20 +1,20 @@
 //! # wgpu Renderer
 //!
-//! Main rendering engine with HSB color manipulation.
+//! Main rendering engine. Generic over `EffectPlugin` so apps can supply
+//! their own shader, uniforms, and GPU resources.
 
-use rustjay_core::{HsbParams, EngineState, Vertex};
+use rustjay_core::{EffectPlugin, EngineState, Vertex};
 use rustjay_io::output::OutputManager;
 use crate::blit::BlitPipeline;
-use crate::pipeline::MainPipeline;
+use crate::plugin_renderer::PluginRenderer;
 use crate::texture::{InputTexture, Texture};
-use crate::uniforms::HsbUniforms;
 
 use anyhow::Result;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-pub struct WgpuEngine {
+pub struct WgpuEngine<P: EffectPlugin> {
     #[allow(dead_code)]
     instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -28,19 +28,14 @@ pub struct WgpuEngine {
 
     shared_state: Arc<std::sync::Mutex<EngineState>>,
 
-    main_pipeline: MainPipeline,
+    plugin_renderer: PluginRenderer<P>,
     blit_pipeline: BlitPipeline,
 
     pub render_target: Texture,
     pub input_texture: InputTexture,
 
     vertex_buffer: wgpu::Buffer,
-    hsb_uniform_buffer: wgpu::Buffer,
-
-    uniform_bind_group: wgpu::BindGroup,
     blit_bind_group: wgpu::BindGroup,
-    cached_texture_bind_group: Option<wgpu::BindGroup>,
-    cached_texture_gen: u64,
 
     frame_count: u64,
     fps_last_time: std::time::Instant,
@@ -50,11 +45,12 @@ pub struct WgpuEngine {
     output_manager: OutputManager,
 }
 
-impl WgpuEngine {
+impl<P: EffectPlugin> WgpuEngine<P> {
     pub async fn new(
         instance: &wgpu::Instance,
         window: Arc<Window>,
         shared_state: Arc<std::sync::Mutex<EngineState>>,
+        plugin: P,
     ) -> Result<Self> {
         let size = window.inner_size();
         let surface = instance.create_surface(window)?;
@@ -104,7 +100,6 @@ impl WgpuEngine {
         let render_target = Texture::create_render_target(&device, 1920, 1080, "Render Target");
         let input_texture = InputTexture::new(Arc::clone(&device), Arc::clone(&queue));
 
-        let main_pipeline = MainPipeline::new(&device);
         let blit_pipeline = BlitPipeline::new(&device, surface_format);
 
         let vertices = Vertex::quad_vertices();
@@ -114,22 +109,11 @@ impl WgpuEngine {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let hsb_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("HSB Uniform Buffer"),
-            size: std::mem::size_of::<HsbUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Uniform Bind Group"),
-            layout: &main_pipeline.uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: hsb_uniform_buffer.as_entire_binding(),
-            }],
-        });
         let blit_bind_group = blit_pipeline.create_bind_group(&device, &render_target.view);
+
+        let engine_state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
+        drop(engine_state);
 
         Ok(Self {
             instance: instance.clone(),
@@ -141,16 +125,12 @@ impl WgpuEngine {
             window_width: size.width,
             window_height: size.height,
             shared_state,
-            main_pipeline,
+            plugin_renderer,
             blit_pipeline,
             render_target,
             input_texture,
             vertex_buffer,
-            hsb_uniform_buffer,
-            uniform_bind_group,
             blit_bind_group,
-            cached_texture_bind_group: None,
-            cached_texture_gen: u64::MAX,
             frame_count: 0,
             fps_last_time: std::time::Instant::now(),
             fps_frame_count: 0,
@@ -212,97 +192,38 @@ impl WgpuEngine {
         self.output_manager.stop_v4l2();
     }
 
-    pub fn render(&mut self, occluded: bool) {
-        let (hsb_params, color_enabled) = {
-            let state = match self.shared_state.lock() {
-                Ok(s) => s,
-                Err(e) => e.into_inner(),
-            };
-
-            let base_hue = state.audio_routing.base_hue;
-            let base_sat = state.audio_routing.base_saturation;
-            let base_bright = state.audio_routing.base_brightness;
-
-            let (mut hue, mut sat, mut bright) = if state.audio_routing.enabled {
-                state.audio_routing.matrix.apply_to_hsb(base_hue, base_sat, base_bright)
-            } else {
-                (base_hue, base_sat, base_bright)
-            };
-
-            let (hue_mod, sat_mod, bright_mod) = state.lfo.bank.get_hsb_modulations();
-            hue = (hue + hue_mod * 90.0).clamp(-180.0, 180.0);
-            sat = (sat + sat_mod).clamp(0.0, 2.0);
-            bright = (bright + bright_mod).clamp(0.0, 2.0);
-
-            (HsbParams { hue_shift: hue, saturation: sat, brightness: bright }, state.color_enabled)
+    pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
+        let engine_state = match self.shared_state.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
         };
 
         if self.input_texture.binding_view().is_none() {
             self.input_texture.ensure_size(1920, 1080);
         }
 
-        let current_gen = self.input_texture.texture_generation;
-        if self.cached_texture_gen != current_gen {
-            if let (Some(input_view), Some(input_sampler)) = (
-                self.input_texture.binding_view(),
-                self.input_texture.binding_sampler(),
-            ) {
-                self.cached_texture_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Texture Bind Group"),
-                    layout: &self.main_pipeline.texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(input_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(input_sampler),
-                        },
-                    ],
-                }));
-                self.cached_texture_gen = current_gen;
-            }
-        }
-
-        let Some(ref texture_bind_group) = self.cached_texture_bind_group else {
-            return;
-        };
-
-        let hsb_uniforms: HsbUniforms = if color_enabled {
-            (&hsb_params).into()
-        } else {
-            HsbUniforms::identity()
-        };
-        self.queue.write_buffer(&self.hsb_uniform_buffer, 0, bytemuck::bytes_of(&hsb_uniforms));
+        // Plugin prepare hook
+        self.plugin_renderer.plugin.prepare(
+            app_state,
+            &engine_state,
+            &self.device,
+            &self.queue,
+        );
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Pipeline Encoder"),
         });
 
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Main Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.render_target.view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            render_pass.set_pipeline(&self.main_pipeline.render_pipeline);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_bind_group(0, texture_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
+        self.plugin_renderer.render(
+            &mut encoder,
+            &self.device,
+            &self.queue,
+            &self.input_texture,
+            &self.render_target,
+            app_state,
+            &engine_state,
+            &self.vertex_buffer,
+        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
 

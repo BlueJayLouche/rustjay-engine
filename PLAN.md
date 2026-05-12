@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Foundational — API not yet stable
+> **Status**: Phase 1 ✅ Complete — Phase 2 upcoming
 
 ---
 
@@ -37,8 +37,8 @@ rustjay-engine/
 ├── Cargo.toml                  # workspace root
 ├── PLAN.md
 ├── crates/
-│   ├── rustjay-core/           # shared types, state, LFO, vertex
-│   ├── rustjay-audio/          # FFT, beat detection, audio routing
+│   ├── rustjay-core/           # shared types, state, LFO, vertex, routing
+│   ├── rustjay-audio/          # FFT, beat detection (routing types re-export from core)
 │   ├── rustjay-io/             # all video inputs + outputs (platform-gated)
 │   ├── rustjay-control/        # MIDI, OSC, web remote
 │   ├── rustjay-presets/        # preset save/load/apply
@@ -46,7 +46,7 @@ rustjay-engine/
 │   ├── rustjay-render/         # wgpu engine, EffectPlugin trait, pipeline
 │   └── rustjay-engine/         # facade: re-exports + RustjayApp builder
 └── examples/
-    ├── template/               # Phase 1 — HSB color (port of rustjay-template)
+    ├── template/               # Phase 1 — HSB color (port of rustjay-template) ✅
     ├── delta/                  # Phase 2 — RGB delay / motion extraction
     └── waaaves/                # Phase 3 — multi-block feedback pipeline
 ```
@@ -79,18 +79,19 @@ No cycles. `rustjay-core` depends on nothing in this workspace.
 
 The shared vocabulary. Everything else depends on this; it depends on nothing internal.
 
-- `EngineState` — the state the engine manages (replaces `SharedState` in the template). Contains: `InputState`, `AudioState`, `LfoState`, `HsbParams`, `ResolutionState`, `PerformanceMetrics`, output states, command channels.
+- `EngineState` — the state the engine manages (renamed from `SharedState` in the template). Contains: `InputState`, `AudioState`, `LfoState`, `HsbParams`, `ResolutionState`, `PerformanceMetrics`, output states, command channels.
 - `LfoState` + LFO tick logic (3 banks, 5 waveforms, tempo sync)
 - `Vertex` type
 - `InputType`, `GuiTab` enum, `BuiltinTab` enum
-- Common error types (`RustjayError`)
+- Common error types
 - Serde-derived types for persistence
+- **Audio routing types** — `AudioRoutingState`, `RoutingMatrix`, `AudioRoute`, `FftBand`, `ModulationTarget` live here (not in `rustjay-audio`) to avoid circular deps; `rustjay-audio` re-exports them.
 
 ### `rustjay-audio`
 
 - `AudioAnalyzer` — lock-free FFT via `realfft`, beat detection, tap tempo
-- `AudioRoutingState` — FFT-band → parameter routing matrix
 - `AudioCommand` enum
+- Routing types are defined in `rustjay-core` and re-exported here for backwards compatibility
 - Feature: always compiled (no optional flag — audio is core to VJ)
 
 ### `rustjay-io`
@@ -118,32 +119,33 @@ Exports: `InputManager`, `OutputManager`, `InputCommand`, `OutputCommand`
 
 - `PresetBank` — named presets, 8 quick slots, save/load JSON
 - `PresetCommand` enum
-- Serialises `EngineState` fields + a serialisable snapshot of app state (via trait)
+- Serialises `EngineState` fields + custom_values map for extensibility
 
 ### `rustjay-gui`
 
 - `ImGuiRenderer` — imgui-wgpu integration
 - `ControlGui` — dual-window control window, tab bar
 - Built-in tabs: **Input**, **Audio**, **Output**, **Presets**, **MIDI**, **OSC**, **Web**, **Settings** — rendered by the engine automatically
-- `GuiTab<S>` trait — the extension point for app-specific tabs (see below)
+- `GuiTab<S>` trait — Phase 2 extension point for app-specific tabs (see below)
 
 ### `rustjay-render`
 
 - `WgpuEngine` — device/queue/surface lifecycle, render target, blit pipeline
-- `EffectPlugin` trait — the core abstraction (see below)
-- `RenderPipeline` — takes an `EffectPlugin`, manages bind groups and uniform buffers
+- `EffectPlugin` trait — Phase 2 core abstraction (see below)
+- `MainPipeline` — HSB shader pipeline targeting `Bgra8Unorm`
 - `InputTexture`, `Texture` helpers
 
 ### `rustjay-engine` (facade)
 
 - Re-exports the public API of all sub-crates under one roof
-- `RustjayApp<P>` builder — the entry point for app authors
 - `App` struct + winit `ApplicationHandler` impl (the event loop)
 - `ConfigManager` — settings persistence
+- Phase 1 entry point: `run(app_name: &str)` — hardwired HSB pipeline
+- Phase 2 entry point: `RustjayApp<P>` builder — generic over `EffectPlugin`
 
 ---
 
-## Key Traits
+## Key Traits (Phase 2)
 
 ### `EffectPlugin`
 
@@ -216,10 +218,10 @@ App authors never touch winit, wgpu, or the event loop directly.
 
 ---
 
-## What a Complete App Looks Like
+## What a Complete App Looks Like (Phase 2+)
 
 ```rust
-// examples/template/src/main.rs
+// examples/template/src/main.rs (after Phase 2 migration)
 use rustjay_engine::prelude::*;
 
 struct HsbEffect;
@@ -247,7 +249,6 @@ impl EffectPlugin for HsbEffect {
     }
 
     fn build_uniforms(&self, s: &HsbState, engine: &EngineState) -> HsbUniforms {
-        // Composite: base + LFO modulation + audio routing
         let hue = s.hue_shift + engine.lfo.modulate(LfoTarget::Hue);
         HsbUniforms { values: [hue, s.saturation, s.brightness, 0.0] }
     }
@@ -285,113 +286,76 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
-### Phase 1 — Engine Core + Template Example
+### Phase 1 — Engine Core + Template Example ✅ COMPLETE
 
-**Goal**: `rustjay-engine` is a real Cargo workspace. `examples/template` builds, runs, and is feature-identical to the standalone `rustjay-template` repo.
+**Goal**: `rustjay-engine` is a real Cargo workspace. `examples/template` builds and is architecturally identical to the standalone `rustjay-template` repo.
 
-**Why this proves the engine**: template covers every subsystem — all I/O paths, audio, MIDI, OSC, presets, LFO, dual-window GUI. If the template runs through the engine, every subsystem is wired.
+**What was built**: All 8 crates scaffolded and populated. Every subsystem from `rustjay-template` lives in its respective crate. The entry point is `rustjay_engine::run("template")` — a hardwired function that boots the full engine with the built-in HSB pipeline. The `EffectPlugin` / `GuiTab<S>` / `RustjayApp<P>` generics were intentionally deferred to Phase 2; they require the full working engine as a foundation before the generic layer can be extracted safely.
 
-#### Steps
+**Key architectural decision**: `AudioRoutingState`, `RoutingMatrix`, `AudioRoute`, `FftBand`, and `ModulationTarget` were moved from `rustjay-audio` into `rustjay-core` to eliminate a circular dependency. `rustjay-audio` re-exports them.
 
-1. **Workspace scaffold**
-   - Root `Cargo.toml` declaring all 8 crates as workspace members
-   - Stub `lib.rs` in each crate (empty but compiling)
-   - Confirm `cargo build` succeeds on the empty workspace
+#### Steps (completed)
 
-2. **`rustjay-core`**
-   - Migrate `core/state.rs`, `core/lfo.rs`, `core/vertex.rs`, `core/mod.rs` from template
-   - Rename `SharedState` → `EngineState` (prepares for the generic split)
-   - Add `BuiltinTab` enum
+1. ✅ Workspace scaffold — root `Cargo.toml`, 8 crates, stub `lib.rs` files
+2. ✅ `rustjay-core` — `EngineState` (renamed from `SharedState`), LFO, vertex, routing types
+3. ✅ `rustjay-audio` — `AudioAnalyzer`, FFT, beat detection, `AudioCommand`
+4. ✅ `rustjay-io` — `InputManager`, `OutputManager`, all platform-gated I/O paths, `build.rs`
+5. ✅ `rustjay-control` — MIDI, OSC, web remote
+6. ✅ `rustjay-presets` — `PresetBank`, save/load/quick-slots, `custom_values` map
+7. ✅ `rustjay-gui` — `ImGuiRenderer`, `ControlGui`, all 8 built-in tabs
+8. ✅ `rustjay-render` — `WgpuEngine`, `MainPipeline`, blit, texture, uniforms, `main.wgsl`
+9. ✅ `rustjay-engine` (facade) — `App`, event loop, commands, `config/`, `run(app_name)`
+10. ✅ `examples/template` — calls `rustjay_engine::run("template")`
+11. ✅ README, git init, pushed to `git@github.com:BlueJayLouche/rustjay-engine.git`
 
-3. **`rustjay-audio`**
-   - Migrate `audio/fft.rs`, `audio/device.rs`, `audio/routing.rs`, `audio/mod.rs`
-   - Keep `AudioCommand` enum here; re-export from `rustjay-core`
+#### Parity verification checklist (runtime — not yet tested)
 
-4. **`rustjay-io`**
-   - Migrate `input/`, `output/`, `v4l2_devices.rs`, `ndi_runtime.rs`
-   - All platform-conditional code stays; feature flags preserved
-   - Migrate `build.rs` (Syphon/NDI path detection)
-
-5. **`rustjay-control`**
-   - Migrate `midi/`, `osc/`, `web/`
-
-6. **`rustjay-presets`**
-   - Migrate `presets/`
-   - Design `AppStateSnapshot` trait: a simple `fn snapshot(&self) -> serde_json::Value` / `fn restore(&mut self, v: serde_json::Value)` that `EffectPlugin::State` must satisfy via `Serialize`/`Deserialize` (already required)
-
-7. **`rustjay-gui`**
-   - Migrate `gui/` (renderer + all tabs)
-   - Define `GuiTab<S>` trait
-   - Refactor `ControlGui` to accept a `Vec<Box<dyn GuiTab<State=S>>>` alongside the built-in tabs
-   - Built-in tabs render first unless replaced via `replaces()`
-
-8. **`rustjay-render`**
-   - Migrate `engine/` (renderer, pipeline, blit, texture, uniforms)
-   - Define `EffectPlugin` trait
-   - `RenderPipeline<P>` wraps `WgpuEngine` and calls `plugin.build_uniforms()` + `plugin.shader_source()` at init
-
-9. **`rustjay-engine` (facade)**
-   - Thin `lib.rs`: `pub use rustjay_render::*; pub use rustjay_gui::*;` etc.
-   - `prelude` module
-   - Migrate `app/` (event loop, commands, update, events) here
-   - Make `App<P: EffectPlugin>` generic — holds `P`, `P::State`, and `EngineState`
-   - `RustjayApp<P>` builder
-   - `ConfigManager` / `config/`
-
-10. **`examples/template`**
-    - Implement `HsbEffect` + `HsbState` + `ColorTab` (as sketched above)
-    - Copy `shaders/hsb.wgsl`
-    - Minimal `Cargo.toml`: `rustjay-engine = { path = "../../crates/rustjay-engine", features = ["ndi", "webcam"] }`
-
-11. **Parity verification checklist**
-    - [ ] Webcam input works
-    - [ ] NDI input works
-    - [ ] Syphon input works (macOS)
-    - [ ] Spout input works (Windows)
-    - [ ] V4L2 input works (Linux)
-    - [ ] NDI output works
-    - [ ] Syphon output works (macOS)
-    - [ ] Spout output works (Windows)
-    - [ ] V4L2 loopback output works (Linux)
-    - [ ] Audio FFT + beat detection works
-    - [ ] Audio routing matrix works
-    - [ ] MIDI CC learn + mapping works
-    - [ ] OSC server works
-    - [ ] Web remote works
-    - [ ] LFO modulation affects shader uniforms
-    - [ ] Presets save/load/quick-slots work
-    - [ ] Settings auto-save on exit
-    - [ ] Fullscreen toggle works
-    - [ ] Dual-window layout correct
-    - [ ] HSB Color tab renders and controls the shader
+- [ ] Webcam input works
+- [ ] NDI input works
+- [ ] Syphon input works (macOS)
+- [ ] Spout input works (Windows)
+- [ ] V4L2 input works (Linux)
+- [ ] NDI output works
+- [ ] Syphon output works (macOS)
+- [ ] Spout output works (Windows)
+- [ ] V4L2 loopback output works (Linux)
+- [ ] Audio FFT + beat detection works
+- [ ] Audio routing matrix works
+- [ ] MIDI CC learn + mapping works
+- [ ] OSC server works
+- [ ] Web remote works
+- [ ] LFO modulation affects shader uniforms
+- [ ] Presets save/load/quick-slots work
+- [ ] Settings auto-save on exit
+- [ ] Fullscreen toggle works
+- [ ] Dual-window layout correct
+- [ ] HSB Color tab renders and controls the shader
 
 **Phase 1 exit criteria**: `cargo run -p template --release` on macOS, Windows, and Linux, with the above checklist complete.
 
 ---
 
-### Phase 2 — Delta Example (Proving Generality)
+### Phase 2 — Generic Plugin API + Delta Example
 
-**Goal**: a second example with a *different* shader and *different* app state runs through the same engine without any changes to the engine crates.
+**Goal**: extract the `EffectPlugin` / `GuiTab<S>` / `RustjayApp<P>` generic layer from the hardwired engine, prove it with two working examples.
 
-`rustjay-delta` uses a multi-frame RGB delay technique (Posy's motion extraction). Its state is:
-- `delay_r`, `delay_g`, `delay_b` (frame offsets per channel)
-- A circular frame buffer (ring buffer of textures)
-- `mix_amount`
+Phase 2 has two distinct parts:
 
-This example will stress-test the engine because it requires:
-- Multiple GPU textures managed by the app (not just an input texture)
-- A uniform type structurally different from `HsbUniforms`
-- A different custom tab ("Motion" tab)
+#### Part A — Implement the generic traits
 
-**Steps**
+1. **`EffectPlugin` in `rustjay-render`** — define the trait; refactor `MainPipeline` into `RenderPipeline<P: EffectPlugin>` that calls `plugin.build_uniforms()` and `plugin.shader_source()`
+2. **`GuiTab<S>` in `rustjay-gui`** — define the trait; refactor `ControlGui` to accept a `Vec<Box<dyn AnyGuiTab>>` alongside the built-ins; built-ins render first unless replaced via `replaces()`
+3. **`RustjayApp<P>` in `rustjay-engine`** — builder pattern entry point; `App<P>` becomes generic over `P: EffectPlugin`; `run(app_name)` becomes a convenience wrapper around `RustjayApp`
+4. **`prelude` module** — re-export everything an app author needs: `EffectPlugin`, `GuiTab`, `RustjayApp`, `EngineState`, `BuiltinTab`
 
-1. Implement `DeltaEffect` as `EffectPlugin` with a ring-buffer texture approach
-2. Implement `MotionTab` as `GuiTab`
-3. If the ring buffer requires hooks the engine doesn't expose, add them minimally (e.g., `fn on_device_ready(&mut self, device: &wgpu::Device, queue: &wgpu::Queue)` lifecycle method on `EffectPlugin`)
-4. Identify and document any friction points in the trait API
-5. Refine `EffectPlugin` based on what delta required — this is the API's first real test
+#### Part B — Migrate template + add delta
 
-**Phase 2 exit criteria**: `cargo run -p delta --release` works. No changes to `rustjay-engine`, `rustjay-render`, or `rustjay-gui` — only `examples/delta` is new.
+5. **Migrate `examples/template`** — replace `rustjay_engine::run("template")` with the `EffectPlugin` pattern: implement `HsbEffect`, `HsbState`, `HsbUniforms`, `ColorTab`; entry point becomes `RustjayApp::new(HsbEffect).run()`
+6. **`examples/delta`** — implement `DeltaEffect` (RGB delay / motion extraction, Posy technique): `DeltaState` with `delay_r/g/b`, `mix_amount`; ring-buffer texture management; `MotionTab`
+7. If delta requires GPU lifecycle hooks the engine doesn't expose, add them minimally (e.g., `fn on_device_ready(&mut self, device: &wgpu::Device, queue: &wgpu::Queue)` on `EffectPlugin`)
+8. Document friction points in the trait API for Phase 3 planning
+
+**Phase 2 exit criteria**: `cargo run -p template --release` and `cargo run -p delta --release` both work. No changes to engine crates for delta — only `examples/delta` is new.
 
 ---
 
@@ -437,12 +401,10 @@ Option B aligns better with wgpu's mental model and scales to complex graphs (wa
 
 ## Open Questions (Deferred to Later Phases)
 
-These are real design questions that don't need answers in Phase 1 but should be resolved before Phase 4.
-
 | Question | When to decide |
 |---|---|
-| Should `EffectPlugin::State` be required to implement a `PresetSnapshot` trait, or is `Serialize`/`Deserialize` enough? | End of Phase 1 |
-| Does `EffectPlugin` need an `on_device_ready()` lifecycle hook for GPU resource init? | Phase 2 |
+| Should `EffectPlugin::State` be required to implement a `PresetSnapshot` trait, or is `Serialize`/`Deserialize` enough? | Start of Phase 2 |
+| Does `EffectPlugin` need an `on_device_ready()` lifecycle hook for GPU resource init? | Phase 2 (delta will answer this) |
 | `RenderGraph` vs `MultiPassPlugin` for multi-pass effects | Start of Phase 3 |
 | Should `rustjay-audio` be optional (feature flag)? Some visual-only apps may not want it | Phase 3 |
 | Workspace-level version pinning strategy (one version for all crates vs independent versioning) | Phase 4 |

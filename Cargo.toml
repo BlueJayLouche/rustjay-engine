@@ -9,6 +9,7 @@ members = [
     "crates/rustjay-render",
     "crates/rustjay-engine",
     "examples/template",
+    "examples/delta",
 ]
 resolver = "2"
 
