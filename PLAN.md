@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 upcoming
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 upcoming
 
 ---
 
@@ -303,7 +303,7 @@ fn main() -> anyhow::Result<()> {
 5. ✅ `rustjay-control` — MIDI, OSC, web remote
 6. ✅ `rustjay-presets` — `PresetBank`, save/load/quick-slots, `custom_values` map
 7. ✅ `rustjay-gui` — `ImGuiRenderer`, `ControlGui`, all 8 built-in tabs
-8. ✅ `rustjay-render` — `WgpuEngine`, `MainPipeline`, blit, texture, uniforms, `main.wgsl`
+8. ✅ `rustjay-render` — `WgpuEngine`, blit, texture, `main.wgsl` (hardwired HSB pipeline, replaced by `PluginRenderer<P>` in Phase 2)
 9. ✅ `rustjay-engine` (facade) — `App`, event loop, commands, `config/`, `run(app_name)`
 10. ✅ `examples/template` — calls `rustjay_engine::run("template")`
 11. ✅ README, git init, pushed to `git@github.com:BlueJayLouche/rustjay-engine.git`
@@ -335,27 +335,33 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
-### Phase 2 — Generic Plugin API + Delta Example
+### Phase 2 — Generic Plugin API + Delta Example ✅ COMPLETE
 
-**Goal**: extract the `EffectPlugin` / `GuiTab<S>` / `RustjayApp<P>` generic layer from the hardwired engine, prove it with two working examples.
+**Goal**: extract the `EffectPlugin` / `AnyGuiTab` generic layer from the hardwired engine, prove it with two working examples.
 
-Phase 2 has two distinct parts:
+**What was built**:
 
-#### Part A — Implement the generic traits
+#### Part A — Generic traits (completed)
 
-1. **`EffectPlugin` in `rustjay-render`** — define the trait; refactor `MainPipeline` into `RenderPipeline<P: EffectPlugin>` that calls `plugin.build_uniforms()` and `plugin.shader_source()`
-2. **`GuiTab<S>` in `rustjay-gui`** — define the trait; refactor `ControlGui` to accept a `Vec<Box<dyn AnyGuiTab>>` alongside the built-ins; built-ins render first unless replaced via `replaces()`
-3. **`RustjayApp<P>` in `rustjay-engine`** — builder pattern entry point; `App<P>` becomes generic over `P: EffectPlugin`; `run(app_name)` becomes a convenience wrapper around `RustjayApp`
-4. **`prelude` module** — re-export everything an app author needs: `EffectPlugin`, `GuiTab`, `RustjayApp`, `EngineState`, `BuiltinTab`
+1. ✅ **`EffectPlugin` in `rustjay-core`** — trait with `State`, `Uniforms`, `shader_source`, `build_uniforms`, `app_name`, `default_state`, and lifecycle hooks `init`, `prepare`, `render` (escape hatch for custom passes)
+2. ✅ **`AnyGuiTab` in `rustjay-gui`** — type-erased tab trait using `dyn Any` for app state; `replaces()` hook honoured in `build_tabs` so custom tabs can occupy a built-in slot in-position; `BuiltinTab` aliased to `GuiTab` (no duplicate enum)
+3. ✅ **`App<P>`, `WgpuEngine<P>`, `PluginRenderer<P>`** — engine fully generic over `P: EffectPlugin`
+4. ✅ **`run<P>` / `run_with_tabs`** entry points; `prelude` module for convenient imports
+5. ✅ **`plugin.app_name()`** threads through to `ConfigManager` and `WebConfig` for per-app config isolation
+6. ✅ **`plugin.default_state()`** for non-`Default` initial app state (fixes black-screen regression)
+7. ✅ Deleted dead `pipeline.rs` (`MainPipeline`) and `uniforms.rs` (`HsbUniforms`); `plugin.init()` called inside `PluginRenderer::new()`
 
-#### Part B — Migrate template + add delta
+#### Part B — Examples (completed)
 
-5. **Migrate `examples/template`** — replace `rustjay_engine::run("template")` with the `EffectPlugin` pattern: implement `HsbEffect`, `HsbState`, `HsbUniforms`, `ColorTab`; entry point becomes `RustjayApp::new(HsbEffect).run()`
-6. **`examples/delta`** — implement `DeltaEffect` (RGB delay / motion extraction, Posy technique): `DeltaState` with `delay_r/g/b`, `mix_amount`; ring-buffer texture management; `MotionTab`
-7. If delta requires GPU lifecycle hooks the engine doesn't expose, add them minimally (e.g., `fn on_device_ready(&mut self, device: &wgpu::Device, queue: &wgpu::Queue)` on `EffectPlugin`)
-8. Document friction points in the trait API for Phase 3 planning
+8. ✅ **`examples/template`** — `HsbEffect` implementing `EffectPlugin`; `build_uniforms` applies audio routing matrix + full 3-channel LFO modulation; `default_state` sets saturation=1, brightness=1
+9. ✅ **`examples/delta`** — `DeltaEffect` (RGB spatial delay / chromatic aberration); `DeltaState` with `delay_r/g/b`, `mix_amount`; `MotionTab` implementing `AnyGuiTab`; proves the engine is general with zero engine-crate changes
 
-**Phase 2 exit criteria**: `cargo run -p template --release` and `cargo run -p delta --release` both work. No changes to engine crates for delta — only `examples/delta` is new.
+**Key decisions from Phase 2**:
+- `EffectPlugin` lives in `rustjay-core` (not `rustjay-render`) because wgpu was already a core dependency and it avoids a re-export chain
+- `AnyGuiTab` uses `dyn Any` for type erasure rather than a generic `GuiTab<S>` — avoids making `ControlGui` generic and keeps the tab list `Vec<Box<dyn AnyGuiTab>>`
+- The `render()` escape hatch on `EffectPlugin` (returns `bool` to skip default pass) is sufficient for Phase 2; `RenderGraph` deferred to Phase 3
+
+**Phase 2 exit criteria**: `cargo run -p template --release` and `cargo run -p delta --release` both work. ✅
 
 ---
 
@@ -403,8 +409,8 @@ Option B aligns better with wgpu's mental model and scales to complex graphs (wa
 
 | Question | When to decide |
 |---|---|
-| Should `EffectPlugin::State` be required to implement a `PresetSnapshot` trait, or is `Serialize`/`Deserialize` enough? | Start of Phase 2 |
-| Does `EffectPlugin` need an `on_device_ready()` lifecycle hook for GPU resource init? | Phase 2 (delta will answer this) |
+| Should `EffectPlugin::State` be required to implement a `PresetSnapshot` trait, or is `Serialize`/`Deserialize` enough? | Phase 3 — `custom_values: HashMap<String, f32>` in presets is a stopgap; revisit when waaaves needs richer snapshot |
+| Does `EffectPlugin` need an `on_device_ready()` lifecycle hook for GPU resource init? | ✅ Resolved in Phase 2 — `init(&mut self, device, queue)` added; delta confirmed it's sufficient for single-pass effects |
 | `RenderGraph` vs `MultiPassPlugin` for multi-pass effects | Start of Phase 3 |
 | Should `rustjay-audio` be optional (feature flag)? Some visual-only apps may not want it | Phase 3 |
 | Workspace-level version pinning strategy (one version for all crates vs independent versioning) | Phase 4 |
