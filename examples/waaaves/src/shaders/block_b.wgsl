@@ -20,10 +20,6 @@ struct WaaavesUniforms {
 var input_tex: texture_2d<f32>;
 @group(0) @binding(1)
 var input_sampler: sampler;
-@group(0) @binding(2)
-var feedback_tex: texture_2d<f32>;
-@group(0) @binding(3)
-var feedback_sampler: sampler;
 
 @group(1) @binding(0)
 var<uniform> u: WaaavesUniforms;

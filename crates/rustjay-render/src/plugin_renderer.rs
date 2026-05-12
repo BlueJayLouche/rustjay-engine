@@ -16,9 +16,19 @@ pub struct PluginRenderer<P: EffectPlugin> {
     cached_texture_gen: u64,
     dummy_feedback: Texture,
 
+    /// Cached result of `plugin.render_graph()` — avoids a Vec allocation every frame.
+    pub cached_graph: Option<rustjay_core::RenderGraph>,
+
     // Multi-pass state
     graph_pipelines: Vec<wgpu::RenderPipeline>,
     graph_shaders: Vec<wgpu::ShaderModule>,
+    /// Stores the shader source pointer for each compiled pass so we can detect
+    /// shader changes (not just count changes) when deciding whether to rebuild.
+    graph_shader_sources: Vec<&'static str>,
+    /// Per-pass uniform buffer — one per pass so build_pass_uniforms works correctly.
+    graph_uniform_buffers: Vec<wgpu::Buffer>,
+    /// Per-pass uniform bind group referencing the corresponding buffer.
+    graph_uniform_bind_groups: Vec<wgpu::BindGroup>,
     pub intermediate_textures: Vec<Texture>,
 }
 
@@ -145,6 +155,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             &[0, 0, 0, 255],
         );
 
+        // Cache the graph before plugin is moved into Self.
+        let cached_graph = plugin.render_graph();
+
         let mut renderer = Self {
             plugin,
             pipeline,
@@ -156,8 +169,12 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             cached_texture_bind_group: None,
             cached_texture_gen: u64::MAX,
             dummy_feedback,
+            cached_graph,
             graph_pipelines: Vec::new(),
             graph_shaders: Vec::new(),
+            graph_shader_sources: Vec::new(),
+            graph_uniform_buffers: Vec::new(),
+            graph_uniform_bind_groups: Vec::new(),
             intermediate_textures: Vec::new(),
         };
         renderer.plugin.init(device, queue);
@@ -191,8 +208,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             return;
         }
 
-        // Multi-pass graph path
-        if let Some(graph) = self.plugin.render_graph() {
+        // Multi-pass graph path — clone is cheap: Vec of small structs with &'static str fields.
+        if let Some(graph) = self.cached_graph.clone() {
             if !graph.passes.is_empty() {
                 self.render_graph(
                     encoder, device, queue,
@@ -283,7 +300,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let target_width = render_target.width;
         let target_height = render_target.height;
 
-        // Ensure intermediate textures
+        // Ensure intermediate textures (one per non-final pass).
         let needed_intermediates = graph.passes.len().saturating_sub(1);
         if self.intermediate_textures.len() != needed_intermediates {
             self.intermediate_textures.clear();
@@ -295,10 +312,29 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             }
         }
 
-        // Ensure graph pipelines and shaders
-        if self.graph_pipelines.len() != graph.passes.len() {
+        // Rebuild pipelines + per-pass uniform buffers when pass count or
+        // shader content changes.
+        let needs_rebuild = self.graph_pipelines.len() != graph.passes.len()
+            || graph.passes.iter().zip(self.graph_shader_sources.iter())
+                .any(|(pass, &src)| !std::ptr::eq(pass.shader.as_bytes(), src.as_bytes()));
+
+        if needs_rebuild {
             self.graph_pipelines.clear();
             self.graph_shaders.clear();
+            self.graph_shader_sources.clear();
+            self.graph_uniform_buffers.clear();
+            self.graph_uniform_bind_groups.clear();
+
+            // Validate: PassInput::PreviousPass on pass 0 is a mistake.
+            if let Some(first) = graph.passes.first() {
+                if first.input == PassInput::PreviousPass {
+                    log::warn!(
+                        "[RenderGraph] pass[0] declares PreviousPass input — \
+                         no previous pass exists; will use dummy black texture"
+                    );
+                }
+            }
+
             for pass in &graph.passes {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some(pass.label),
@@ -337,8 +373,28 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                     multiview_mask: None,
                     cache: None,
                 });
+
+                // Per-pass uniform buffer so build_pass_uniforms works correctly.
+                let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("{} Uniform Buffer", pass.label)),
+                    size: std::mem::size_of::<P::Uniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("{} Uniform Bind Group", pass.label)),
+                    layout: &self.uniform_bind_group_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buf.as_entire_binding(),
+                    }],
+                });
+
+                self.graph_shader_sources.push(pass.shader);
                 self.graph_shaders.push(shader);
                 self.graph_pipelines.push(pipeline);
+                self.graph_uniform_buffers.push(buf);
+                self.graph_uniform_bind_groups.push(bg);
             }
         }
 
@@ -354,28 +410,31 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 &intermediate[i].view
             };
 
-            // Resolve input texture & sampler for this pass
-            let (input_view, input_sampler): (Option<&wgpu::TextureView>, Option<&wgpu::Sampler>) = match pass.input {
-                PassInput::EngineInput => (
-                    input_texture.binding_view(),
-                    input_texture.binding_sampler(),
-                ),
-                PassInput::PreviousPass if i > 0 => (
-                    Some(&intermediate[i - 1].view),
-                    Some(&intermediate[i - 1].sampler),
-                ),
-                PassInput::Feedback => (
-                    feedback_texture.map(|f| &f.texture.view),
-                    feedback_texture.map(|f| &f.texture.sampler),
-                ),
-                _ => (None, None),
-            };
+            // Resolve the input source for this pass.
+            let (input_view, input_sampler): (Option<&wgpu::TextureView>, Option<&wgpu::Sampler>) =
+                match pass.input {
+                    PassInput::EngineInput => (
+                        input_texture.binding_view(),
+                        input_texture.binding_sampler(),
+                    ),
+                    PassInput::PreviousPass if i > 0 => (
+                        Some(&intermediate[i - 1].view),
+                        Some(&intermediate[i - 1].sampler),
+                    ),
+                    PassInput::PreviousPass => {
+                        // Warned at rebuild time; silently fall back to dummy.
+                        (None, None)
+                    },
+                    PassInput::Feedback => (
+                        feedback_texture.map(|f| &f.texture.view),
+                        feedback_texture.map(|f| &f.texture.sampler),
+                    ),
+                };
 
-            // Update uniforms for this specific pass
+            // Write per-pass uniforms into this pass's dedicated buffer.
             let uniforms = self.plugin.build_pass_uniforms(i, app_state, engine_state);
-            queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+            queue.write_buffer(&self.graph_uniform_buffers[i], 0, bytemuck::bytes_of(&uniforms));
 
-            // Build bind group
             let (iv, is) = match (input_view, input_sampler) {
                 (Some(v), Some(s)) => (v, s),
                 _ => (&dummy.view, &dummy.sampler),
@@ -433,7 +492,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             render_pass.set_pipeline(&pipelines[i]);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.graph_uniform_bind_groups[i], &[]);
             render_pass.draw(0..6, 0..1);
         }
     }

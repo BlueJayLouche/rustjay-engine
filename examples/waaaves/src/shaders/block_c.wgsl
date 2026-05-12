@@ -20,10 +20,6 @@ struct WaaavesUniforms {
 var input_tex: texture_2d<f32>;
 @group(0) @binding(1)
 var input_sampler: sampler;
-@group(0) @binding(2)
-var feedback_tex: texture_2d<f32>;
-@group(0) @binding(3)
-var feedback_sampler: sampler;
 
 @group(1) @binding(0)
 var<uniform> u: WaaavesUniforms;
@@ -92,14 +88,14 @@ fn hsv_to_rgb(hsv: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.texcoord;
-    var color = textureSample(input_tex, input_sampler, uv);
+    let pre_grade = textureSample(input_tex, input_sampler, uv);
 
     // HSB adjustment
-    var hsv = rgb_to_hsv(color.rgb);
+    var hsv = rgb_to_hsv(pre_grade.rgb);
     hsv.x = fract(hsv.x + u.hue_shift / 360.0);
     hsv.y = clamp(hsv.y * u.saturation, 0.0, 1.0);
     hsv.z = clamp(hsv.z * u.brightness, 0.0, 1.0);
-    color = vec4<f32>(hsv_to_rgb(hsv), color.a);
+    let graded = vec4<f32>(hsv_to_rgb(hsv), pre_grade.a);
 
-    return color;
+    return mix(graded, pre_grade, u.mix_original);
 }

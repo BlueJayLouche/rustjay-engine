@@ -116,7 +116,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         let plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
         drop(engine_state);
 
-        let previous_frame = if plugin_renderer.plugin.render_graph().map(|g| g.feedback).unwrap_or(false) {
+        let previous_frame = if plugin_renderer.cached_graph.as_ref().map(|g| g.feedback).unwrap_or(false) {
             Some(PreviousFrameTexture::new(&device, 1920, 1080))
         } else {
             None
