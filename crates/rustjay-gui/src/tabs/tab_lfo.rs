@@ -41,7 +41,7 @@ impl ControlGui {
                         let bank = &state.lfo.bank.lfos[i];
                         let wf_idx = bank.waveform as usize;
                         let tgt_idx = match bank.target {
-                            LfoTarget::None => 0,
+                            LfoTarget::None | LfoTarget::Unknown => 0,
                             LfoTarget::HueShift => 1,
                             LfoTarget::Saturation => 2,
                             LfoTarget::Brightness => 3,

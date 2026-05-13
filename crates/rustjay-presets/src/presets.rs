@@ -25,18 +25,24 @@ pub struct Preset {
     
     // Color parameters
     /// Base HSB color parameters.
+    #[serde(default)]
     pub hsb_params: HsbParams,
     /// Whether color processing is enabled.
+    #[serde(default)]
     pub color_enabled: bool,
 
     // Audio parameters
     /// Global audio amplitude multiplier.
+    #[serde(default)]
     pub audio_amplitude: f32,
     /// Audio smoothing factor.
+    #[serde(default)]
     pub audio_smoothing: f32,
     /// Whether audio normalization is enabled.
+    #[serde(default)]
     pub audio_normalize: bool,
     /// Whether pink noise shaping is applied.
+    #[serde(default)]
     pub audio_pink_noise: bool,
     /// FFT size for audio analysis.
     #[serde(default = "default_fft_size")]

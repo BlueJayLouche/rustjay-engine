@@ -107,6 +107,11 @@ pub enum ModulationTarget {
     InputOpacity,
     /// Output texture opacity.
     OutputOpacity,
+    /// Unrecognised variant from an older preset file (e.g. `RedDelay`,
+    /// `BlueDelay`, `InputMix` from pre-engine standalone apps).
+    /// The route is preserved in the preset bank but has no effect.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ModulationTarget {
@@ -122,10 +127,11 @@ impl ModulationTarget {
             ModulationTarget::AudioSmoothing => "Audio Smoothing",
             ModulationTarget::InputOpacity => "Input Opacity",
             ModulationTarget::OutputOpacity => "Output Opacity",
+            ModulationTarget::Unknown => "(unknown)",
         }
     }
-    
-    /// All supported modulation targets.
+
+    /// All supported modulation targets (excludes `Unknown`).
     pub fn all() -> &'static [ModulationTarget] {
         &[
             ModulationTarget::HueShift,

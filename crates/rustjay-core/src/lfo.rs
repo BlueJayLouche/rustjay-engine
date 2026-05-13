@@ -89,6 +89,11 @@ pub enum LfoTarget {
     Saturation = 1,
     /// Modulate brightness.
     Brightness = 2,
+    /// Unrecognised target from an older preset file (e.g. `RedDelay`,
+    /// `BlueDelay`, `Intensity`, `InputMix` from pre-engine standalone apps).
+    /// Treated as `None` — the LFO is preserved but has no effect.
+    #[serde(other)]
+    Unknown,
 }
 
 impl LfoTarget {
@@ -99,10 +104,11 @@ impl LfoTarget {
             LfoTarget::HueShift => "Hue Shift",
             LfoTarget::Saturation => "Saturation",
             LfoTarget::Brightness => "Brightness",
+            LfoTarget::Unknown => "(unknown)",
         }
     }
-    
-    /// All supported modulation targets.
+
+    /// All supported modulation targets (excludes `None` and `Unknown`).
     pub fn all() -> &'static [LfoTarget] {
         &[
             LfoTarget::HueShift,
@@ -300,7 +306,7 @@ impl LfoBank {
                 LfoTarget::HueShift => hue = lfo.output,
                 LfoTarget::Saturation => sat = lfo.output,
                 LfoTarget::Brightness => bright = lfo.output,
-                LfoTarget::None => {}
+                LfoTarget::None | LfoTarget::Unknown => {}
             }
         }
         
