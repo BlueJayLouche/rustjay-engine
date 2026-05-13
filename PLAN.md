@@ -94,6 +94,17 @@ The shared vocabulary. Everything else depends on this; it depends on nothing in
 - Routing types are defined in `rustjay-core` and re-exported here for backwards compatibility
 - Feature: always compiled (no optional flag — audio is core to VJ)
 
+#### Planned audio sync integrations (Phase 5+)
+
+| Feature | Crate dep | What it provides |
+|---------|-----------|-----------------|
+| `link` | `rusty_link` (Ableton Link SDK bindings) | BPM, beat phase, quantum position — joins a shared Link session with Live, Serato, Traktor, etc. |
+| `pioneer` | custom UDP implementation | ProDJ Link protocol — BPM, beat number, track position, player metadata from CDJ/XDJ/DJM gear over Ethernet |
+
+Both features surface their data as additional fields on `EngineState` (alongside the existing `AudioState`) so they slot into the modulation matrix without API changes. Pioneer gear also emits standard MIDI Clock — that path already works today via `rustjay-control`'s `MidiManager`; the `pioneer` feature is the richer path for track-level metadata.
+
+Note on ProDJ Link: there is no mature Rust crate for this protocol as of 2026. Implementation would follow the open reverse-engineering work at <https://djl.fandom.com/wiki/DJ_Link_Ecosystem>.
+
 ### `rustjay-io`
 
 All video sources and sinks. Each is feature-gated. Platform-specific deps live in `[target.*.dependencies]`.
@@ -102,9 +113,11 @@ All video sources and sinks. Each is feature-gated. Platform-specific deps live 
 |---------|-----------|------------|
 | `webcam` | macOS, Windows, Linux | `nokhwa` |
 | `ndi` | all | `grafton-ndi` |
-| `syphon` | macOS (auto) | `syphon-core`, `syphon-wgpu` |
+| `syphon` | macOS (auto) | `syphon-core`, `syphon-wgpu` (vendored in `vendor/`) |
 | `spout` | Windows (auto) | `windows` |
 | `v4l2` | Linux (auto) | `v4l` |
+
+> **Syphon note**: the Syphon Objective-C framework is statically bundled inside the vendored `syphon-core` / `syphon-metal` / `syphon-wgpu` crates (see `vendor/`). No separate macOS framework install or `.framework` bundle is required — `cargo build` is self-contained on macOS.
 
 Exports: `InputManager`, `OutputManager`, `InputCommand`, `OutputCommand`
 
@@ -444,6 +457,118 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
+### Phase 5 — Indexed Mesh + Vertex-Shader Displacement (Sputnik Example)
+
+**Goal**: prove the engine handles vertex-shader effects as naturally as fragment effects. Two backwards-compatible `EffectPlugin` methods unlock indexed mesh geometry and vertex-stage texture sampling without touching any existing example.
+
+The reference app is a port of [sputnikMesh](https://github.com/BlueJayLouche/sputnikMesh) — a Rutt-Etra style effect where video luminance displaces a dense grid of vertices, producing audio-reactive 3D mesh visuals.
+
+#### Design decisions
+
+**Two new `EffectPlugin` methods, both defaulting to no-op:**
+
+```rust
+/// When `Some`, the engine generates a `cols×rows` indexed grid instead of
+/// the fullscreen quad. Changing the returned value triggers a mesh rebuild.
+/// Existing plugins return `None` and are completely unaffected.
+fn mesh_descriptor(&self) -> Option<MeshDescriptor> { None }
+
+/// When `true`, texture and sampler bind group entries are given
+/// `ShaderStages::VERTEX | FRAGMENT` visibility so `vs_main` can sample
+/// the video texture. Required for displacement effects.
+fn vertex_reads_texture(&self) -> bool { false }
+```
+
+Separated into two methods rather than one because the concerns are independent: a future effect might want vertex texture sampling without a custom mesh, or a mesh effect might source displacement from a compute shader rather than the video texture.
+
+**Index format: `u32` throughout.** A 640×360 grid produces 641×361 = 231,401 vertices, exceeding `u16::MAX`. `u32` from the start avoids a future breaking change.
+
+**`MeshTopology::Wireframe` deferred.** Wireframe requires `wgpu::Features::POLYGON_MODE_LINE`, which is unavailable in the WebGPU backend and requires an explicit device feature request on native. Deferred to SG-9.
+
+**Dynamic mesh resolution.** The dirty check compares the full `MeshDescriptor` (`Copy + PartialEq`) each frame — same pattern as the `RenderGraph` shader-source check. On change, only the vertex and index buffers are recreated; the pipeline layout is unchanged. A resolution slider therefore works live without restart.
+
+**`textureSampleLevel` (not `textureSample`) in `vs_main`.** `textureSample` requires screen-space derivative instructions (`dpdx`/`dpdy`) that are only valid in the fragment stage. The vertex shader must pass an explicit mip level — `0.0` gives the full-resolution sample.
+
+#### Step 1 — `rustjay-core` (new types + trait methods)
+
+1. [ ] **`MeshDescriptor`** — `{ cols: u32, rows: u32, topology: MeshTopology }` — `Copy + PartialEq`
+2. [ ] **`MeshTopology`** enum — `Scanlines` (LineList, classic Rutt-Etra scan look) and `Triangles` (TriangleList, solid terrain surface)
+3. [ ] **`fn mesh_descriptor()`** on `EffectPlugin` — default `None`
+4. [ ] **`fn vertex_reads_texture()`** on `EffectPlugin` — default `false`
+5. [ ] Re-export `MeshDescriptor`, `MeshTopology` from `rustjay-core::lib`
+
+#### Step 2 — `rustjay-render` (engine mesh support)
+
+6. [ ] **`generate_mesh(device, desc) -> (Buffer, Buffer, u32)`** — builds vertex + index buffers for a `cols×rows` grid:
+
+   | Topology | Index formula | Index count |
+   |---|---|---|
+   | `Scanlines` (LineList) | `cols` line segments per row | `(rows+1) × cols × 2` |
+   | `Triangles` (TriangleList) | 2 triangles per cell, 6 indices | `rows × cols × 6` |
+
+   Vertices in NDC `[-1, 1]`; UVs in `[0, 1]`. Vertex index formula: `row * (cols+1) + col`.
+
+7. [ ] **`PluginRenderer` new fields** — `mesh_vertex_buffer: Option<Buffer>`, `mesh_index_buffer: Option<Buffer>`, `mesh_index_count: u32`, `cached_mesh: Option<MeshDescriptor>`
+
+8. [ ] **Bind group layout visibility** — in `PluginRenderer::new()`, read `plugin.vertex_reads_texture()` once and set all four texture/sampler entries (bindings 0–3) and the uniform binding (group 1) to `VERTEX | FRAGMENT` when true, `FRAGMENT` when false. Stored as a `bool` field; not re-evaluated at runtime.
+
+9. [ ] **Dirty-check + rebuild** in `render()` — compare `plugin.mesh_descriptor()` against `cached_mesh`; on mismatch, call `generate_mesh()` and update `cached_mesh`. Zero allocation when unchanged.
+
+10. [ ] **Draw path** — when `mesh_index_buffer` is `Some`:
+    ```rust
+    render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+    render_pass.draw_indexed(0..index_count, 0, 0..1);
+    ```
+    When `None`: existing `draw(0..6, 0..1)` unchanged.
+
+#### Step 3 — `examples/sputnik`
+
+11. [ ] **`Cargo.toml`** — workspace member, `rustjay-engine` dep
+12. [ ] **`SputnikEffect`** — implements `EffectPlugin`; `mesh_descriptor()` returns grid sized from `SputnikState`; `vertex_reads_texture()` returns `true`
+13. [ ] **`SputnikUniforms`** (48 bytes, 16-byte aligned, `Pod + Zeroable`):
+
+    ```rust
+    pub struct SputnikUniforms {
+        pub displacement_scale: f32,
+        pub rotation:           f32,
+        pub zoom:               f32,
+        pub aspect_ratio:       f32,      // 16 bytes
+        pub audio_bands:        [f32; 8], // 32 bytes → total 48
+    }
+    ```
+
+14. [ ] **`SputnikState`** — serialised, drives GUI sliders:
+
+    | Field | Type | Default | Notes |
+    |---|---|---|---|
+    | `mesh_cols` | `u32` | `320` | triggers mesh rebuild on change |
+    | `mesh_rows` | `u32` | `180` | triggers mesh rebuild on change |
+    | `topology` | `u32` | `0` | 0 = Scanlines, 1 = Triangles |
+    | `displacement_scale` | `f32` | `0.3` | |
+    | `rotation` | `f32` | `0.0` | radians |
+    | `zoom` | `f32` | `1.0` | |
+    | `audio_band_weights` | `[f32; 8]` | `[0.0; 8]` | per-FFT-band additive lift |
+
+15. [ ] **`src/shaders/sputnik.wgsl`** — vertex shader samples video with `textureSampleLevel`, extracts luminance, applies per-band audio lift, displaces Y, applies rotation + zoom. Fragment shader samples the video texture at the displaced UV to colour each vertex.
+
+16. [ ] **`SputnikTab`** — custom GUI tab with sliders for all `SputnikState` fields; topology shown as a radio button (Scanlines / Triangles); mesh resolution shown with a note that changing it triggers a rebuild.
+
+17. [ ] **`main.rs`** — `RustjayApp::new(SputnikEffect).run()`
+
+#### Parity checklist (runtime)
+
+- [ ] Scanlines mode renders horizontal scan displacement
+- [ ] Triangles mode renders a solid displaced terrain surface
+- [ ] Audio bands drive per-column displacement lift
+- [ ] LFO can modulate `displacement_scale` via the existing modulation matrix
+- [ ] Rotation and zoom controls work in real time
+- [ ] Mesh resolution slider triggers a rebuild without crash
+- [ ] `examples/template`, `examples/delta`, `examples/waaaves` all unaffected
+
+**Phase 5 exit criteria**: `cargo run -p sputnik --release` shows audio-reactive mesh displacement in both topology modes. All three earlier examples compile and run without change.
+
+---
+
 ## Open Questions (Deferred to Later Phases)
 
 | Question | When to decide |
@@ -467,6 +592,122 @@ After Phase 2 proves the API is stable enough:
 4. `rustjay-mapper` → scope-defined separately (projection mesh warping may require Phase 3+ capabilities)
 
 The goal is that each existing app's unique code shrinks to ~100–200 lines of Rust + its WGSL shader(s).
+
+---
+
+## Stretch Goals (Post-Phase 5)
+
+These are architecturally sound additions that go beyond the core roadmap. Each is scoped to a specific crate, feature-gated, and feasible without breaking existing API contracts. Priority is loosely ordered by community impact.
+
+---
+
+### SG-1 — ISF (Interactive Shader Format) compatibility
+
+**Crate**: `rustjay-render` (new feature `isf`)  
+**Deps**: `naga` (GLSL→WGSL transpilation, already a transitive dep via wgpu), custom ISF JSON parser
+
+ISF is the open shader format used by Resolume, VDMX, CoGe, and Millumin. A valid ISF shader is a GLSL fragment shader + a JSON header that declares its inputs (floats, colours, images, audio). Support would work as follows:
+
+1. `IsfEffect` implements `EffectPlugin` — the shader source is synthesised WGSL transpiled from the ISF GLSL at build time or first run
+2. The ISF input manifest maps to `EngineState` fields automatically (audio bands → float inputs, video input → image input)
+3. An `isf!()` macro or `IsfEffect::from_path()` constructor gives VJs access to the entire ISF community library without writing Rust
+
+**Why it matters**: ISF has thousands of free shaders. This is the single highest-leverage feature for community adoption.
+
+---
+
+### SG-2 — WGSL hot-reload
+
+**Crate**: `rustjay-render` (new feature `hot-reload`)  
+**Deps**: `notify` (file watcher)
+
+A `--watch` flag (or compile-time feature) that watches the shader paths returned by `EffectPlugin::shader_source` on disk (resolved via a manifest) and rebuilds `wgpu::RenderPipeline` in place on change. The existing `graph_shader_sources` dirty-check in `PluginRenderer` provides the plumbing — the watcher just sets a flag.
+
+**Why it matters**: eliminates the recompile/restart loop during shader development. Contained entirely in `rustjay-render`, zero API impact.
+
+---
+
+### SG-3 — Video file playback input
+
+**Crate**: `rustjay-io` (new feature `video_file`)  
+**Deps**: `ffmpeg-next` (or `openh264` for H.264-only path)
+
+A `VideoFileInput` source that loops `.mp4` / `.mov` / `.webm` files and feeds decoded frames into the existing `InputManager` texture pipeline. Supports: loop, ping-pong, speed control, BPM-sync (frame advance driven by beat clock from `rustjay-audio`).
+
+This is one of the most-requested features in live VJ tools. It slots cleanly into the existing `InputType` enum without touching the render path.
+
+---
+
+### SG-4 — DMX / Art-Net output
+
+**Crate**: `rustjay-io` (new feature `dmx`)  
+**Deps**: `artnet_protocol` or `sacn`
+
+An `ArtNetSink` that maps `EngineState` fields (audio bands, LFO values, uniforms) to DMX channel values and broadcasts UDP Art-Net packets on the local network. Configuration: universe, start address, channel-to-source mapping — editable from a new **Lighting** GUI tab.
+
+**Why it matters**: VJs in live event and installation contexts almost always need to sync lighting rigs. This turns rustjay-engine into a full AV sync hub.
+
+---
+
+### SG-5 — Screen capture input
+
+**Crate**: `rustjay-io` (new feature `screencapture`)  
+**Platform deps**: macOS → `ScreenCaptureKit` via `objc2` bindings; Windows → DXGI Desktop Duplication
+
+Captures a selected display, window, or app into the input texture pipeline. On macOS, `ScreenCaptureKit` (available since macOS 12.3) provides zero-copy GPU surface sharing that integrates naturally with the existing Metal/wgpu path.
+
+VJs routinely want to capture browser windows, VLC, or other generative tools as live input. Currently requires a physical camera + screen — this eliminates that workaround.
+
+---
+
+### SG-6 — MIDI Timecode (MTC) receive
+
+**Crate**: `rustjay-control` (extension to `MidiManager`, feature `mtc`)  
+**Deps**: no new deps — MTC is decoded from raw MIDI quarter-frame messages
+
+MIDI Timecode is the standard sync protocol for locking to video editing software (Final Cut Pro, DaVinci Resolve, Premiere). Receiving MTC exposes SMPTE timecode (HH:MM:SS:FF) into `EngineState`, enabling frame-accurate effect automation synced to a video timeline.
+
+**Why it matters**: VJs working in hybrid live+video contexts (backing tracks, live cinema) need this. The existing MIDI infrastructure handles the wire; only a quarter-frame reassembly parser is needed.
+
+---
+
+### SG-7 — Rhai scripting for parameter automation
+
+**Crate**: `rustjay-engine` (new feature `scripting`)  
+**Deps**: `rhai`
+
+Rhai is a safe, sandboxed, Rust-native scripting language designed for embedding. With this feature, a VJ can drop a `.rhai` script alongside their app that runs each frame and drives `EngineState` fields programmatically — without recompiling. Example uses: generative parameter sequences, reactive to audio, time-based animations.
+
+The integration point is a `ScriptRunner` called inside the engine's update loop after audio analysis and before uniform upload. The API exposed to scripts mirrors `EngineState` fields.
+
+*(Previously deferred as a non-goal through Phase 3. Revisit after Phase 5 — the mesh example will surface whether live parameter automation belongs in the scripting layer or the LFO system.)*
+
+---
+
+### SG-8 — HLS / WebRTC streaming output
+
+**Crate**: `rustjay-io` (new feature `stream`)  
+**Deps**: `webrtc` (Rust port of libwebrtc) or `str0m` (pure-Rust WebRTC)
+
+Streams the render output as a live video feed accessible in a browser or OBS via WebRTC data channel or HLS segment upload. The existing `WebServer` in `rustjay-control` (axum) is the natural signalling endpoint.
+
+**Why it matters**: remote VJ sets, streaming audiences watching the raw output without screen capture, multi-venue installations where output needs to travel over LAN. This is a meaningful step toward rustjay-engine as a headless rendering node.
+
+---
+
+### SG-9 — Mesh topology extensions (builds on Phase 5)
+
+**Crate**: `rustjay-core` + `rustjay-render`  
+**Deps**: no new deps for wireframe; `wgpu::Features::POLYGON_MODE_LINE` already available on native targets
+
+Phase 5 ships `Scanlines` and `Triangles`. This goal extends `MeshTopology` with:
+
+- **`Wireframe`** — `TriangleList` + `PolygonMode::Line`. Requires explicitly requesting `POLYGON_MODE_LINE` at device creation (add to `rustjay-render`'s device setup, guarded by `#[cfg(not(target_arch = "wasm32"))]`). Gives the classic wire-frame mesh look distinct from scanlines.
+- **`Points`** — `PointList` topology. Each vertex rendered as a point sprite; point size driven by luminance. Produces a particle-cloud displacement effect from the same mesh infrastructure.
+- **Compute-shader mesh** — move vertex generation from CPU (`generate_mesh` in `PluginRenderer`) to a wgpu compute pass. Enables GPU-side procedural deformation (noise, physics) before the vertex shader runs. Adds `fn compute_shader(&self) -> Option<&'static str>` to `EffectPlugin`.
+- **3D perspective projection** — add a proper `mat4x4` MVP uniform path. Phase 5 uses a simple 2D rotation; this extends `SputnikUniforms` with a camera distance and proper perspective divide, enabling deep-Z mesh displacement.
+
+**Why it matters**: the Phase 5 sputnik example proves the infrastructure; SG-9 exploits it fully. The wireframe and point modes are visually distinct enough to be separate VJ tools in their own right.
 
 ---
 
