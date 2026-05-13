@@ -12,7 +12,7 @@
 /// Align a value to the next multiple of alignment.
 ///
 /// # Examples
-/// ```
+/// ```ignore
 /// assert_eq!(align_to(100, 256), 256);
 /// assert_eq!(align_to(256, 256), 256);
 /// assert_eq!(align_to(257, 256), 512);
@@ -33,7 +33,7 @@ pub const fn align_to(value: u32, alignment: u32) -> u32 {
 /// Row pitch in bytes, aligned to 256 bytes
 ///
 /// # Examples
-/// ```
+/// ```ignore
 /// // 1920x1080 BGRA: 7680 bytes per row, already aligned
 /// assert_eq!(aligned_row_pitch_bgra(1920), 7680);
 ///

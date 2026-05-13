@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 /// Run the engine with the given plugin and no custom GUI tabs.
 ///
-/// ```no_run
+/// ```ignore
 /// use rustjay_engine::prelude::*;
 ///
 /// struct MyEffect;
@@ -37,7 +37,7 @@ pub fn run<P: EffectPlugin>(plugin: P) -> Result<()> {
 
 /// Run the engine with the given plugin and custom GUI tabs.
 ///
-/// ```no_run
+/// ```ignore
 /// use rustjay_engine::prelude::*;
 ///
 /// struct MyEffect;

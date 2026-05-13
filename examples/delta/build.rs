@@ -15,22 +15,22 @@ fn main() {
         // Framework search + link + rpath
         // Use rustc-link-search and rustc-link-lib so the linker correctly
         // associates the framework search path with the framework link.
+        // These propagate to downstream crates; rustc-link-arg does not.
         println!("cargo:rustc-link-search=framework={}", syphon_dir);
         println!("cargo:rustc-link-lib=framework=Syphon");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", syphon_dir);
         println!("cargo:warning=Syphon framework found at: {}", syphon_dir);
 
         // ===== NDI Library =====
-        if std::env::var("CARGO_FEATURE_NDI").is_ok() {
-            let ndi_lib_paths = [
-                "/usr/local/lib",
-                "/Library/NDI SDK for Apple/lib/macOS",
-            ];
+        // NDI rpath: always add if installed (propagates to downstream test binaries)
+        let ndi_lib_paths = [
+            "/usr/local/lib",
+            "/Library/NDI SDK for Apple/lib/macOS",
+        ];
 
-            for path in &ndi_lib_paths {
-                if std::path::Path::new(path).exists() {
-                    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
-                }
+        for path in &ndi_lib_paths {
+            if std::path::Path::new(path).exists() {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
             }
         }
 

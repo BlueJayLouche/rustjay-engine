@@ -138,7 +138,7 @@ impl AnyGuiTab for SputnikTab {
 
         ui.slider_config("Displacement", 0.0, 2.0)
             .build(&mut state.displacement_scale);
-        ui.slider_config("Rotation", -3.14, 3.14)
+        ui.slider_config("Rotation", -std::f32::consts::PI, std::f32::consts::PI)
             .build(&mut state.rotation);
         ui.slider_config("Zoom", 0.1, 3.0)
             .build(&mut state.zoom);

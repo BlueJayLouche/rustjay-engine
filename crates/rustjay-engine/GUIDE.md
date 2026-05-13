@@ -62,7 +62,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 Edit `src/main.rs`:
 
-```rust
+```rust,ignore
 use rustjay_engine::prelude::*;
 
 struct MyEffect;
@@ -110,7 +110,7 @@ You should see two windows: a control window with tabs (Input, Audio, Output, et
 
 Implement the [`AnyGuiTab`] trait to add sliders, buttons, or any ImGui widgets:
 
-```rust
+```rust,ignore
 struct MyTab;
 
 impl AnyGuiTab for MyTab {
@@ -134,7 +134,7 @@ impl AnyGuiTab for MyTab {
 
 Then pass it to [`run_with_tabs`]:
 
-```rust
+```rust,ignore
 fn main() -> anyhow::Result<()> {
     rustjay_engine::run_with_tabs(MyEffect, vec![Box::new(MyTab)])
 }
@@ -142,7 +142,7 @@ fn main() -> anyhow::Result<()> {
 
 Your tab appears in the control window's tab bar. If you want it to *replace* a built-in tab (e.g. replace the Color tab), implement [`AnyGuiTab::replaces`]:
 
-```rust
+```rust,ignore
 impl AnyGuiTab for MyTab {
     // ...
     fn replaces(&self) -> Option<BuiltinTab> {
@@ -155,7 +155,7 @@ impl AnyGuiTab for MyTab {
 
 For effects that need multiple shader stages or frame feedback, return a [`RenderGraph`]:
 
-```rust
+```rust,ignore
 impl EffectPlugin for MyEffect {
     // ... single-pass shader still required as fallback ...
 
@@ -189,7 +189,7 @@ The last pass always writes to the render target.
 
 ### Reading audio data
 
-```rust
+```rust,ignore
 fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
     let volume = engine.audio.volume;
     let bass = engine.audio.fft[0];
@@ -199,7 +199,7 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 
 ### LFO modulation
 
-```rust
+```rust,ignore
 let (hue_mod, sat_mod, bright_mod) = engine.lfo.bank.get_hsb_modulations();
 ```
 
