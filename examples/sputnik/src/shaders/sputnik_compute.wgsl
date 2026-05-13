@@ -31,7 +31,11 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let v = &vertices[index];
 
-    // Add subtle noise-based displacement to the base mesh position.
+    // Reconstruct base mesh Y from texcoord (the engine generates
+    //   y = 1.0 - v * 2.0  where v = texcoord.y)
+    // then add subtle noise. We must not accumulate — the compute
+    // shader runs every frame and the storage buffer persists.
+    let base_y = 1.0 - (*v).texcoord.y * 2.0;
     let noise = hash2((*v).texcoord * 100.0) * 0.02;
-    (*v).position.y = (*v).position.y + noise;
+    (*v).position.y = base_y + noise;
 }
