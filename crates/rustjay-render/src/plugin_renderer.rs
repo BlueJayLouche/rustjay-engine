@@ -344,6 +344,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             return;
         }
 
+        let topology_changed = self.cached_mesh.map(|m| m.topology) != current.map(|m| m.topology);
+
         if let Some(desc) = current {
             let (vb, ib, count) = generate_mesh(device, desc);
             self.mesh_vertex_buffer = Some(vb);
@@ -356,14 +358,16 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
 
         self.cached_mesh = current;
-        self.rebuild_single_pass_pipeline(device);
 
-        // Force graph pipeline rebuild on next render_graph call.
-        self.graph_pipelines.clear();
-        self.graph_shaders.clear();
-        self.graph_shader_sources.clear();
-        self.graph_uniform_buffers.clear();
-        self.graph_uniform_bind_groups.clear();
+        // Pipeline bakes topology — only rebuild when it actually changes.
+        if topology_changed {
+            self.rebuild_single_pass_pipeline(device);
+            self.graph_pipelines.clear();
+            self.graph_shaders.clear();
+            self.graph_shader_sources.clear();
+            self.graph_uniform_buffers.clear();
+            self.graph_uniform_bind_groups.clear();
+        }
     }
 
     pub fn render(

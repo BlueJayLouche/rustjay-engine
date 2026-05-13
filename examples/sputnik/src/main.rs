@@ -116,10 +116,10 @@ impl AnyGuiTab for SputnikTab {
         ui.text("Topology");
         let scanlines = state.topology == 0;
         let triangles = state.topology == 1;
-        if ui.radio_button_bool("Scanlines", scanlines) && scanlines {
+        if ui.radio_button_bool("Scanlines", scanlines) {
             state.topology = 0;
         }
-        if ui.radio_button_bool("Triangles", triangles) && triangles {
+        if ui.radio_button_bool("Triangles", triangles) {
             state.topology = 1;
         }
 
