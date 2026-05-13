@@ -16,6 +16,8 @@ struct SputnikUniforms {
     zoom: f32,
     aspect_ratio: f32,
     audio_bands: [f32; 8],
+    /// Model-View-Projection matrix for 3D perspective projection.
+    mvp: glam::Mat4,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -26,6 +28,8 @@ struct SputnikState {
     displacement_scale: f32,
     rotation: f32,
     zoom: f32,
+    camera_distance: f32,
+    camera_tilt: f32,
     audio_band_weights: [f32; 8],
 }
 
@@ -45,6 +49,8 @@ impl EffectPlugin for SputnikEffect {
             displacement_scale: 0.3,
             rotation: 0.0,
             zoom: 1.0,
+            camera_distance: 3.0,
+            camera_tilt: 0.0,
             audio_band_weights: [0.0; 8],
         }
     }
@@ -72,6 +78,10 @@ impl EffectPlugin for SputnikEffect {
         true
     }
 
+    fn compute_shader(&self) -> Option<&'static str> {
+        Some(include_str!("shaders/sputnik_compute.wgsl"))
+    }
+
     fn build_uniforms(&self, s: &SputnikState, engine: &EngineState) -> SputnikUniforms {
         let aspect = if engine.resolution.internal_height > 0 {
             engine.resolution.internal_width as f32 / engine.resolution.internal_height as f32
@@ -84,12 +94,33 @@ impl EffectPlugin for SputnikEffect {
             bands[i] = engine.audio.fft[i] * s.audio_band_weights[i];
         }
 
+        // Build MVP matrix for 3D perspective projection.
+        let fov = 60.0f32.to_radians();
+        let near = 0.1;
+        let far = 100.0;
+        let projection = glam::Mat4::perspective_rh(fov, aspect, near, far);
+
+        let camera_dist = s.camera_distance.max(0.1);
+        let tilt = s.camera_tilt;
+        let eye = glam::Vec3::new(
+            0.0,
+            tilt.sin() * camera_dist,
+            tilt.cos() * camera_dist,
+        );
+        let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y);
+
+        let model = glam::Mat4::from_rotation_z(s.rotation)
+            * glam::Mat4::from_scale(glam::Vec3::splat(s.zoom));
+
+        let mvp = projection * view * model;
+
         SputnikUniforms {
             displacement_scale: s.displacement_scale,
             rotation: s.rotation,
             zoom: s.zoom,
             aspect_ratio: aspect,
             audio_bands: bands,
+            mvp,
         }
     }
 }
@@ -152,6 +183,13 @@ impl AnyGuiTab for SputnikTab {
             .build(&mut state.rotation);
         ui.slider_config("Zoom", 0.1, 3.0)
             .build(&mut state.zoom);
+
+        ui.separator();
+        ui.text("Camera (3D Perspective)");
+        ui.slider_config("Distance", 1.0, 10.0)
+            .build(&mut state.camera_distance);
+        ui.slider_config("Tilt", -1.0, 1.0)
+            .build(&mut state.camera_tilt);
 
         ui.separator();
         ui.text("Audio Band Weights");

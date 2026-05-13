@@ -407,3 +407,56 @@ pub fn get_local_ip() -> Option<String> {
     None
 }
 
+/// Copy text to the system clipboard.
+pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try wl-copy first (Wayland), then fall back to xclip
+        let result = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(text.as_bytes())?;
+                }
+                child.wait()
+            });
+        if result.is_err() {
+            let mut child = Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(Stdio::piped())
+                .spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = Command::new("cmd")
+            .args(["/C", "clip"])
+            .stdin(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // Windows clip expects UTF-16LE with BOM for Unicode, but plain ASCII/UTF-8 works for basic text
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+    }
+    Ok(())
+}
+

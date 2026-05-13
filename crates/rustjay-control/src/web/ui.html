@@ -177,7 +177,8 @@
     
     <script>
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = wsProtocol + '//' + window.location.host + window.location.pathname + '/ws';
+        const pathname = window.location.pathname.replace(/\/$/, '');
+        const wsUrl = wsProtocol + '//' + window.location.host + pathname + '/ws';
         const ws = new WebSocket(wsUrl);
         let params = {};
         

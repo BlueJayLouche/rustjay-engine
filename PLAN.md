@@ -709,8 +709,8 @@ Phase 5 ships `Scanlines` and `Triangles`. This goal extends `MeshTopology` with
 
 - ✅ **`Wireframe`** — `TriangleList` + `PolygonMode::Line`. `POLYGON_MODE_LINE` requested at device creation on native (`#[cfg(not(target_arch = "wasm32"))]`). Gives the classic wire-frame mesh look distinct from scanlines.
 - ✅ **`Points`** — `PointList` topology. Each vertex renders as a single point; no index buffer needed. Produces a particle-cloud displacement effect from the same mesh infrastructure.
-- ⏸️ **Compute-shader mesh** — move vertex generation from CPU (`generate_mesh` in `PluginRenderer`) to a wgpu compute pass. Enables GPU-side procedural deformation (noise, physics) before the vertex shader runs. Adds `fn compute_shader(&self) -> Option<&'static str>` to `EffectPlugin`.
-- ⏸️ **3D perspective projection** — add a proper `mat4x4` MVP uniform path. Phase 5 uses a simple 2D rotation; this extends `SputnikUniforms` with a camera distance and proper perspective divide, enabling deep-Z mesh displacement.
+- ✅ **Compute-shader mesh** — `EffectPlugin::compute_shader()` returns WGSL source for a compute pass that modifies the mesh vertex buffer before rendering. The engine creates a `STORAGE | VERTEX` buffer, dispatches 1D workgroups of 256 threads, and the render pass uses the same buffer. Demonstrated in `sputnik` with noise-based displacement.
+- ✅ **3D perspective projection** — `SputnikUniforms` carries a `mat4x4<f32>` MVP matrix (using `glam::Mat4` on CPU). The vertex shader applies perspective after displacement, giving deep-Z mesh visuals with camera distance and tilt controls.
 
 **Why it matters**: the Phase 5 sputnik example proves the infrastructure; SG-9 exploits it fully. The wireframe and point modes are visually distinct enough to be separate VJ tools in their own right.
 

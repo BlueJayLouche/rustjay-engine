@@ -38,17 +38,17 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     mesh_index_count: u32,
     mesh_vertex_count: u32,
     cached_mesh: Option<MeshDescriptor>,
+
+    // Compute mesh state
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    compute_bind_group: Option<wgpu::BindGroup>,
+    compute_workgroups: (u32, u32, u32),
 }
 
-/// Generate a indexed mesh grid from a descriptor.
+/// Generate mesh vertex and index data from a descriptor.
 ///
-/// Returns `(vertex_buffer, index_buffer, index_count)`.
-/// For `MeshTopology::Points`, `index_buffer` is `None` and vertices are
-/// drawn directly with `PointList`.
-fn generate_mesh(
-    device: &wgpu::Device,
-    desc: MeshDescriptor,
-) -> (wgpu::Buffer, Option<wgpu::Buffer>, u32) {
+/// Returns `(vertices, indices)`. For `MeshTopology::Points`, `indices` is empty.
+fn generate_mesh_data(desc: MeshDescriptor) -> (Vec<Vertex>, Vec<u32>) {
     let cols = desc.cols.max(1);
     let rows = desc.rows.max(1);
     let vertex_count = ((cols + 1) * (rows + 1)) as usize;
@@ -105,12 +105,22 @@ fn generate_mesh(
         }
     }
 
-    let _vertex_count = vertices.len() as u32;
+    (vertices, indices)
+}
 
+/// Create GPU buffers from mesh data.
+///
+/// Returns `(vertex_buffer, index_buffer, index_count)`.
+fn create_mesh_buffers(
+    device: &wgpu::Device,
+    vertices: &[Vertex],
+    indices: &[u32],
+    vertex_usage: wgpu::BufferUsages,
+) -> (wgpu::Buffer, Option<wgpu::Buffer>, u32) {
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Mesh Vertex Buffer"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
+        contents: bytemuck::cast_slice(vertices),
+        usage: vertex_usage,
     });
 
     let index_count = indices.len() as u32;
@@ -120,7 +130,7 @@ fn generate_mesh(
     } else {
         Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mesh Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
+            contents: bytemuck::cast_slice(indices),
             usage: wgpu::BufferUsages::INDEX,
         }))
     };
@@ -141,6 +151,69 @@ fn wgpu_polygon_mode(topology: MeshTopology) -> wgpu::PolygonMode {
         MeshTopology::Wireframe => wgpu::PolygonMode::Line,
         _ => wgpu::PolygonMode::Fill,
     }
+}
+
+/// Build compute pipeline and bind group for GPU mesh deformation.
+///
+/// Dispatches 1D workgroups of size 256. The compute shader should use
+/// `@workgroup_size(256, 1, 1)` and index vertices with `id.x`.
+fn build_compute_resources(
+    device: &wgpu::Device,
+    compute_shader: &str,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    vertex_buffer: &wgpu::Buffer,
+    vertex_count: u32,
+) -> (wgpu::ComputePipeline, wgpu::BindGroup, (u32, u32, u32)) {
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Compute Shader"),
+        source: wgpu::ShaderSource::Wgsl(compute_shader.into()),
+    });
+
+    let storage_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Compute Storage Bind Group Layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+
+    let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Compute Pipeline Layout"),
+        bind_group_layouts: &[
+            Some(uniform_bind_group_layout),
+            Some(&storage_bind_group_layout),
+        ],
+        ..Default::default()
+    });
+
+    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Compute Pipeline"),
+        layout: Some(&compute_pipeline_layout),
+        module: &cs_module,
+        entry_point: Some("cs_main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    let storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Compute Storage Bind Group"),
+        layout: &storage_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: vertex_buffer.as_entire_binding(),
+        }],
+    });
+
+    // 1D dispatch: workgroup size 256.
+    let workgroups = ((vertex_count + 255) / 256).max(1);
+
+    (compute_pipeline, storage_bind_group, (workgroups, 1, 1))
 }
 
 impl<P: EffectPlugin> PluginRenderer<P> {
@@ -281,11 +354,33 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         // Generate initial mesh if the plugin declares one.
         let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count, mesh_vertex_count) =
             if let Some(desc) = initial_mesh {
-                let (vb, ib, count) = generate_mesh(device, desc);
+                let (vertices, indices) = generate_mesh_data(desc);
+                let vertex_usage = if plugin.compute_shader().is_some() {
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+                } else {
+                    wgpu::BufferUsages::VERTEX
+                };
+                let (vb, ib, count) = create_mesh_buffers(device, &vertices, &indices, vertex_usage);
                 let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
                 (Some(vb), ib, count, vertex_count)
             } else {
                 (None, None, 0, 0)
+            };
+
+        // Build compute resources if the plugin provides a compute shader and a mesh.
+        let (compute_pipeline, compute_bind_group, compute_workgroups) =
+            if let (Some(cs), Some(desc)) = (plugin.compute_shader(), initial_mesh) {
+                if let Some(ref vb) = mesh_vertex_buffer {
+                    let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                    let (cp, cb, wg) = build_compute_resources(
+                        device, cs, &uniform_bind_group_layout, vb, vertex_count,
+                    );
+                    (Some(cp), Some(cb), wg)
+                } else {
+                    (None, None, (0, 0, 0))
+                }
+            } else {
+                (None, None, (0, 0, 0))
             };
 
         let mut renderer = Self {
@@ -311,6 +406,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             mesh_index_count,
             mesh_vertex_count,
             cached_mesh: initial_mesh,
+            compute_pipeline,
+            compute_bind_group,
+            compute_workgroups,
         };
         renderer.plugin.init(device, queue);
         renderer
@@ -373,16 +471,38 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let topology_changed = self.cached_mesh.map(|m| m.topology) != current.map(|m| m.topology);
 
         if let Some(desc) = current {
-            let (vb, ib, count) = generate_mesh(device, desc);
+            let (vertices, indices) = generate_mesh_data(desc);
+            let vertex_usage = if self.plugin.compute_shader().is_some() {
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+            } else {
+                wgpu::BufferUsages::VERTEX
+            };
+            let (vb, ib, count) = create_mesh_buffers(device, &vertices, &indices, vertex_usage);
             self.mesh_vertex_buffer = Some(vb);
             self.mesh_index_buffer = ib;
             self.mesh_index_count = count;
             self.mesh_vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+
+            // Rebuild compute resources if the plugin uses a compute shader.
+            if let Some(cs) = self.plugin.compute_shader() {
+                if let Some(ref vb) = self.mesh_vertex_buffer {
+                    let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                    let (cp, cb, wg) = build_compute_resources(
+                        device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
+                    );
+                    self.compute_pipeline = Some(cp);
+                    self.compute_bind_group = Some(cb);
+                    self.compute_workgroups = wg;
+                }
+            }
         } else {
             self.mesh_vertex_buffer = None;
             self.mesh_index_buffer = None;
             self.mesh_index_count = 0;
             self.mesh_vertex_count = 0;
+            self.compute_pipeline = None;
+            self.compute_bind_group = None;
+            self.compute_workgroups = (0, 0, 0);
         }
 
         self.cached_mesh = current;
@@ -411,6 +531,19 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         vertex_buffer: &wgpu::Buffer,
     ) {
         self.check_mesh_dirty(device, app_state);
+
+        // Run compute pass if the plugin provides a compute shader.
+        if let (Some(ref pipeline), Some(ref bind_group)) = (&self.compute_pipeline, &self.compute_bind_group) {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Mesh Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(pipeline);
+            compute_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            compute_pass.set_bind_group(1, bind_group, &[]);
+            let (wx, wy, wz) = self.compute_workgroups;
+            compute_pass.dispatch_workgroups(wx, wy, wz);
+        }
 
         // Give the plugin a chance to do its own render pass
         if self.plugin.render(

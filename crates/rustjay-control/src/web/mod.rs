@@ -336,12 +336,17 @@ impl Drop for WebServer {
 fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str) -> Router {
     let ws_path = format!("/{}/ws", app_name);
     let page_path = format!("/{}", app_name);
+    let page_path_slash = format!("/{}/", app_name);
+    let page_path_redirect = page_path.clone();
     
     Router::new()
         .route(&ws_path, get(ws_handler))
         .route(&page_path, get(index_handler))
+        .route(&page_path_slash, get(move || async move {
+            axum::response::Redirect::permanent(&page_path)
+        }))
         .route("/", get(move || async move { 
-            axum::response::Redirect::temporary(&page_path) 
+            axum::response::Redirect::temporary(&page_path_redirect) 
         }))
         .route("/health", get(|| async { "OK" }))
         .layer(CorsLayer::permissive())

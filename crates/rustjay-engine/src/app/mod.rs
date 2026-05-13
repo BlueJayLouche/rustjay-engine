@@ -152,6 +152,10 @@ impl<P: EffectPlugin> App<P> {
             log::info!("Web server initialized on port {}", web_port);
             (Some(server), Some(cmd_tx))
         };
+        {
+            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.web_app_name = app_name.clone();
+        }
 
         Self {
             shared_state,

@@ -566,6 +566,8 @@ pub struct EngineState {
     pub web_enabled: bool,
     /// Web server listen port.
     pub web_port: u16,
+    /// Web server app name path segment.
+    pub web_app_name: String,
 }
 
 impl EngineState {
@@ -608,6 +610,7 @@ impl EngineState {
             web_command: WebCommand::None,
             web_enabled: false,
             web_port: 8081,
+            web_app_name: "rustjay-template".to_string(),
             lfo: LfoState::new(),
         }
     }

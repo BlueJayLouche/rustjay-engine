@@ -200,6 +200,26 @@ pub trait EffectPlugin: Send + Sync + 'static {
         false
     }
 
+    /// Optional compute shader that modifies the mesh vertex buffer on the
+    /// GPU before the render pass each frame.
+    ///
+    /// When `Some`, the engine creates a compute pipeline and dispatches it
+    /// with enough workgroups to cover all vertices in the mesh. The compute
+    /// shader has access to:
+    ///
+    /// - `@group(0) @binding(0)` — the app's uniform buffer
+    /// - `@group(1) @binding(0)` — the vertex storage buffer (`array<Vertex>`)
+    ///
+    /// The vertex buffer is created with `STORAGE | VERTEX` usage so the
+    /// compute shader can write to it and the render pass can read from it.
+    ///
+    /// Workgroup size should be `@workgroup_size(16, 16, 1)` or similar.
+    /// The mesh dimensions should be passed through the app's uniform struct
+    /// if the compute shader needs them.
+    fn compute_shader(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Optional custom render pass. If this returns `true`, the engine skips
     /// its default render pass and assumes the plugin has written to the
     /// render target itself.

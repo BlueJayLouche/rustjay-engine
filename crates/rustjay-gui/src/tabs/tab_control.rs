@@ -217,9 +217,9 @@ impl ControlGui {
         ui.separator();
 
         // Get current state
-        let (enabled, port) = {
+        let (enabled, port, app_name) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.web_enabled, state.web_port)
+            (state.web_enabled, state.web_port, state.web_app_name.clone())
         };
 
         // Status indicator
@@ -268,13 +268,16 @@ impl ControlGui {
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "Access URL:");
 
             let local_ip = crate::control_gui::get_local_ip().unwrap_or_else(|| "localhost".to_string());
-            let url = format!("http://{}:{}/rustjay-template", local_ip, port);
+            let url = format!("http://{}:{}/{}", local_ip, port, app_name);
 
             ui.text(&url);
 
             if ui.button("Copy URL to Clipboard") {
-                // TODO: Implement clipboard copy
-                ui.tooltip_text("URL copied!");
+                if let Err(e) = crate::control_gui::copy_to_clipboard(&url) {
+                    log::warn!("Failed to copy URL to clipboard: {}", e);
+                } else {
+                    ui.tooltip_text("URL copied!");
+                }
             }
 
             ui.separator();
