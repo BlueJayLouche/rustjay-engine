@@ -707,10 +707,10 @@ Streams the render output as a live video feed accessible in a browser or OBS vi
 
 Phase 5 ships `Scanlines` and `Triangles`. This goal extends `MeshTopology` with:
 
-- **`Wireframe`** — `TriangleList` + `PolygonMode::Line`. Requires explicitly requesting `POLYGON_MODE_LINE` at device creation (add to `rustjay-render`'s device setup, guarded by `#[cfg(not(target_arch = "wasm32"))]`). Gives the classic wire-frame mesh look distinct from scanlines.
-- **`Points`** — `PointList` topology. Each vertex rendered as a point sprite; point size driven by luminance. Produces a particle-cloud displacement effect from the same mesh infrastructure.
-- **Compute-shader mesh** — move vertex generation from CPU (`generate_mesh` in `PluginRenderer`) to a wgpu compute pass. Enables GPU-side procedural deformation (noise, physics) before the vertex shader runs. Adds `fn compute_shader(&self) -> Option<&'static str>` to `EffectPlugin`.
-- **3D perspective projection** — add a proper `mat4x4` MVP uniform path. Phase 5 uses a simple 2D rotation; this extends `SputnikUniforms` with a camera distance and proper perspective divide, enabling deep-Z mesh displacement.
+- ✅ **`Wireframe`** — `TriangleList` + `PolygonMode::Line`. `POLYGON_MODE_LINE` requested at device creation on native (`#[cfg(not(target_arch = "wasm32"))]`). Gives the classic wire-frame mesh look distinct from scanlines.
+- ✅ **`Points`** — `PointList` topology. Each vertex renders as a single point; no index buffer needed. Produces a particle-cloud displacement effect from the same mesh infrastructure.
+- ⏸️ **Compute-shader mesh** — move vertex generation from CPU (`generate_mesh` in `PluginRenderer`) to a wgpu compute pass. Enables GPU-side procedural deformation (noise, physics) before the vertex shader runs. Adds `fn compute_shader(&self) -> Option<&'static str>` to `EffectPlugin`.
+- ⏸️ **3D perspective projection** — add a proper `mat4x4` MVP uniform path. Phase 5 uses a simple 2D rotation; this extends `SputnikUniforms` with a camera distance and proper perspective divide, enabling deep-Z mesh displacement.
 
 **Why it matters**: the Phase 5 sputnik example proves the infrastructure; SG-9 exploits it fully. The wireframe and point modes are visually distinct enough to be separate VJ tools in their own right.
 

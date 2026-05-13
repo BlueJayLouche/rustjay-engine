@@ -36,16 +36,19 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     mesh_vertex_buffer: Option<wgpu::Buffer>,
     mesh_index_buffer: Option<wgpu::Buffer>,
     mesh_index_count: u32,
+    mesh_vertex_count: u32,
     cached_mesh: Option<MeshDescriptor>,
 }
 
 /// Generate a indexed mesh grid from a descriptor.
 ///
 /// Returns `(vertex_buffer, index_buffer, index_count)`.
+/// For `MeshTopology::Points`, `index_buffer` is `None` and vertices are
+/// drawn directly with `PointList`.
 fn generate_mesh(
     device: &wgpu::Device,
     desc: MeshDescriptor,
-) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+) -> (wgpu::Buffer, Option<wgpu::Buffer>, u32) {
     let cols = desc.cols.max(1);
     let rows = desc.rows.max(1);
     let vertex_count = ((cols + 1) * (rows + 1)) as usize;
@@ -77,8 +80,9 @@ fn generate_mesh(
                 }
             }
         }
-        MeshTopology::Triangles => {
+        MeshTopology::Triangles | MeshTopology::Wireframe => {
             // rows * cols cells, 2 triangles each, 6 indices.
+            // Wireframe uses the same index buffer but PolygonMode::Line.
             indices.reserve((rows * cols * 6) as usize);
             for row in 0..rows {
                 for col in 0..cols {
@@ -96,9 +100,12 @@ fn generate_mesh(
                 }
             }
         }
+        MeshTopology::Points => {
+            // No index buffer needed — vertices are drawn directly as PointList.
+        }
     }
 
-    let index_count = indices.len() as u32;
+    let _vertex_count = vertices.len() as u32;
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Mesh Vertex Buffer"),
@@ -106,11 +113,17 @@ fn generate_mesh(
         usage: wgpu::BufferUsages::VERTEX,
     });
 
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Mesh Index Buffer"),
-        contents: bytemuck::cast_slice(&indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
+    let index_count = indices.len() as u32;
+
+    let index_buffer = if indices.is_empty() {
+        None
+    } else {
+        Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Mesh Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        }))
+    };
 
     (vertex_buffer, index_buffer, index_count)
 }
@@ -118,7 +131,15 @@ fn generate_mesh(
 fn wgpu_topology(topology: MeshTopology) -> wgpu::PrimitiveTopology {
     match topology {
         MeshTopology::Scanlines => wgpu::PrimitiveTopology::LineList,
-        MeshTopology::Triangles => wgpu::PrimitiveTopology::TriangleList,
+        MeshTopology::Triangles | MeshTopology::Wireframe => wgpu::PrimitiveTopology::TriangleList,
+        MeshTopology::Points => wgpu::PrimitiveTopology::PointList,
+    }
+}
+
+fn wgpu_polygon_mode(topology: MeshTopology) -> wgpu::PolygonMode {
+    match topology {
+        MeshTopology::Wireframe => wgpu::PolygonMode::Line,
+        _ => wgpu::PolygonMode::Fill,
     }
 }
 
@@ -223,7 +244,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
+                polygon_mode: initial_topology.map(wgpu_polygon_mode).unwrap_or(wgpu::PolygonMode::Fill),
                 unclipped_depth: false,
                 conservative: false,
             },
@@ -258,12 +279,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let cached_graph = plugin.render_graph();
 
         // Generate initial mesh if the plugin declares one.
-        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
+        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count, mesh_vertex_count) =
             if let Some(desc) = initial_mesh {
                 let (vb, ib, count) = generate_mesh(device, desc);
-                (Some(vb), Some(ib), count)
+                let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                (Some(vb), ib, count, vertex_count)
             } else {
-                (None, None, 0)
+                (None, None, 0, 0)
             };
 
         let mut renderer = Self {
@@ -287,6 +309,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             mesh_vertex_buffer,
             mesh_index_buffer,
             mesh_index_count,
+            mesh_vertex_count,
             cached_mesh: initial_mesh,
         };
         renderer.plugin.init(device, queue);
@@ -302,6 +325,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let topology = self.cached_mesh
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
+        let polygon_mode = self.cached_mesh
+            .map(|m| wgpu_polygon_mode(m.topology))
+            .unwrap_or(wgpu::PolygonMode::Fill);
 
         self.pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -327,7 +353,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
+                polygon_mode,
                 unclipped_depth: false,
                 conservative: false,
             },
@@ -349,12 +375,14 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         if let Some(desc) = current {
             let (vb, ib, count) = generate_mesh(device, desc);
             self.mesh_vertex_buffer = Some(vb);
-            self.mesh_index_buffer = Some(ib);
+            self.mesh_index_buffer = ib;
             self.mesh_index_count = count;
+            self.mesh_vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
         } else {
             self.mesh_vertex_buffer = None;
             self.mesh_index_buffer = None;
             self.mesh_index_count = 0;
+            self.mesh_vertex_count = 0;
         }
 
         self.cached_mesh = current;
@@ -477,6 +505,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         if let Some(ref index_buf) = self.mesh_index_buffer {
             render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+        } else if self.mesh_vertex_buffer.is_some() {
+            // PointList mode — draw vertices directly.
+            render_pass.draw(0..self.mesh_vertex_count, 0..1);
         } else {
             render_pass.draw(0..6, 0..1);
         }
@@ -515,6 +546,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let graph_topology = self.cached_mesh
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
+        let graph_polygon_mode = self.cached_mesh
+            .map(|m| wgpu_polygon_mode(m.topology))
+            .unwrap_or(wgpu::PolygonMode::Fill);
 
         let needs_rebuild = self.graph_pipelines.len() != graph.passes.len()
             || graph.passes.iter().zip(self.graph_shader_sources.iter())
@@ -566,7 +600,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                         strip_index_format: None,
                         front_face: wgpu::FrontFace::Ccw,
                         cull_mode: None,
-                        polygon_mode: wgpu::PolygonMode::Fill,
+                        polygon_mode: graph_polygon_mode,
                         unclipped_depth: false,
                         conservative: false,
                     },
@@ -700,6 +734,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             if let Some(ref index_buf) = self.mesh_index_buffer {
                 render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+            } else if self.mesh_vertex_buffer.is_some() {
+                // PointList mode — draw vertices directly.
+                render_pass.draw(0..self.mesh_vertex_count, 0..1);
             } else {
                 render_pass.draw(0..6, 0..1);
             }

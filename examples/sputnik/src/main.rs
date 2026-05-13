@@ -54,10 +54,12 @@ impl EffectPlugin for SputnikEffect {
     }
 
     fn mesh_descriptor(&self, state: &SputnikState) -> Option<MeshDescriptor> {
-        let topology = if state.topology == 0 {
-            MeshTopology::Scanlines
-        } else {
-            MeshTopology::Triangles
+        let topology = match state.topology {
+            0 => MeshTopology::Scanlines,
+            1 => MeshTopology::Triangles,
+            2 => MeshTopology::Wireframe,
+            3 => MeshTopology::Points,
+            _ => MeshTopology::Scanlines,
         };
         Some(MeshDescriptor {
             cols: state.mesh_cols,
@@ -116,11 +118,19 @@ impl AnyGuiTab for SputnikTab {
         ui.text("Topology");
         let scanlines = state.topology == 0;
         let triangles = state.topology == 1;
+        let wireframe = state.topology == 2;
+        let points = state.topology == 3;
         if ui.radio_button_bool("Scanlines", scanlines) {
             state.topology = 0;
         }
         if ui.radio_button_bool("Triangles", triangles) {
             state.topology = 1;
+        }
+        if ui.radio_button_bool("Wireframe", wireframe) {
+            state.topology = 2;
+        }
+        if ui.radio_button_bool("Points", points) {
+            state.topology = 3;
         }
 
         ui.separator();

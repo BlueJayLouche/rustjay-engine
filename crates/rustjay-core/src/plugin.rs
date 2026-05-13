@@ -27,6 +27,12 @@ pub enum MeshTopology {
     Scanlines,
     /// Solid surface (`TriangleList`), terrain-style displacement.
     Triangles,
+    /// Wireframe outline (`TriangleList` + `PolygonMode::Line`).
+    /// Gives a classic wire-frame mesh look distinct from scanlines.
+    Wireframe,
+    /// Point-cloud (`PointList`). Each vertex renders as a single point.
+    /// Produces a particle-cloud displacement effect.
+    Points,
 }
 
 /// Describes a linear multi-pass render pipeline.

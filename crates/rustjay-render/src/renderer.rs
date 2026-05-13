@@ -72,9 +72,15 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             })
             .await?;
 
+        let mut required_features = wgpu::Features::empty();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            required_features |= wgpu::Features::POLYGON_MODE_LINE;
+        }
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 label: Some("Device"),
                 memory_hints: wgpu::MemoryHints::default(),
