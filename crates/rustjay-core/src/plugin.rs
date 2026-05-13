@@ -5,6 +5,30 @@
 
 use crate::EngineState;
 
+/// Describes a mesh grid for vertex-shader effects.
+///
+/// When a plugin returns `Some(MeshDescriptor)`, the engine generates a
+/// `cols × rows` indexed grid instead of the default fullscreen quad.
+/// Changing the descriptor triggers a mesh rebuild.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct MeshDescriptor {
+    /// Number of columns in the mesh grid.
+    pub cols: u32,
+    /// Number of rows in the mesh grid.
+    pub rows: u32,
+    /// Primitive topology used when rendering the mesh.
+    pub topology: MeshTopology,
+}
+
+/// Primitive topology for mesh rendering.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MeshTopology {
+    /// Horizontal scanlines (`LineList`), classic Rutt-Etra wire look.
+    Scanlines,
+    /// Solid surface (`TriangleList`), terrain-style displacement.
+    Triangles,
+}
+
 /// Describes a linear multi-pass render pipeline.
 ///
 /// Passes execute in declaration order. Each pass reads from a single
@@ -151,6 +175,23 @@ pub trait EffectPlugin: Send + Sync + 'static {
         engine: &EngineState,
     ) -> Self::Uniforms {
         self.build_uniforms(app_state, engine)
+    }
+
+    /// Optional mesh descriptor. When `Some`, the engine generates a
+    /// `cols × rows` indexed grid instead of the fullscreen quad.
+    ///
+    /// Existing plugins return `None` and are completely unaffected.
+    fn mesh_descriptor(&self, _state: &Self::State) -> Option<MeshDescriptor> {
+        None
+    }
+
+    /// When `true`, texture and sampler bind group entries are given
+    /// `VERTEX | FRAGMENT` visibility so `vs_main` can sample the video
+    /// texture. Required for displacement effects.
+    ///
+    /// Default is `false` — only the fragment stage can sample textures.
+    fn vertex_reads_texture(&self) -> bool {
+        false
     }
 
     /// Optional custom render pass. If this returns `true`, the engine skips

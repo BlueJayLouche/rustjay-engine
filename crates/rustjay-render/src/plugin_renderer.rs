@@ -1,8 +1,9 @@
 //! Plugin-aware renderer that compiles app-provided shaders and manages
 //! the per-effect pipeline, uniform buffer, and bind groups.
 
-use rustjay_core::{EffectPlugin, EngineState, PassInput, Vertex};
+use rustjay_core::{EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex};
 use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
+use wgpu::util::DeviceExt;
 
 pub(crate) struct PluginRenderer<P: EffectPlugin> {
     pub plugin: P,
@@ -30,6 +31,95 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     /// Per-pass uniform bind group referencing the corresponding buffer.
     graph_uniform_bind_groups: Vec<wgpu::BindGroup>,
     pub intermediate_textures: Vec<Texture>,
+
+    // Mesh state
+    mesh_vertex_buffer: Option<wgpu::Buffer>,
+    mesh_index_buffer: Option<wgpu::Buffer>,
+    mesh_index_count: u32,
+    cached_mesh: Option<MeshDescriptor>,
+}
+
+/// Generate a indexed mesh grid from a descriptor.
+///
+/// Returns `(vertex_buffer, index_buffer, index_count)`.
+fn generate_mesh(
+    device: &wgpu::Device,
+    desc: MeshDescriptor,
+) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    let cols = desc.cols.max(1);
+    let rows = desc.rows.max(1);
+    let vertex_count = ((cols + 1) * (rows + 1)) as usize;
+
+    let mut vertices = Vec::with_capacity(vertex_count);
+    for row in 0..=rows {
+        let v = row as f32 / rows as f32;
+        for col in 0..=cols {
+            let u = col as f32 / cols as f32;
+            let x = u * 2.0 - 1.0;
+            let y = 1.0 - v * 2.0;
+            vertices.push(Vertex {
+                position: [x, y],
+                texcoord: [u, v],
+            });
+        }
+    }
+
+    let mut indices = Vec::new();
+    match desc.topology {
+        MeshTopology::Scanlines => {
+            // (rows + 1) horizontal lines, each with cols segments.
+            indices.reserve(((rows + 1) * cols * 2) as usize);
+            for row in 0..=rows {
+                for col in 0..cols {
+                    let base = row * (cols + 1) + col;
+                    indices.push(base);
+                    indices.push(base + 1);
+                }
+            }
+        }
+        MeshTopology::Triangles => {
+            // rows * cols cells, 2 triangles each, 6 indices.
+            indices.reserve((rows * cols * 6) as usize);
+            for row in 0..rows {
+                for col in 0..cols {
+                    let tl = row * (cols + 1) + col;
+                    let tr = tl + 1;
+                    let bl = (row + 1) * (cols + 1) + col;
+                    let br = bl + 1;
+                    // CCW winding
+                    indices.push(tl);
+                    indices.push(bl);
+                    indices.push(tr);
+                    indices.push(tr);
+                    indices.push(bl);
+                    indices.push(br);
+                }
+            }
+        }
+    }
+
+    let index_count = indices.len() as u32;
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Mesh Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Mesh Index Buffer"),
+        contents: bytemuck::cast_slice(&indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    (vertex_buffer, index_buffer, index_count)
+}
+
+fn wgpu_topology(topology: MeshTopology) -> wgpu::PrimitiveTopology {
+    match topology {
+        MeshTopology::Scanlines => wgpu::PrimitiveTopology::LineList,
+        MeshTopology::Triangles => wgpu::PrimitiveTopology::TriangleList,
+    }
 }
 
 impl<P: EffectPlugin> PluginRenderer<P> {
@@ -39,6 +129,12 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             source: wgpu::ShaderSource::Wgsl(plugin.shader_source().into()),
         });
 
+        let shader_stages = if plugin.vertex_reads_texture() {
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+        } else {
+            wgpu::ShaderStages::FRAGMENT
+        };
+
         // Unified texture bind group layout: always 4 entries so the same
         // layout works for single-pass plugins and multi-pass graph passes.
         // Single-pass shaders simply omit @binding(2) and @binding(3).
@@ -47,7 +143,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: shader_stages,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -57,13 +153,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: shader_stages,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: shader_stages,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -73,7 +169,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: shader_stages,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -84,7 +180,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             label: Some("Uniform Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: shader_stages,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -99,6 +195,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             bind_group_layouts: &[Some(&texture_bind_group_layout), Some(&uniform_bind_group_layout)],
             ..Default::default()
         });
+
+        let initial_mesh = plugin.mesh_descriptor(&plugin.default_state());
+        let initial_topology = initial_mesh.map(|m| m.topology);
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -120,7 +219,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: initial_topology.map(wgpu_topology).unwrap_or(wgpu::PrimitiveTopology::TriangleList),
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -158,6 +257,15 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         // Cache the graph before plugin is moved into Self.
         let cached_graph = plugin.render_graph();
 
+        // Generate initial mesh if the plugin declares one.
+        let (mesh_vertex_buffer, mesh_index_buffer, mesh_index_count) =
+            if let Some(desc) = initial_mesh {
+                let (vb, ib, count) = generate_mesh(device, desc);
+                (Some(vb), Some(ib), count)
+            } else {
+                (None, None, 0)
+            };
+
         let mut renderer = Self {
             plugin,
             pipeline,
@@ -176,9 +284,86 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             graph_uniform_buffers: Vec::new(),
             graph_uniform_bind_groups: Vec::new(),
             intermediate_textures: Vec::new(),
+            mesh_vertex_buffer,
+            mesh_index_buffer,
+            mesh_index_count,
+            cached_mesh: initial_mesh,
         };
         renderer.plugin.init(device, queue);
         renderer
+    }
+
+    fn rebuild_single_pass_pipeline(&mut self, device: &wgpu::Device) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Plugin Shader"),
+            source: wgpu::ShaderSource::Wgsl(self.plugin.shader_source().into()),
+        });
+
+        let topology = self.cached_mesh
+            .map(|m| wgpu_topology(m.topology))
+            .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
+
+        self.pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&self.pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+    }
+
+    fn check_mesh_dirty(&mut self, device: &wgpu::Device, app_state: &P::State) {
+        let current = self.plugin.mesh_descriptor(app_state);
+        if self.cached_mesh == current {
+            return;
+        }
+
+        if let Some(desc) = current {
+            let (vb, ib, count) = generate_mesh(device, desc);
+            self.mesh_vertex_buffer = Some(vb);
+            self.mesh_index_buffer = Some(ib);
+            self.mesh_index_count = count;
+        } else {
+            self.mesh_vertex_buffer = None;
+            self.mesh_index_buffer = None;
+            self.mesh_index_count = 0;
+        }
+
+        self.cached_mesh = current;
+        self.rebuild_single_pass_pipeline(device);
+
+        // Force graph pipeline rebuild on next render_graph call.
+        self.graph_pipelines.clear();
+        self.graph_shaders.clear();
+        self.graph_shader_sources.clear();
+        self.graph_uniform_buffers.clear();
+        self.graph_uniform_bind_groups.clear();
     }
 
     pub fn render(
@@ -193,6 +378,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         engine_state: &EngineState,
         vertex_buffer: &wgpu::Buffer,
     ) {
+        self.check_mesh_dirty(device, app_state);
+
         // Give the plugin a chance to do its own render pass
         if self.plugin.render(
             encoder,
@@ -277,11 +464,18 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             multiview_mask: None,
         });
 
+        let vb = self.mesh_vertex_buffer.as_ref().unwrap_or(vertex_buffer);
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(0, vb.slice(..));
         render_pass.set_bind_group(0, texture_bind_group, &[]);
         render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
-        render_pass.draw(0..6, 0..1);
+
+        if let Some(ref index_buf) = self.mesh_index_buffer {
+            render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+        } else {
+            render_pass.draw(0..6, 0..1);
+        }
     }
 
     fn render_graph(
@@ -313,7 +507,11 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
 
         // Rebuild pipelines + per-pass uniform buffers when pass count or
-        // shader content changes.
+        // shader content changes, or when mesh topology changes.
+        let graph_topology = self.cached_mesh
+            .map(|m| wgpu_topology(m.topology))
+            .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
+
         let needs_rebuild = self.graph_pipelines.len() != graph.passes.len()
             || graph.passes.iter().zip(self.graph_shader_sources.iter())
                 .any(|(pass, &src)| !std::ptr::eq(pass.shader.as_bytes(), src.as_bytes()));
@@ -360,7 +558,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                         })],
                     }),
                     primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        topology: graph_topology,
                         strip_index_format: None,
                         front_face: wgpu::FrontFace::Ccw,
                         cull_mode: None,
@@ -424,7 +622,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                     PassInput::PreviousPass => {
                         // Warned at rebuild time; silently fall back to dummy.
                         (None, None)
-                    },
+                    }
                     PassInput::Feedback => (
                         feedback_texture.map(|f| &f.texture.view),
                         feedback_texture.map(|f| &f.texture.sampler),
@@ -489,11 +687,18 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 multiview_mask: None,
             });
 
+            let vb = self.mesh_vertex_buffer.as_ref().unwrap_or(vertex_buffer);
             render_pass.set_pipeline(&pipelines[i]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, vb.slice(..));
             render_pass.set_bind_group(0, &bind_group, &[]);
             render_pass.set_bind_group(1, &self.graph_uniform_bind_groups[i], &[]);
-            render_pass.draw(0..6, 0..1);
+
+            if let Some(ref index_buf) = self.mesh_index_buffer {
+                render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..self.mesh_index_count, 0, 0..1);
+            } else {
+                render_pass.draw(0..6, 0..1);
+            }
         }
     }
 }

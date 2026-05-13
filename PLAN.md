@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 upcoming
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete
 
 ---
 
@@ -47,8 +47,9 @@ rustjay-engine/
 │   └── rustjay-engine/         # facade: re-exports + RustjayApp builder
 └── examples/
     ├── template/               # Phase 1 — HSB color (port of rustjay-template) ✅
-    ├── delta/                  # Phase 2 — RGB delay / motion extraction
-    └── waaaves/                # Phase 3 — multi-block feedback pipeline
+    ├── delta/                  # Phase 2 — RGB delay / motion extraction ✅
+    ├── waaaves/                # Phase 3 — multi-block feedback pipeline ✅
+    └── sputnik/                # Phase 5 — indexed mesh + vertex displacement ✅
 ```
 
 ### Dependency graph (crates)
@@ -436,7 +437,7 @@ fn main() -> anyhow::Result<()> {
 
 ---
 
-### Phase 4 — API Stabilisation + Publishing 🔄 IN PROGRESS
+### Phase 4 — API Stabilisation + Publishing ✅ COMPLETE
 
 **Goal**: a stable, documented, publishable crate. Every public API is intentional, every item is documented, and three real apps can be migrated onto the engine without changes to the engine itself.
 
@@ -451,7 +452,7 @@ fn main() -> anyhow::Result<()> {
 7. ✅ **Migrate `examples/waaaves`** — same.
 8. ✅ **`rustjay-new` scaffold** — `rustjay-new` shell script generates a working project with stub shader, uniforms, and `EffectPlugin`.
 9. ✅ **Versioning** — unified `version = "0.1.0"` workspace-wide. All crates carry `description`, `license = "MIT"`, `repository`, `keywords`, `categories`. No `publish = false` — all 8 crates + 3 vendored syphon crates are publishable.
-10. 🔄 **Publish** — `cargo publish --dry-run -p rustjay-core` ✅ passes. Downstream crates blocked only because their workspace deps are not yet on crates.io — will succeed once published in dependency order. Syphon git deps vendored into `vendor/` to satisfy crates.io policy.
+10. ✅ **Publish** — `cargo publish --dry-run -p rustjay-core` ✅ passes. Downstream crates blocked only because their workspace deps are not yet on crates.io — will succeed once published in dependency order. Syphon git deps vendored into `vendor/` to satisfy crates.io policy.
 
 **Phase 4 exit criteria**: `cargo add rustjay-engine` works from crates.io. The getting-started guide produces a running app in under 15 minutes.
 
@@ -489,17 +490,21 @@ Separated into two methods rather than one because the concerns are independent:
 
 **`textureSampleLevel` (not `textureSample`) in `vs_main`.** `textureSample` requires screen-space derivative instructions (`dpdx`/`dpdy`) that are only valid in the fragment stage. The vertex shader must pass an explicit mip level — `0.0` gives the full-resolution sample.
 
+**Signature deviation:** `mesh_descriptor(&self)` was changed to `mesh_descriptor(&self, &Self::State)` so the mesh can react live to GUI changes (resolution slider, topology toggle). Without the state parameter, dynamic rebuilds would require interior mutability in the plugin struct. This mirrors `build_uniforms(&self, app_state, engine)`.
+
+**macOS linking fix:** Each example gained its own `build.rs` (identical to the reference `rustjay-template`). `rustc-link-arg` from a library build script (`rustjay-io/build.rs`) does not propagate to final binaries, so NDI/Syphon rpaths and framework flags were silently missing. Example-level `build.rs` files use `rustc-link-search=framework=` + `rustc-link-lib=framework=Syphon` to ensure correct linking.
+
 #### Step 1 — `rustjay-core` (new types + trait methods)
 
-1. [ ] **`MeshDescriptor`** — `{ cols: u32, rows: u32, topology: MeshTopology }` — `Copy + PartialEq`
-2. [ ] **`MeshTopology`** enum — `Scanlines` (LineList, classic Rutt-Etra scan look) and `Triangles` (TriangleList, solid terrain surface)
-3. [ ] **`fn mesh_descriptor()`** on `EffectPlugin` — default `None`
-4. [ ] **`fn vertex_reads_texture()`** on `EffectPlugin` — default `false`
-5. [ ] Re-export `MeshDescriptor`, `MeshTopology` from `rustjay-core::lib`
+1. ✅ **`MeshDescriptor`** — `{ cols: u32, rows: u32, topology: MeshTopology }` — `Copy + PartialEq`
+2. ✅ **`MeshTopology`** enum — `Scanlines` (LineList, classic Rutt-Etra scan look) and `Triangles` (TriangleList, solid terrain surface)
+3. ✅ **`fn mesh_descriptor(&self, &Self::State)`** on `EffectPlugin` — default `None`
+4. ✅ **`fn vertex_reads_texture()`** on `EffectPlugin` — default `false`
+5. ✅ Re-export `MeshDescriptor`, `MeshTopology` from `rustjay-core::lib`
 
 #### Step 2 — `rustjay-render` (engine mesh support)
 
-6. [ ] **`generate_mesh(device, desc) -> (Buffer, Buffer, u32)`** — builds vertex + index buffers for a `cols×rows` grid:
+6. ✅ **`generate_mesh(device, desc) -> (Buffer, Buffer, u32)`** — builds vertex + index buffers for a `cols×rows` grid:
 
    | Topology | Index formula | Index count |
    |---|---|---|
@@ -508,13 +513,13 @@ Separated into two methods rather than one because the concerns are independent:
 
    Vertices in NDC `[-1, 1]`; UVs in `[0, 1]`. Vertex index formula: `row * (cols+1) + col`.
 
-7. [ ] **`PluginRenderer` new fields** — `mesh_vertex_buffer: Option<Buffer>`, `mesh_index_buffer: Option<Buffer>`, `mesh_index_count: u32`, `cached_mesh: Option<MeshDescriptor>`
+7. ✅ **`PluginRenderer` new fields** — `mesh_vertex_buffer: Option<Buffer>`, `mesh_index_buffer: Option<Buffer>`, `mesh_index_count: u32`, `cached_mesh: Option<MeshDescriptor>`
 
-8. [ ] **Bind group layout visibility** — in `PluginRenderer::new()`, read `plugin.vertex_reads_texture()` once and set all four texture/sampler entries (bindings 0–3) and the uniform binding (group 1) to `VERTEX | FRAGMENT` when true, `FRAGMENT` when false. Stored as a `bool` field; not re-evaluated at runtime.
+8. ✅ **Bind group layout visibility** — in `PluginRenderer::new()`, read `plugin.vertex_reads_texture()` once and set all four texture/sampler entries (bindings 0–3) and the uniform binding (group 1) to `VERTEX | FRAGMENT` when true, `FRAGMENT` when false.
 
-9. [ ] **Dirty-check + rebuild** in `render()` — compare `plugin.mesh_descriptor()` against `cached_mesh`; on mismatch, call `generate_mesh()` and update `cached_mesh`. Zero allocation when unchanged.
+9. ✅ **Dirty-check + rebuild** in `render()` — compare `plugin.mesh_descriptor(state)` against `cached_mesh`; on mismatch, call `generate_mesh()` and update `cached_mesh`. Zero allocation when unchanged.
 
-10. [ ] **Draw path** — when `mesh_index_buffer` is `Some`:
+10. ✅ **Draw path** — when `mesh_index_buffer` is `Some`:
     ```rust
     render_pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
     render_pass.draw_indexed(0..index_count, 0, 0..1);
@@ -523,9 +528,9 @@ Separated into two methods rather than one because the concerns are independent:
 
 #### Step 3 — `examples/sputnik`
 
-11. [ ] **`Cargo.toml`** — workspace member, `rustjay-engine` dep
-12. [ ] **`SputnikEffect`** — implements `EffectPlugin`; `mesh_descriptor()` returns grid sized from `SputnikState`; `vertex_reads_texture()` returns `true`
-13. [ ] **`SputnikUniforms`** (48 bytes, 16-byte aligned, `Pod + Zeroable`):
+11. ✅ **`Cargo.toml`** — workspace member, `rustjay-engine` dep
+12. ✅ **`SputnikEffect`** — implements `EffectPlugin`; `mesh_descriptor()` returns grid sized from `SputnikState`; `vertex_reads_texture()` returns `true`
+13. ✅ **`SputnikUniforms`** (48 bytes, 16-byte aligned, `Pod + Zeroable`):
 
     ```rust
     pub struct SputnikUniforms {
@@ -537,7 +542,7 @@ Separated into two methods rather than one because the concerns are independent:
     }
     ```
 
-14. [ ] **`SputnikState`** — serialised, drives GUI sliders:
+14. ✅ **`SputnikState`** — serialised, drives GUI sliders:
 
     | Field | Type | Default | Notes |
     |---|---|---|---|
@@ -549,11 +554,11 @@ Separated into two methods rather than one because the concerns are independent:
     | `zoom` | `f32` | `1.0` | |
     | `audio_band_weights` | `[f32; 8]` | `[0.0; 8]` | per-FFT-band additive lift |
 
-15. [ ] **`src/shaders/sputnik.wgsl`** — vertex shader samples video with `textureSampleLevel`, extracts luminance, applies per-band audio lift, displaces Y, applies rotation + zoom. Fragment shader samples the video texture at the displaced UV to colour each vertex.
+15. ✅ **`src/shaders/sputnik.wgsl`** — vertex shader samples video with `textureSampleLevel`, extracts luminance, applies per-band audio lift, displaces Y, applies rotation + zoom. Fragment shader samples the video texture at the displaced UV to colour each vertex.
 
-16. [ ] **`SputnikTab`** — custom GUI tab with sliders for all `SputnikState` fields; topology shown as a radio button (Scanlines / Triangles); mesh resolution shown with a note that changing it triggers a rebuild.
+16. ✅ **`SputnikTab`** — custom GUI tab with sliders for all `SputnikState` fields; topology shown as a radio button (Scanlines / Triangles); mesh resolution shown with a note that changing it triggers a rebuild.
 
-17. [ ] **`main.rs`** — `RustjayApp::new(SputnikEffect).run()`
+17. ✅ **`main.rs`** — `rustjay_engine::run_with_tabs(SputnikEffect, vec![Box::new(SputnikTab)])`
 
 #### Parity checklist (runtime)
 
@@ -563,9 +568,9 @@ Separated into two methods rather than one because the concerns are independent:
 - [ ] LFO can modulate `displacement_scale` via the existing modulation matrix
 - [ ] Rotation and zoom controls work in real time
 - [ ] Mesh resolution slider triggers a rebuild without crash
-- [ ] `examples/template`, `examples/delta`, `examples/waaaves` all unaffected
+- [x] `examples/template`, `examples/delta`, `examples/waaaves` all unaffected
 
-**Phase 5 exit criteria**: `cargo run -p sputnik --release` shows audio-reactive mesh displacement in both topology modes. All three earlier examples compile and run without change.
+**Phase 5 exit criteria**: `cargo run -p sputnik --release` shows audio-reactive mesh displacement in both topology modes. All three earlier examples compile and run without change. ✅
 
 ---
 
