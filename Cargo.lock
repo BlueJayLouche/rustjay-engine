@@ -3208,6 +3208,7 @@ dependencies = [
  "metal 0.33.0",
  "nokhwa",
  "objc",
+ "rustjay-audio",
  "rustjay-core",
  "serde",
  "serde_json",
@@ -3544,13 +3545,12 @@ checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 [[package]]
 name = "syphon-core"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
 dependencies = [
  "block",
  "cocoa 0.26.1",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
- "crossbeam",
- "env_logger",
  "io-surface",
  "libc",
  "log",
@@ -3563,6 +3563,7 @@ dependencies = [
 [[package]]
 name = "syphon-metal"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
 dependencies = [
  "cocoa 0.26.1",
  "core-foundation 0.10.1",
@@ -3580,11 +3581,11 @@ dependencies = [
 [[package]]
 name = "syphon-wgpu"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
 dependencies = [
  "bytemuck",
  "cocoa 0.26.1",
  "core-foundation 0.10.1",
- "env_logger",
  "io-surface",
  "log",
  "metal 0.33.0",

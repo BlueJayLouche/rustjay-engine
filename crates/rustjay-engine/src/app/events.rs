@@ -296,7 +296,6 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
             engine.render(self.output_occluded, &mut self.app_state);
             self.update_preview_textures();
         }
-
         if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
             (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
         {

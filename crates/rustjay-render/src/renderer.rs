@@ -257,6 +257,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             feedback.copy_from(&mut encoder, &self.render_target.texture);
         }
 
+        // engine_state is no longer needed — drop it now so the FPS tracker
+        // below can re-lock shared_state without deadlocking (std::sync::Mutex
+        // is not reentrant; holding the guard while calling .lock() again hangs).
+        drop(engine_state);
+
         self.queue.submit(std::iter::once(encoder.finish()));
 
         self.output_manager.submit_frame(&self.render_target.texture, &self.device, &self.queue);

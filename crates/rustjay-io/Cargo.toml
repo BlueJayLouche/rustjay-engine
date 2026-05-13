@@ -9,8 +9,9 @@ keywords = ["vj", "video", "ndi", "syphon", "spout"]
 categories = ["graphics", "multimedia::video"]
 
 [dependencies]
-rustjay-core = { workspace = true }
-log          = { workspace = true }
+rustjay-core  = { workspace = true }
+rustjay-audio = { workspace = true }
+log           = { workspace = true }
 anyhow       = { workspace = true }
 wgpu         = { workspace = true }
 bytemuck     = { workspace = true }

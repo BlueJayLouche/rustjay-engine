@@ -106,13 +106,16 @@ pub struct InputFrame {
     pub timestamp: std::time::Instant,
 }
 
-/// Results returned from the background discovery thread
+/// Results returned from the background discovery thread.
+///
+/// NOTE: Syphon servers (macOS) are intentionally excluded — `SyphonServerDirectory`
+/// must be accessed from the main thread only (it uses AppKit internals that conflict
+/// with Metal's drawable pool when called off-thread, causing a deadlock).
 struct DiscoveryResults {
     webcam: Vec<String>,
+    audio: Vec<String>,
     #[cfg(feature = "ndi")]
     ndi: Vec<String>,
-    #[cfg(target_os = "macos")]
-    syphon: Vec<SyphonServerInfo>,
     #[cfg(target_os = "windows")]
     spout: Vec<SpoutSenderInfo>,
     #[cfg(target_os = "linux")]
@@ -158,6 +161,7 @@ pub struct InputManager {
 
     // Device lists — None = not yet discovered, Some([]) = discovered but none found
     webcam_devices: Option<Vec<String>>,
+    audio_devices: Option<Vec<String>>,
     #[cfg(feature = "ndi")]
     ndi_sources: Option<Vec<String>>,
     #[cfg(target_os = "macos")]
@@ -199,6 +203,7 @@ impl InputManager {
             spout_receiver: None,
             current_frame: None,
             webcam_devices: None,
+            audio_devices: None,
             #[cfg(feature = "ndi")]
             ndi_sources: None,
             #[cfg(target_os = "macos")]
@@ -240,6 +245,11 @@ impl InputManager {
         self.webcam_devices.as_deref().unwrap_or(&[])
     }
 
+    /// Get cached list of audio input devices (empty until discovery completes)
+    pub fn audio_devices(&self) -> &[String] {
+        self.audio_devices.as_deref().unwrap_or(&[])
+    }
+
     /// Get cached list of NDI sources (empty until discovery completes)
     #[cfg(feature = "ndi")]
     pub fn ndi_sources(&self) -> &[String] {
@@ -278,14 +288,13 @@ impl InputManager {
         }
 
         self.webcam_devices = None;
+        self.audio_devices = None;
         #[cfg(feature = "ndi")]
         {
             self.ndi_sources = None;
         }
-        #[cfg(target_os = "macos")]
-        {
-            self.syphon_servers = None;
-        }
+        // Syphon is NOT reset here — it is refreshed on the main thread below
+        // (SyphonServerDirectory must not be called from a background thread).
         #[cfg(target_os = "windows")]
         {
             self.spout_senders = None;
@@ -294,6 +303,17 @@ impl InputManager {
         {
             self.v4l2_capture_devices = None;
             self.v4l2_output_devices = None;
+        }
+
+        // Syphon discovery runs on the main thread (caller's thread). The
+        // SyphonServerDirectory singleton uses AppKit internals that conflict with
+        // Metal's drawable pool when accessed off-thread, causing a deadlock.
+        #[cfg(target_os = "macos")]
+        {
+            log::info!("[InputManager] Discovering Syphon servers (main thread)...");
+            let servers = syphon_input::SyphonDiscovery::new().discover_servers();
+            log::info!("[InputManager] Found {} Syphon server(s)", servers.len());
+            self.syphon_servers = Some(servers);
         }
 
         self.is_discovering = true;
@@ -314,6 +334,15 @@ impl InputManager {
             #[cfg(not(feature = "webcam"))]
             let webcam: Vec<String> = Vec::new();
 
+            // Audio device enumeration runs in the background to avoid blocking
+            // the main thread — cpal's CoreAudio backend can stall the main run loop.
+            let audio = {
+                log::info!("[InputManager] Discovering audio input devices...");
+                let devices = rustjay_audio::list_audio_devices();
+                log::info!("[InputManager] Found {} audio input device(s)", devices.len());
+                devices
+            };
+
             #[cfg(feature = "ndi")]
             let ndi = {
                 log::info!("[InputManager] Discovering NDI sources...");
@@ -323,14 +352,6 @@ impl InputManager {
             };
             #[cfg(not(feature = "ndi"))]
             let ndi: Vec<String> = Vec::new();
-
-            #[cfg(target_os = "macos")]
-            let syphon = {
-                log::info!("[InputManager] Discovering Syphon servers...");
-                let servers = syphon_input::SyphonDiscovery::new().discover_servers();
-                log::info!("[InputManager] Found {} Syphon server(s)", servers.len());
-                servers
-            };
 
             #[cfg(target_os = "windows")]
             let spout = {
@@ -361,10 +382,9 @@ impl InputManager {
 
             let _ = tx.send(DiscoveryResults {
                 webcam,
+                audio,
                 #[cfg(feature = "ndi")]
                 ndi,
-                #[cfg(target_os = "macos")]
-                syphon,
                 #[cfg(target_os = "windows")]
                 spout,
                 #[cfg(target_os = "linux")]
@@ -386,14 +406,13 @@ impl InputManager {
         let result = self.discovery_rx.as_ref().and_then(|rx| rx.try_recv().ok());
         if let Some(result) = result {
             self.webcam_devices = Some(result.webcam);
+            self.audio_devices = Some(result.audio);
             #[cfg(feature = "ndi")]
             {
                 self.ndi_sources = Some(result.ndi);
             }
-            #[cfg(target_os = "macos")]
-            {
-                self.syphon_servers = Some(result.syphon);
-            }
+            // Syphon servers were populated synchronously on the main thread in
+            // begin_refresh_devices() and are not part of DiscoveryResults.
             #[cfg(target_os = "windows")]
             {
                 self.spout_senders = Some(result.spout);

@@ -8,9 +8,6 @@ members = [
     "crates/rustjay-gui",
     "crates/rustjay-render",
     "crates/rustjay-engine",
-    "vendor/syphon-core",
-    "vendor/syphon-metal",
-    "vendor/syphon-wgpu",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -71,6 +68,6 @@ rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
 rustjay-gui     = { path = "crates/rustjay-gui", version = "0.1.0" }
 rustjay-render  = { path = "crates/rustjay-render", version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
-syphon-core     = { path = "vendor/syphon-core", version = "0.1.0" }
-syphon-metal    = { path = "vendor/syphon-metal", version = "0.1.0" }
-syphon-wgpu     = { path = "vendor/syphon-wgpu", version = "0.1.0" }
+syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
+syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
+syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
