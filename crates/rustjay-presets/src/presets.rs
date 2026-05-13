@@ -2,7 +2,7 @@
 //!
 //! Save and load parameter snapshots with quick preset selector.
 
-use rustjay_core::{HsbParams, LfoBank, EngineState, RoutingMatrix, PresetCommand};
+use rustjay_core::{HsbParams, LfoBank, EngineState, RoutingMatrix};
 use serde::{Deserialize, Serialize};
 
 fn default_fft_size() -> usize {
