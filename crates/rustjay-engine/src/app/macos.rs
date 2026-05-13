@@ -1,0 +1,67 @@
+//! macOS-specific app delegate hooks to prevent termination when the last
+//! window is hidden, and to recreate (show) windows when the Dock icon is
+//! clicked or the app is reactivated.
+
+use std::sync::OnceLock;
+use winit::event_loop::EventLoopProxy;
+
+use super::WindowAction;
+
+static PROXY: OnceLock<EventLoopProxy<WindowAction>> = OnceLock::new();
+
+pub fn set_proxy(proxy: EventLoopProxy<WindowAction>) {
+    let _ = PROXY.set(proxy);
+}
+
+pub fn setup_macos_app_delegate() {
+    use objc::runtime::{Class, Object, Sel, BOOL, NO, YES, class_addMethod};
+    use objc::{sel, sel_impl};
+    use std::mem;
+    use std::os::raw::c_char;
+
+    extern "C" fn should_terminate_after_last_window_closed(
+        _self: &Object,
+        _sel: Sel,
+        _sender: *mut Object,
+    ) -> BOOL {
+        NO
+    }
+
+    extern "C" fn should_handle_reopen(
+        _self: &Object,
+        _sel: Sel,
+        _sender: *mut Object,
+        _flag: BOOL,
+    ) -> BOOL {
+        if let Some(proxy) = PROXY.get() {
+            let _ = proxy.send_event(WindowAction::RecreateWindows);
+        }
+        YES
+    }
+
+    unsafe {
+        if let Some(delegate_class) = Class::get("WinitApplicationDelegate") {
+            let cls = delegate_class as *const _ as *mut Class;
+
+            let enc = "c@:@\0".as_ptr() as *const c_char;
+            class_addMethod(
+                cls,
+                sel!(applicationShouldTerminateAfterLastWindowClosed:),
+                mem::transmute::<extern "C" fn(&Object, Sel, *mut Object) -> BOOL, _>(
+                    should_terminate_after_last_window_closed,
+                ),
+                enc,
+            );
+
+            let enc2 = "c@:@c\0".as_ptr() as *const c_char;
+            class_addMethod(
+                cls,
+                sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+                mem::transmute::<extern "C" fn(&Object, Sel, *mut Object, BOOL) -> BOOL, _>(
+                    should_handle_reopen,
+                ),
+                enc2,
+            );
+        }
+    }
+}

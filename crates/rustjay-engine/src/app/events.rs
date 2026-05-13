@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, WindowAction};
 use rustjay_gui::{ControlGui, ImGuiRenderer};
 use rustjay_render::WgpuEngine;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowAttributes;
 use rustjay_core::EffectPlugin;
 
-impl<P: EffectPlugin> ApplicationHandler for App<P> {
+impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.wgpu_instance.is_none() {
             let backends = if cfg!(target_os = "macos") {
@@ -135,18 +135,46 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
         }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: WindowAction) {
+        match event {
+            WindowAction::RecreateWindows => {
+                if let Some(ref window) = self.output_window {
+                    window.set_visible(true);
+                    self.output_occluded = false;
+                    let fullscreen = {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.output_fullscreen
+                    };
+                    if fullscreen {
+                        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                    }
+                    window.set_cursor_visible(false);
+                    log::info!("Output window shown");
+                }
+                if let Some(ref window) = self.control_window {
+                    window.set_visible(true);
+                    self.control_visible = true;
+                    log::info!("Control window shown");
+                }
+            }
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        if let Some(ref output_window) = self.output_window {
+        if let Some(output_window) = self.output_window.as_ref() {
             if window_id == output_window.id() {
                 match event {
                     WindowEvent::CloseRequested => {
+                        let window = Arc::clone(output_window);
                         self.save_settings();
-                        event_loop.exit();
+                        window.set_visible(false);
+                        self.output_occluded = true;
+                        log::info!("Output window hidden");
                     }
                     WindowEvent::CursorEntered { .. } => {
                         output_window.set_cursor_visible(false);
@@ -199,8 +227,10 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
                         self.output_occluded = occluded;
                     }
                     WindowEvent::Resized(size) => {
-                        if let Some(ref mut engine) = self.output_engine {
-                            engine.resize(size.width, size.height);
+                        if !self.output_occluded {
+                            if let Some(ref mut engine) = self.output_engine {
+                                engine.resize(size.width, size.height);
+                            }
                         }
                     }
                     _ => {}
@@ -209,7 +239,7 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
             }
         }
 
-        if let Some(ref control_window) = self.control_window {
+        if let Some(control_window) = self.control_window.as_ref() {
             if window_id == control_window.id() {
                 if let Some(ref mut renderer) = self.imgui_renderer {
                     let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
@@ -218,8 +248,11 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
 
                 match event {
                     WindowEvent::CloseRequested => {
+                        let window = Arc::clone(control_window);
                         self.save_settings();
-                        event_loop.exit();
+                        window.set_visible(false);
+                        self.control_visible = false;
+                        log::info!("Control window hidden");
                     }
                     WindowEvent::KeyboardInput { event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
@@ -242,17 +275,21 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
                         }
                     }
                     WindowEvent::Resized(size) => {
-                        if let Some(ref mut renderer) = self.imgui_renderer {
-                            renderer.resize(size.width, size.height);
+                        if self.control_visible {
+                            if let Some(ref mut renderer) = self.imgui_renderer {
+                                renderer.resize(size.width, size.height);
+                            }
                         }
                     }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        if let Some(ref mut renderer) = self.imgui_renderer {
-                            renderer.set_scale_factor(scale_factor);
-                            let window_size = control_window.inner_size();
-                            let logical_width = window_size.width as f32 / scale_factor as f32;
-                            let logical_height = window_size.height as f32 / scale_factor as f32;
-                            renderer.set_display_size(logical_width, logical_height);
+                        if self.control_visible {
+                            if let Some(ref mut renderer) = self.imgui_renderer {
+                                renderer.set_scale_factor(scale_factor);
+                                let window_size = control_window.inner_size();
+                                let logical_width = window_size.width as f32 / scale_factor as f32;
+                                let logical_height = window_size.height as f32 / scale_factor as f32;
+                                renderer.set_display_size(logical_width, logical_height);
+                            }
                         }
                     }
                     _ => {}
@@ -296,18 +333,20 @@ impl<P: EffectPlugin> ApplicationHandler for App<P> {
             engine.render(self.output_occluded, &mut self.app_state);
             self.update_preview_textures();
         }
-        if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
-            (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
-        {
-            let scale_factor = window.scale_factor();
-            let window_size = window.inner_size();
-            let logical_width = window_size.width as f32 / scale_factor as f32;
-            let logical_height = window_size.height as f32 / scale_factor as f32;
-            renderer.set_display_size(logical_width, logical_height);
+        if self.control_visible {
+            if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
+                (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
+            {
+                let scale_factor = window.scale_factor();
+                let window_size = window.inner_size();
+                let logical_width = window_size.width as f32 / scale_factor as f32;
+                let logical_height = window_size.height as f32 / scale_factor as f32;
+                renderer.set_display_size(logical_width, logical_height);
 
-            let app_state = &mut self.app_state as &mut dyn std::any::Any;
-            if let Err(err) = renderer.render_frame(|ui| gui.build_ui(ui, app_state)) {
-                log::error!("ImGui render error: {}", err);
+                let app_state = &mut self.app_state as &mut dyn std::any::Any;
+                if let Err(err) = renderer.render_frame(|ui| gui.build_ui(ui, app_state)) {
+                    log::error!("ImGui render error: {}", err);
+                }
             }
         }
 

@@ -17,15 +17,33 @@ use std::sync::Arc;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::Window;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum WindowAction {
+    RecreateWindows,
+}
+
+#[cfg(target_os = "macos")]
+mod macos;
+
 pub(crate) fn run_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
 ) -> Result<()> {
-    let event_loop = EventLoop::new()?;
+    let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
+    #[cfg(target_os = "macos")]
+    let proxy = event_loop.create_proxy();
+
     let mut app = App::new(shared_state, plugin, tabs);
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_proxy(proxy);
+        macos::setup_macos_app_delegate();
+    }
+
     event_loop.run_app(&mut app)?;
 
     Ok(())
@@ -58,6 +76,7 @@ pub(crate) struct App<P: EffectPlugin> {
 
     pub(crate) shift_pressed: bool,
     pub(crate) output_occluded: bool,
+    pub(crate) control_visible: bool,
     pub(crate) last_frame_time: std::time::Instant,
     pub(crate) frame_delta_time: f32,
 
@@ -65,6 +84,7 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) plugin: Option<P>,
     pub(crate) app_state: P::State,
     pub(crate) custom_tabs: Vec<Box<dyn AnyGuiTab>>,
+
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -178,6 +198,7 @@ impl<P: EffectPlugin> App<P> {
             config_manager,
             shift_pressed: false,
             output_occluded: false,
+            control_visible: true,
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,
             plugin: Some(plugin),
