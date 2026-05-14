@@ -931,6 +931,7 @@ dependencies = [
  "objc",
  "rustjay-engine",
  "serde",
+ "wgpu",
 ]
 
 [[package]]

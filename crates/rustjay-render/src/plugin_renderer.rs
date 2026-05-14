@@ -545,6 +545,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
 
         // Give the plugin a chance to do its own render pass
+        let raw_input = input_texture.texture.as_ref().map(|t| &t.texture);
         if self.plugin.render(
             encoder,
             device,
@@ -555,6 +556,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             app_state,
             engine_state,
             vertex_buffer,
+            raw_input,
         ) {
             return;
         }

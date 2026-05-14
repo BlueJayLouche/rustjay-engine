@@ -69,7 +69,7 @@ That's it — you get a dual-window VJ app with the full built-in control panel.
 git clone https://github.com/BlueJayLouche/rustjay-engine
 cd rustjay-engine
 cargo run -p template    # HSB colour
-cargo run -p delta       # RGB delay
+cargo run -p delta       # RGB delay / motion extraction
 cargo run -p waaaves     # feedback pipeline
 cargo run -p sputnik     # mesh displacement
 ```

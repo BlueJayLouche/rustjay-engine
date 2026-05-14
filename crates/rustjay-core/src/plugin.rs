@@ -246,6 +246,9 @@ pub trait EffectPlugin: Send + Sync + 'static {
     ///
     /// Use this when the effect needs extra bind groups, multiple passes,
     /// or compute shaders that the default single-pass pipeline can't express.
+    ///
+    /// `input_texture` is the raw wgpu texture backing the video input,
+    /// useful for effects that need to copy frames into a history ring buffer.
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
@@ -258,6 +261,7 @@ pub trait EffectPlugin: Send + Sync + 'static {
         _app_state: &mut Self::State,
         _engine_state: &EngineState,
         _vertex_buffer: &wgpu::Buffer,
+        _input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         false
     }

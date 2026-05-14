@@ -151,7 +151,81 @@ impl AnyGuiTab for MyTab {
 }
 ```
 
-## 4. Multi-pass effects with feedback
+## 4. Frame-history effects with a custom render pipeline
+
+For effects that need to read from multiple *previous frames* (temporal delay, motion extraction, echo trails), override `render()` and manage your own GPU pipeline and ring buffer.
+
+```rust,ignore
+use rustjay_engine::prelude::*;
+
+struct MyEffect {
+    pipeline:   Option<wgpu::RenderPipeline>,
+    tex_bgl:    Option<wgpu::BindGroupLayout>,
+    history:    Vec<Texture>,       // ring buffer of past frames
+    write_idx:  usize,
+}
+
+impl EffectPlugin for MyEffect {
+    type State = MyState;
+    type Uniforms = MyUniforms;
+
+    /// Return a stub shader that matches the engine's default binding layout
+    /// (group 0: texture, sampler, texture, sampler — group 1: uniform).
+    /// The engine compiles this for its default pipeline, but since render()
+    /// returns true below, that pipeline is never used.
+    fn shader_source(&self) -> &'static str {
+        include_str!("shaders/stub.wgsl")
+    }
+
+    /// Build the real pipeline with your own bind group layout.
+    fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("My Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/real.wgsl").into()),
+        });
+        // ... create bind group layouts, pipeline, history textures ...
+        self.pipeline = Some(/* ... */);
+    }
+
+    /// Custom render — copy the live input into the ring buffer, then draw
+    /// using delayed frames for each channel.  Return true to tell the engine
+    /// to skip its own render pass.
+    fn render(
+        &mut self,
+        encoder:             &mut wgpu::CommandEncoder,
+        device:              &wgpu::Device,
+        queue:               &wgpu::Queue,
+        input_view:          Option<&wgpu::TextureView>,
+        input_sampler:       Option<&wgpu::Sampler>,
+        render_target_view:  &wgpu::TextureView,
+        app_state:           &mut Self::State,
+        engine_state:        &EngineState,
+        _vertex_buffer:      &wgpu::Buffer,
+        input_texture:       Option<&wgpu::Texture>,  // raw texture — use for GPU copies
+    ) -> bool {
+        // Push current frame into ring buffer
+        if let Some(src) = input_texture {
+            let dest = &self.history[self.write_idx];
+            encoder.copy_texture_to_texture(/* src → dest */);
+            self.write_idx = (self.write_idx + 1) % self.history.len();
+        }
+
+        // Build bind group from delayed history frames, run render pass ...
+
+        true  // skip the engine's default render pass
+    }
+}
+```
+
+Key rules:
+- **`shader_source()` still required** — the engine compiles it for its default pipeline even if you never use that pipeline. Make it a minimal stub whose bindings match the engine's standard layout (`[Texture, Sampler, Texture, Sampler]` at group 0, uniform buffer at group 1).
+- **Your real shader** lives in a separate file compiled inside `init()`, with whatever binding layout you need.
+- **`input_texture`** gives you the raw `wgpu::Texture` so you can `copy_texture_to_texture` without an intermediate CPU readback.
+- Returning `true` from `render()` tells the engine to skip its default draw — you own the render target.
+
+See `examples/delta` for a complete working implementation: 8-frame RGB ring buffer, 8 blend modes, per-channel gain, threshold, and trail fade.
+
+## 5. Multi-pass effects with feedback
 
 For effects that need multiple shader stages or frame feedback, return a [`RenderGraph`]:
 
@@ -185,7 +259,7 @@ Each pass can read from:
 
 The last pass always writes to the render target.
 
-## 5. Common patterns
+## 6. Common patterns
 
 ### Reading audio data
 
@@ -211,7 +285,7 @@ Presets are handled automatically by the engine. The built-in Presets tab lets u
 
 - Browse the [`examples/`] directory in the repo for complete working apps:
   - `template` — HSB colour adjustment
-  - `delta` — RGB spatial delay with custom tab
+  - `delta` — RGB delay / motion extraction with custom render pipeline and frame-history ring buffer
   - `waaaves` — 3-pass feedback pipeline
 - Explore the [`EffectPlugin`] trait documentation for lifecycle hooks (`init`, `prepare`, `render`).
 - Enable feature flags in `Cargo.toml` for optional I/O protocols:

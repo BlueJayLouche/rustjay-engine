@@ -13,8 +13,8 @@ impl ControlGui {
             state.lfo.show_window
         };
 
-        // Snapshot target list so we can map indices ↔ targets without borrowing state
-        let (target_list, hsb_count) = {
+        // Snapshot target list and param name lookup so we can map indices ↔ targets
+        let (target_list, hsb_count, param_names) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let mut targets: Vec<LfoTarget> = Vec::new();
             // Always include None
@@ -24,13 +24,15 @@ impl ControlGui {
             targets.push(LfoTarget::Saturation);
             targets.push(LfoTarget::Brightness);
             let hsb = targets.len() - 1; // count of non-None HSB targets
+            let mut names = std::collections::HashMap::new();
             // Append custom modulatable params
             for d in &state.param_descriptors {
                 if d.is_modulatable() {
                     targets.push(LfoTarget::Custom(d.id.clone()));
+                    names.insert(d.id.clone(), d.name.clone());
                 }
             }
-            (targets, hsb)
+            (targets, hsb, names)
         };
 
         let target_names: Vec<String> = target_list
@@ -172,13 +174,18 @@ impl ControlGui {
                             ui.spacing();
                             let indicator = if target_idx <= hsb_count {
                                 match target_idx {
-                                    1 => "→ Shifts hue",
-                                    2 => "↑↓ Saturation",
-                                    3 => "☀☾ Brightness",
-                                    _ => "",
+                                    1 => "→ Shifts hue".to_string(),
+                                    2 => "↑↓ Saturation".to_string(),
+                                    3 => "☀☾ Brightness".to_string(),
+                                    _ => String::new(),
                                 }
                             } else {
-                                "↔ Modulating parameter"
+                                let name = target_list.get(target_idx)
+                                    .and_then(|t| t.param_id())
+                                    .and_then(|id| param_names.get(id))
+                                    .map(|n| n.as_str())
+                                    .unwrap_or("parameter");
+                                format!("→ Modulating: {}", name)
                             };
                             ui.text_colored([0.8, 0.8, 0.2, 1.0], indicator);
                         }

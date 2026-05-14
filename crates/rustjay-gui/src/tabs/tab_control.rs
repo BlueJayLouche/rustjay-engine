@@ -5,6 +5,33 @@
 use crate::control_gui::ControlGui;
 use rustjay_core::{MidiCommand, OscCommand, WebCommand, ParamCategory};
 
+/// Return a sort order for standard categories (lower = earlier).
+/// Custom categories always sort after standard ones.
+fn category_order(cat: &ParamCategory) -> u8 {
+    match cat {
+        ParamCategory::Color => 0,
+        ParamCategory::Motion => 1,
+        ParamCategory::Audio => 2,
+        ParamCategory::Output => 3,
+        ParamCategory::Settings => 4,
+        ParamCategory::Custom(_) => 5,
+    }
+}
+
+/// Collect unique categories from descriptors and sort them: standard first,
+/// then custom ones alphabetically.
+fn sorted_categories(descriptors: &[rustjay_core::ParameterDescriptor]) -> Vec<ParamCategory> {
+    let mut cats: Vec<_> = descriptors.iter()
+        .map(|d| d.category.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    cats.sort_by(|a, b| {
+        category_order(a).cmp(&category_order(b)).then_with(|| a.name().cmp(&b.name()))
+    });
+    cats
+}
+
 impl ControlGui {
     /// Build the MIDI tab with dynamically-generated learn buttons.
     pub(crate) fn build_midi_tab(&mut self, ui: &imgui::Ui) {
@@ -37,15 +64,7 @@ impl ControlGui {
         if descriptors.is_empty() {
             ui.text_disabled("No effect-declared parameters.");
         } else {
-            // Group by category
-            let categories = [
-                ParamCategory::Color,
-                ParamCategory::Motion,
-                ParamCategory::Audio,
-                ParamCategory::Output,
-                ParamCategory::Settings,
-            ];
-            for cat in &categories {
+            for cat in &sorted_categories(&descriptors) {
                 let cat_params: Vec<_> = descriptors.iter().filter(|d| d.category == *cat).collect();
                 if cat_params.is_empty() { continue; }
 
@@ -137,14 +156,7 @@ impl ControlGui {
         if descriptors.is_empty() {
             ui.text_disabled("No effect-declared parameters.");
         } else {
-            let categories = [
-                ParamCategory::Color,
-                ParamCategory::Motion,
-                ParamCategory::Audio,
-                ParamCategory::Output,
-                ParamCategory::Settings,
-            ];
-            for cat in &categories {
+            for cat in &sorted_categories(&descriptors) {
                 let cat_params: Vec<_> = descriptors.iter().filter(|d| d.category == *cat).collect();
                 if cat_params.is_empty() { continue; }
 
