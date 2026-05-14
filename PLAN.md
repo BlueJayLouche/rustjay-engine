@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete — Phase 7 🚧 Serving (pending browser effect verify)
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete — Phase 7 ✅ Complete
 
 ---
 
@@ -741,9 +741,9 @@ pub fn set_mix(v: f32);       // blend live vs delayed          [0.0, 1.0]
 
 #### Parity checklist (runtime)
 
-- [ ] Webcam input renders in real time in Chrome/Arc 113+
-- [ ] `delay_r` / `delay_g` / `delay_b` sliders visibly shift channel offsets
-- [ ] `mix_amount` slider blends live vs delayed frame correctly
+- [x] Webcam input renders in real time in Chrome/Arc 113+
+- [x] `delay_r` / `delay_g` / `delay_b` sliders visibly shift channel offsets
+- [x] `mix_amount` slider blends live vs delayed frame correctly
 - [ ] No console errors or wgpu validation warnings
 - [ ] `trunk build --release` deploys to a static host without modification
 - [ ] `cargo build --workspace` (native, all features) is unaffected
