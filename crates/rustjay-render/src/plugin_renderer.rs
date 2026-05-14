@@ -270,11 +270,17 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             ],
         });
 
+        let uniform_stages = if plugin.compute_shader().is_some() {
+            shader_stages | wgpu::ShaderStages::COMPUTE
+        } else {
+            shader_stages
+        };
+
         let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Uniform Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: shader_stages,
+                visibility: uniform_stages,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,

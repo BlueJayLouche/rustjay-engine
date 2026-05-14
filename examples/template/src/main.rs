@@ -28,7 +28,7 @@ impl EffectPlugin for HsbEffect {
     fn app_name(&self) -> &str { "template" }
 
     fn default_state(&self) -> HsbState {
-        HsbState { saturation: 1.0, brightness: 1.0, ..Default::default() }
+        HsbState { saturation: 1.0, brightness: 1.0, enabled: true, ..Default::default() }
     }
 
     /// Declare HSB parameters for dynamic UI, LFO targets, and control mapping.
