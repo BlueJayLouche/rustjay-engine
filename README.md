@@ -160,7 +160,7 @@ All I/O device enumeration (webcam, audio, NDI) runs in a background thread so t
 | 5 | ✅ | Indexed mesh geometry + vertex-shader displacement (sputnik) |
 | 6 | ✅ | Ableton Link + ProDJ Link tempo sync |
 
-Stretch goals: hot-reload plugins, GLSL/ISF transpiler, Spout input (Windows), timeline/sequencer.
+Stretch goals: hot-reload plugins, GLSL/ISF transpiler, timeline/sequencer.
 
 ## License
 

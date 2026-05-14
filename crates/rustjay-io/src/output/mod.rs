@@ -221,7 +221,7 @@ pub struct OutputManager {
     #[cfg(target_os = "macos")]
     syphon_output: Option<syphon_output::SyphonOutput>,
 
-    /// Spout output (Windows) — TODO: replace () with real type from spout crate
+    /// Spout output (Windows).
     #[cfg(target_os = "windows")]
     spout_output: Option<spout_output::SpoutOutput>,
 
@@ -343,8 +343,7 @@ impl OutputManager {
         false
     }
 
-    /// Start V4L2 loopback output (Linux only)
-    /// TODO (Linux): implement this using V4l2LoopbackOutput in v4l2_output.rs
+    /// Start V4L2 loopback output (Linux only).
     #[cfg(target_os = "linux")]
     pub fn start_v4l2(&mut self, device_path: &str, width: u32, height: u32) -> anyhow::Result<()> {
         let output = v4l2_output::V4l2LoopbackOutput::new(device_path, width, height)?;

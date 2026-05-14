@@ -509,8 +509,7 @@ impl InputManager {
         Err(anyhow::anyhow!("Syphon is only available on macOS"))
     }
 
-    /// Start Spout input (Windows only)
-    /// TODO (Windows): implement this using the SpoutInputReceiver in spout_input.rs
+    /// Start Spout input (Windows only).
     #[cfg(target_os = "windows")]
     pub fn start_spout(&mut self, sender_name: impl Into<String>) -> Result<()> {
         let sender_name = sender_name.into();
