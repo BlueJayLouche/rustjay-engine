@@ -225,7 +225,7 @@ impl<P: EffectPlugin> App<P> {
                     }
                     // Also write to custom_param_bases for effect-declared params
                     for (path, value) in &dirty_values {
-                        if let Some(id) = path.split('/').nth(1) {
+                        if let Some(id) = path.split('/').last() {
                             if shared.param_descriptors.iter().any(|d| d.id == id) {
                                 shared.set_param_base(id, *value);
                             }
@@ -238,38 +238,34 @@ impl<P: EffectPlugin> App<P> {
 
     pub(super) fn update_osc(&mut self) {
         if let Some(ref server) = self.osc_server {
-            let (hue_shift, saturation, brightness, color_enabled, amplitude, smoothing) = {
+            if let Ok(mut shared) = self.shared_state.lock() {
                 if let Ok(mut osc_state) = server.state().lock() {
-                    (
-                        osc_state.get_value_if_dirty("/color/hue_shift"),
-                        osc_state.get_value_if_dirty("/color/saturation"),
-                        osc_state.get_value_if_dirty("/color/brightness"),
-                        osc_state.get_value_if_dirty("/color/enabled"),
-                        osc_state.get_value_if_dirty("/audio/amplitude"),
-                        osc_state.get_value_if_dirty("/audio/smoothing"),
-                    )
-                } else {
-                    (None, None, None, None, None, None)
-                }
-            };
+                    // Hardcoded HSB / audio params
+                    if let Some(v) = osc_state.get_value_if_dirty("/color/hue_shift") {
+                        shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
+                    }
+                    if let Some(v) = osc_state.get_value_if_dirty("/color/saturation") {
+                        shared.hsb_params.saturation = v.clamp(0.0, 2.0);
+                    }
+                    if let Some(v) = osc_state.get_value_if_dirty("/color/brightness") {
+                        shared.hsb_params.brightness = v.clamp(0.0, 2.0);
+                    }
+                    if let Some(v) = osc_state.get_value_if_dirty("/color/enabled") {
+                        shared.color_enabled = v > 0.5;
+                    }
+                    if let Some(v) = osc_state.get_value_if_dirty("/audio/amplitude") {
+                        shared.audio.amplitude = v.clamp(0.0, 5.0);
+                    }
+                    if let Some(v) = osc_state.get_value_if_dirty("/audio/smoothing") {
+                        shared.audio.smoothing = v.clamp(0.0, 1.0);
+                    }
 
-            if hue_shift.is_some() || saturation.is_some() || brightness.is_some() ||
-               color_enabled.is_some() || amplitude.is_some() || smoothing.is_some() {
-                if let Ok(mut shared) = self.shared_state.lock() {
-                    if let Some(v) = hue_shift { shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0); }
-                    if let Some(v) = saturation { shared.hsb_params.saturation = v.clamp(0.0, 2.0); }
-                    if let Some(v) = brightness { shared.hsb_params.brightness = v.clamp(0.0, 2.0); }
-                    if let Some(v) = color_enabled { shared.color_enabled = v > 0.5; }
-                    if let Some(v) = amplitude { shared.audio.amplitude = v.clamp(0.0, 5.0); }
-                    if let Some(v) = smoothing { shared.audio.smoothing = v.clamp(0.0, 1.0); }
-                    // Also check custom params
+                    // Effect-declared custom params
                     let descriptors = shared.param_descriptors.clone();
                     for desc in &descriptors {
                         let addr = format!("/{}/{}", desc.category.name().to_lowercase(), desc.id);
-                        if let Ok(mut osc_state) = server.state().lock() {
-                            if let Some(v) = osc_state.get_value_if_dirty(&addr) {
-                                shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
-                            }
+                        if let Some(v) = osc_state.get_value_if_dirty(&addr) {
+                            shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
                         }
                     }
                 }

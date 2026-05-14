@@ -822,8 +822,11 @@ impl EngineState {
     }
 
     /// Set the base value of a custom parameter.
+    /// Also updates the modulated value so the change is immediately visible
+    /// (LFO / audio routing will overwrite on the next frame if active).
     pub fn set_param_base(&mut self, id: &str, value: f32) {
         self.custom_param_bases.insert(id.to_string(), value);
+        self.custom_params.insert(id.to_string(), value);
     }
 
     /// Reset modulated params to base values (call before applying LFO + routing each frame).

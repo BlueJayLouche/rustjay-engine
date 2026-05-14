@@ -491,7 +491,15 @@ impl<P: EffectPlugin> App<P> {
                                 "audio/normalize" => state.audio.normalize = value > 0.5,
                                 "audio/pink_noise" => state.audio.pink_noise_shaping = value > 0.5,
                                 "output/fullscreen" => state.output_fullscreen = value > 0.5,
-                                _ => {}
+                                _ => {
+                                    // Fallback: check if this is an effect-declared custom param
+                                    if let Some(desc) = state.param_descriptors.iter().find(|d| {
+                                        format!("{}/{}", d.category.name().to_lowercase(), d.id) == id
+                                    }) {
+                                        let (desc_id, desc_min, desc_max) = (desc.id.clone(), desc.min, desc.max);
+                                        state.set_param_base(&desc_id, value.clamp(desc_min, desc_max));
+                                    }
+                                }
                             }
                         }
                     }
