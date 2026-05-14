@@ -349,16 +349,6 @@ impl ControlGui {
             .map(|(i, t)| (i, t.name().to_string(), t.replaces()))
             .collect();
 
-        // Apply custom tab replacements to the visible tab list.
-        for (_idx, _name, replaces) in &custom_info {
-            if let Some(replaced) = replaces {
-                if let Some(pos) = visible_tabs.iter().position(|t| t == replaced) {
-                    // Remove the replaced tab — the custom tab will be rendered in its place.
-                    visible_tabs.remove(pos);
-                }
-            }
-        }
-
         if let Some(_tab_bar) = ui.tab_bar("##main_tabs") {
             for tab in &visible_tabs {
                 // If a custom tab replaces this slot, render it here instead.

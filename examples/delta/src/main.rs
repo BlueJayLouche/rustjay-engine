@@ -57,9 +57,9 @@ impl BlendMode {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DeltaState {
     // Delays per channel (0–16 frames)
-    red_delay: f32,
-    green_delay: f32,
-    blue_delay: f32,
+    red_delay: u32,
+    green_delay: u32,
+    blue_delay: u32,
 
     // Effect settings
     intensity: f32,
@@ -84,9 +84,9 @@ struct DeltaState {
 impl Default for DeltaState {
     fn default() -> Self {
         Self {
-            red_delay: 0.0,
-            green_delay: 2.0,
-            blue_delay: 4.0,
+            red_delay: 0,
+            green_delay: 2,
+            blue_delay: 4,
             intensity: 1.0,
             blend_mode: BlendMode::Replace,
             grayscale_input: true,
@@ -536,9 +536,9 @@ impl EffectPlugin for DeltaEffect {
             };
         }
 
-        let rd = engine.get_param("red_delay").unwrap_or(s.red_delay);
-        let gd = engine.get_param("green_delay").unwrap_or(s.green_delay);
-        let bd = engine.get_param("blue_delay").unwrap_or(s.blue_delay);
+        let rd = engine.get_param("red_delay").unwrap_or(s.red_delay as f32).round();
+        let gd = engine.get_param("green_delay").unwrap_or(s.green_delay as f32).round();
+        let bd = engine.get_param("blue_delay").unwrap_or(s.blue_delay as f32).round();
         let intensity = engine.get_param("intensity").unwrap_or(s.intensity);
         let blend_mode = engine.get_param("blend_mode").unwrap_or(s.blend_mode as i32 as f32);
         let grayscale = engine.get_param("grayscale_input").unwrap_or(if s.grayscale_input { 1.0 } else { 0.0 });
@@ -593,14 +593,20 @@ impl AnyGuiTab for MotionTab {
 
         // Delays
         ui.text_colored([0.0, 1.0, 1.0, 1.0], "Channel Delays (frames)");
-        if ui.slider_config("Red Delay", 0.0, 16.0).build(&mut state.red_delay) {
-            engine.set_param_base("red_delay", state.red_delay);
+        let mut rd = state.red_delay as i32;
+        if ui.slider_config("Red Delay", 0, 16).build(&mut rd) {
+            state.red_delay = rd as u32;
+            engine.set_param_base("red_delay", state.red_delay as f32);
         }
-        if ui.slider_config("Green Delay", 0.0, 16.0).build(&mut state.green_delay) {
-            engine.set_param_base("green_delay", state.green_delay);
+        let mut gd = state.green_delay as i32;
+        if ui.slider_config("Green Delay", 0, 16).build(&mut gd) {
+            state.green_delay = gd as u32;
+            engine.set_param_base("green_delay", state.green_delay as f32);
         }
-        if ui.slider_config("Blue Delay", 0.0, 16.0).build(&mut state.blue_delay) {
-            engine.set_param_base("blue_delay", state.blue_delay);
+        let mut bd = state.blue_delay as i32;
+        if ui.slider_config("Blue Delay", 0, 16).build(&mut bd) {
+            state.blue_delay = bd as u32;
+            engine.set_param_base("blue_delay", state.blue_delay as f32);
         }
 
         ui.separator();
