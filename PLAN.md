@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete — Phase 7 🚧 Implementation (pending browser verify)
 
 ---
 
@@ -50,7 +50,8 @@ rustjay-engine/
     ├── template/               # Phase 1 — HSB color (port of rustjay-template) ✅
     ├── delta/                  # Phase 2 — RGB delay / motion extraction ✅
     ├── waaaves/                # Phase 3 — multi-block feedback pipeline ✅
-    └── sputnik/                # Phase 5 — indexed mesh + vertex displacement ✅
+    ├── sputnik/                # Phase 5 — indexed mesh + vertex displacement ✅
+    └── webapp/                 # Phase 7 — Delta effect in browser (WASM + WebGPU + React) 🚧
 ```
 
 ### Dependency graph (crates)
@@ -630,6 +631,125 @@ breaking any existing API or example.
 - All existing examples compile without modification
 - `link` feature code is written and structurally correct (full build requires
   CMake, documented as build dependency)
+
+---
+
+### Phase 7 — WASM Web Example (Delta Effect in the Browser) 🚧 Planning
+
+**Goal**: ship `examples/webapp/` — a deployable static site that runs the DeltaEffect (RGB spatial delay / chromatic aberration) entirely in the browser using WebAssembly + WebGPU. Webcam input comes from `getUserMedia`; a React control panel drives shader parameters in real time. No server, no native deps, no install.
+
+This phase proves that the engine's core render concepts (shader pipeline, frame texture, uniform control) survive the WASM/WebGPU boundary and can be surfaced through a modern web UI — laying groundwork for in-browser VJ tools, live demos, and documentation.
+
+---
+
+#### Why a standalone WASM crate, not the engine facade
+
+`rustjay-io`, `rustjay-audio`, `rustjay-gui`, `rustjay-control`, and `rustjay-presets` all have non-WASM system dependencies (nokhwa, cpal, imgui, MIDI stack, axum, file I/O). Forcing WASM feature-gates across all eight crates is Phase 7+ work. Instead, `examples/webapp` is a self-contained `cdylib` that reimplements only what the browser needs:
+
+| Dependency | Native engine | WASM webapp |
+|---|---|---|
+| GPU rendering | `rustjay-render` → wgpu (Metal/Vulkan/DX12) | wgpu `webgpu` feature → WebGPU |
+| Video input | `rustjay-io` → nokhwa | `web-sys` → `getUserMedia` |
+| Control UI | `rustjay-gui` → ImGui | React 18 components |
+| Parameter state | `EngineState` + commands | `#[wasm_bindgen]` struct + setters |
+| Audio reactive | `rustjay-audio` → cpal | Deferred (Web Audio API, stretch) |
+| Presets / MIDI / OSC | full engine subsystems | Out of scope for Phase 7 |
+
+The delta shader (`delta.wgsl`) is copied verbatim — no shader changes required.
+
+---
+
+#### Layout
+
+```
+examples/webapp/
+├── Cargo.toml              # [lib] crate-type = ["cdylib"]; wasm-only deps
+├── Trunk.toml              # trunk configuration (serve port, dist dir)
+├── index.html              # Trunk entry: <canvas id="canvas">, React mount <div id="root">
+├── src/
+│   ├── lib.rs              # #[wasm_bindgen(start)] — canvas surface, RAF loop, state cell
+│   ├── delta.rs            # DeltaUniforms (Pod), build_uniforms, shader include_str!
+│   ├── webcam.rs           # JS bridge: getUserMedia → per-frame Uint8Array → wgpu texture
+│   └── shaders/
+│       └── delta.wgsl      # copy of examples/delta/src/shaders/delta.wgsl (adapted)
+└── ui/
+    ├── package.json        # React 18 + Vite; `npm run build` → ui/dist/
+    ├── src/
+    │   ├── main.tsx        # mounts <App/>, imports WASM module
+    │   ├── App.tsx         # canvas wrapper + <DelaySliders />
+    │   └── components/
+    │       └── DelaySliders.tsx  # sliders for delay_r, delay_g, delay_b, mix_amount
+    └── dist/               # Trunk copies into final output via <link data-trunk rel="copy-dir">
+```
+
+---
+
+#### Key technical decisions
+
+**No winit.** The WASM binary uses `web-sys` to look up `<canvas id="canvas">` directly and passes an `OffscreenCanvas`-compatible handle to `wgpu::Instance::create_surface_from_canvas()`. Winit's WASM support adds `~30 kB` and forces a particular event-loop structure that conflicts with React's own RAF scheduling.
+
+**wgpu WebGPU backend.** `wgpu = { version = "0.20", features = ["webgpu"] }`. Requires Chrome 113+, Arc, or Edge 113+. No WebGL fallback in Phase 7 — WebGPU is the target, and the browser share is sufficient for a developer example.
+
+**Webcam → texture pipeline.** JavaScript (in `index.html`) calls `getUserMedia`, draws each frame to a 2D `<canvas>`, extracts pixels with `getImageData()`, and passes the `Uint8ClampedArray` to a Rust-exported function. On the Rust side: `queue.write_texture(dest, data, layout, size)` uploads RGBA pixels each frame. This avoids `VideoFrame` / `WebCodecs` complexity while staying zero-copy on the JS side.
+
+**Simplified delta shader.** The desktop `DeltaEffect` uses a per-channel integer frame delay driven by a ring buffer (`delay_r` frames ago, etc.). The browser version simplifies to a pixel-offset approach: the shader samples the *previous frame* (one feedback texture) shifted by `(delay_r, delay_g, delay_b)` pixels, blended with the live webcam feed via `mix_amount`. This is visually equivalent at low delay values and removes the ring-buffer state machine.
+
+**Feedback texture.** A second `wgpu::Texture` (same size as canvas) holds the previous render output. After each frame, a copy pass (`command_encoder.copy_texture_to_texture`) writes the render target into the feedback texture. The delta shader reads from both (current webcam + previous frame).
+
+**`#[wasm_bindgen]` parameter API.** The render state is held in a `thread_local! { static STATE: RefCell<Option<WasmApp>> }`. React calls four exported functions:
+
+```rust
+#[wasm_bindgen]
+pub fn set_delay_r(v: i32);   // pixel offset for red channel   [-64, 64]
+#[wasm_bindgen]
+pub fn set_delay_g(v: i32);   // pixel offset for green channel
+#[wasm_bindgen]
+pub fn set_delay_b(v: i32);   // pixel offset for blue channel
+#[wasm_bindgen]
+pub fn set_mix(v: f32);       // blend live vs delayed          [0.0, 1.0]
+```
+
+**React + Trunk.** The React app lives in `ui/`. `npm run build` (Vite) outputs to `ui/dist/`. `Trunk.toml` declares a pre-build hook that runs `npm run build` before the Rust WASM compile. `index.html` carries `<link data-trunk rel="copy-dir" href="ui/dist"/>` so trunk bundles both the WASM module and the React assets into a single `dist/` directory.
+
+---
+
+#### Steps
+
+1. [x] **Workspace** — add `examples/webapp` to root `[workspace.members]`; create `Cargo.toml` with `[lib] crate-type = ["cdylib"]`; add WASM deps: `wgpu` (webgpu feature), `wasm-bindgen`, `web-sys` (Window, Document, HtmlCanvasElement, MediaDevices, MediaStream, HtmlVideoElement, CanvasRenderingContext2d, ImageData), `js-sys`, `bytemuck`, `wasm-bindgen-futures`, `console_error_panic_hook`, `log`, `console_log`
+
+2. [x] **Canvas surface** — `src/lib.rs`: exported `async fn start()` (not `wasm_bindgen(start)` — needs to be async for adapter/device requests); canvas by ID; `wgpu::Instance::new` with `Backends::BROWSER_WEBGPU`; request adapter (`HighPerformance`); device/queue/surface/config
+
+3. [x] **Feedback texture** — `strip_srgb(surface_format)` used as format (preserves channel order for copy-texture compatibility, removes sRGB flag to prevent gamma double-conversion in feedback loop); blit via `copy_texture_to_texture` at frame end
+
+4. [x] **Delta pipeline** — `src/delta.rs`: `DeltaUniforms` with `f32` fields (converted from `i32` params — GPU requires f32); `include_str!` shader; two texture bind groups (webcam + feedback) plus uniform bind group
+
+5. [x] **Delta shader** — `src/shaders/delta.wgsl`: per-channel UV offsets from pixel delays, feedback mix via `mix_amount`, resolution uniform for pixel→UV conversion
+
+6. [x] **Webcam bridge** — webcam capture (getUserMedia, drawImage, getImageData) lives in `index.html` JS to avoid complex web_sys video API; `src/webcam.rs` handles texture upload only; `update_webcam_frame` exported for JS to call each tick
+
+7. [x] **RAF render loop** — `Rc<RefCell<Option<Closure<dyn FnMut()>>>>` self-referential pattern (not `spawn_local` — render loop is sync); webcam capture runs a separate JS RAF loop calling `update_webcam_frame` each tick
+
+8. [x] **WASM exports** — four `#[wasm_bindgen]` setters (`set_delay_r`, `set_delay_g`, `set_delay_b`, `set_mix`) writing into `thread_local PARAMS`; exposed as `window.rustjay` for React
+
+9. [x] **React UI** — canvas stays in `index.html` (not App.tsx); React loads dynamically after WASM init; `DelaySliders.tsx` four range inputs with per-channel accent colours; WASM called via `window.rustjay` with null-guard for pre-init events
+
+10. [x] **Trunk config** — `dist = "dist"`, `port = 8080`; pre-build hook runs `npm install && npm run build` in `ui/`; `<link data-trunk rel="copy-dir" href="ui/dist"/>` bundles React output
+
+11. [ ] **Build verification** — `trunk serve` shows delta effect in Chrome with webcam; `trunk build --release` produces `dist/` deployable to GitHub Pages / Netlify; `cargo build --workspace` (native) is unaffected
+
+---
+
+#### Parity checklist (runtime)
+
+- [ ] Webcam input renders in real time in Chrome/Arc 113+
+- [ ] `delay_r` / `delay_g` / `delay_b` sliders visibly shift channel offsets
+- [ ] `mix_amount` slider blends live vs delayed frame correctly
+- [ ] No console errors or wgpu validation warnings
+- [ ] `trunk build --release` deploys to a static host without modification
+- [ ] `cargo build --workspace` (native, all features) is unaffected
+- [x] `cargo check --target wasm32-unknown-unknown -p webapp` passes
+
+**Phase 7 exit criteria**: `trunk serve` opens in Chrome and shows webcam video processed through the delta shader with live React parameter control.
 
 ---
 

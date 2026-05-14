@@ -1,0 +1,13 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+
+[serve]
+port = 8080
+open = false
+
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["-c", "cd ui && npm install && npm run build"]
