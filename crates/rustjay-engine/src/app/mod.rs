@@ -84,7 +84,6 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) plugin: Option<P>,
     pub(crate) app_state: P::State,
     pub(crate) custom_tabs: Vec<Box<dyn AnyGuiTab>>,
-
 }
 
 impl<P: EffectPlugin> App<P> {

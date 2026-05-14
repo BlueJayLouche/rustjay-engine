@@ -31,37 +31,48 @@ pub fn setup_macos_app_delegate() {
         _self: &Object,
         _sel: Sel,
         _sender: *mut Object,
-        _flag: BOOL,
+        has_visible_windows: BOOL,
     ) -> BOOL {
-        if let Some(proxy) = PROXY.get() {
-            let _ = proxy.send_event(WindowAction::RecreateWindows);
+        // Only show windows when none are currently visible; clicking the
+        // Dock icon when windows are already on screen is a no-op.
+        if has_visible_windows == NO {
+            if let Some(proxy) = PROXY.get() {
+                let _ = proxy.send_event(WindowAction::RecreateWindows);
+            }
         }
         YES
     }
 
     unsafe {
-        if let Some(delegate_class) = Class::get("WinitApplicationDelegate") {
-            let cls = delegate_class as *const _ as *mut Class;
-
-            let enc = "c@:@\0".as_ptr() as *const c_char;
-            class_addMethod(
-                cls,
-                sel!(applicationShouldTerminateAfterLastWindowClosed:),
-                mem::transmute::<extern "C" fn(&Object, Sel, *mut Object) -> BOOL, _>(
-                    should_terminate_after_last_window_closed,
-                ),
-                enc,
+        let Some(delegate_class) = Class::get("WinitApplicationDelegate") else {
+            log::warn!(
+                "WinitApplicationDelegate class not found — \
+                 macOS window lifecycle hooks not installed. \
+                 App will quit when the last window is closed."
             );
+            return;
+        };
 
-            let enc2 = "c@:@c\0".as_ptr() as *const c_char;
-            class_addMethod(
-                cls,
-                sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-                mem::transmute::<extern "C" fn(&Object, Sel, *mut Object, BOOL) -> BOOL, _>(
-                    should_handle_reopen,
-                ),
-                enc2,
-            );
-        }
+        let cls = delegate_class as *const _ as *mut Class;
+
+        let enc = "c@:@\0".as_ptr() as *const c_char;
+        class_addMethod(
+            cls,
+            sel!(applicationShouldTerminateAfterLastWindowClosed:),
+            mem::transmute::<extern "C" fn(&Object, Sel, *mut Object) -> BOOL, _>(
+                should_terminate_after_last_window_closed,
+            ),
+            enc,
+        );
+
+        let enc2 = "c@:@c\0".as_ptr() as *const c_char;
+        class_addMethod(
+            cls,
+            sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+            mem::transmute::<extern "C" fn(&Object, Sel, *mut Object, BOOL) -> BOOL, _>(
+                should_handle_reopen,
+            ),
+            enc2,
+        );
     }
 }

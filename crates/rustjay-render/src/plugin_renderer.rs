@@ -356,7 +356,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             if let Some(desc) = initial_mesh {
                 let (vertices, indices) = generate_mesh_data(desc);
                 let vertex_usage = if plugin.compute_shader().is_some() {
-                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
                 } else {
                     wgpu::BufferUsages::VERTEX
                 };
@@ -473,7 +473,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         if let Some(desc) = current {
             let (vertices, indices) = generate_mesh_data(desc);
             let vertex_usage = if self.plugin.compute_shader().is_some() {
-                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE
             } else {
                 wgpu::BufferUsages::VERTEX
             };
@@ -485,15 +485,14 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
             // Rebuild compute resources if the plugin uses a compute shader.
             if let Some(cs) = self.plugin.compute_shader() {
-                if let Some(ref vb) = self.mesh_vertex_buffer {
-                    let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
-                    let (cp, cb, wg) = build_compute_resources(
-                        device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
-                    );
-                    self.compute_pipeline = Some(cp);
-                    self.compute_bind_group = Some(cb);
-                    self.compute_workgroups = wg;
-                }
+                let vb = self.mesh_vertex_buffer.as_ref().unwrap();
+                let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                let (cp, cb, wg) = build_compute_resources(
+                    device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
+                );
+                self.compute_pipeline = Some(cp);
+                self.compute_bind_group = Some(cb);
+                self.compute_workgroups = wg;
             }
         } else {
             self.mesh_vertex_buffer = None;

@@ -213,7 +213,8 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// The vertex buffer is created with `STORAGE | VERTEX` usage so the
     /// compute shader can write to it and the render pass can read from it.
     ///
-    /// Workgroup size should be `@workgroup_size(16, 16, 1)` or similar.
+    /// Workgroup size must be `@workgroup_size(256, 1, 1)` — the engine
+    /// dispatches 1D groups of 256 threads sized to cover all vertices.
     /// The mesh dimensions should be passed through the app's uniform struct
     /// if the compute shader needs them.
     fn compute_shader(&self) -> Option<&'static str> {
