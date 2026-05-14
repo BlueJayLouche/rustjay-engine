@@ -11,6 +11,8 @@ rustjay-engine is a Cargo workspace of focused crates that handles all the infra
 - Real-time audio analysis — FFT, beat detection, 8-band spectrum
 - Audio-reactive parameter routing — FFT bands → any parameter
 - **LFO** modulation (3 banks, 5 waveforms, tempo-sync to BPM)
+- **Ableton Link** — join a shared tempo session with Live, Serato, Traktor, etc.
+- **ProDJ Link** — BPM, beat phase, and track metadata from CDJ/XDJ/DJM gear
 - **MIDI** learn and mapping
 - **OSC** server
 - **Web** parameter server (REST + live push)
@@ -29,6 +31,7 @@ rustjay-engine/
 │   ├── rustjay-io          # InputManager, OutputManager (Webcam/NDI/Syphon/Spout/V4L2)
 │   ├── rustjay-control     # MIDI, OSC, Web server
 │   ├── rustjay-presets     # Preset save/load/quick-slots
+│   ├── rustjay-sync        # Ableton Link + ProDJ Link tempo sync (optional)
 │   ├── rustjay-gui         # ImGui control window, all built-in tabs
 │   ├── rustjay-render      # wgpu pipeline, blit, textures, uniforms
 │   └── rustjay-engine      # Facade — app runner, config, re-exports
@@ -93,6 +96,48 @@ Download and install [Syphon.framework](https://github.com/Syphon/Syphon-Framewo
 
 The Rust bindings come directly from [`BlueJayLouche/syphon-rs`](https://github.com/BlueJayLouche/syphon-rs) — no vendored copy.
 
+## Tempo sync
+
+The engine supports two external sync sources in addition to audio analysis BPM.
+
+### Enabling features
+
+```toml
+[dependencies]
+rustjay-engine = { git = "https://github.com/BlueJayLouche/rustjay-engine", features = ["link", "prodj"] }
+```
+
+Enable one or both. The default build has neither — audio analysis is always available as a fallback.
+
+### Priority
+
+When multiple sources are active the engine picks the highest-priority one:
+
+1. **Ableton Link** — if enabled and at least one peer is present
+2. **ProDJ Link** — if enabled and a master deck is present
+3. **Audio analysis** — always-on fallback
+
+### Using sync in a plugin
+
+Use `effective_bpm()` and `effective_beat_phase()` instead of `engine.audio.bpm` / `engine.audio.beat_phase`:
+
+```rust
+fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
+    MyUniforms {
+        bpm:        engine.effective_bpm(),
+        beat_phase: engine.effective_beat_phase(),
+        // ...
+    }
+}
+```
+
+The **Sync** tab in the control window lets users enable/disable each source, adjust the Link quantum, and see discovered ProDJ devices — no code changes required.
+
+### Build requirements
+
+- **`link` feature:** CMake ≥ 3.14 must be installed (`brew install cmake` / `apt install cmake`). Links against Ableton Link — the resulting binary is **GPL-2.0+**.
+- **`prodj` feature:** No extra system dependencies. Sends LAN broadcast packets and binds UDP ports 50000/50002 — get operator approval before using on a production DJ network.
+
 ## Architecture notes
 
 ### Device discovery
@@ -113,8 +158,9 @@ All I/O device enumeration (webcam, audio, NDI) runs in a background thread so t
 | 3 | ✅ | Multi-input compositor, custom GUI tabs |
 | 4 | ✅ | API stabilisation, docs, example gallery |
 | 5 | ✅ | Indexed mesh geometry + vertex-shader displacement (sputnik) |
+| 6 | ✅ | Ableton Link + ProDJ Link tempo sync |
 
-Stretch goals (post Phase 5): Ableton Link, Pioneer DJ integration, hot-reload plugins, GLSL/ISF transpiler, Spout input (Windows), timeline/sequencer.
+Stretch goals: hot-reload plugins, GLSL/ISF transpiler, Spout input (Windows), timeline/sequencer.
 
 ## License
 
