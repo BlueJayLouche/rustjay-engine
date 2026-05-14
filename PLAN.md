@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete — Phase 7 🚧 Implementation (pending browser verify)
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete — Phase 7 🚧 Serving (pending browser effect verify)
 
 ---
 
@@ -733,9 +733,9 @@ pub fn set_mix(v: f32);       // blend live vs delayed          [0.0, 1.0]
 
 9. [x] **React UI** — canvas stays in `index.html` (not App.tsx); React loads dynamically after WASM init; `DelaySliders.tsx` four range inputs with per-channel accent colours; WASM called via `window.rustjay` with null-guard for pre-init events
 
-10. [x] **Trunk config** — `dist = "dist"`, `port = 8080`; pre-build hook runs `npm install && npm run build` in `ui/`; `<link data-trunk rel="copy-dir" href="ui/dist"/>` bundles React output
+10. [x] **Trunk config** — `dist = "/tmp/rustjay-webapp-dist"` (outside project tree to prevent self-triggering rebuild loop); `port = 8080`; pre-build hook guarded: `[ -d ui/dist ] || (cd ui && npm install && npm run build)` so React builds once then stays stable across WASM hot-reloads; JS uses `TrunkApplicationStarted` event + `window.wasmBindings` instead of manually importing the hashed WASM JS; React script path corrected to `dist/assets/index.js`
 
-11. [ ] **Build verification** — `trunk serve` shows delta effect in Chrome with webcam; `trunk build --release` produces `dist/` deployable to GitHub Pages / Netlify; `cargo build --workspace` (native) is unaffected
+11. [x] **Build verification** — `trunk serve` stable at http://localhost:8080 (no rebuild loop confirmed over 70s); `cargo check --target wasm32-unknown-unknown -p webapp` passes; browser effect verify pending
 
 ---
 

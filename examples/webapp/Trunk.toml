@@ -1,13 +1,16 @@
 [build]
 target = "index.html"
-dist = "dist"
+dist = "/tmp/rustjay-webapp-dist"
 public_url = "/"
 
 [serve]
 port = 8080
 open = false
 
+# Only build React when ui/dist is missing — avoids triggering a trunk
+# watch loop on every WASM rebuild. Run `cd ui && npm run build` manually
+# after changing React source.
 [[hooks]]
 stage = "pre_build"
 command = "sh"
-command_arguments = ["-c", "cd ui && npm install && npm run build"]
+command_arguments = ["-c", "[ -d ui/dist ] || (cd ui && npm install && npm run build)"]

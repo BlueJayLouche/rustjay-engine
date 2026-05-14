@@ -41,20 +41,32 @@
     <div id="root"></div>
 
     <script type="module">
-        import init, { start, update_webcam_frame, set_delay_r, set_delay_g, set_delay_b, set_mix } from './webapp.js';
+        // Trunk initialises the WASM module and fires TrunkApplicationStarted,
+        // exposing all wasm-bindgen exports on window.wasmBindings.
+        window.addEventListener('TrunkApplicationStarted', async () => {
+            const { start, update_webcam_frame, set_delay_r, set_delay_g, set_delay_b, set_mix } =
+                window.wasmBindings;
 
-        async function run() {
-            await init();
-            await start();
+            try {
+                await start();
+            } catch (err) {
+                console.error('WebGPU init failed:', err);
+                return;
+            }
 
-            // Expose WASM API to React
             window.rustjay = { set_delay_r, set_delay_g, set_delay_b, set_mix };
 
-            // Webcam capture loop
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+                });
+            } catch (err) {
+                console.error('Webcam access failed:', err);
+                return;
+            }
+
             const video = document.createElement('video');
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 } }
-            });
             video.srcObject = stream;
             video.autoplay = true;
             video.playsInline = true;
@@ -79,14 +91,12 @@
             }
             requestAnimationFrame(tick);
 
-            // Load React UI after WASM is ready
+            // trunk copy-dir maps ui/dist/ → dist/ in the output
             const script = document.createElement('script');
             script.type = 'module';
-            script.src = 'ui/dist/assets/index.js';
+            script.src = 'dist/assets/index.js';
             document.body.appendChild(script);
-        }
-
-        run().catch(err => console.error('Startup failed:', err));
+        });
     </script>
 </body>
 </html>
