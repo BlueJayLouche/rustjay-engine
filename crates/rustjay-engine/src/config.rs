@@ -2,6 +2,7 @@
 
 use rustjay_core::{HsbParams, EngineState};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn default_fft_size() -> usize {
@@ -63,6 +64,9 @@ pub(crate) struct AppSettings {
     pub web_port: u16,
     pub ui_scale: f32,
     pub show_preview: bool,
+    /// Effect-declared custom parameter values.
+    #[serde(default)]
+    pub custom_params: HashMap<String, f32>,
 }
 
 impl Default for AppSettings {
@@ -98,6 +102,7 @@ impl Default for AppSettings {
             web_port: 8081,
             ui_scale: 1.0,
             show_preview: true,
+            custom_params: HashMap::new(),
         }
     }
 }
@@ -173,6 +178,13 @@ impl AppSettings {
         state.web_port = self.web_port;
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
+        // Restore custom param values (only for params that are declared)
+        for (id, value) in &self.custom_params {
+            if state.param_descriptors.iter().any(|d| &d.id == id) {
+                state.custom_param_bases.insert(id.clone(), *value);
+                state.custom_params.insert(id.clone(), *value);
+            }
+        }
     }
 
     pub fn from_state(state: &EngineState) -> Self {
@@ -211,6 +223,7 @@ impl AppSettings {
             web_port: state.web_port,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
+            custom_params: state.custom_param_bases.clone(),
         }
     }
 }

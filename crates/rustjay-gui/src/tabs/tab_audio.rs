@@ -271,9 +271,17 @@ impl ControlGui {
 
     /// Build the audio routing matrix window
     pub(crate) fn build_routing_window(&mut self, ui: &imgui::Ui) {
-        use rustjay_audio::routing::{FftBand, ModulationTarget};
+        use rustjay_core::routing::{FftBand, ModulationTarget};
 
         let mut is_open = true;
+
+        // Build dynamic target list from descriptors
+        let target_list = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            ModulationTarget::all_for(&state.param_descriptors)
+        };
+        let target_names: Vec<String> = target_list.iter().map(|t| t.name()).collect();
+        let target_refs: Vec<&str> = target_names.iter().map(|s| s.as_str()).collect();
 
         ui.window("Audio Routing Matrix")
             .position([500.0, 100.0], imgui::Condition::FirstUseEver)
@@ -307,13 +315,17 @@ impl ControlGui {
                     (state.audio_routing.selected_band, state.audio_routing.selected_target)
                 };
 
+                // Clamp target_idx if target list shrank
+                if target_idx >= target_list.len() && !target_list.is_empty() {
+                    target_idx = target_list.len() - 1;
+                }
+
                 // Band selection
                 let bands: Vec<&str> = FftBand::all().iter().map(|b| b.name()).collect();
                 ui.combo_simple_string("Band##new", &mut band_idx, &bands);
 
-                // Target selection
-                let targets: Vec<&str> = ModulationTarget::all().iter().map(|t| t.name()).collect();
-                ui.combo_simple_string("Target##new", &mut target_idx, &targets);
+                // Target selection — DYNAMIC
+                ui.combo_simple_string("Target##new", &mut target_idx, &target_refs);
 
                 // Update selections
                 {
@@ -325,13 +337,13 @@ impl ControlGui {
                 ui.same_line();
 
                 // Add button
-                let can_add = can_add && band_idx < FftBand::all().len() && target_idx < ModulationTarget::all().len();
+                let can_add = can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
                     if ui.button("Add Route") {
                         if let Some(band) = FftBand::from_index(band_idx) {
-                            if let Some(target) = ModulationTarget::all().get(target_idx) {
+                            if let Some(target) = target_list.get(target_idx) {
                                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.audio_routing.matrix.add_route(band, *target);
+                                state.audio_routing.matrix.add_route(band, target.clone());
                             }
                         }
                     }
@@ -348,7 +360,7 @@ impl ControlGui {
                 let routes_data: Vec<_> = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio_routing.matrix.routes().iter().map(|r| {
-                        (r.id, r.band, r.target, r.amount, r.attack, r.release, r.enabled, r.current_value)
+                        (r.id, r.band, r.target.clone(), r.amount, r.attack, r.release, r.enabled, r.current_value)
                     }).collect()
                 };
 

@@ -1,24 +1,54 @@
+//! # LFO Control Window
+//!
+//! Dynamically populates LFO targets from effect-declared parameters.
+
 use crate::control_gui::ControlGui;
 use rustjay_core::lfo::{LfoTarget, Waveform, beat_division_to_hz};
 
 impl ControlGui {
-    /// Build the LFO control window
+    /// Build the LFO control window with dynamically-generated targets.
     pub(crate) fn build_lfo_window(&mut self, ui: &imgui::Ui) {
         let mut show_window = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.lfo.show_window
         };
-        let mut should_close = false;
 
+        // Snapshot target list so we can map indices ↔ targets without borrowing state
+        let (target_list, hsb_count) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut targets: Vec<LfoTarget> = Vec::new();
+            // Always include None
+            targets.push(LfoTarget::None);
+            // Include HSB for backward compatibility
+            targets.push(LfoTarget::HueShift);
+            targets.push(LfoTarget::Saturation);
+            targets.push(LfoTarget::Brightness);
+            let hsb = targets.len() - 1; // count of non-None HSB targets
+            // Append custom modulatable params
+            for d in &state.param_descriptors {
+                if d.is_modulatable() {
+                    targets.push(LfoTarget::Custom(d.id.clone()));
+                }
+            }
+            (targets, hsb)
+        };
+
+        let target_names: Vec<String> = target_list
+            .iter()
+            .map(|t| t.name())
+            .collect();
+
+        let target_refs: Vec<&str> = target_names.iter().map(|s| s.as_str()).collect();
+
+        let mut close_clicked = false;
         ui.window("LFO Control")
             .size([520.0, 480.0], imgui::Condition::FirstUseEver)
             .opened(&mut show_window)
             .build(|| {
                 ui.text("Low Frequency Oscillator Modulation");
-                ui.text_disabled("Each LFO can modulate Hue, Saturation, or Brightness");
+                ui.text_disabled("Each LFO can modulate parameters declared by the active effect");
                 ui.separator();
 
-                // Get BPM for display
                 let bpm = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio.bpm
@@ -27,36 +57,19 @@ impl ControlGui {
                 ui.spacing();
 
                 let waveforms = ["Sine", "Triangle", "Ramp Up", "Ramp Down", "Square"];
-                let targets = ["None", "Hue", "Saturation", "Brightness"];
                 let divisions = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"];
 
-                // Iterate through each LFO bank
                 for i in 0..3 {
-                    let _needs_update = false;
-
-                    // Get current values (store originals for change detection)
                     let (enabled, mut rate, mut amplitude, waveform_idx,
-                         tempo_sync, current_division, phase_offset, mut target_idx) = {
+                         tempo_sync, current_division, phase_offset, current_target) = {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         let bank = &state.lfo.bank.lfos[i];
-                        let wf_idx = bank.waveform as usize;
-                        let tgt_idx = match bank.target {
-                            LfoTarget::None | LfoTarget::Unknown => 0,
-                            LfoTarget::HueShift => 1,
-                            LfoTarget::Saturation => 2,
-                            LfoTarget::Brightness => 3,
-                        };
-                        (bank.enabled, bank.rate, bank.amplitude, wf_idx,
-                         bank.tempo_sync, bank.division, bank.phase_offset, tgt_idx)
+                        (bank.enabled, bank.rate, bank.amplitude, bank.waveform as usize,
+                         bank.tempo_sync, bank.division, bank.phase_offset, bank.target.clone())
                     };
-                    // Local mutable copy for UI
-                    let mut division_idx = current_division;
 
-                    let _header_color = if enabled {
-                        [0.2, 0.8, 0.2, 1.0]
-                    } else {
-                        [0.5, 0.5, 0.5, 1.0]
-                    };
+                    let target_idx = target_list.iter().position(|t| *t == current_target).unwrap_or(0);
+                    let mut division_idx = current_division;
 
                     let _id_token = ui.push_id(format!("lfo_{}", i));
 
@@ -64,7 +77,7 @@ impl ControlGui {
                         &format!("LFO {} - {}", i + 1, if enabled { "ON" } else { "OFF" }),
                         imgui::TreeNodeFlags::DEFAULT_OPEN
                     ) {
-                        // Enable/disable checkbox
+                        // Enable/disable
                         let mut enabled_mut = enabled;
                         if ui.checkbox("Enabled", &mut enabled_mut) && enabled_mut != enabled {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -73,20 +86,16 @@ impl ControlGui {
 
                         ui.separator();
 
-                        // Rate control
+                        // Rate / beat division
                         if tempo_sync {
-                            // Beat division dropdown
                             let _width = ui.push_item_width(100.0);
-                            if ui.combo_simple_string(
-                                "Beat Division",
-                                &mut division_idx,
-                                &divisions
-                            ) && division_idx != current_division {
+                            if ui.combo_simple_string("Beat Division", &mut division_idx, &divisions)
+                                && division_idx != current_division
+                            {
                                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.lfo.bank.lfos[i].division = division_idx;
                             }
                         } else {
-                            // Free rate slider
                             let _width = ui.push_item_width(200.0);
                             if ui.slider("Rate (Hz)", 0.01, 10.0, &mut rate) {
                                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,8 +111,7 @@ impl ControlGui {
                         }
                         ui.same_line();
                         if tempo_sync {
-                            ui.text_disabled(&format!("= {:.2} Hz",
-                                beat_division_to_hz(division_idx, bpm)));
+                            ui.text_disabled(&format!("= {:.2} Hz", beat_division_to_hz(division_idx, bpm)));
                         }
 
                         ui.separator();
@@ -111,9 +119,7 @@ impl ControlGui {
                         // Waveform selection
                         ui.text("Waveform:");
                         for (wf_idx, wf_name) in waveforms.iter().enumerate() {
-                            if wf_idx > 0 {
-                                ui.same_line();
-                            }
+                            if wf_idx > 0 { ui.same_line(); }
                             let is_selected = waveform_idx == wf_idx;
                             if is_selected {
                                 let _color = ui.push_style_color(
@@ -124,20 +130,19 @@ impl ControlGui {
                             } else if ui.button(wf_name) {
                                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.lfo.bank.lfos[i].waveform = match wf_idx {
-                                        0 => Waveform::Sine,
-                                        1 => Waveform::Triangle,
-                                        2 => Waveform::Ramp,
-                                        3 => Waveform::Saw,
-                                        4 => Waveform::Square,
-                                        _ => Waveform::Sine,
-                                    };
+                                    0 => Waveform::Sine,
+                                    1 => Waveform::Triangle,
+                                    2 => Waveform::Ramp,
+                                    3 => Waveform::Saw,
+                                    4 => Waveform::Square,
+                                    _ => Waveform::Sine,
+                                };
                             }
                         }
 
-                        // Phase offset
+                        // Phase offset — field is stored in degrees; lfo::update() divides by 360.
                         let _width = ui.push_item_width(200.0);
-                        let phase_degrees = phase_offset * 360.0;
-                        let mut phase_degrees_mut = phase_degrees;
+                        let mut phase_degrees_mut = phase_offset;
                         if ui.slider("Phase Offset (°)", 0.0, 360.0, &mut phase_degrees_mut) {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].phase_offset = phase_degrees_mut;
@@ -153,41 +158,36 @@ impl ControlGui {
 
                         ui.separator();
 
-                        // Target parameter
-                        let _width = ui.push_item_width(120.0);
-                        if ui.combo_simple_string("Target", &mut target_idx, &targets) {
-                            let new_target = match target_idx {
-                                1 => LfoTarget::HueShift,
-                                2 => LfoTarget::Saturation,
-                                3 => LfoTarget::Brightness,
-                                _ => LfoTarget::None,
-                            };
+                        // Target dropdown — DYNAMIC
+                        let _width = ui.push_item_width(150.0);
+                        let mut tgt_idx = target_idx;
+                        if ui.combo_simple_string("Target", &mut tgt_idx, &target_refs) {
+                            let new_target = target_list.get(tgt_idx).cloned().unwrap_or(LfoTarget::None);
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].target = new_target;
                         }
 
-                        // Visual indicator of modulation direction
+                        // Visual indicator
                         if enabled && target_idx > 0 {
                             ui.spacing();
-                            let indicator = match (amplitude > 0.0, target_idx) {
-                                (true, 1) => "→ Shifts hue RIGHT",
-                                (false, 1) => "← Shifts hue LEFT",
-                                (true, 2) => "↑ Increases saturation",
-                                (false, 2) => "↓ Decreases saturation",
-                                (true, 3) => "☀ Increases brightness",
-                                (false, 3) => "☾ Decreases brightness",
-                                _ => "",
+                            let indicator = if target_idx <= hsb_count {
+                                match target_idx {
+                                    1 => "→ Shifts hue",
+                                    2 => "↑↓ Saturation",
+                                    3 => "☀☾ Brightness",
+                                    _ => "",
+                                }
+                            } else {
+                                "↔ Modulating parameter"
                             };
                             ui.text_colored([0.8, 0.8, 0.2, 1.0], indicator);
                         }
                     }
-
-                    // ID token dropped automatically
                 }
 
                 ui.separator();
                 if ui.button("Close") {
-                    should_close = true;
+                    close_clicked = true;
                 }
                 ui.same_line();
                 if ui.button("Reset All LFOs") {
@@ -196,8 +196,10 @@ impl ControlGui {
                 }
             });
 
-        // Update show_window in state if changed
-        if !show_window || should_close {
+        if close_clicked {
+            show_window = false;
+        }
+        if !show_window {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.lfo.show_window = false;
         }

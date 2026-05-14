@@ -3,7 +3,7 @@
 //! Core abstraction that lets app authors plug their own shader, uniforms,
 //! and GPU resources into the engine.
 
-use crate::EngineState;
+use crate::{EngineState, params::ParameterDescriptor, state::GuiTab};
 
 /// Describes a mesh grid for vertex-shader effects.
 ///
@@ -128,6 +128,25 @@ pub trait EffectPlugin: Send + Sync + 'static {
         app_state: &Self::State,
         engine: &EngineState,
     ) -> Self::Uniforms;
+
+    /// Declare all parameters this effect exposes.
+    ///
+    /// The engine uses these descriptors to auto-generate UI controls,
+    /// LFO targets, audio routing targets, and OSC/MIDI/Web mappings.
+    ///
+    /// Default is empty — effects that don't declare parameters continue
+    /// to work by reading directly from `EngineState` (backward compatible).
+    fn parameters(&self) -> Vec<ParameterDescriptor> {
+        vec![]
+    }
+
+    /// Declare which built-in tabs to hide.
+    ///
+    /// For example, delta hides `GuiTab::Color` since it has no HSB parameters.
+    /// Default is empty — all tabs are visible.
+    fn hidden_tabs(&self) -> Vec<GuiTab> {
+        vec![]
+    }
 
     /// App name used for per-app config file isolation (`~/.config/rustjay/<name>.json`).
     fn app_name(&self) -> &str {

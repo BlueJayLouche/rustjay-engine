@@ -99,7 +99,7 @@ impl Preset {
             lfo_bank: state.lfo.bank.clone(),
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
-            custom_values: HashMap::new(),
+            custom_values: state.custom_param_bases.clone(),
         }
     }
     
@@ -122,6 +122,11 @@ impl Preset {
         state.lfo.bank = self.lfo_bank.clone();
         state.audio_routing.matrix = self.routing_matrix.clone();
         state.audio_routing.enabled = self.audio_routing_enabled;
+        // Restore custom parameter values
+        for (id, value) in &self.custom_values {
+            state.custom_param_bases.insert(id.clone(), *value);
+            state.custom_params.insert(id.clone(), *value);
+        }
     }
     
     /// Save preset to file

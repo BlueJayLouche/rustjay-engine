@@ -72,6 +72,11 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) web_server: Option<WebServer>,
     pub(crate) web_command_tx: Option<tokio::sync::mpsc::Sender<WebServerCommand>>,
 
+    #[cfg(feature = "link")]
+    pub(crate) link_manager: Option<rustjay_sync::LinkManager>,
+    #[cfg(feature = "prodj")]
+    pub(crate) prodj_manager: Option<rustjay_sync::ProDjManager>,
+
     pub(crate) config_manager: ConfigManager,
 
     pub(crate) shift_pressed: bool,
@@ -129,10 +134,24 @@ impl<P: EffectPlugin> App<P> {
             }
         };
 
+        // Initialize effect-declared parameters
+        let descriptors = plugin.parameters();
+        let hidden = plugin.hidden_tabs();
+        {
+            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.param_descriptors = descriptors.clone();
+            state.hidden_tabs = hidden;
+            for d in &descriptors {
+                state.custom_param_bases.insert(d.id.clone(), d.default);
+                state.custom_params.insert(d.id.clone(), d.default);
+            }
+        }
+
         let osc_server = {
             let server = OscServer::new(9000, "/rustjay");
             if let Ok(mut state) = server.state().lock() {
                 state.register_default_parameters();
+                state.register_parameters(&descriptors);
             }
             log::info!("OSC server initialized");
             Some(server)
@@ -168,6 +187,7 @@ impl<P: EffectPlugin> App<P> {
             };
             let (mut server, cmd_tx) = WebServer::new(config);
             server.register_default_parameters();
+            server.register_parameters(&descriptors);
             log::info!("Web server initialized on port {}", web_port);
             (Some(server), Some(cmd_tx))
         };
@@ -195,6 +215,10 @@ impl<P: EffectPlugin> App<P> {
             web_server,
             web_command_tx,
             config_manager,
+            #[cfg(feature = "link")]
+            link_manager: Some(rustjay_sync::LinkManager::new()),
+            #[cfg(feature = "prodj")]
+            prodj_manager: Some(rustjay_sync::ProDjManager::new()),
             shift_pressed: false,
             output_occluded: false,
             control_visible: true,

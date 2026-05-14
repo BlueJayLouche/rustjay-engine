@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::params::{ParameterDescriptor, ParamType};
 
 /// FFT frequency bands (8-band spectrum)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,8 +87,8 @@ impl FftBand {
     }
 }
 
-/// Parameters that can be modulated by audio
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Parameters that can be modulated by audio.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ModulationTarget {
     /// Hue shift parameter.
     HueShift,
@@ -107,8 +108,9 @@ pub enum ModulationTarget {
     InputOpacity,
     /// Output texture opacity.
     OutputOpacity,
-    /// Unrecognised variant from an older preset file (e.g. `RedDelay`,
-    /// `BlueDelay`, `InputMix` from pre-engine standalone apps).
+    /// Modulate an effect-declared custom parameter.
+    Custom(String),
+    /// Unrecognised variant from an older preset file.
     /// The route is preserved in the preset bank but has no effect.
     #[serde(other)]
     Unknown,
@@ -116,22 +118,24 @@ pub enum ModulationTarget {
 
 impl ModulationTarget {
     /// Human-readable target name.
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            ModulationTarget::HueShift => "Hue Shift",
-            ModulationTarget::Saturation => "Saturation",
-            ModulationTarget::Brightness => "Brightness",
-            ModulationTarget::InternalWidth => "Internal Width",
-            ModulationTarget::InternalHeight => "Internal Height",
-            ModulationTarget::AudioAmplitude => "Audio Amplitude",
-            ModulationTarget::AudioSmoothing => "Audio Smoothing",
-            ModulationTarget::InputOpacity => "Input Opacity",
-            ModulationTarget::OutputOpacity => "Output Opacity",
-            ModulationTarget::Unknown => "(unknown)",
+            ModulationTarget::HueShift => "Hue Shift".to_string(),
+            ModulationTarget::Saturation => "Saturation".to_string(),
+            ModulationTarget::Brightness => "Brightness".to_string(),
+            ModulationTarget::InternalWidth => "Internal Width".to_string(),
+            ModulationTarget::InternalHeight => "Internal Height".to_string(),
+            ModulationTarget::AudioAmplitude => "Audio Amplitude".to_string(),
+            ModulationTarget::AudioSmoothing => "Audio Smoothing".to_string(),
+            ModulationTarget::InputOpacity => "Input Opacity".to_string(),
+            ModulationTarget::OutputOpacity => "Output Opacity".to_string(),
+            ModulationTarget::Custom(id) => id.clone(),
+            ModulationTarget::Unknown => "(unknown)".to_string(),
         }
     }
 
-    /// All supported modulation targets (excludes `Unknown`).
+    /// All static modulation targets (excludes `Unknown`).
+    /// For backward compatibility.
     pub fn all() -> &'static [ModulationTarget] {
         &[
             ModulationTarget::HueShift,
@@ -144,6 +148,34 @@ impl ModulationTarget {
             ModulationTarget::InputOpacity,
             ModulationTarget::OutputOpacity,
         ]
+    }
+
+    /// Generate the full list of modulation targets for a set of descriptors.
+    pub fn all_for(descriptors: &[ParameterDescriptor]) -> Vec<ModulationTarget> {
+        let mut targets: Vec<ModulationTarget> = Self::all().to_vec();
+        for d in descriptors {
+            if matches!(d.param_type, ParamType::Float | ParamType::Int) {
+                targets.push(ModulationTarget::Custom(d.id.clone()));
+            }
+        }
+        targets
+    }
+
+    /// Get the parameter id for this target (if it's a parameter target).
+    pub fn param_id(&self) -> Option<&str> {
+        match self {
+            ModulationTarget::HueShift => Some("hue_shift"),
+            ModulationTarget::Saturation => Some("saturation"),
+            ModulationTarget::Brightness => Some("brightness"),
+            ModulationTarget::InternalWidth => Some("internal_width"),
+            ModulationTarget::InternalHeight => Some("internal_height"),
+            ModulationTarget::AudioAmplitude => Some("audio_amplitude"),
+            ModulationTarget::AudioSmoothing => Some("audio_smoothing"),
+            ModulationTarget::InputOpacity => Some("input_opacity"),
+            ModulationTarget::OutputOpacity => Some("output_opacity"),
+            ModulationTarget::Custom(id) => Some(id),
+            ModulationTarget::Unknown => None,
+        }
     }
 }
 
@@ -320,18 +352,31 @@ impl RoutingMatrix {
         total.clamp(-2.0, 2.0)
     }
     
-    /// Get all modulations as a map
+    /// Get all modulations as a map for the static targets.
     pub fn get_all_modulations(&self) -> HashMap<ModulationTarget, f32> {
         let mut map = HashMap::new();
         for target in ModulationTarget::all() {
-            map.insert(*target, self.get_modulation(*target));
+            let value = self.get_modulation(target.clone());
+            map.insert(target.clone(), value);
+        }
+        map
+    }
+
+    /// Get all modulations as a map of `param_id → value` for dynamic targets.
+    pub fn get_all_modulations_for(&self, descriptors: &[ParameterDescriptor]) -> HashMap<String, f32> {
+        let mut map = HashMap::new();
+        for target in ModulationTarget::all_for(descriptors) {
+            let id = target.param_id().map(|s| s.to_string());
+            let value = self.get_modulation(target);
+            if let Some(id) = id {
+                map.insert(id, value);
+            }
         }
         map
     }
     
-    /// Apply modulations to HSB parameters
-    /// 
-    /// Returns the modulation offsets for hue, saturation, brightness
+    /// Apply modulations to HSB parameters.
+    #[deprecated(note = "Use `apply_to_params` for generic parameter support.")]
     pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
         let hue_mod = self.get_modulation(ModulationTarget::HueShift);
         let sat_mod = self.get_modulation(ModulationTarget::Saturation);
@@ -343,6 +388,27 @@ impl RoutingMatrix {
         let new_bright = (base_bright + bright_mod * 2.0).clamp(0.0, 2.0);
         
         (new_hue, new_sat, new_bright)
+    }
+
+    /// Apply modulations to a generic parameter map.
+    /// Reads base values from `params`, applies audio routing modulations,
+    /// and writes modulated values back.
+    pub fn apply_to_params(&self, params: &mut HashMap<String, f32>, descriptors: &[ParameterDescriptor]) {
+        for desc in descriptors {
+            if !desc.is_modulatable() {
+                continue;
+            }
+            let mod_value = self.get_modulation(ModulationTarget::Custom(desc.id.clone()));
+            if let Some(base) = params.get(&desc.id) {
+                let range = desc.max - desc.min;
+                let modulated = if range > 0.0 {
+                    (base + mod_value * range).clamp(desc.min, desc.max)
+                } else {
+                    *base
+                };
+                params.insert(desc.id.clone(), modulated);
+            }
+        }
     }
     
     /// Clear all routes

@@ -8,6 +8,7 @@ members = [
     "crates/rustjay-gui",
     "crates/rustjay-render",
     "crates/rustjay-engine",
+    "crates/rustjay-sync",
     "examples/template",
     "examples/delta",
     "examples/waaaves",

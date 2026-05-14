@@ -4,7 +4,9 @@
 //! Tempo-syncable with phase offset support
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::f32::consts::PI;
+use crate::params::{ParameterDescriptor, ParamType};
 
 /// Beat division multipliers for tempo sync
 /// Represent cycle duration in beats (smaller = faster)
@@ -78,8 +80,12 @@ impl Default for Waveform {
     }
 }
 
-/// Target parameter for LFO modulation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Target parameter for LFO modulation.
+///
+/// Uses `#[repr(i8)]` so that explicit discriminants work alongside
+/// the `Custom(String)` variant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(i8)]
 pub enum LfoTarget {
     /// No modulation target.
     None = -1,
@@ -89,8 +95,9 @@ pub enum LfoTarget {
     Saturation = 1,
     /// Modulate brightness.
     Brightness = 2,
-    /// Unrecognised target from an older preset file (e.g. `RedDelay`,
-    /// `BlueDelay`, `Intensity`, `InputMix` from pre-engine standalone apps).
+    /// Modulate an effect-declared custom parameter.
+    Custom(String),
+    /// Unrecognised target from an older preset file.
     /// Treated as `None` — the LFO is preserved but has no effect.
     #[serde(other)]
     Unknown,
@@ -98,23 +105,49 @@ pub enum LfoTarget {
 
 impl LfoTarget {
     /// Human-readable target name.
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            LfoTarget::None => "None",
-            LfoTarget::HueShift => "Hue Shift",
-            LfoTarget::Saturation => "Saturation",
-            LfoTarget::Brightness => "Brightness",
-            LfoTarget::Unknown => "(unknown)",
+            LfoTarget::None => "None".to_string(),
+            LfoTarget::HueShift => "Hue Shift".to_string(),
+            LfoTarget::Saturation => "Saturation".to_string(),
+            LfoTarget::Brightness => "Brightness".to_string(),
+            LfoTarget::Custom(id) => id.clone(),
+            LfoTarget::Unknown => "(unknown)".to_string(),
         }
     }
 
-    /// All supported modulation targets (excludes `None` and `Unknown`).
+    /// All static modulation targets (HSB only, excludes `None` and `Unknown`).
+    /// For backward compatibility.
     pub fn all() -> &'static [LfoTarget] {
         &[
             LfoTarget::HueShift,
             LfoTarget::Saturation,
             LfoTarget::Brightness,
         ]
+    }
+
+    /// Generate the full list of LFO targets for a set of parameter descriptors.
+    /// Includes HSB targets + one target per modulatable custom parameter.
+    pub fn all_for(descriptors: &[ParameterDescriptor]) -> Vec<LfoTarget> {
+        let mut targets: Vec<LfoTarget> = Self::all().to_vec();
+        for d in descriptors {
+            if matches!(d.param_type, ParamType::Float | ParamType::Int) {
+                targets.push(LfoTarget::Custom(d.id.clone()));
+            }
+        }
+        targets.push(LfoTarget::None);
+        targets
+    }
+
+    /// Get the parameter id for this target (if it's a custom target).
+    pub fn param_id(&self) -> Option<&str> {
+        match self {
+            LfoTarget::HueShift => Some("hue_shift"),
+            LfoTarget::Saturation => Some("saturation"),
+            LfoTarget::Brightness => Some("brightness"),
+            LfoTarget::Custom(id) => Some(id),
+            _ => None,
+        }
     }
 }
 
@@ -291,8 +324,9 @@ impl LfoBank {
         }
     }
     
-    /// Get modulation values for HSB parameters
-    /// Returns (hue_mod, sat_mod, bright_mod)
+    /// Get modulation values for HSB parameters.
+    /// Returns (hue_mod, sat_mod, bright_mod).
+    #[deprecated(note = "Use `get_modulations` for generic parameter support.")]
     pub fn get_hsb_modulations(&self) -> (f32, f32, f32) {
         let mut hue = 0.0;
         let mut sat = 0.0;
@@ -306,11 +340,28 @@ impl LfoBank {
                 LfoTarget::HueShift => hue = lfo.output,
                 LfoTarget::Saturation => sat = lfo.output,
                 LfoTarget::Brightness => bright = lfo.output,
-                LfoTarget::None | LfoTarget::Unknown => {}
+                _ => {}
             }
         }
         
         (hue, sat, bright)
+    }
+    
+    /// Get modulation values for all targets.
+    /// Returns a map of `param_id → modulation_value`.
+    pub fn get_modulations(&self) -> HashMap<String, f32> {
+        let mut mods = HashMap::new();
+        for lfo in &self.lfos {
+            if !lfo.enabled {
+                continue;
+            }
+            if let Some(id) = lfo.target.param_id() {
+                // Sum modulations from multiple LFOs targeting the same param
+                let entry = mods.entry(id.to_string()).or_insert(0.0);
+                *entry += lfo.output;
+            }
+        }
+        mods
     }
     
     /// Reset all LFO phases
@@ -357,8 +408,10 @@ impl LfoState {
         }
     }
     
-    /// Apply LFO modulations to base HSB values
-    /// Returns modulated (hue, saturation, brightness)
+    /// Apply LFO modulations to base HSB values.
+    /// Returns modulated (hue, saturation, brightness).
+    #[deprecated(note = "Use `LfoBank::get_modulations` for generic parameter support.")]
+    #[allow(deprecated)]
     pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
         let (hue_mod, sat_mod, bright_mod) = self.bank.get_hsb_modulations();
         

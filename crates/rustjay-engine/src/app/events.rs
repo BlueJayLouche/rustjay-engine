@@ -311,6 +311,10 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         self.poll_device_discovery();
         self.update_input();
         self.update_audio();
+        #[cfg(feature = "link")]
+        self.update_link();
+        #[cfg(feature = "prodj")]
+        self.update_prodj();
         self.update_lfo();
         self.update_midi();
         self.update_osc();
@@ -366,6 +370,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         if let Some(ref mut analyzer) = self.audio_analyzer {
             analyzer.stop();
         }
+        #[cfg(feature = "link")]
+        if let Some(ref mut manager) = self.link_manager {
+            manager.disable();
+        }
+        // ProDJ Link requires no explicit cleanup — sockets close on process exit.
         if let Some(ref mut manager) = self.midi_manager {
             manager.disconnect();
         }

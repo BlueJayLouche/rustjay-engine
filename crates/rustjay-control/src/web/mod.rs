@@ -181,6 +181,22 @@ impl WebServer {
         // Output parameters
         self.register_parameter("output/fullscreen", "Fullscreen", "Output", 0.0, 1.0, 0.0, 1.0);
     }
+
+    /// Register effect-declared parameters dynamically.
+    pub fn register_parameters(&mut self, descriptors: &[rustjay_core::ParameterDescriptor]) {
+        for d in descriptors {
+            let category = d.category.name();
+            let id = format!("{}/{}", category.to_lowercase(), d.id);
+            match &d.param_type {
+                rustjay_core::ParamType::Enum { variants } => {
+                    self.register_enum_parameter(&id, &d.name, &category, variants.clone(), d.default);
+                }
+                _ => {
+                    self.register_parameter(&id, &d.name, &category, d.min, d.max, d.default, d.step);
+                }
+            }
+        }
+    }
     
     /// Update a parameter value and broadcast to all clients
     pub fn update_parameter(&mut self, id: &str, value: f32) {

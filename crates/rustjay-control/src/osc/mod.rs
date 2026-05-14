@@ -157,6 +157,15 @@ impl OscState {
         self.register_parameter("/resolution/internal_width", "Internal Width", "resolution", 320.0, 4096.0);
         self.register_parameter("/resolution/internal_height", "Internal Height", "resolution", 240.0, 2160.0);
     }
+
+    /// Register effect-declared parameters dynamically.
+    pub fn register_parameters(&mut self, descriptors: &[rustjay_core::ParameterDescriptor]) {
+        for d in descriptors {
+            let category = d.category.name().to_lowercase();
+            let address = format!("/{}/{}", category, d.id);
+            self.register_parameter(&address, &d.name, &category, d.min, d.max);
+        }
+    }
     
     /// Update parameter value from OSC input
     pub fn update_parameter(&mut self, address: &str, value: f32) {

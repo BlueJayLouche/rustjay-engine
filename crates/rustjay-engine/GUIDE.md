@@ -219,3 +219,28 @@ Presets are handled automatically by the engine. The built-in Presets tab lets u
   [dependencies]
   rustjay-engine = { version = "0.1", features = ["ndi", "webcam"] }
   ```
+
+### Tempo sync (Ableton Link + ProDJ Link)
+
+The engine can lock to external tempo sources. Enable the features you need:
+
+```toml
+[dependencies]
+rustjay-engine = { version = "0.1", features = ["link", "prodj"] }
+```
+
+In your shader code, use [`EngineState::effective_bpm`] and [`EngineState::effective_beat_phase`]
+instead of `engine.audio.bpm` / `engine.audio.beat_phase`:
+
+```rust,ignore
+fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
+    let bpm = engine.effective_bpm();
+    let phase = engine.effective_beat_phase();
+    // ...
+}
+```
+
+This automatically follows Ableton Link when peers are present, falls back to
+ProDJ Link when Link is unavailable, and finally falls back to audio analysis.
+No plugin changes are required beyond using `effective_bpm()` — the built-in
+**Sync** tab lets users enable/disable each source at runtime.

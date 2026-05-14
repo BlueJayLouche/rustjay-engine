@@ -16,6 +16,7 @@ rustjay-control = { workspace = true }
 rustjay-presets = { workspace = true }
 rustjay-gui     = { workspace = true }
 rustjay-render  = { workspace = true }
+rustjay-sync    = { path = "../rustjay-sync", version = "0.1.0", optional = true }
 log             = { workspace = true }
 anyhow          = { workspace = true }
 wgpu            = { workspace = true }
@@ -38,6 +39,8 @@ ndi     = ["rustjay-io/ndi"]
 webcam  = ["rustjay-io/webcam"]
 spout   = []
 v4l2    = []
+link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]
+prodj   = ["rustjay-sync/prodj", "rustjay-core/prodj", "rustjay-gui/prodj"]
 
 [profile.release]
 opt-level     = 3

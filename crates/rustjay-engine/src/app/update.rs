@@ -128,9 +128,18 @@ impl<P: EffectPlugin> App<P> {
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;
 
+                // Always reset modulated params to their base values before applying
+                // this frame's modulations — prevents accumulation across frames.
+                state.custom_params = state.custom_param_bases.clone();
+
                 if state.audio_routing.enabled {
                     let delta_time = self.frame_delta_time;
+                    let descriptors: Vec<_> = state.param_descriptors.clone();
                     state.audio_routing.matrix.process(&fft, delta_time);
+                    // Temporarily take custom_params to avoid a split-borrow on `state`.
+                    let mut custom_params = std::mem::take(&mut state.custom_params);
+                    state.audio_routing.matrix.apply_to_params(&mut custom_params, &descriptors);
+                    state.custom_params = custom_params;
                 }
             }
         }
@@ -139,9 +148,38 @@ impl<P: EffectPlugin> App<P> {
     pub(super) fn update_lfo(&mut self) {
         let delta_time = self.frame_delta_time;
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let bpm = state.audio.bpm;
-        let beat_phase = state.audio.beat_phase;
+        let bpm = state.effective_bpm();
+        let beat_phase = state.effective_beat_phase();
         state.lfo.bank.update(bpm, delta_time, beat_phase);
+
+        // Apply LFO modulations to custom params
+        let mods = state.lfo.bank.get_modulations();
+        let descriptors: Vec<_> = state.param_descriptors.clone();
+        for (id, mod_value) in mods {
+            if let Some(base) = state.custom_param_bases.get(&id).copied() {
+                if let Some(desc) = descriptors.iter().find(|d| d.id == id) {
+                    let range = desc.max - desc.min;
+                    let modulated = (base + mod_value * range).clamp(desc.min, desc.max);
+                    state.custom_params.insert(id, modulated);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "link")]
+    pub(super) fn update_link(&mut self) {
+        if let Some(ref mut manager) = self.link_manager {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            manager.update(&mut state.link);
+        }
+    }
+
+    #[cfg(feature = "prodj")]
+    pub(super) fn update_prodj(&mut self) {
+        if let Some(ref mut manager) = self.prodj_manager {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            manager.update(&mut state.prodj);
+        }
     }
 
     pub(super) fn update_midi(&mut self) {
@@ -185,6 +223,14 @@ impl<P: EffectPlugin> App<P> {
                     if let Some(&v) = dirty_values.get("audio/smoothing") {
                         shared.audio.smoothing = v.clamp(0.0, 1.0);
                     }
+                    // Also write to custom_param_bases for effect-declared params
+                    for (path, value) in &dirty_values {
+                        if let Some(id) = path.split('/').nth(1) {
+                            if shared.param_descriptors.iter().any(|d| d.id == id) {
+                                shared.set_param_base(id, *value);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -216,6 +262,16 @@ impl<P: EffectPlugin> App<P> {
                     if let Some(v) = color_enabled { shared.color_enabled = v > 0.5; }
                     if let Some(v) = amplitude { shared.audio.amplitude = v.clamp(0.0, 5.0); }
                     if let Some(v) = smoothing { shared.audio.smoothing = v.clamp(0.0, 1.0); }
+                    // Also check custom params
+                    let descriptors = shared.param_descriptors.clone();
+                    for desc in &descriptors {
+                        let addr = format!("/{}/{}", desc.category.name().to_lowercase(), desc.id);
+                        if let Ok(mut osc_state) = server.state().lock() {
+                            if let Some(v) = osc_state.get_value_if_dirty(&addr) {
+                                shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -235,6 +291,12 @@ impl<P: EffectPlugin> App<P> {
                 server.update_parameter("audio/normalize", if state.audio.normalize { 1.0 } else { 0.0 });
                 server.update_parameter("audio/pink_noise", if state.audio.pink_noise_shaping { 1.0 } else { 0.0 });
                 server.update_parameter("output/fullscreen", if state.output_fullscreen { 1.0 } else { 0.0 });
+                // Broadcast custom param values
+                for desc in &state.param_descriptors {
+                    let id = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
+                    let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
+                    server.update_parameter(&id, value);
+                }
             }
         }
     }

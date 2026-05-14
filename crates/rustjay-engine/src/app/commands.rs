@@ -1,7 +1,7 @@
 use super::App;
 use rustjay_core::EffectPlugin;
 use rustjay_audio::list_audio_devices;
-use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand};
+use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand, LinkCommand, ProDjCommand};
 use rustjay_control::OscServer;
 use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 
@@ -18,6 +18,8 @@ impl<P: EffectPlugin> App<P> {
         self.process_osc_commands();
         self.process_preset_commands();
         self.process_web_commands();
+        self.process_link_commands();
+        self.process_prodj_commands();
     }
 
     fn process_input_commands(&mut self) {
@@ -494,6 +496,50 @@ impl<P: EffectPlugin> App<P> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn process_link_commands(&mut self) {
+        let command = std::mem::replace(&mut lock(&self.shared_state).link_command, LinkCommand::None);
+        match command {
+            LinkCommand::None => {}
+            LinkCommand::Enable => {
+                let mut state = lock(&self.shared_state);
+                state.link.enabled = true;
+                log::info!("[Link] Enable requested");
+            }
+            LinkCommand::Disable => {
+                let mut state = lock(&self.shared_state);
+                state.link.enabled = false;
+                log::info!("[Link] Disable requested");
+            }
+            LinkCommand::SetQuantum(q) => {
+                let mut state = lock(&self.shared_state);
+                state.link.quantum = q.max(1.0);
+                log::info!("[Link] Quantum set to {}", q);
+            }
+        }
+    }
+
+    fn process_prodj_commands(&mut self) {
+        let command = std::mem::replace(&mut lock(&self.shared_state).prodj_command, ProDjCommand::None);
+        match command {
+            ProDjCommand::None => {}
+            ProDjCommand::Start => {
+                let mut state = lock(&self.shared_state);
+                state.prodj.enabled = true;
+                log::info!("[ProDJ] Start requested");
+            }
+            ProDjCommand::Stop => {
+                let mut state = lock(&self.shared_state);
+                state.prodj.enabled = false;
+                state.prodj.devices.clear();
+                state.prodj.master_bpm = 0.0;
+                state.prodj.master_beat_phase = 0.0;
+                state.prodj.current_track_artist.clear();
+                state.prodj.current_track_title.clear();
+                log::info!("[ProDJ] Stop requested");
             }
         }
     }

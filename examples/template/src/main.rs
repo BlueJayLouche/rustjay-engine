@@ -31,6 +31,24 @@ impl EffectPlugin for HsbEffect {
         HsbState { saturation: 1.0, brightness: 1.0, ..Default::default() }
     }
 
+    /// Declare HSB parameters for dynamic UI, LFO targets, and control mapping.
+    fn parameters(&self) -> Vec<ParameterDescriptor> {
+        vec![
+            ParameterDescriptor::float(
+                "hue_shift", "Hue Shift", ParamCategory::Color,
+                -180.0, 180.0, 0.0, 1.0,
+            ),
+            ParameterDescriptor::float(
+                "saturation", "Saturation", ParamCategory::Color,
+                0.0, 2.0, 1.0, 0.01,
+            ),
+            ParameterDescriptor::float(
+                "brightness", "Brightness", ParamCategory::Color,
+                0.0, 2.0, 1.0, 0.01,
+            ),
+        ]
+    }
+
     fn shader_source(&self) -> &'static str {
         include_str!("shaders/hsb.wgsl")
     }
@@ -39,18 +57,11 @@ impl EffectPlugin for HsbEffect {
         if !s.enabled {
             return HsbUniforms { values: [0.0, 1.0, 1.0, 0.0] };
         }
-
-        let (mut hue, mut sat, mut bright) = if engine.audio_routing.enabled {
-            engine.audio_routing.matrix.apply_to_hsb(s.hue_shift, s.saturation, s.brightness)
-        } else {
-            (s.hue_shift, s.saturation, s.brightness)
-        };
-
-        let (hue_mod, sat_mod, bright_mod) = engine.lfo.bank.get_hsb_modulations();
-        hue = (hue + hue_mod * 90.0).clamp(-180.0, 180.0);
-        sat = (sat + sat_mod).clamp(0.0, 2.0);
-        bright = (bright + bright_mod).clamp(0.0, 2.0);
-
+        // Audio routing + LFO modulations are applied by the engine each frame
+        // and available via get_param (base + modulation, clamped to descriptor range).
+        let hue   = engine.get_param("hue_shift").unwrap_or(s.hue_shift);
+        let sat   = engine.get_param("saturation").unwrap_or(s.saturation);
+        let bright = engine.get_param("brightness").unwrap_or(s.brightness);
         HsbUniforms { values: [hue, sat, bright, 0.0] }
     }
 }

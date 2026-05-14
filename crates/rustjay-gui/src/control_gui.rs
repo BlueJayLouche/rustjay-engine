@@ -4,7 +4,7 @@
 
 #![allow(deprecated)]
 
-use rustjay_core::{GuiTab, InputCommand, EngineState};
+use rustjay_core::{GuiTab, InputCommand, EngineState, ParamCategory};
 use rustjay_io::InputManager;
 use std::sync::{Arc, Mutex};
 
@@ -312,18 +312,34 @@ impl ControlGui {
         });
     }
 
-    /// Build the main tabs
+    /// Build the main tabs dynamically.
+    ///
+    /// Tabs are filtered by `EngineState::hidden_tabs` and category tabs
+    /// (Color, Motion) are only shown when the effect declares parameters
+    /// in those categories.
     fn build_tabs(&mut self, ui: &imgui::Ui, app_state: &mut dyn std::any::Any) {
-        let builtin_tabs = [
-            GuiTab::Input, GuiTab::Color, GuiTab::Audio, GuiTab::Output,
-            GuiTab::Presets, GuiTab::Midi, GuiTab::Osc, GuiTab::Web, GuiTab::Settings,
-        ];
-
-        let current_tab = {
+        let (current_tab, hidden_tabs, has_color_params, has_motion_params) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.current_tab
+            let has_color = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Color);
+            let has_motion = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
+            (state.current_tab, state.hidden_tabs.clone(), has_color, has_motion)
         };
         let custom_tab_active = self.custom_tab_active;
+
+        // Build dynamic tab list: all standard tabs minus hidden ones,
+        // minus category tabs with no declared parameters.
+        let mut visible_tabs: Vec<GuiTab> = GuiTab::all()
+            .iter()
+            .filter(|t| !hidden_tabs.contains(t))
+            .filter(|t| {
+                match t {
+                    GuiTab::Color => has_color_params,
+                    GuiTab::Motion => has_motion_params,
+                    _ => true,
+                }
+            })
+            .copied()
+            .collect();
 
         // Snapshot (index, name, replaces) so we can mutate self.custom_tab_active
         // inside the loop without borrow conflicts.
@@ -333,11 +349,21 @@ impl ControlGui {
             .map(|(i, t)| (i, t.name().to_string(), t.replaces()))
             .collect();
 
+        // Apply custom tab replacements to the visible tab list.
+        for (_idx, _name, replaces) in &custom_info {
+            if let Some(replaced) = replaces {
+                if let Some(pos) = visible_tabs.iter().position(|t| t == replaced) {
+                    // Remove the replaced tab — the custom tab will be rendered in its place.
+                    visible_tabs.remove(pos);
+                }
+            }
+        }
+
         if let Some(_tab_bar) = ui.tab_bar("##main_tabs") {
-            for builtin in &builtin_tabs {
+            for tab in &visible_tabs {
                 // If a custom tab replaces this slot, render it here instead.
                 if let Some((idx, name, _)) = custom_info.iter()
-                    .find(|(_, _, r)| *r == Some(*builtin))
+                    .find(|(_, _, r)| *r == Some(*tab))
                 {
                     let idx = *idx;
                     let is_selected = custom_tab_active == Some(idx);
@@ -347,11 +373,11 @@ impl ControlGui {
                         }
                     }
                 } else {
-                    let is_selected = current_tab == *builtin && custom_tab_active.is_none();
-                    if let Some(_item) = ui.tab_item(builtin.name()) {
+                    let is_selected = current_tab == *tab && custom_tab_active.is_none();
+                    if let Some(_item) = ui.tab_item(tab.name()) {
                         if !is_selected {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                            state.current_tab = *builtin;
+                            state.current_tab = *tab;
                             self.custom_tab_active = None;
                         }
                     }
@@ -381,7 +407,8 @@ impl ControlGui {
         } else {
             match current_tab {
                 GuiTab::Input => self.build_input_tab(ui),
-                GuiTab::Color => self.build_color_tab(ui),
+                GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
+                GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
                 GuiTab::Audio => self.build_audio_tab(ui),
                 GuiTab::Output => self.build_output_tab(ui),
                 GuiTab::Presets => self.build_presets_tab(ui),
@@ -389,6 +416,7 @@ impl ControlGui {
                 GuiTab::Osc => self.build_osc_tab(ui),
                 GuiTab::Web => self.build_web_tab(ui),
                 GuiTab::Settings => self.build_settings_tab(ui),
+                GuiTab::Sync => self.build_sync_tab(ui),
             }
         }
     }

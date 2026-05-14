@@ -4,8 +4,10 @@
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use crate::lfo::LfoState;
 use crate::routing::AudioRoutingState;
+use crate::params::{ParameterDescriptor, ParamCategory};
 
 // ── Command enums ──────────────────────────────────────────────────────────
 
@@ -218,6 +220,38 @@ impl Default for WebCommand {
     fn default() -> Self { Self::None }
 }
 
+/// Commands sent to the Ableton Link subsystem.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkCommand {
+    /// No-op.
+    None,
+    /// Enable Link session participation.
+    Enable,
+    /// Disable Link session participation.
+    Disable,
+    /// Change the musical quantum (e.g. 4.0 for a 4/4 bar).
+    SetQuantum(f64),
+}
+
+impl Default for LinkCommand {
+    fn default() -> Self { Self::None }
+}
+
+/// Commands sent to the ProDJ Link subsystem.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProDjCommand {
+    /// No-op.
+    None,
+    /// Start listening for ProDJ Link devices.
+    Start,
+    /// Stop listening and clear discovered devices.
+    Stop,
+}
+
+impl Default for ProDjCommand {
+    fn default() -> Self { Self::None }
+}
+
 // ── Input type ─────────────────────────────────────────────────────────────
 
 /// Discriminant for the active video input source.
@@ -302,6 +336,68 @@ impl Default for HsbParams {
 impl HsbParams {
     /// Reset to defaults (no shift, unity saturation and brightness).
     pub fn reset(&mut self) { *self = Self::default(); }
+}
+
+/// Live state of Ableton Link sync.
+#[derive(Debug, Clone)]
+pub struct LinkState {
+    /// Whether Link session participation is active.
+    pub enabled: bool,
+    /// Number of peers in the current Link session.
+    pub num_peers: usize,
+    /// Current tempo from Link (BPM).
+    pub bpm: f32,
+    /// Current position within a beat cycle (0–1).
+    pub beat_phase: f32,
+    /// Musical quantum used for beat/phase calculations.
+    pub quantum: f64,
+    /// Whether the Link session is currently playing.
+    pub is_playing: bool,
+}
+
+impl Default for LinkState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            num_peers: 0,
+            bpm: 0.0,
+            beat_phase: 0.0,
+            quantum: 4.0,
+            is_playing: false,
+        }
+    }
+}
+
+/// Discovered CDJ/XDJ device on a ProDJ Link network.
+#[derive(Debug, Clone)]
+pub struct CdjDevice {
+    /// Device ID assigned by the ProDJ Link network.
+    pub device_id: u32,
+    /// Human-readable device name.
+    pub name: String,
+    /// Whether the deck is currently playing.
+    pub is_playing: bool,
+    /// Whether this deck is the current tempo master.
+    pub is_master: bool,
+    /// Current BPM reported by the deck, if available.
+    pub bpm: Option<f32>,
+}
+
+/// Live state of ProDJ Link sync.
+#[derive(Debug, Clone, Default)]
+pub struct ProDjState {
+    /// Whether ProDJ Link discovery is active.
+    pub enabled: bool,
+    /// Discovered CDJ/XDJ devices.
+    pub devices: Vec<CdjDevice>,
+    /// Current master BPM (0.0 if no master).
+    pub master_bpm: f32,
+    /// Current master beat phase (0–1).
+    pub master_beat_phase: f32,
+    /// Artist of the current master track.
+    pub current_track_artist: String,
+    /// Title of the current master track.
+    pub current_track_title: String,
 }
 
 /// Live state of the audio analysis subsystem.
@@ -440,6 +536,8 @@ pub enum GuiTab {
     Input,
     /// Colour / HSB adjustment.
     Color,
+    /// Motion / spatial effect parameters.
+    Motion,
     /// Audio analysis and routing.
     Audio,
     /// Video output configuration.
@@ -454,6 +552,8 @@ pub enum GuiTab {
     Web,
     /// General application settings.
     Settings,
+    /// Tempo sync (Ableton Link + ProDJ).
+    Sync,
 }
 
 impl GuiTab {
@@ -462,6 +562,7 @@ impl GuiTab {
         match self {
             GuiTab::Input    => "Input",
             GuiTab::Color    => "Color",
+            GuiTab::Motion   => "Motion",
             GuiTab::Audio    => "Audio",
             GuiTab::Output   => "Output",
             GuiTab::Presets  => "Presets",
@@ -469,7 +570,25 @@ impl GuiTab {
             GuiTab::Osc      => "OSC",
             GuiTab::Web      => "Web",
             GuiTab::Settings => "Settings",
+            GuiTab::Sync     => "Sync",
         }
+    }
+
+    /// All standard built-in tabs in their default order.
+    pub fn all() -> &'static [GuiTab] {
+        &[
+            GuiTab::Input,
+            GuiTab::Color,
+            GuiTab::Motion,
+            GuiTab::Audio,
+            GuiTab::Output,
+            GuiTab::Presets,
+            GuiTab::Midi,
+            GuiTab::Osc,
+            GuiTab::Web,
+            GuiTab::Settings,
+            GuiTab::Sync,
+        ]
     }
 }
 
@@ -568,6 +687,33 @@ pub struct EngineState {
     pub web_port: u16,
     /// Web server app name path segment.
     pub web_app_name: String,
+
+    /// Ableton Link sync state.
+    pub link: LinkState,
+    /// Pending Link command.
+    pub link_command: LinkCommand,
+
+    /// ProDJ Link sync state.
+    pub prodj: ProDjState,
+    /// Pending ProDJ command.
+    pub prodj_command: ProDjCommand,
+
+    // ── Effect-declared parameters ───────────────────────────────────────────
+
+    /// Effect-declared parameter descriptors (populated at init).
+    pub param_descriptors: Vec<ParameterDescriptor>,
+
+    /// Base values of effect parameters (set by user UI, OSC, MIDI, Web).
+    /// LFO and audio routing read from these and write modulated values
+    /// into `custom_params`.
+    pub custom_param_bases: HashMap<String, f32>,
+
+    /// Modulated values of effect parameters (base + LFO + audio routing).
+    /// Effects read these in `build_uniforms`.
+    pub custom_params: HashMap<String, f32>,
+
+    /// Tabs hidden by the active effect (populated at init from `EffectPlugin::hidden_tabs`).
+    pub hidden_tabs: Vec<GuiTab>,
 }
 
 impl EngineState {
@@ -612,12 +758,93 @@ impl EngineState {
             web_port: 8081,
             web_app_name: "rustjay-template".to_string(),
             lfo: LfoState::new(),
+            link: LinkState::default(),
+            link_command: LinkCommand::None,
+            prodj: ProDjState::default(),
+            prodj_command: ProDjCommand::None,
+            param_descriptors: Vec::new(),
+            custom_param_bases: HashMap::new(),
+            custom_params: HashMap::new(),
+            hidden_tabs: Vec::new(),
         }
     }
 
     /// Toggle fullscreen mode on the output window.
     pub fn toggle_fullscreen(&mut self) {
         self.output_fullscreen = !self.output_fullscreen;
+    }
+
+    /// Resolved BPM from the highest-priority active sync source.
+    ///
+    /// Priority: Ableton Link → ProDJ Link master → audio analysis.
+    pub fn effective_bpm(&self) -> f32 {
+        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
+            self.link.bpm
+        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
+            self.prodj.master_bpm
+        } else {
+            self.audio.bpm
+        }
+    }
+
+    /// Resolved beat phase from the highest-priority active sync source.
+    ///
+    /// Priority: Ableton Link → ProDJ Link master → audio analysis.
+    pub fn effective_beat_phase(&self) -> f32 {
+        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
+            self.link.beat_phase
+        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
+            self.prodj.master_beat_phase
+        } else {
+            self.audio.beat_phase
+        }
+    }
+
+    /// Human-readable name of the sync source currently driving tempo.
+    pub fn effective_sync_source(&self) -> &'static str {
+        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
+            "Link"
+        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
+            "ProDJ"
+        } else {
+            "Audio"
+        }
+    }
+
+    /// Get the modulated value of a custom parameter.
+    pub fn get_param(&self, id: &str) -> Option<f32> {
+        self.custom_params.get(id).copied()
+    }
+
+    /// Get the base value of a custom parameter (before LFO / audio modulation).
+    pub fn get_param_base(&self, id: &str) -> Option<f32> {
+        self.custom_param_bases.get(id).copied()
+    }
+
+    /// Set the base value of a custom parameter.
+    pub fn set_param_base(&mut self, id: &str, value: f32) {
+        self.custom_param_bases.insert(id.to_string(), value);
+    }
+
+    /// Reset modulated params to base values (call before applying LFO + routing each frame).
+    pub fn reset_custom_params_to_base(&mut self) {
+        self.custom_params = self.custom_param_bases.clone();
+    }
+
+    /// Get parameter descriptors for a given category.
+    pub fn params_for_category(&self, category: ParamCategory) -> Vec<&ParameterDescriptor> {
+        self.param_descriptors
+            .iter()
+            .filter(|d| d.category == category)
+            .collect()
+    }
+
+    /// Get all modulatable (Float / Int) parameter descriptors.
+    pub fn modulatable_params(&self) -> Vec<&ParameterDescriptor> {
+        self.param_descriptors
+            .iter()
+            .filter(|d| d.is_modulatable())
+            .collect()
     }
 }
 

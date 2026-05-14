@@ -2,7 +2,7 @@
 
 > **Role**: System architect (Evidence-First)  
 > **Date**: 2026-05-13  
-> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete
+> **Status**: Phase 1 ✅ Complete — Phase 2 ✅ Complete — Phase 3 ✅ Complete — Phase 4 ✅ Complete — Phase 5 ✅ Complete — Phase 6 ✅ Complete
 
 ---
 
@@ -39,6 +39,7 @@ rustjay-engine/
 ├── crates/
 │   ├── rustjay-core/           # shared types, state, LFO, vertex, routing
 │   ├── rustjay-audio/          # FFT, beat detection (routing types re-export from core)
+│   ├── rustjay-sync/           # Ableton Link + ProDJ Link tempo sync
 │   ├── rustjay-io/             # all video inputs + outputs (platform-gated)
 │   ├── rustjay-control/        # MIDI, OSC, web remote
 │   ├── rustjay-presets/        # preset save/load/apply
@@ -95,16 +96,24 @@ The shared vocabulary. Everything else depends on this; it depends on nothing in
 - Routing types are defined in `rustjay-core` and re-exported here for backwards compatibility
 - Feature: always compiled (no optional flag — audio is core to VJ)
 
-#### Planned audio sync integrations (Phase 5+)
+#### Audio sync integrations (Phase 6)
 
-| Feature | Crate dep | What it provides |
-|---------|-----------|-----------------|
-| `link` | `rusty_link` (Ableton Link SDK bindings) | BPM, beat phase, quantum position — joins a shared Link session with Live, Serato, Traktor, etc. |
-| `pioneer` | custom UDP implementation | ProDJ Link protocol — BPM, beat number, track position, player metadata from CDJ/XDJ/DJM gear over Ethernet |
+Implemented in the dedicated `rustjay-sync` crate. Both features surface their
+data as additional fields on `EngineState` (alongside the existing `AudioState`)
+so they slot into the modulation matrix without API changes.
 
-Both features surface their data as additional fields on `EngineState` (alongside the existing `AudioState`) so they slot into the modulation matrix without API changes. Pioneer gear also emits standard MIDI Clock — that path already works today via `rustjay-control`'s `MidiManager`; the `pioneer` feature is the richer path for track-level metadata.
+| Feature | Crate dep | What it provides | License |
+|---------|-----------|-----------------|---------|
+| `link` | `rusty_link` (Ableton Link SDK bindings) | BPM, beat phase, quantum position — joins a shared Link session with Live, Serato, Traktor, etc. | **GPL-2.0+** |
+| `prodj` | `prodjlink-rs` | ProDJ Link protocol — BPM, master deck, track metadata from CDJ/XDJ/DJM gear over Ethernet | MIT |
 
-Note on ProDJ Link: there is no mature Rust crate for this protocol as of 2026. Implementation would follow the open reverse-engineering work at <https://djl.fandom.com/wiki/DJ_Link_Ecosystem>.
+Pioneer gear also emits standard MIDI Clock — that path already works today via
+`rustjay-control`'s `MidiManager`; the `prodj` feature is the richer path for
+track-level metadata.
+
+`EngineState::effective_bpm()` and `EngineState::effective_beat_phase()` resolve
+the highest-priority active sync source automatically: Link → ProDJ → Audio.
+Plugins do not need to change.
 
 ### `rustjay-io`
 
@@ -571,6 +580,56 @@ Separated into two methods rather than one because the concerns are independent:
 - [x] `examples/template`, `examples/delta`, `examples/waaaves` all unaffected
 
 **Phase 5 exit criteria**: `cargo run -p sputnik --release` shows audio-reactive mesh displacement in both topology modes. All three earlier examples compile and run without change. ✅
+
+---
+
+### Phase 6 — Ableton Link + ProDJ Link Integration ✅ COMPLETE
+
+**Goal**: add real-time tempo sync from two industry-standard sources without
+breaking any existing API or example.
+
+**What was built**:
+
+#### New crate: `rustjay-sync`
+
+- **`LinkManager`** (feature `link`) — wraps `rusty_link`, exposes BPM, beat
+  phase, peer count, and quantum to `EngineState`.
+- **`ProDjManager`** (feature `prodj`) — wraps `prodjlink-rs`, exposes
+  discovered CDJ devices, master BPM, and track metadata to `EngineState`.
+
+#### `rustjay-core` extensions
+
+- `LinkState`, `ProDjState`, `CdjDevice` structs
+- `LinkCommand`, `ProDjCommand` enums
+- `EngineState::effective_bpm()`, `effective_beat_phase()`,
+  `effective_sync_source()` — automatic priority resolution
+- `GuiTab::Sync` variant
+
+#### Engine loop integration
+
+- `update_link()` and `update_prodj()` called each frame before `update_lfo()`
+- `update_lfo()` now uses `effective_bpm()` / `effective_beat_phase()`
+- Command dispatch for enable/disable/quantum changes
+- Clean Link disable on app exit
+
+#### GUI
+
+- New **Sync** tab with Ableton Link and ProDJ Link sections
+- Peer count, BPM, beat phase, quantum slider (Link)
+- Discovered deck list, master track info (ProDJ)
+- Read-only "Current source" label
+
+#### Licensing
+
+- `rusty_link` is GPL-2.0+; documented prominently in `crates/rustjay-sync/README.md`
+- Feature is optional — base crate remains MIT
+
+**Phase 6 exit criteria**:
+- `cargo check --all` passes
+- `cargo check -p rustjay-engine --features prodj` passes
+- All existing examples compile without modification
+- `link` feature code is written and structurally correct (full build requires
+  CMake, documented as build dependency)
 
 ---
 
