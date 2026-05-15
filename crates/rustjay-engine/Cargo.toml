@@ -43,11 +43,3 @@ link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]
 prodj   = ["rustjay-sync/prodj", "rustjay-core/prodj", "rustjay-gui/prodj"]
 mtc     = ["rustjay-control/mtc", "rustjay-gui/mtc"]
 
-[profile.release]
-opt-level     = 3
-lto           = "fat"
-codegen-units = 1
-panic         = "abort"
-
-[profile.dev]
-opt-level = 1

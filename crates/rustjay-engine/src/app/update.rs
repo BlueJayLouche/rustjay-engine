@@ -1,6 +1,7 @@
 use super::App;
 use rustjay_core::EffectPlugin;
 use rustjay_core::InputType;
+use std::sync::Arc;
 
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
@@ -134,12 +135,18 @@ impl<P: EffectPlugin> App<P> {
 
                 if state.audio_routing.enabled {
                     let delta_time = self.frame_delta_time;
-                    let descriptors: Vec<_> = state.param_descriptors.clone();
+                    let descriptors = Arc::clone(&state.param_descriptors);
                     state.audio_routing.matrix.process(&fft, delta_time);
-                    // Temporarily take custom_params to avoid a split-borrow on `state`.
+                    // Temporarily take slices to avoid split-borrow on `state`.
                     let mut custom_params = std::mem::take(&mut state.custom_params);
-                    state.audio_routing.matrix.apply_to_params(&mut custom_params, &descriptors);
+                    let custom_param_bases = std::mem::take(&mut state.custom_param_bases);
+                    state.audio_routing.matrix.apply_to_params(
+                        &mut custom_params,
+                        &custom_param_bases,
+                        &descriptors,
+                    );
                     state.custom_params = custom_params;
+                    state.custom_param_bases = custom_param_bases;
                 }
             }
         }
@@ -154,14 +161,14 @@ impl<P: EffectPlugin> App<P> {
 
         // Apply LFO modulations to custom params
         let mods = state.lfo.bank.get_modulations();
-        let descriptors: Vec<_> = state.param_descriptors.clone();
+        let descriptors = Arc::clone(&state.param_descriptors);
         for (id, mod_value) in mods {
-            if let Some(base) = state.custom_param_bases.get(&id).copied() {
-                if let Some(desc) = descriptors.iter().find(|d| d.id == id) {
-                    let range = desc.max - desc.min;
-                    let modulated = (base + mod_value * range).clamp(desc.min, desc.max);
-                    state.custom_params.insert(id, modulated);
-                }
+            if let Some(i) = descriptors.iter().position(|d| d.id == id) {
+                let base = state.custom_param_bases[i];
+                let desc = &descriptors[i];
+                let range = desc.max - desc.min;
+                let modulated = (base + mod_value * range).clamp(desc.min, desc.max);
+                state.custom_params[i] = modulated;
             }
         }
     }
@@ -273,8 +280,8 @@ impl<P: EffectPlugin> App<P> {
                     }
 
                     // Effect-declared custom params
-                    let descriptors = shared.param_descriptors.clone();
-                    for desc in &descriptors {
+                    let descriptors = Arc::clone(&shared.param_descriptors);
+                    for desc in descriptors.iter() {
                         let addr = format!("/{}/{}", desc.category.name().to_lowercase(), desc.id);
                         if let Some(v) = osc_state.get_value_if_dirty(&addr) {
                             shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
@@ -300,7 +307,7 @@ impl<P: EffectPlugin> App<P> {
                 server.update_parameter("audio/pink_noise", if state.audio.pink_noise_shaping { 1.0 } else { 0.0 });
                 server.update_parameter("output/fullscreen", if state.output_fullscreen { 1.0 } else { 0.0 });
                 // Broadcast custom param values
-                for desc in &state.param_descriptors {
+                for desc in state.param_descriptors.iter() {
                     let id = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
                     let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
                     server.update_parameter(&id, value);

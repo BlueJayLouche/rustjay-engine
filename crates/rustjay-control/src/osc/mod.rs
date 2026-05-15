@@ -97,6 +97,8 @@ pub struct OscState {
     pub parameters: HashMap<String, OscParameter>,
     /// Whether server is running
     pub running: bool,
+    /// Host to bind to
+    pub host: String,
     /// Port number
     pub port: u16,
     /// Base address prefix
@@ -108,7 +110,7 @@ pub struct OscState {
 }
 
 impl OscState {
-    pub fn new(port: u16, base_address: &str) -> Self {
+    pub fn new(host: &str, port: u16, base_address: &str) -> Self {
         let base = if base_address.starts_with('/') {
             base_address.to_string()
         } else {
@@ -118,6 +120,7 @@ impl OscState {
         Self {
             parameters: HashMap::new(),
             running: false,
+            host: host.to_string(),
             port,
             base_address: base,
             last_message: None,
@@ -261,8 +264,8 @@ pub struct OscServer {
 
 impl OscServer {
     /// Create a new OSC server (not started until [`start`](Self::start) is called).
-    pub fn new(port: u16, base_address: &str) -> Self {
-        let state = Arc::new(Mutex::new(OscState::new(port, base_address)));
+    pub fn new(host: &str, port: u16, base_address: &str) -> Self {
+        let state = Arc::new(Mutex::new(OscState::new(host, port, base_address)));
         let running = Arc::new(AtomicBool::new(false));
         
         Self {
@@ -288,8 +291,13 @@ impl OscServer {
             state.port
         };
         
-        // Create socket
-        let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
+        // Create socket bound to configured host (default: 127.0.0.1)
+        let host = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.host.clone()
+        };
+        let bind_addr: Ipv4Addr = host.parse().unwrap_or(Ipv4Addr::LOCALHOST);
+        let addr = SocketAddrV4::new(bind_addr, port);
         let socket = UdpSocket::bind(addr)?;
         socket.set_nonblocking(true)?;
         

@@ -7,15 +7,23 @@
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rustjay_core::{MtcFrameRate, MtcState, SmpteTime};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-// ── Nibble reassembler ────────────────────────────────────────────────────
+// ── Startup epoch for last_qf_ms timestamps ───────────────────────────────
+
+static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn now_ms() -> u64 {
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+// ── Nibble reassembler (per-port, not shared) ─────────────────────────────
 
 /// Reassembles MTC quarter-frame messages into SMPTE timecodes.
 ///
-/// MTC encodes one timecode value across 8 quarter-frame messages (types
-/// 0–7). Each carries a 4-bit nibble. A bitmask tracks which types have
-/// arrived; once all 8 are seen the full HH:MM:SS:FF position is assembled.
+/// One instance lives inside each MIDI callback closure — never shared between
+/// threads, so no locking is needed.
 struct MtcDecoder {
     nibbles: [u8; 8],
     seen: u8,
@@ -39,7 +47,7 @@ impl MtcDecoder {
     }
 
     /// Full-frame SysEx: `F0 7F <dev> 01 01 hr mn sc fr F7`
-    fn feed_full_frame(&self, msg: &[u8]) -> Option<SmpteTime> {
+    fn parse_full_frame(msg: &[u8]) -> Option<SmpteTime> {
         if msg.len() < 10 || msg[3] != 0x01 || msg[4] != 0x01 { return None; }
         let hr = msg[5];
         Some(SmpteTime {
@@ -71,49 +79,71 @@ impl MtcDecoder {
     }
 }
 
-// ── Per-port receive state (lives behind the callback mutex) ──────────────
+// ── Packed AtomicU64 layout ───────────────────────────────────────────────
+//
+//  bits [ 4: 0]  hours   (0–23,  5 bits)
+//  bits [10: 5]  minutes (0–59,  6 bits)
+//  bits [16:11]  seconds (0–59,  6 bits)
+//  bits [21:17]  frames  (0–29,  5 bits)
+//  bits [23:22]  rate    (0–3,   2 bits)  MtcFrameRate discriminant
+//  bit  [   24]  running
+//  bit  [   25]  playing
 
-struct MtcRxState {
-    decoder:  MtcDecoder,
-    pub_state: MtcState,
-    last_qf:  std::time::Instant,
+fn pack_smpte(tc: &SmpteTime, running: bool, playing: bool) -> u64 {
+    let rate = match tc.frame_rate {
+        MtcFrameRate::Fps24       => 0u64,
+        MtcFrameRate::Fps25       => 1u64,
+        MtcFrameRate::Fps2997Drop => 2u64,
+        MtcFrameRate::Fps30       => 3u64,
+    };
+    (tc.hours as u64)
+        | ((tc.minutes as u64) << 5)
+        | ((tc.seconds as u64) << 11)
+        | ((tc.frames  as u64) << 17)
+        | (rate << 22)
+        | ((running as u64) << 24)
+        | ((playing as u64) << 25)
 }
 
-impl MtcRxState {
+fn unpack_smpte(packed: u64) -> (SmpteTime, bool, bool) {
+    let tc = SmpteTime {
+        hours:      ( packed        & 0x1F) as u8,
+        minutes:    ((packed >>  5) & 0x3F) as u8,
+        seconds:    ((packed >> 11) & 0x3F) as u8,
+        frames:     ((packed >> 17) & 0x1F) as u8,
+        frame_rate: match (packed >> 22) & 0x03 {
+            0 => MtcFrameRate::Fps24,
+            1 => MtcFrameRate::Fps25,
+            2 => MtcFrameRate::Fps2997Drop,
+            _ => MtcFrameRate::Fps30,
+        },
+    };
+    let running = ((packed >> 24) & 1) != 0;
+    let playing = ((packed >> 25) & 1) != 0;
+    (tc, running, playing)
+}
+
+// ── Lock-free published state ─────────────────────────────────────────────
+
+/// Shared between the MIDI callback threads (writers) and the engine thread
+/// (reader).  All hot-path fields are lock-free.
+struct MtcPublished {
+    /// Packed SMPTE position + running/playing flags (see layout above).
+    smpte: AtomicU64,
+    /// Milliseconds since process start when the last quarter-frame arrived.
+    last_qf_ms: AtomicU64,
+    /// Name of the MIDI port currently providing MTC.  Changes at most once
+    /// per port-connect event, so a Mutex is fine — it is never contended in
+    /// steady state.
+    source_device: Mutex<String>,
+}
+
+impl MtcPublished {
     fn new() -> Self {
         Self {
-            decoder:  MtcDecoder::new(),
-            pub_state: MtcState::default(),
-            last_qf:  std::time::Instant::now(),
-        }
-    }
-
-    fn on_quarter_frame(&mut self, data: u8, device: &str) {
-        self.last_qf = std::time::Instant::now();
-        self.pub_state.running = true;
-        self.pub_state.playing = true;
-        if let Some(tc) = self.decoder.feed_quarter_frame(data) {
-            log::debug!("[MTC] {} from {}", tc, device);
-            self.pub_state.position    = tc;
-            self.pub_state.source_device = device.to_string();
-        }
-    }
-
-    fn on_full_frame(&mut self, msg: &[u8], device: &str) {
-        self.pub_state.running = true;
-        if let Some(tc) = self.decoder.feed_full_frame(msg) {
-            log::info!("[MTC] Full-frame locate: {} from {}", tc, device);
-            self.pub_state.position    = tc;
-            self.pub_state.source_device = device.to_string();
-            // Full-frame is a locate command; transport may not be rolling.
-            self.pub_state.playing = false;
-        }
-    }
-
-    /// Clear `playing` if no quarter-frame has arrived in 500 ms.
-    fn tick(&mut self) {
-        if self.pub_state.playing && self.last_qf.elapsed().as_millis() > 500 {
-            self.pub_state.playing = false;
+            smpte:         AtomicU64::new(0),
+            last_qf_ms:    AtomicU64::new(0),
+            source_device: Mutex::new(String::new()),
         }
     }
 }
@@ -126,7 +156,7 @@ impl MtcRxState {
 /// (internally throttled to once per 5 s) to pick up devices plugged in after
 /// launch. The decoded [`MtcState`] is available via [`clone_state`](MtcReceiver::clone_state).
 pub struct MtcReceiver {
-    rx_state:        Arc<Mutex<MtcRxState>>,
+    published:       Arc<MtcPublished>,
     /// Port names we have successfully connected to.
     connected_names: Vec<String>,
     /// Live connections — dropping one closes the port.
@@ -138,7 +168,7 @@ impl MtcReceiver {
     /// Create a receiver and immediately connect to all currently visible ports.
     pub fn new() -> Self {
         let mut r = Self {
-            rx_state:        Arc::new(Mutex::new(MtcRxState::new())),
+            published:       Arc::new(MtcPublished::new()),
             connected_names: Vec::new(),
             connections:     Vec::new(),
             // Make elapsed() > 5 s so the first refresh() call runs immediately.
@@ -183,8 +213,11 @@ impl MtcReceiver {
                 continue;
             };
 
-            let state  = Arc::clone(&self.rx_state);
-            let device = name.clone();
+            let published = Arc::clone(&self.published);
+            let device    = name.clone();
+            // Each port gets its own decoder — no sharing, no locking on the
+            // hot path (240 quarter-frames/sec at 30 fps MTC).
+            let mut decoder = MtcDecoder::new();
 
             let result = input.connect(
                 &port,
@@ -193,15 +226,47 @@ impl MtcReceiver {
                     if msg.is_empty() { return; }
                     match msg[0] {
                         0xF1 if msg.len() >= 2 => {
-                            if let Ok(mut s) = state.lock() {
-                                s.on_quarter_frame(msg[1], &device);
+                            // Record arrival time before any decode work.
+                            published.last_qf_ms.store(now_ms(), Ordering::Release);
+
+                            if let Some(tc) = decoder.feed_quarter_frame(msg[1]) {
+                                log::debug!("[MTC] {} from {}", tc, device);
+                                // Update source device name — try_lock avoids any
+                                // block if the reader happens to hold it.
+                                if let Ok(mut src) = published.source_device.try_lock() {
+                                    if src.as_str() != device {
+                                        src.clear();
+                                        src.push_str(&device);
+                                    }
+                                }
+                                published.smpte.store(
+                                    pack_smpte(&tc, true, true),
+                                    Ordering::Release,
+                                );
+                            } else {
+                                // Running but no complete SMPTE yet — set flags only.
+                                published.smpte.fetch_or(
+                                    (1u64 << 24) | (1u64 << 25),
+                                    Ordering::Relaxed,
+                                );
                             }
                         }
                         0xF0 if msg.len() >= 10
                             && msg[3] == 0x01 && msg[4] == 0x01 =>
                         {
-                            if let Ok(mut s) = state.lock() {
-                                s.on_full_frame(msg, &device);
+                            if let Some(tc) = MtcDecoder::parse_full_frame(msg) {
+                                log::info!("[MTC] Full-frame locate: {} from {}", tc, device);
+                                if let Ok(mut src) = published.source_device.try_lock() {
+                                    if src.as_str() != device {
+                                        src.clear();
+                                        src.push_str(&device);
+                                    }
+                                }
+                                // Full-frame is a locate — running but not playing.
+                                published.smpte.store(
+                                    pack_smpte(&tc, true, false),
+                                    Ordering::Release,
+                                );
                             }
                         }
                         _ => {}
@@ -221,21 +286,65 @@ impl MtcReceiver {
         }
     }
 
-    /// Age out the `playing` flag if no quarter-frame has arrived in 500 ms.
+    /// Clear the `playing` flag if no quarter-frame has arrived in 500 ms.
     /// Call once per engine frame.
     pub fn tick(&self) {
-        if let Ok(mut s) = self.rx_state.lock() { s.tick(); }
+        let last = self.published.last_qf_ms.load(Ordering::Acquire);
+        if now_ms().saturating_sub(last) > 500 {
+            // Atomically clear the playing bit (bit 25).
+            self.published.smpte.fetch_and(!(1u64 << 25), Ordering::Relaxed);
+        }
     }
 
-    /// Snapshot the current MTC state.
+    /// Snapshot the current MTC state.  Lock-free on the hot path.
     pub fn clone_state(&self) -> MtcState {
-        self.rx_state.lock()
-            .map(|s| s.pub_state.clone())
-            .unwrap_or_default()
+        let packed = self.published.smpte.load(Ordering::Acquire);
+        let (position, running, playing) = unpack_smpte(packed);
+        let source_device = self.published.source_device
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
+        MtcState { position, running, playing, source_device }
     }
 
     /// Port names currently being listened to.
     pub fn connected_ports(&self) -> &[String] {
         &self.connected_names
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smpte_roundtrip_exhaustive() {
+        for hours   in 0u8..24 {
+            for minutes in 0u8..60 {
+                for seconds in 0u8..60 {
+                    for frames in 0u8..30 {
+                        for &rate in &[
+                            MtcFrameRate::Fps24,
+                            MtcFrameRate::Fps25,
+                            MtcFrameRate::Fps2997Drop,
+                            MtcFrameRate::Fps30,
+                        ] {
+                            let tc = SmpteTime { hours, minutes, seconds, frames, frame_rate: rate };
+                            let packed = pack_smpte(&tc, true, false);
+                            let (tc2, running, playing) = unpack_smpte(packed);
+                            assert_eq!(tc2.hours,      hours,   "hours mismatch");
+                            assert_eq!(tc2.minutes,    minutes, "minutes mismatch");
+                            assert_eq!(tc2.seconds,    seconds, "seconds mismatch");
+                            assert_eq!(tc2.frames,     frames,  "frames mismatch");
+                            assert_eq!(tc2.frame_rate, rate,    "rate mismatch");
+                            assert!(running);
+                            assert!(!playing);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

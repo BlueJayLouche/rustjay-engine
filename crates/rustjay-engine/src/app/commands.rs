@@ -9,21 +9,49 @@ fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, Engi
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// All pending commands popped from shared state in a single lock acquisition.
+struct PendingCommands {
+    input:  InputCommand,
+    output: OutputCommand,
+    audio:  AudioCommand,
+    midi:   MidiCommand,
+    osc:    OscCommand,
+    preset: PresetCommand,
+    web:    WebCommand,
+    link:   LinkCommand,
+    prodj:  ProDjCommand,
+}
+
 impl<P: EffectPlugin> App<P> {
     pub(super) fn dispatch_commands(&mut self) {
-        self.process_input_commands();
-        self.process_output_commands();
-        self.process_audio_commands();
-        self.process_midi_commands();
-        self.process_osc_commands();
-        self.process_preset_commands();
-        self.process_web_commands();
-        self.process_link_commands();
-        self.process_prodj_commands();
+        // Pop all nine command slots in a single lock — saves 8 mutex acquires per frame
+        // over the previous one-lock-per-process_* pattern.
+        let cmds = {
+            let mut s = lock(&self.shared_state);
+            PendingCommands {
+                input:  std::mem::replace(&mut s.input_command,  InputCommand::None),
+                output: std::mem::replace(&mut s.output_command, OutputCommand::None),
+                audio:  std::mem::replace(&mut s.audio_command,  AudioCommand::None),
+                midi:   std::mem::replace(&mut s.midi_command,   MidiCommand::None),
+                osc:    std::mem::replace(&mut s.osc_command,    OscCommand::None),
+                preset: std::mem::replace(&mut s.preset_command, PresetCommand::None),
+                web:    std::mem::replace(&mut s.web_command,    WebCommand::None),
+                link:   std::mem::replace(&mut s.link_command,   LinkCommand::None),
+                prodj:  std::mem::replace(&mut s.prodj_command,  ProDjCommand::None),
+            }
+        };
+        self.process_input_commands(cmds.input);
+        self.process_output_commands(cmds.output);
+        self.process_audio_commands(cmds.audio);
+        self.process_midi_commands(cmds.midi);
+        self.process_osc_commands(cmds.osc);
+        self.process_preset_commands(cmds.preset);
+        self.process_web_commands(cmds.web);
+        self.process_link_commands(cmds.link);
+        self.process_prodj_commands(cmds.prodj);
     }
 
-    fn process_input_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).input_command, InputCommand::None);
+    fn process_input_commands(&mut self, command: InputCommand) {
 
         match command {
             InputCommand::StartWebcam { device_index, width, height, fps } => {
@@ -126,8 +154,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_output_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).output_command, OutputCommand::None);
+    fn process_output_commands(&mut self, command: OutputCommand) {
 
         match command {
             #[cfg(feature = "ndi")]
@@ -223,8 +250,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_audio_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).audio_command, AudioCommand::None);
+    fn process_audio_commands(&mut self, command: AudioCommand) {
 
         match command {
             AudioCommand::RefreshDevices => {
@@ -276,8 +302,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_midi_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).midi_command, MidiCommand::None);
+    fn process_midi_commands(&mut self, command: MidiCommand) {
 
         match command {
             MidiCommand::RefreshDevices => {
@@ -314,8 +339,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_osc_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).osc_command, OscCommand::None);
+    fn process_osc_commands(&mut self, command: OscCommand) {
 
         match command {
             OscCommand::Start => {
@@ -336,7 +360,8 @@ impl<P: EffectPlugin> App<P> {
             OscCommand::SetPort(port) => {
                 if let Some(ref mut server) = self.osc_server {
                     server.stop();
-                    let new_server = OscServer::new(port, "/rustjay");
+                    let host = lock(&self.shared_state).osc_host.clone();
+                    let new_server = OscServer::new(&host, port, "/rustjay");
                     if let Ok(mut state) = new_server.state().lock() {
                         state.register_default_parameters();
                     }
@@ -357,8 +382,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_preset_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).preset_command, PresetCommand::None);
+    fn process_preset_commands(&mut self, command: PresetCommand) {
 
         match command {
             PresetCommand::Save { name } => {
@@ -428,8 +452,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_web_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).web_command, WebCommand::None);
+    fn process_web_commands(&mut self, command: WebCommand) {
 
         match command {
             WebCommand::Start => {
@@ -451,7 +474,8 @@ impl<P: EffectPlugin> App<P> {
             WebCommand::SetPort(port) => {
                 if let Some(ref mut server) = self.web_server {
                     server.stop();
-                    let config = WebConfig { port, app_name: "rustjay".to_string(), enabled: false };
+                    let host = lock(&self.shared_state).web_host.clone();
+                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false };
                     let (new_server, cmd_tx) = WebServer::new(config);
                     *server = new_server;
                     self.web_command_tx = Some(cmd_tx);
@@ -508,8 +532,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_link_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).link_command, LinkCommand::None);
+    fn process_link_commands(&mut self, command: LinkCommand) {
         match command {
             LinkCommand::None => {}
             LinkCommand::Enable => {
@@ -530,8 +553,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    fn process_prodj_commands(&mut self) {
-        let command = std::mem::replace(&mut lock(&self.shared_state).prodj_command, ProDjCommand::None);
+    fn process_prodj_commands(&mut self, command: ProDjCommand) {
         match command {
             ProDjCommand::None => {}
             ProDjCommand::Start => {

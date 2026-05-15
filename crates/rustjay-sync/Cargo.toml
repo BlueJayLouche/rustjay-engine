@@ -2,20 +2,19 @@
 name = "rustjay-sync"
 version = "0.1.0"
 edition = "2021"
-description = "Ableton Link and ProDJ Link sync for rustjay-engine"
+description = "Sync & timing: Ableton Link, ProDJ Link, MTC"
 license = "MIT"
-repository = "https://github.com/BlueJayLouche/rustjay-engine"
-keywords = ["vj", "audio", "sync", "ableton-link", "prodj"]
-categories = ["multimedia::audio", "network-programming"]
 
 [features]
-default = []
-link  = ["dep:rusty_link"]
+default = ["link"]
+link = ["dep:rusty_link"]
 prodj = ["dep:prodjlink-rs"]
+mtc = []
 
 [dependencies]
 rustjay-core = { path = "../rustjay-core", version = "0.1.0" }
+
 log = { workspace = true }
 
 rusty_link = { version = "0.4", optional = true }
-prodjlink-rs = { git = "https://github.com/BlueJayLouche/prodjlink-rs", optional = true }
+prodjlink-rs = { git = "https://github.com/BlueJayLouche/prodjlink-rs", rev = "e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f", optional = true }

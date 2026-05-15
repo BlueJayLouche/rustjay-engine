@@ -178,7 +178,8 @@
     <script>
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const pathname = window.location.pathname.replace(/\/$/, '');
-        const wsUrl = wsProtocol + '//' + window.location.host + pathname + '/ws';
+        const token = window.RUSTJAY_TOKEN || '';
+        const wsUrl = wsProtocol + '//' + window.location.host + pathname + '/ws?token=' + encodeURIComponent(token);
         const ws = new WebSocket(wsUrl);
         let params = {};
         
@@ -253,37 +254,61 @@
             const isSelect = param.options && param.options.length > 0;
 
             if (isSelect) {
-                const opts = param.options.map((o, i) =>
-                    `<option value="${i}" ${Math.round(param.value) === i ? 'selected' : ''}>${o}</option>`
-                ).join('');
-                div.innerHTML = `
-                    <div class="control-header">
-                        <span class="control-name">${param.name}</span>
-                    </div>
-                    <select onchange="updateParam('${param.id}', this.value)">${opts}</select>
-                `;
+                const header = document.createElement('div');
+                header.className = 'control-header';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'control-name';
+                nameSpan.textContent = param.name;
+                header.appendChild(nameSpan);
+                div.appendChild(header);
+
+                const select = document.createElement('select');
+                param.options.forEach((o, i) => {
+                    const option = document.createElement('option');
+                    option.value = i;
+                    option.textContent = o;
+                    if (Math.round(param.value) === i) {
+                        option.selected = true;
+                    }
+                    select.appendChild(option);
+                });
+                select.addEventListener('change', () => updateParam(param.id, parseInt(select.value, 10)));
+                div.appendChild(select);
             } else if (isToggle) {
-                div.innerHTML = `
-                    <div class="toggle">
-                        <span class="control-name">${param.name}</span>
-                        <div class="toggle-btn ${param.value > 0.5 ? 'active' : ''}"
-                             onclick="toggleParam('${param.id}')">
-                        </div>
-                    </div>
-                `;
+                const toggleDiv = document.createElement('div');
+                toggleDiv.className = 'toggle';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'control-name';
+                nameSpan.textContent = param.name;
+                toggleDiv.appendChild(nameSpan);
+
+                const btn = document.createElement('div');
+                btn.className = 'toggle-btn' + (param.value > 0.5 ? ' active' : '');
+                btn.addEventListener('click', () => toggleParam(param.id));
+                toggleDiv.appendChild(btn);
+                div.appendChild(toggleDiv);
             } else {
-                div.innerHTML = `
-                    <div class="control-header">
-                        <span class="control-name">${param.name}</span>
-                        <span class="control-value" id="val-${param.id}">${formatValue(param.value)}</span>
-                    </div>
-                    <input type="range"
-                           min="${param.min}"
-                           max="${param.max}"
-                           step="${param.step}"
-                           value="${param.value}"
-                           oninput="updateParam('${param.id}', this.value)">
-                `;
+                const header = document.createElement('div');
+                header.className = 'control-header';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'control-name';
+                nameSpan.textContent = param.name;
+                header.appendChild(nameSpan);
+                const valSpan = document.createElement('span');
+                valSpan.className = 'control-value';
+                valSpan.id = 'val-' + param.id;
+                valSpan.textContent = formatValue(param.value);
+                header.appendChild(valSpan);
+                div.appendChild(header);
+
+                const input = document.createElement('input');
+                input.type = 'range';
+                input.min = param.min;
+                input.max = param.max;
+                input.step = param.step;
+                input.value = param.value;
+                input.addEventListener('input', () => updateParam(param.id, input.value));
+                div.appendChild(input);
             }
 
             return div;

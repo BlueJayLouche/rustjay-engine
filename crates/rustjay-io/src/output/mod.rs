@@ -59,7 +59,8 @@ const READBACK_SLOTS: usize = 2;
 /// State of a single staging buffer slot.
 enum SlotState {
     /// Buffer is idle and available for a new copy.
-    Available,
+    /// May hold a cached buffer (unmapped, ready to reuse) from the previous frame.
+    Available { cached: Option<(wgpu::Buffer, u64)> },
     /// A copy has been submitted and `map_async` requested; waiting for GPU.
     Pending {
         buffer: wgpu::Buffer,
@@ -80,7 +81,7 @@ impl ReadbackPool {
     fn new() -> Self {
         let mut slots = Vec::with_capacity(READBACK_SLOTS);
         for _ in 0..READBACK_SLOTS {
-            slots.push(SlotState::Available);
+            slots.push(SlotState::Available { cached: None });
         }
         Self { slots, current: 0 }
     }
@@ -101,22 +102,20 @@ impl ReadbackPool {
                         let h = *height;
                         let data = buffer.slice(..).get_mapped_range().to_vec();
                         buffer.unmap();
-                        // Move buffer out so we can reuse the slot
-                        let buf = match std::mem::replace(slot, SlotState::Available) {
+                        // Return the unmapped buffer to the slot cache so submit_copy
+                        // can reuse it next frame without a GPU allocator call.
+                        let buf_size = (w as u64) * 4 * (h as u64);
+                        let buf = match std::mem::replace(slot, SlotState::Available { cached: None }) {
                             SlotState::Pending { buffer, .. } => buffer,
                             _ => unreachable!(),
                         };
-                        // We could cache `buf` for reuse, but wgpu buffers
-                        // can't be re-mapped after unmap without a new copy,
-                        // and the size may change.  Drop it; a new one is
-                        // cheap relative to the copy itself.
-                        drop(buf);
+                        *slot = SlotState::Available { cached: Some((buf, buf_size)) };
                         Some((data, w, h))
                     }
                     _ => None,
                 }
             }
-            SlotState::Available => None,
+            SlotState::Available { .. } => None,
         }
     }
 
@@ -133,18 +132,25 @@ impl ReadbackPool {
         let bytes_per_row = width * 4;
         let buffer_size = (bytes_per_row * height) as u64;
 
-        // If the current slot is still pending (GPU too slow), drop it.
-        if matches!(self.slots[self.current], SlotState::Pending { .. }) {
-            self.slots[self.current] = SlotState::Available;
-            log::debug!("Readback slot {} overwritten (GPU too slow)", self.current);
-        }
+        // Extract any cached buffer from this slot (discarding Pending if GPU is too slow).
+        let cached = match std::mem::replace(&mut self.slots[self.current], SlotState::Available { cached: None }) {
+            SlotState::Available { cached } => cached,
+            SlotState::Pending { .. } => {
+                log::debug!("Readback slot {} overwritten (GPU too slow)", self.current);
+                None
+            }
+        };
 
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Readback Staging"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // Reuse cached buffer if it matches the required size, else allocate.
+        let staging_buffer = match cached {
+            Some((buf, sz)) if sz == buffer_size => buf,
+            _ => device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Readback Staging"),
+                size: buffer_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Readback Copy"),
@@ -198,11 +204,13 @@ impl ReadbackPool {
             if matches!(slot, SlotState::Pending { .. }) {
                 // Poll once to let the GPU finish, then discard.
                 device.poll(wgpu::PollType::wait_indefinitely()).ok();
-                if let SlotState::Pending { buffer, .. } = std::mem::replace(slot, SlotState::Available) {
-                    // Buffer may or may not be mapped; dropping handles cleanup.
+                if let SlotState::Pending { buffer, .. } =
+                    std::mem::replace(slot, SlotState::Available { cached: None })
+                {
                     drop(buffer);
                 }
             }
+            // Available slots may hold a cached buffer; dropped when ReadbackPool drops.
         }
     }
 }

@@ -41,12 +41,15 @@ impl ProDjManager {
             return;
         }
 
+        // Read lock-free snapshot — zero acquisitions of ProDjLinkState's mutex
+        let snap = self.client.snapshot();
+
         // Refresh discovered devices
         state.devices.clear();
         let mut master_bpm = 0.0f32;
         let mut has_master = false;
 
-        for device in self.client.cdj_devices() {
+        for device in &snap.devices {
             let bpm = device.bpm.map(|b| b as f32).unwrap_or(0.0);
             if device.is_master {
                 master_bpm = bpm;
@@ -79,7 +82,7 @@ impl ProDjManager {
         state.master_beat_phase = Self::derive_beat_phase(master_bpm);
 
         // Update current master track metadata
-        if let Some(track) = self.client.current_track() {
+        if let Some(track) = &snap.current_track {
             state.current_track_artist.clone_from(&track.artist);
             state.current_track_title.clone_from(&track.title);
             // Prefer track BPM if master BPM is missing

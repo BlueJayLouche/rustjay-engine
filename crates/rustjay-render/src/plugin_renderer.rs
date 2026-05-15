@@ -31,6 +31,10 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     /// Per-pass uniform bind group referencing the corresponding buffer.
     graph_uniform_bind_groups: Vec<wgpu::BindGroup>,
     pub intermediate_textures: Vec<Texture>,
+    /// Cached per-pass texture bind groups for multi-pass effects.
+    cached_pass_bind_groups: Vec<Option<wgpu::BindGroup>>,
+    /// Generation keys for cached_pass_bind_groups — one per pass.
+    cached_pass_texture_gens: Vec<u64>,
 
     // Mesh state
     mesh_vertex_buffer: Option<wgpu::Buffer>,
@@ -407,6 +411,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             graph_uniform_buffers: Vec::new(),
             graph_uniform_bind_groups: Vec::new(),
             intermediate_textures: Vec::new(),
+            cached_pass_bind_groups: Vec::new(),
+            cached_pass_texture_gens: Vec::new(),
             mesh_vertex_buffer,
             mesh_index_buffer,
             mesh_index_count,
@@ -520,6 +526,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             self.graph_shader_sources.clear();
             self.graph_uniform_buffers.clear();
             self.graph_uniform_bind_groups.clear();
+            self.cached_pass_bind_groups.clear();
+            self.cached_pass_texture_gens.clear();
         }
     }
 
@@ -700,6 +708,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             self.graph_shader_sources.clear();
             self.graph_uniform_buffers.clear();
             self.graph_uniform_bind_groups.clear();
+            self.cached_pass_bind_groups.clear();
+            self.cached_pass_texture_gens.clear();
 
             // Validate: PassInput::PreviousPass on pass 0 is a mistake.
             if let Some(first) = graph.passes.first() {
@@ -771,6 +781,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 self.graph_pipelines.push(pipeline);
                 self.graph_uniform_buffers.push(buf);
                 self.graph_uniform_bind_groups.push(bg);
+                self.cached_pass_bind_groups.push(None);
+                self.cached_pass_texture_gens.push(u64::MAX);
             }
         }
 
@@ -825,28 +837,34 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 (&dummy.view, &dummy.sampler)
             };
 
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(&format!("Pass {} Bind Group", i)),
-                layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(iv),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(is),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(fbv),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(fbs),
-                    },
-                ],
-            });
+            let current_gen = input_texture.texture_generation;
+            if self.cached_pass_texture_gens[i] != current_gen {
+                self.cached_pass_bind_groups[i] = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("Pass {} Bind Group", i)),
+                    layout: &self.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(iv),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(is),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(fbv),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(fbs),
+                        },
+                    ],
+                }));
+                self.cached_pass_texture_gens[i] = current_gen;
+            }
+
+            let bind_group = self.cached_pass_bind_groups[i].as_ref().unwrap();
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(pass.label),
@@ -868,7 +886,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             let vb = self.mesh_vertex_buffer.as_ref().unwrap_or(vertex_buffer);
             render_pass.set_pipeline(&pipelines[i]);
             render_pass.set_vertex_buffer(0, vb.slice(..));
-            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.set_bind_group(1, &self.graph_uniform_bind_groups[i], &[]);
 
             if let Some(ref index_buf) = self.mesh_index_buffer {

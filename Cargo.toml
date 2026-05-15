@@ -60,6 +60,7 @@ toml    = "1.0"
 chrono  = { version = "0.4", features = ["serde"] }
 instant = "0.1"
 dirs    = "6.0"
+rand    = "0.8"
 
 # Workspace-internal crates
 rustjay-core    = { path = "crates/rustjay-core", version = "0.1.0" }
@@ -73,3 +74,12 @@ rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
 syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
+
+[profile.dev]
+opt-level = 1

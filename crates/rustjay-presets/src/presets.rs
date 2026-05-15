@@ -99,7 +99,9 @@ impl Preset {
             lfo_bank: state.lfo.bank.clone(),
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
-            custom_values: state.custom_param_bases.clone(),
+            custom_values: state.param_descriptors.iter().enumerate()
+                .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
+                .collect(),
         }
     }
     
@@ -124,8 +126,10 @@ impl Preset {
         state.audio_routing.enabled = self.audio_routing_enabled;
         // Restore custom parameter values
         for (id, value) in &self.custom_values {
-            state.custom_param_bases.insert(id.clone(), *value);
-            state.custom_params.insert(id.clone(), *value);
+            if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
+                state.custom_param_bases[i] = *value;
+                state.custom_params[i] = *value;
+            }
         }
     }
     
@@ -142,9 +146,40 @@ impl Preset {
     
     /// Load preset from file
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > 1_048_576 {
+            return Err(anyhow::anyhow!("Preset file too large: {} bytes", metadata.len()));
+        }
         let content = std::fs::read_to_string(path)?;
         let preset: Preset = serde_json::from_str(&content)?;
+        preset.validate()?;
         Ok(preset)
+    }
+
+    /// Validate preset fields are within acceptable ranges.
+    fn validate(&self) -> anyhow::Result<()> {
+        const MAX_DIM: u32 = 4096;
+        const VALID_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
+
+        if self.internal_width > MAX_DIM || self.internal_height > MAX_DIM {
+            return Err(anyhow::anyhow!(
+                "Preset dimensions out of range: {}x{} (max {})",
+                self.internal_width, self.internal_height, MAX_DIM
+            ));
+        }
+        if !VALID_FFT_SIZES.contains(&self.audio_fft_size) {
+            return Err(anyhow::anyhow!(
+                "Invalid audio_fft_size: {} (valid: {:?})",
+                self.audio_fft_size, VALID_FFT_SIZES
+            ));
+        }
+        if self.custom_values.len() > 256 {
+            return Err(anyhow::anyhow!(
+                "Too many custom values: {} (max 256)",
+                self.custom_values.len()
+            ));
+        }
+        Ok(())
     }
     
     /// Get filename-safe version of name

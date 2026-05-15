@@ -297,18 +297,15 @@ pub async fn start() -> Result<(), JsValue> {
             }
         });
 
-        win_for_closure
-            .request_animation_frame(
-                f.borrow().as_ref().unwrap().as_ref().unchecked_ref(),
-            )
-            .unwrap();
+        if let Some(closure) = f.borrow().as_ref() {
+            let _ = win_for_closure
+                .request_animation_frame(closure.as_ref().unchecked_ref());
+        }
     }));
 
-    window
-        .request_animation_frame(
-            g.borrow().as_ref().unwrap().as_ref().unchecked_ref(),
-        )
-        .unwrap();
+    if let Some(closure) = g.borrow().as_ref() {
+        let _ = window.request_animation_frame(closure.as_ref().unchecked_ref());
+    }
 
     Ok(())
 }
@@ -399,19 +396,19 @@ fn render_frame(app: &mut App) {
 /// Set red channel pixel offset.
 #[wasm_bindgen]
 pub fn set_delay_r(v: i32) {
-    PARAMS.with(|p| p.borrow_mut().delay_r = v);
+    PARAMS.with(|p| p.borrow_mut().delay_r = v.clamp(-64, 64));
 }
 
 /// Set green channel pixel offset.
 #[wasm_bindgen]
 pub fn set_delay_g(v: i32) {
-    PARAMS.with(|p| p.borrow_mut().delay_g = v);
+    PARAMS.with(|p| p.borrow_mut().delay_g = v.clamp(-64, 64));
 }
 
 /// Set blue channel pixel offset.
 #[wasm_bindgen]
 pub fn set_delay_b(v: i32) {
-    PARAMS.with(|p| p.borrow_mut().delay_b = v);
+    PARAMS.with(|p| p.borrow_mut().delay_b = v.clamp(-64, 64));
 }
 
 /// Set blend factor between live webcam and delayed feedback.
@@ -423,6 +420,9 @@ pub fn set_mix(v: f32) {
 /// Upload a new webcam frame (RGBA, `width * height * 4` bytes).
 #[wasm_bindgen]
 pub fn update_webcam_frame(data: &[u8], width: u32, height: u32) {
+    const MAX_DIM: u32 = 4096;
+    let width = width.min(MAX_DIM);
+    let height = height.min(MAX_DIM);
     APP.with(|app| {
         if let Some(app) = app.borrow_mut().as_mut() {
             webcam::update_webcam(app, data, width, height);

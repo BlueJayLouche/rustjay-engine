@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use crate::lfo::LfoState;
 use crate::routing::AudioRoutingState;
 use crate::params::{ParameterDescriptor, ParamCategory};
@@ -783,6 +784,8 @@ pub struct EngineState {
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.
     pub osc_enabled: bool,
+    /// OSC server listen host.
+    pub osc_host: String,
     /// OSC server listen port.
     pub osc_port: u16,
 
@@ -802,6 +805,8 @@ pub struct EngineState {
     pub web_command: WebCommand,
     /// Whether the web remote server is running.
     pub web_enabled: bool,
+    /// Web server listen host.
+    pub web_host: String,
     /// Web server listen port.
     pub web_port: u16,
     /// Web server app name path segment.
@@ -826,16 +831,17 @@ pub struct EngineState {
     // ── Effect-declared parameters ───────────────────────────────────────────
 
     /// Effect-declared parameter descriptors (populated at init).
-    pub param_descriptors: Vec<ParameterDescriptor>,
+    /// Wrapped in Arc so cloning is a pointer copy.
+    pub param_descriptors: Arc<Vec<ParameterDescriptor>>,
 
     /// Base values of effect parameters (set by user UI, OSC, MIDI, Web).
-    /// LFO and audio routing read from these and write modulated values
-    /// into `custom_params`.
-    pub custom_param_bases: HashMap<String, f32>,
+    /// Aligned 1:1 with `param_descriptors` — indexed by descriptor position.
+    pub custom_param_bases: Vec<f32>,
 
     /// Modulated values of effect parameters (base + LFO + audio routing).
+    /// Aligned 1:1 with `param_descriptors` — indexed by descriptor position.
     /// Effects read these in `build_uniforms`.
-    pub custom_params: HashMap<String, f32>,
+    pub custom_params: Vec<f32>,
 
     /// Tabs hidden by the active effect (populated at init from `EffectPlugin::hidden_tabs`).
     pub hidden_tabs: Vec<GuiTab>,
@@ -872,6 +878,7 @@ impl EngineState {
             midi_command: MidiCommand::None,
             osc_command: OscCommand::None,
             osc_enabled: false,
+            osc_host: "127.0.0.1".to_string(),
             osc_port: 9001,
             preset_command: PresetCommand::None,
             preset_names: Vec::new(),
@@ -880,6 +887,7 @@ impl EngineState {
             input_discovering: false,
             web_command: WebCommand::None,
             web_enabled: false,
+            web_host: "127.0.0.1".to_string(),
             web_port: 8081,
             web_app_name: "rustjay-template".to_string(),
             lfo: LfoState::new(),
@@ -889,9 +897,9 @@ impl EngineState {
             prodj_command: ProDjCommand::None,
             mtc: MtcState::default(),
             sync_source: SyncSource::Audio,
-            param_descriptors: Vec::new(),
-            custom_param_bases: HashMap::new(),
-            custom_params: HashMap::new(),
+            param_descriptors: Arc::new(Vec::new()),
+            custom_param_bases: Vec::new(),
+            custom_params: Vec::new(),
             hidden_tabs: Vec::new(),
         }
     }
@@ -927,27 +935,34 @@ impl EngineState {
         self.sync_source.name()
     }
 
+    /// Find the index of a parameter by its string ID.
+    pub fn param_index(&self, id: &str) -> Option<usize> {
+        self.param_descriptors.iter().position(|d| d.id == id)
+    }
+
     /// Get the modulated value of a custom parameter.
     pub fn get_param(&self, id: &str) -> Option<f32> {
-        self.custom_params.get(id).copied()
+        self.param_index(id).and_then(|i| self.custom_params.get(i).copied())
     }
 
     /// Get the base value of a custom parameter (before LFO / audio modulation).
     pub fn get_param_base(&self, id: &str) -> Option<f32> {
-        self.custom_param_bases.get(id).copied()
+        self.param_index(id).and_then(|i| self.custom_param_bases.get(i).copied())
     }
 
     /// Set the base value of a custom parameter.
     /// Also updates the modulated value so the change is immediately visible
     /// (LFO / audio routing will overwrite on the next frame if active).
     pub fn set_param_base(&mut self, id: &str, value: f32) {
-        self.custom_param_bases.insert(id.to_string(), value);
-        self.custom_params.insert(id.to_string(), value);
+        if let Some(i) = self.param_index(id) {
+            self.custom_param_bases[i] = value;
+            self.custom_params[i] = value;
+        }
     }
 
     /// Reset modulated params to base values (call before applying LFO + routing each frame).
     pub fn reset_custom_params_to_base(&mut self) {
-        self.custom_params = self.custom_param_bases.clone();
+        self.custom_params.copy_from_slice(&self.custom_param_bases);
     }
 
     /// Get parameter descriptors for a given category.

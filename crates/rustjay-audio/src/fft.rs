@@ -99,7 +99,7 @@ pub const FFT_SIZE_LABELS: &[&str] = &[
 pub fn process_audio_frame(
     frame: &[f32],
     sample_rate: f32,
-    fft_size: usize,
+    hann_window: &[f32],
     r2c: &std::sync::Arc<dyn realfft::RealToComplex<f32>>,
     scratch: &mut [rustfft::num_complex::Complex<f32>],
     windowed_buf: &mut Vec<f32>,
@@ -112,9 +112,8 @@ pub fn process_audio_frame(
     output: &Arc<AudioOutput>,
     config: &Arc<AudioConfig>,
 ) {
-    // Apply Hann window in-place (no allocation)
-    for (i, (&s, w_out)) in frame.iter().zip(windowed_buf.iter_mut()).enumerate() {
-        let w = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / fft_size as f32).cos());
+    // Apply pre-computed Hann window in-place (no allocation, no transcendental calls)
+    for ((s, w), w_out) in frame.iter().zip(hann_window.iter()).zip(windowed_buf.iter_mut()) {
         *w_out = s * w;
     }
 
@@ -136,6 +135,7 @@ pub fn process_audio_frame(
     //   1. Normalize by fft_size (realfft does NOT divide by N)
     //   2. Apply amplitude as gain (before dB — preserves dynamic range)
     //   3. Convert to dB, then map [-60 dB, 0 dB] → [0, 1]
+    let fft_size = hann_window.len();
     let fft_norm = 1.0 / fft_size as f32;
     let gain = amplitude.max(0.0001);
 
@@ -165,7 +165,7 @@ pub fn process_audio_frame(
             *band = (*band * g).min(1.0);
         }
     }
-    let volume: f32 = frame.iter().map(|&s| s * s).sum::<f32>() / fft_size as f32;
+    let volume: f32 = frame.iter().map(|&s| s * s).sum::<f32>() / hann_window.len() as f32;
     let rms_volume = volume.sqrt();
 
     // Beat detection — O(1) front removal via VecDeque
