@@ -844,14 +844,57 @@ VJs routinely want to capture browser windows, VLC, or other generative tools as
 
 ---
 
-### SG-6 — MIDI Timecode (MTC) receive
+### SG-6 — MIDI Timecode (MTC) receive ✅ COMPLETE
 
-**Crate**: `rustjay-control` (extension to `MidiManager`, feature `mtc`)  
+**Crate**: `rustjay-control` (new `MtcReceiver` type, feature `mtc`)  
 **Deps**: no new deps — MTC is decoded from raw MIDI quarter-frame messages
 
 MIDI Timecode is the standard sync protocol for locking to video editing software (Final Cut Pro, DaVinci Resolve, Premiere). Receiving MTC exposes SMPTE timecode (HH:MM:SS:FF) into `EngineState`, enabling frame-accurate effect automation synced to a video timeline.
 
 **Why it matters**: VJs working in hybrid live+video contexts (backing tracks, live cinema) need this. The existing MIDI infrastructure handles the wire; only a quarter-frame reassembly parser is needed.
+
+**What was built**:
+- `MtcFrameRate`, `SmpteTime`, `MtcState` types in `rustjay-core::state` (always compiled, no deps)
+- `SmpteTime::as_seconds_f64()` + `Display` (HH:MM:SS:FF)
+- `MtcDecoder` in `rustjay-control/src/midi/mtc.rs` (`#[cfg(feature = "mtc")]`) — bitmask reassembly of 8 quarter-frame nibbles; handles full-frame SysEx locate messages
+- `MtcReceiver` opens **all available MIDI ports simultaneously** (one `MidiInput` per port as the midir API requires); refreshes with a 5-second throttle to handle hot-plug (e.g. IAC Driver appearing after startup); decodes MTC on whichever port is sending it and populates `source_device`
+- 500 ms timeout via `MtcReceiver::tick()` clears `playing` on transport stop
+- `EngineState::mtc: MtcState` field updated each frame via `App::update_midi()` → `receiver.refresh(); receiver.tick(); shared.mtc = receiver.clone_state()`
+- MTC section displayed in the **Audio tab** (see SG-6b) as passive info regardless of active sync source
+- Feature propagation: `rustjay-control/mtc`, `rustjay-gui/mtc`, `rustjay-engine/mtc`; all four example crates forward `mtc = ["rustjay-engine/mtc"]`
+
+**Runtime checklist**:
+- ✅ Quarter-frame messages from DAW update `EngineState::mtc.position` in real time
+- ✅ Transport play/stop toggles `mtc.playing` within 500 ms
+- ✅ Full-frame SysEx locate updates position with `playing = false`
+- ✅ Audio tab shows position, frame rate, elapsed seconds, and source port name
+- ✅ All existing examples compile and run without change
+
+---
+
+### SG-6b — Sync source selector + LFO tempo fix ✅ COMPLETE
+
+**Crates**: `rustjay-core`, `rustjay-gui`, `rustjay-engine`, `rustjay-sync`
+
+Follow-on fixes and UX improvements made alongside SG-6.
+
+**What was built**:
+
+*Explicit sync source selection*
+- `SyncSource` enum (`Audio`, `AbletonLink`, `ProDj`) added to `rustjay-core::state` with `#[default] = Audio`; always compiled (no feature gates on variants)
+- `EngineState::sync_source: SyncSource` field drives `effective_bpm()` and `effective_beat_phase()` — replaced the old implicit priority chain that required `num_peers > 0` (which prevented solo Link use)
+- `GuiTab::Sync` removed from `GuiTab::all()`; sync source radio buttons folded into the **Audio tab** under "Tempo & Sync"; the Sync tab variant is kept for serialisation/`hidden_tabs` compatibility
+- LFO window header now shows active source: `Tempo: 128.0 BPM  (source: Ableton Link)`
+- Example feature forwarding: all four examples (`template`, `delta`, `waaaves`, `sputnik`) gained `link`, `prodj`, and `mtc` feature re-exports so `cargo run -p delta --features link` works
+
+*LFO beat-phase double-advance bug*
+- Root cause: `Lfo::update()` was adding the external `beat_phase` ramp to `self.phase` (which was already advancing at BPM rate), doubling the effective speed when Link's smooth 0→1 quantum ramp was active
+- Fix: removed the additive `beat_phase` from `synced_phase`; `beat_phase` is now used only as a **snap trigger** — when it wraps from ~1 to ~0 (quantum boundary), LFOs at ≤ 1-beat division snap `self.phase` to 0 for beat alignment
+- Added `last_beat_phase: f32` (serde-skipped) to `Lfo` struct for boundary detection
+
+*Ableton Link callback use-after-free (rusty_link bug)*
+- `rusty_link 0.4.9`'s `set_num_peers_callback` / `set_start_stop_callback` pass a raw pointer to the stack-local `closure` argument into the C++ Link library; the stack frame is freed when the function returns. When the Link ASIO background thread fires the callback on peer detection → SIGSEGV
+- Fix: rewrote `LinkManager` to be **callback-free** — `num_peers` polled via `link.num_peers()` and `is_playing` via `session.is_playing()` on the captured session state each frame; `Arc<Shared>` and both callbacks removed entirely
 
 ---
 

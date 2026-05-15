@@ -7,5 +7,7 @@ pub(crate) mod osc;
 pub(crate) mod web;
 
 pub use midi::{MidiManager, MidiState};
+#[cfg(feature = "mtc")]
+pub use midi::mtc::MtcReceiver;
 pub use osc::OscServer;
 pub use web::{WebServer, WebConfig, WebCommand};

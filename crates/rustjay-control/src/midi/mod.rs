@@ -5,6 +5,9 @@
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "mtc")]
+pub mod mtc;
+
 /// Commands for MIDI device and learn-mode control
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiCommand {
@@ -50,29 +53,28 @@ impl MidiMapping {
             dirty: false,
         }
     }
-    
+
     /// Update value from MIDI CC value (0-127)
     pub fn update_from_midi(&mut self, midi_value: u8) {
         let normalized = midi_value as f32 / 127.0;
         let new_value = self.min_value + normalized * (self.max_value - self.min_value);
-        // Only mark dirty if value actually changed significantly
         if (new_value - self.value).abs() > 0.001 {
             self.value = new_value;
             self.dirty = true;
         }
     }
-    
+
     /// Get the scaled value and clear dirty flag
     pub fn get_scaled_value(&mut self) -> f32 {
         self.dirty = false;
         self.value
     }
-    
+
     /// Peek value without clearing dirty flag
     pub fn peek_value(&self) -> f32 {
         self.value
     }
-    
+
     /// Check if value is dirty (has been updated)
     pub fn is_dirty(&self) -> bool {
         self.dirty
@@ -141,7 +143,7 @@ impl MidiState {
         self.learning_param_name = Some(param_name.to_string());
         log::info!("MIDI learn started for: {}", param_name);
     }
-    
+
     /// Cancel learning
     pub fn cancel_learning(&mut self) {
         self.learn_state = LearnState::Idle;
@@ -149,25 +151,20 @@ impl MidiState {
         self.learning_param_name = None;
         log::info!("MIDI learn cancelled");
     }
-    
+
     /// Complete learning with received CC
     pub fn complete_learning(&mut self, cc: u8, channel: u8) {
         if let (Some(path), Some(name)) = (&self.learning_param_path, &self.learning_param_name) {
-            // Check if this CC/channel is already mapped
             self.mappings.retain(|m| !(m.cc == cc && m.channel == channel));
-            
-            // Add new mapping with default range 0.0 - 1.0
             let mapping = MidiMapping::new(cc, channel, name, path, 0.0, 1.0);
             self.mappings.push(mapping);
-            
             log::info!("MIDI mapped: {} -> CC {} channel {}", name, cc, channel);
         }
-        
         self.learn_state = LearnState::Idle;
         self.learning_param_path = None;
         self.learning_param_name = None;
     }
-    
+
     /// Remove a mapping
     pub fn remove_mapping(&mut self, index: usize) {
         if index < self.mappings.len() {
@@ -175,7 +172,7 @@ impl MidiState {
             log::info!("Removed MIDI mapping: {}", mapping.name);
         }
     }
-    
+
     /// Update mapping range
     pub fn update_mapping_range(&mut self, index: usize, min: f32, max: f32) {
         if let Some(mapping) = self.mappings.get_mut(index) {
@@ -183,18 +180,15 @@ impl MidiState {
             mapping.max_value = max;
         }
     }
-    
+
     /// Handle incoming MIDI CC message
     pub fn handle_cc(&mut self, channel: u8, cc: u8, value: u8) {
         self.last_input = Some(MidiInputEvent { channel, cc, value });
-        
         match self.learn_state {
             LearnState::Waiting => {
-                // In learn mode, capture this CC
                 self.complete_learning(cc, channel);
             }
             _ => {
-                // Normal operation - update mapped parameters
                 for mapping in &mut self.mappings {
                     if mapping.cc == cc && mapping.channel == channel {
                         mapping.update_from_midi(value);
@@ -203,7 +197,7 @@ impl MidiState {
             }
         }
     }
-    
+
     /// Get current value for a parameter path (peek without clearing dirty)
     pub fn get_value(&self, param_path: &str) -> Option<f32> {
         self.mappings
@@ -211,12 +205,12 @@ impl MidiState {
             .find(|m| m.param_path == param_path)
             .map(|m| m.peek_value())
     }
-    
+
     /// Check if a parameter is currently mapped
     pub fn is_mapped(&self, param_path: &str) -> bool {
         self.mappings.iter().any(|m| m.param_path == param_path)
     }
-    
+
     /// Get mapping for a parameter
     pub fn get_mapping(&self, param_path: &str) -> Option<&MidiMapping> {
         self.mappings.iter().find(|m| m.param_path == param_path)
@@ -248,8 +242,6 @@ impl MidiManager {
 
     /// Check if the connected device is still available in the port list.
     /// Only performs the actual check at most once every 3 seconds.
-    /// Returns `Some(false)` when the device has been confirmed missing,
-    /// `Some(true)` when confirmed present, or `None` when the check was skipped.
     pub fn check_device_available_if_needed(&mut self) -> Option<bool> {
         if self.last_availability_check.elapsed().as_secs() < 3 {
             return None;
@@ -262,7 +254,7 @@ impl MidiManager {
         };
 
         let Some(name) = device_name else {
-            return Some(true); // not connected, nothing to check
+            return Some(true);
         };
 
         if let Ok(mut tmp) = MidiInput::new("RustJay MIDI Check") {
@@ -271,27 +263,23 @@ impl MidiManager {
                 .any(|p| tmp.port_name(p).ok().as_deref() == Some(name.as_str()));
             Some(available)
         } else {
-            Some(true) // assume present if we can't create a temporary input
+            Some(true)
         }
     }
-    
+
     /// Refresh list of available devices
     pub fn refresh_devices(&mut self) -> Vec<String> {
-        // Need to temporarily take the input to list ports
         if let Some(ref mut input) = self.input {
             let ports = input.ports();
             let device_names: Vec<String> = ports
                 .iter()
                 .filter_map(|p| input.port_name(p).ok())
                 .collect();
-            
             if let Ok(mut state) = self.state.lock() {
                 state.available_devices = device_names.clone();
             }
-            
             device_names
         } else {
-            // Recreate input if it was taken during connection
             if let Ok(mut input) = MidiInput::new("RustJay MIDI") {
                 input.ignore(Ignore::None);
                 let ports = input.ports();
@@ -299,11 +287,9 @@ impl MidiManager {
                     .iter()
                     .filter_map(|p| input.port_name(p).ok())
                     .collect();
-                
                 if let Ok(mut state) = self.state.lock() {
                     state.available_devices = device_names.clone();
                 }
-                
                 self.input = Some(input);
                 device_names
             } else {
@@ -311,97 +297,84 @@ impl MidiManager {
             }
         }
     }
-    
+
     /// Connect to a MIDI device by name
     pub fn connect(&mut self, device_name: &str) -> anyhow::Result<()> {
-        // Disconnect existing
         self.disconnect();
-        
+
         let input = self.input.take()
             .ok_or_else(|| anyhow::anyhow!("MIDI input not available"))?;
-        
+
         let ports = input.ports();
         let port = ports
             .into_iter()
-            .find(|p| {
-                input
-                    .port_name(p)
-                    .map(|n| n == device_name)
-                    .unwrap_or(false)
-            })
+            .find(|p| input.port_name(p).map(|n| n == device_name).unwrap_or(false))
             .ok_or_else(|| anyhow::anyhow!("MIDI device '{}' not found", device_name))?;
-        
+
         let state = Arc::clone(&self.state);
-        
+
         let conn = input.connect(
             &port,
             "rustjay-midi",
             move |_stamp, message, _| {
-                // Parse MIDI message
-                if message.len() >= 3 {
-                    let status = message[0];
-                    // CC message: status 0xB0 - 0xBF (channel 1-16)
-                    if (status & 0xF0) == 0xB0 {
-                        let channel = status & 0x0F;
-                        let cc = message[1];
-                        let value = message[2];
-                        
-                        if let Ok(mut state) = state.lock() {
-                            state.handle_cc(channel, cc, value);
-                        }
+                if message.is_empty() { return; }
+                let status = message[0];
+                // CC message: status 0xB0–0xBF
+                if (status & 0xF0) == 0xB0 && message.len() >= 3 {
+                    let channel = status & 0x0F;
+                    let cc      = message[1];
+                    let value   = message[2];
+                    if let Ok(mut state) = state.lock() {
+                        state.handle_cc(channel, cc, value);
                     }
                 }
             },
             (),
         ).map_err(|e| anyhow::anyhow!("MIDI connect error: {}", e))?;
-        
+
         self.connection = Some(conn);
-        
+
         if let Ok(mut state) = self.state.lock() {
             state.selected_device = Some(device_name.to_string());
             state.enabled = true;
         }
-        
+
         log::info!("Connected to MIDI device: {}", device_name);
         Ok(())
     }
-    
+
     /// Disconnect from current device
     pub fn disconnect(&mut self) {
         if let Some(conn) = self.connection.take() {
-            // Close connection and get back the MidiInput
             let _ = conn.close();
             log::info!("MIDI disconnected");
         }
-        
-        // Recreate the MidiInput for future connections
         if self.input.is_none() {
             if let Ok(mut input) = MidiInput::new("RustJay MIDI") {
                 input.ignore(Ignore::None);
                 self.input = Some(input);
             }
         }
-        
         if let Ok(mut state) = self.state.lock() {
             state.selected_device = None;
             state.enabled = false;
         }
     }
-    
+
     /// Start learning a parameter
     pub fn start_learn(&mut self, param_path: &str, param_name: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.start_learning(param_path, param_name);
         }
     }
-    
+
     /// Cancel learning
     pub fn cancel_learn(&mut self) {
         if let Ok(mut state) = self.state.lock() {
             state.cancel_learning();
         }
     }
-    
+
     /// Get shared state reference
     pub fn state(&self) -> Arc<Mutex<MidiState>> {
         Arc::clone(&self.state)

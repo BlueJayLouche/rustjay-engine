@@ -21,3 +21,6 @@ objc = "0.2"
 default = ["ndi", "webcam"]
 ndi     = ["rustjay-engine/ndi"]
 webcam  = ["rustjay-engine/webcam"]
+link    = ["rustjay-engine/link"]
+prodj   = ["rustjay-engine/prodj"]
+mtc     = ["rustjay-engine/mtc"]

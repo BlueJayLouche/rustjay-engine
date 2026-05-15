@@ -41,6 +41,7 @@ spout   = []
 v4l2    = []
 link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]
 prodj   = ["rustjay-sync/prodj", "rustjay-core/prodj", "rustjay-gui/prodj"]
+mtc     = ["rustjay-control/mtc", "rustjay-gui/mtc"]
 
 [profile.release]
 opt-level     = 3

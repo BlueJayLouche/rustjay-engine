@@ -8,6 +8,9 @@ repository = "https://github.com/BlueJayLouche/rustjay-engine"
 keywords = ["vj", "video", "midi", "osc", "websocket"]
 categories = ["graphics", "multimedia::video"]
 
+[features]
+mtc = []
+
 [dependencies]
 rustjay-core = { workspace = true }
 serde        = { workspace = true }

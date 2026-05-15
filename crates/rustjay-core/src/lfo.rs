@@ -184,6 +184,9 @@ pub struct Lfo {
     /// Current output value (-1.0 to 1.0), not serialized
     #[serde(skip)]
     pub output: f32,
+    /// Previous beat_phase sample — used to detect quantum-boundary crossings
+    #[serde(skip)]
+    last_beat_phase: f32,
 }
 
 impl Lfo {
@@ -208,6 +211,7 @@ impl Lfo {
             phase_offset: 0.0,
             phase: 0.0,
             output: 0.0,
+            last_beat_phase: 0.0,
         }
     }
     
@@ -238,44 +242,50 @@ impl Lfo {
         }
     }
     
-    /// Update LFO phase based on time/BPM
-    /// 
-    /// # Arguments
-    /// * `bpm` - Current BPM
-    /// * `delta_time` - Time since last frame in seconds
-    /// * `beat_phase` - Current beat phase (0-1) from tap tempo, for syncing at 0°
+    /// Update LFO phase based on time/BPM.
+    ///
+    /// `beat_phase` is a 0→1 ramp from the active sync source (Link quantum,
+    /// ProDJ bar, or audio beat detector).  It is used only as a snap trigger:
+    /// when it wraps from ~1 back to ~0 (a new quantum started) we realign
+    /// `self.phase` for sub-beat/single-beat divisions so the LFO stays
+    /// musically in phase.  It is NOT added to `self.phase` — doing so would
+    /// make the LFO run faster than the selected division because both
+    /// `self.phase` and `beat_phase` advance at the tempo rate.
     pub fn update(&mut self, bpm: f32, delta_time: f32, beat_phase: f32) {
         if !self.enabled || self.target == LfoTarget::None {
             self.output = 0.0;
             return;
         }
-        
+
+        let division = self.division.clamp(0, BEAT_DIVISIONS.len() - 1);
+
         // Calculate effective rate
         let rate_hz = if self.tempo_sync {
-            // Calculate frequency from BPM and beat division
-            let division = self.division.clamp(0, BEAT_DIVISIONS.len() - 1);
-            let beat_duration = 60.0 / bpm.max(1.0); // seconds per beat
+            let beat_duration = 60.0 / bpm.max(1.0);
             let cycle_duration = beat_duration * BEAT_DIVISIONS[division];
             1.0 / cycle_duration
         } else {
             self.rate.clamp(0.01, 20.0)
         };
-        
-        // Update phase
-        self.phase += rate_hz * delta_time;
-        self.phase = self.phase % 1.0;
-        
-        // Calculate phase with offset
-        // Phase offset: 0° = no offset, aligns with beat_phase at 0
+
+        // Snap to beat on quantum boundary crossing (beat_phase wrapped ≈ 1→0).
+        // Only snap for divisions ≤ 1 beat; longer cycles accumulate freely
+        // so they don't get disrupted on every bar.
+        if self.tempo_sync && beat_phase < self.last_beat_phase - 0.5 {
+            if BEAT_DIVISIONS[division] <= 1.0 {
+                self.phase = 0.0;
+            }
+        }
+        self.last_beat_phase = beat_phase;
+
+        // Accumulate phase at the correct rate
+        self.phase = (self.phase + rate_hz * delta_time) % 1.0;
+
+        // Apply static phase offset (degrees → 0-1)
         let offset_normalized = self.phase_offset / 360.0;
         let effective_phase = (self.phase + offset_normalized) % 1.0;
-        
-        // When phase_offset is 0, we want LFO to be at start of cycle when beat_phase is 0
-        // This means: effective_phase should align with beat_phase
-        let synced_phase = (effective_phase + beat_phase) % 1.0;
-        
-        // Calculate output
-        let raw_value = Self::calculate_value(synced_phase, self.waveform);
+
+        let raw_value = Self::calculate_value(effective_phase, self.waveform);
         self.output = raw_value * self.amplitude;
     }
     
@@ -283,6 +293,7 @@ impl Lfo {
     pub fn reset(&mut self) {
         self.phase = 0.0;
         self.output = 0.0;
+        self.last_beat_phase = 0.0;
     }
     
     /// Get the waveform value at a specific phase (for visualization)

@@ -98,24 +98,30 @@ The Rust bindings come directly from [`BlueJayLouche/syphon-rs`](https://github.
 
 ## Tempo sync
 
-The engine supports two external sync sources in addition to audio analysis BPM.
+The engine supports three tempo sources. The active source is chosen explicitly by the user at runtime — not by a priority chain.
 
 ### Enabling features
 
 ```toml
 [dependencies]
-rustjay-engine = { git = "https://github.com/BlueJayLouche/rustjay-engine", features = ["link", "prodj"] }
+rustjay-engine = { git = "https://github.com/BlueJayLouche/rustjay-engine", features = ["link", "prodj", "mtc"] }
 ```
 
-Enable one or both. The default build has neither — audio analysis is always available as a fallback.
+Enable any combination. The default build has none — audio beat detection is always available as a fallback.
 
-### Priority
+### Source selection
 
-When multiple sources are active the engine picks the highest-priority one:
+The **Audio tab** contains a "Tempo & Sync" section with a radio button for each compiled-in source:
 
-1. **Ableton Link** — if enabled and at least one peer is present
-2. **ProDJ Link** — if enabled and a master deck is present
-3. **Audio analysis** — always-on fallback
+| Source | What it uses |
+|--------|-------------|
+| **Audio / Tap Tempo** | Real-time beat detection from the audio input, or tap-tempo BPM |
+| **Ableton Link** | Joins the local Link session — syncs with Live, Serato, Traktor, etc. |
+| **ProDJ Link** | BPM, beat phase, and track metadata from CDJ/XDJ/DJM gear |
+
+Switching sources enables/disables the corresponding session in the background. The per-source detail panel (Link beat-phase bar + quantum slider, ProDJ deck list, etc.) appears inline.
+
+MIDI Timecode is always shown as passive info in the same section — it is a position reference, not a BPM source.
 
 ### Using sync in a plugin
 
@@ -131,12 +137,24 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 }
 ```
 
-The **Sync** tab in the control window lets users enable/disable each source, adjust the Link quantum, and see discovered ProDJ devices — no code changes required.
+These dispatch on `engine.sync_source` and return the correct values for whichever source is active.
+
+### MIDI Timecode (MTC)
+
+With the `mtc` feature the engine listens for SMPTE timecode on **all MIDI ports simultaneously** — no device selection needed. MIDI Timecode from any connected DAW (Bitwig, Logic, Resolve) is decoded and available in `EngineState::mtc`:
+
+```rust
+let pos = &engine.mtc.position; // SmpteTime { hours, minutes, seconds, frames, frame_rate }
+let elapsed = pos.as_seconds_f64();
+```
+
+The Audio tab shows the current position, frame rate (24/25/29.97/30 fps), and which MIDI port is sending.
 
 ### Build requirements
 
 - **`link` feature:** CMake ≥ 3.14 must be installed (`brew install cmake` / `apt install cmake`). Links against Ableton Link — the resulting binary is **GPL-2.0+**.
 - **`prodj` feature:** No extra system dependencies. Sends LAN broadcast packets and binds UDP ports 50000/50002 — get operator approval before using on a production DJ network.
+- **`mtc` feature:** No extra system dependencies. Relies on `midir` (already a transitive dep).
 
 ## Architecture notes
 
@@ -159,6 +177,7 @@ All I/O device enumeration (webcam, audio, NDI) runs in a background thread so t
 | 4 | ✅ | API stabilisation, docs, example gallery |
 | 5 | ✅ | Indexed mesh geometry + vertex-shader displacement (sputnik) |
 | 6 | ✅ | Ableton Link + ProDJ Link tempo sync |
+| SG-6 | ✅ | MIDI Timecode receive, explicit sync source selector, LFO beat-phase fix |
 
 Stretch goals: hot-reload plugins, GLSL/ISF transpiler, timeline/sequencer.
 

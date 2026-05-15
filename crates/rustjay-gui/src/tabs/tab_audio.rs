@@ -1,5 +1,5 @@
 use crate::control_gui::ControlGui;
-use rustjay_core::AudioCommand;
+use rustjay_core::{AudioCommand, SyncSource};
 
 impl ControlGui {
     /// Build the Audio tab
@@ -22,7 +22,6 @@ impl ControlGui {
         // Audio Device Selection
         ui.text_colored([0.0, 1.0, 1.0, 1.0], "Input Device");
 
-        // Refresh button
         if ui.button("Refresh Audio Devices") {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.audio_command = AudioCommand::RefreshDevices;
@@ -30,11 +29,9 @@ impl ControlGui {
 
         ui.spacing();
 
-        // Device dropdown
         if !self.audio_devices.is_empty() {
             let device_names: Vec<&str> = self.audio_devices.iter().map(|s| s.as_str()).collect();
 
-            // Find current selection index
             if let Some(ref current) = selected_device {
                 if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
                     self.selected_audio_device = idx;
@@ -47,7 +44,6 @@ impl ControlGui {
                 state.audio_command = AudioCommand::SelectDevice(device_name.unwrap_or_default());
             }
 
-            // Show currently selected
             if let Some(ref device) = selected_device {
                 ui.text(format!("Active: {}", device));
             }
@@ -73,7 +69,6 @@ impl ControlGui {
         ui.spacing();
 
         if enabled {
-            // Get additional audio settings
             let (mut normalize, mut pink_noise, current_fft_size) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 (state.audio.normalize, state.audio.pink_noise_shaping, state.audio.fft_size)
@@ -139,27 +134,160 @@ impl ControlGui {
             ui.separator();
             ui.spacing();
 
-            // Tap Tempo section
-            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Tempo");
+            // ── Tempo & Sync ───────────────────────────────────────────────────
+            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Tempo & Sync");
 
-            let (bpm, tap_info) = {
+            let mut sync_source = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.audio.bpm, state.audio.tap_tempo_info.clone())
+                state.sync_source
             };
 
-            ui.text(format!("BPM: {:.1}", bpm));
+            // Source selector
+            let sources: &[(&str, SyncSource)] = &[
+                ("Audio / Tap Tempo", SyncSource::Audio),
+                #[cfg(feature = "link")]
+                ("Ableton Link", SyncSource::AbletonLink),
+                #[cfg(feature = "prodj")]
+                ("ProDJ Link", SyncSource::ProDj),
+            ];
 
-            // Tap tempo button
-            let _btn_color = ui.push_style_color(imgui::StyleColor::Button, [0.8, 0.3, 0.3, 1.0]);
-            let _btn_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.9, 0.4, 0.4, 1.0]);
-            let _btn_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [1.0, 0.5, 0.5, 1.0]);
-
-            if ui.button_with_size("TAP", [60.0, 30.0]) {
-                self.handle_tap_tempo();
+            for &(label, variant) in sources {
+                let mut selected = sync_source == variant;
+                if ui.radio_button(label, &mut selected, true) && selected {
+                    sync_source = variant;
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.sync_source = variant;
+                    // Route enable/disable commands through the same command path as
+                    // before — this lets process_link_commands set link.enabled on the
+                    // NEXT frame so link.enable() is never called with the state lock held.
+                    #[cfg(feature = "link")]
+                    {
+                        state.link_command = if variant == SyncSource::AbletonLink {
+                            rustjay_core::LinkCommand::Enable
+                        } else {
+                            rustjay_core::LinkCommand::Disable
+                        };
+                    }
+                    #[cfg(feature = "prodj")]
+                    {
+                        state.prodj_command = if variant == SyncSource::ProDj {
+                            rustjay_core::ProDjCommand::Start
+                        } else {
+                            rustjay_core::ProDjCommand::Stop
+                        };
+                    }
+                }
             }
 
-            ui.same_line();
-            ui.text_disabled(&tap_info);
+            ui.spacing();
+
+            // Per-source live info + tap tempo
+            match sync_source {
+                SyncSource::Audio => {
+                    let (bpm, tap_info) = {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        (state.audio.bpm, state.audio.tap_tempo_info.clone())
+                    };
+                    ui.text(format!("BPM: {:.1}", bpm));
+
+                    let _btn_color = ui.push_style_color(imgui::StyleColor::Button, [0.8, 0.3, 0.3, 1.0]);
+                    let _btn_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.9, 0.4, 0.4, 1.0]);
+                    let _btn_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [1.0, 0.5, 0.5, 1.0]);
+
+                    if ui.button_with_size("TAP", [60.0, 30.0]) {
+                        self.handle_tap_tempo();
+                    }
+                    ui.same_line();
+                    ui.text_disabled(&tap_info);
+                }
+
+                #[cfg(feature = "link")]
+                SyncSource::AbletonLink => {
+                    let (link_peers, link_bpm, link_phase, mut link_quantum, link_playing) = {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        (
+                            state.link.num_peers,
+                            state.link.bpm,
+                            state.link.beat_phase,
+                            state.link.quantum,
+                            state.link.is_playing,
+                        )
+                    };
+
+                    ui.text(format!("BPM: {:.2}  |  Peers: {}  |  Playing: {}", link_bpm, link_peers, if link_playing { "Yes" } else { "No" }));
+                    ui.text("Beat phase");
+                    imgui::ProgressBar::new(link_phase)
+                        .overlay_text(format!("{:.0}%", link_phase * 100.0))
+                        .build(ui);
+
+                    let mut quantum_f32 = link_quantum as f32;
+                    if ui.slider("Quantum", 1.0_f32, 16.0_f32, &mut quantum_f32) {
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.link.quantum = quantum_f32 as f64;
+                        state.link_command = rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
+                    }
+                }
+
+                #[cfg(feature = "prodj")]
+                SyncSource::ProDj => {
+                    let (prodj_devices, prodj_master_bpm, prodj_artist, prodj_title) = {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        (
+                            state.prodj.devices.clone(),
+                            state.prodj.master_bpm,
+                            state.prodj.current_track_artist.clone(),
+                            state.prodj.current_track_title.clone(),
+                        )
+                    };
+
+                    ui.text(format!("Master BPM: {:.2}", prodj_master_bpm));
+                    if !prodj_artist.is_empty() || !prodj_title.is_empty() {
+                        ui.text(format!("Track: {} - {}", prodj_artist, prodj_title));
+                    }
+                    if !prodj_devices.is_empty() {
+                        for device in &prodj_devices {
+                            let master_tag = if device.is_master { " [MASTER]" } else { "" };
+                            let playing_tag = if device.is_playing { "▶" } else { "⏸" };
+                            ui.text(format!(
+                                "{} Deck {}: {}{} | BPM: {:.2}",
+                                playing_tag, device.device_id, device.name, master_tag,
+                                device.bpm.unwrap_or(0.0)
+                            ));
+                        }
+                    } else {
+                        ui.text_disabled("No devices discovered yet...");
+                    }
+                }
+
+                #[allow(unreachable_patterns)]
+                _ => { ui.text_disabled("Selected source is not compiled in."); }
+            }
+
+            // MTC — always shown as passive info regardless of sync source
+            #[cfg(feature = "mtc")]
+            {
+                ui.spacing();
+                ui.text_colored([0.0, 1.0, 1.0, 1.0], "MIDI Timecode (MTC)");
+                let (running, playing, position, source) = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (state.mtc.running, state.mtc.playing, state.mtc.position, state.mtc.source_device.clone())
+                };
+                let (status_color, status_text) = if playing {
+                    ([0.0_f32, 1.0, 0.0, 1.0], "Playing")
+                } else if running {
+                    ([1.0_f32, 0.8, 0.0, 1.0], "Stopped")
+                } else {
+                    ([0.5_f32, 0.5, 0.5, 1.0], "No signal")
+                };
+                ui.text("Status:");
+                ui.same_line();
+                ui.text_colored(status_color, status_text);
+                if !source.is_empty() {
+                    ui.text(format!("Source:  {}", source));
+                }
+                ui.text(format!("Position: {}  [{}]", position, position.frame_rate.name()));
+                ui.text_disabled("Listening on all MIDI ports automatically.");
+            }
 
             ui.spacing();
             ui.separator();
@@ -168,12 +296,11 @@ impl ControlGui {
             // FFT visualization
             ui.text("Frequency Bands");
             let band_names = ["Sub Bass", "Bass", "Low Mid", "Mid", "High Mid", "High", "Very High", "Presence"];
-            for (_i, (&value, name)) in fft.iter().zip(band_names.iter()).enumerate() {
+            for (&value, name) in fft.iter().zip(band_names.iter()) {
                 let width = 200.0 * value;
                 ui.text(format!("{}", name));
                 ui.same_line();
                 ui.text(format!(": {:.2}", value));
-                // Draw a simple bar
                 let draw_list = ui.get_window_draw_list();
                 let pos = ui.cursor_screen_pos();
                 draw_list.add_rect(
@@ -201,8 +328,6 @@ impl ControlGui {
 
     /// Build the audio routing section in the Audio tab
     pub(crate) fn build_audio_routing_section(&mut self, ui: &imgui::Ui) {
-        
-
         ui.text_colored([0.0, 1.0, 1.0, 1.0], "Audio Reactivity Routing");
 
         let (routing_enabled, show_window, _can_add_route) = {
@@ -211,7 +336,6 @@ impl ControlGui {
             (routing.enabled, routing.show_window, routing.matrix.can_add_route())
         };
 
-        // Enable/disable toggle
         let mut enabled = routing_enabled;
         if ui.checkbox("Enable Audio Routing", &mut enabled) {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -225,7 +349,6 @@ impl ControlGui {
 
         ui.same_line();
 
-        // Open routing window button
         let mut show = show_window;
         if ui.button("Open Routing Matrix") {
             show = !show;
@@ -233,7 +356,6 @@ impl ControlGui {
             state.audio_routing.show_window = show;
         }
 
-        // Show current routes summary
         let route_count = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.audio_routing.matrix.len()
@@ -242,7 +364,6 @@ impl ControlGui {
         if route_count > 0 {
             ui.text(format!("Active routes: {}", route_count));
 
-            // Show a mini list of routes
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             for (i, route) in state.audio_routing.matrix.routes().iter().enumerate() {
                 if !route.enabled { continue; }
@@ -251,7 +372,7 @@ impl ControlGui {
                     route.target.name(),
                     route.amount * 100.0
                 ));
-                if i >= 3 { // Limit to 3 lines
+                if i >= 3 {
                     let remaining = route_count - 4;
                     if remaining > 0 {
                         ui.text_disabled(format!("  ... and {} more", remaining));
@@ -263,7 +384,6 @@ impl ControlGui {
             ui.text_disabled("No active routes. Click 'Open Routing Matrix' to add.");
         }
 
-        // Build routing window if shown (lock is already dropped at this point)
         if show {
             self.build_routing_window(ui);
         }
@@ -275,7 +395,6 @@ impl ControlGui {
 
         let mut is_open = true;
 
-        // Build dynamic target list from descriptors
         let target_list = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             ModulationTarget::all_for(&state.param_descriptors)
@@ -288,7 +407,6 @@ impl ControlGui {
             .size([450.0, 550.0], imgui::Condition::FirstUseEver)
             .opened(&mut is_open)
             .build(|| {
-                // Get current state
                 let (can_add, route_count, max_routes) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     let routing = &state.audio_routing;
@@ -298,36 +416,27 @@ impl ControlGui {
                 ui.text(format!("Routes: {}/{}", route_count, max_routes));
                 ui.same_line();
 
-                // Clear all button
                 if ui.button("Clear All") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio_routing.matrix.clear();
                 }
 
                 ui.separator();
-
-                // Add new route section
                 ui.text_colored([0.0, 1.0, 1.0, 1.0], "Add New Route");
 
-                // Get selections
                 let (mut band_idx, mut target_idx) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     (state.audio_routing.selected_band, state.audio_routing.selected_target)
                 };
 
-                // Clamp target_idx if target list shrank
                 if target_idx >= target_list.len() && !target_list.is_empty() {
                     target_idx = target_list.len() - 1;
                 }
 
-                // Band selection
                 let bands: Vec<&str> = FftBand::all().iter().map(|b| b.name()).collect();
                 ui.combo_simple_string("Band##new", &mut band_idx, &bands);
-
-                // Target selection — DYNAMIC
                 ui.combo_simple_string("Target##new", &mut target_idx, &target_refs);
 
-                // Update selections
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio_routing.selected_band = band_idx;
@@ -336,7 +445,6 @@ impl ControlGui {
 
                 ui.same_line();
 
-                // Add button
                 let can_add = can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
                     if ui.button("Add Route") {
@@ -352,11 +460,8 @@ impl ControlGui {
                 }
 
                 ui.separator();
-
-                // Existing routes list
                 ui.text_colored([0.0, 1.0, 1.0, 1.0], "Active Routes");
 
-                // We need to collect route data first to avoid borrow issues
                 let routes_data: Vec<_> = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio_routing.matrix.routes().iter().map(|r| {
@@ -367,7 +472,6 @@ impl ControlGui {
                 for (id, band, target, amount, attack, release, enabled, current) in &routes_data {
                     let _id_token = ui.push_id(format!("route_{}", *id));
 
-                    // Enable/disable checkbox
                     let mut is_enabled = *enabled;
                     if ui.checkbox("##enabled", &mut is_enabled) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -377,21 +481,16 @@ impl ControlGui {
                     }
                     ui.same_line();
 
-                    // Route info
                     ui.text(format!("{} → {}", band.short_name(), target.name()));
-
-                    // Current value indicator
                     ui.same_line();
                     ui.text_colored([0.0, 1.0, 0.0, 1.0], format!("{:.2}", current));
-
-                    // Delete button
                     ui.same_line();
+
                     if ui.button("X") {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.audio_routing.matrix.remove_route(*id);
                     }
 
-                    // Amount slider
                     let mut amt = *amount;
                     if ui.slider("Amount", -1.0, 1.0, &mut amt) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -400,7 +499,6 @@ impl ControlGui {
                         }
                     }
 
-                    // Attack/Release sliders
                     ui.columns(2, "attack_release", false);
                     let mut atk = *attack;
                     if ui.slider("Attack", 0.001, 1.0, &mut atk) {
@@ -420,7 +518,6 @@ impl ControlGui {
                     ui.columns(1, "", false);
 
                     ui.separator();
-                    // _id_token auto-pops when dropped
                 }
 
                 if routes_data.is_empty() {
@@ -428,7 +525,6 @@ impl ControlGui {
                 }
             });
 
-        // Update window visibility
         if !is_open {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.audio_routing.show_window = false;
@@ -446,7 +542,6 @@ impl ControlGui {
 
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Clear taps if it's been too long since last tap (2 seconds)
         if now - state.audio.last_tap_time > 2.0 {
             state.audio.tap_times.clear();
             state.audio.tap_tempo_info = "Reset: new tempo sequence".to_string();
@@ -454,29 +549,24 @@ impl ControlGui {
             state.audio.tap_tempo_info = format!("{} taps recorded", state.audio.tap_times.len() + 1);
         }
 
-        // Add tap time
         state.audio.tap_times.push(now);
         state.audio.last_tap_time = now;
 
-        // Keep only last 8 taps for average
         if state.audio.tap_times.len() > 8 {
             state.audio.tap_times.remove(0);
         }
 
-        // Reset beat phase on every tap (global sync)
         state.audio.beat_phase = 0.0;
 
-        // Calculate BPM from tap intervals (need at least 4 taps for accuracy)
         if state.audio.tap_times.len() >= 4 {
             let mut intervals = Vec::new();
             for i in 1..state.audio.tap_times.len() {
                 intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i-1]);
             }
 
-            // Average interval
             let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
 
-            if avg_interval > 0.1 && avg_interval < 3.0 { // Reasonable range (20-600 BPM)
+            if avg_interval > 0.1 && avg_interval < 3.0 {
                 let new_bpm = (60.0 / avg_interval) as f32;
                 state.audio.bpm = new_bpm.clamp(40.0, 200.0);
                 state.audio.tap_tempo_info = format!("BPM: {:.1}", state.audio.bpm);

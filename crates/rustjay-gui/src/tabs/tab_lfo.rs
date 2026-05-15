@@ -51,11 +51,11 @@ impl ControlGui {
                 ui.text_disabled("Each LFO can modulate parameters declared by the active effect");
                 ui.separator();
 
-                let bpm = {
+                let (bpm, sync_source_name) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio.bpm
+                    (state.effective_bpm(), state.effective_sync_source())
                 };
-                ui.text(&format!("Tempo: {:.1} BPM", bpm));
+                ui.text(&format!("Tempo: {:.1} BPM  (source: {})", bpm, sync_source_name));
                 ui.spacing();
 
                 let waveforms = ["Sine", "Triangle", "Ramp Up", "Ramp Down", "Square"];

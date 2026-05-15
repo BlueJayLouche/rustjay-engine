@@ -233,6 +233,18 @@ impl<P: EffectPlugin> App<P> {
                     }
                 }
             }
+
+        }
+
+        // MTC: refresh port list, age out playing flag, copy state into EngineState.
+        #[cfg(feature = "mtc")]
+        if let Some(ref mut receiver) = self.mtc_receiver {
+            receiver.refresh();
+            receiver.tick();
+            let mtc = receiver.clone_state();
+            if let Ok(mut shared) = self.shared_state.lock() {
+                shared.mtc = mtc;
+            }
         }
     }
 

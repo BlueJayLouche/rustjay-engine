@@ -2,6 +2,8 @@
 
 use rustjay_audio::AudioAnalyzer;
 use rustjay_control::{MidiManager, MidiState};
+#[cfg(feature = "mtc")]
+use rustjay_control::MtcReceiver;
 use rustjay_control::OscServer;
 use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 use rustjay_core::EngineState;
@@ -76,6 +78,8 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) link_manager: Option<rustjay_sync::LinkManager>,
     #[cfg(feature = "prodj")]
     pub(crate) prodj_manager: Option<rustjay_sync::ProDjManager>,
+    #[cfg(feature = "mtc")]
+    pub(crate) mtc_receiver: Option<MtcReceiver>,
 
     pub(crate) config_manager: ConfigManager,
 
@@ -219,6 +223,8 @@ impl<P: EffectPlugin> App<P> {
             link_manager: Some(rustjay_sync::LinkManager::new()),
             #[cfg(feature = "prodj")]
             prodj_manager: Some(rustjay_sync::ProDjManager::new()),
+            #[cfg(feature = "mtc")]
+            mtc_receiver: Some(MtcReceiver::new()),
             shift_pressed: false,
             output_occluded: false,
             control_visible: true,

@@ -1,53 +1,29 @@
 //! Ableton Link integration.
 
 use rustjay_core::LinkState;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 
 /// Manages an Ableton Link session and copies live tempo data into
 /// [`LinkState`] each frame.
 ///
 /// Construct once and call [`update`](Self::update) every frame.
+/// All data is polled directly from the Link session state — no background
+/// callbacks are used, which avoids the use-after-free that rusty_link's
+/// callback API is susceptible to on its current version.
 pub struct LinkManager {
     link: rusty_link::AblLink,
-    shared: Arc<Shared>,
     last_enabled: bool,
     quantum: f64,
-}
-
-struct Shared {
-    num_peers: AtomicUsize,
-    is_playing: AtomicBool,
 }
 
 impl LinkManager {
     /// Create a new Link manager with an initial tempo of 120 BPM.
     pub fn new() -> Self {
-        let shared = Arc::new(Shared {
-            num_peers: AtomicUsize::new(0),
-            is_playing: AtomicBool::new(false),
-        });
-
-        let mut link = rusty_link::AblLink::new(120.0);
+        let link = rusty_link::AblLink::new(120.0);
         link.enable(false);
         link.enable_start_stop_sync(true);
 
-        {
-            let s = Arc::clone(&shared);
-            link.set_num_peers_callback(move |n| {
-                s.num_peers.store(n as usize, Ordering::Relaxed);
-            });
-        }
-        {
-            let s = Arc::clone(&shared);
-            link.set_start_stop_callback(move |playing| {
-                s.is_playing.store(playing, Ordering::Relaxed);
-            });
-        }
-
         Self {
             link,
-            shared,
             last_enabled: false,
             quantum: 4.0,
         }
@@ -89,7 +65,6 @@ impl LinkManager {
         let bpm   = session.tempo();
         let phase = session.phase_at_time(time, self.quantum);
 
-        // Normalize phase to 0–1
         let normalized_phase = if self.quantum > 0.0 {
             (phase / self.quantum).rem_euclid(1.0) as f32
         } else {
@@ -98,8 +73,8 @@ impl LinkManager {
 
         state.bpm        = bpm as f32;
         state.beat_phase = normalized_phase;
-        state.num_peers  = self.shared.num_peers.load(Ordering::Relaxed);
-        state.is_playing = self.shared.is_playing.load(Ordering::Relaxed);
+        state.num_peers  = self.link.num_peers() as usize;
+        state.is_playing = session.is_playing();
     }
 }
 

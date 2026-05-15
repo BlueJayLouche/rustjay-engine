@@ -1,137 +1,169 @@
 use crate::control_gui::ControlGui;
-#[cfg(feature = "link")]
-use rustjay_core::LinkCommand;
-#[cfg(feature = "prodj")]
-use rustjay_core::ProDjCommand;
+use rustjay_core::SyncSource;
 
 impl ControlGui {
-    /// Build the Sync tab (Ableton Link + ProDJ Link).
-    #[allow(unused_variables, unused_mut, unused_imports)]
+    /// Build the Sync tab — source selector + per-source details.
+    #[allow(unused_variables, unused_mut)]
     pub(crate) fn build_sync_tab(&mut self, ui: &imgui::Ui) {
-        let (
-            sync_source,
-            mut link_enabled,
-            link_peers,
-            link_bpm,
-            link_phase,
-            mut link_quantum,
-            link_playing,
-            mut prodj_enabled,
-            prodj_devices,
-            prodj_master_bpm,
-            prodj_artist,
-            prodj_title,
-        ) = {
+        // ── Source selector ──────────────────────────────────────────────────
+        let mut sync_source = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                state.effective_sync_source().to_string(),
-                state.link.enabled,
-                state.link.num_peers,
-                state.link.bpm,
-                state.link.beat_phase,
-                state.link.quantum,
-                state.link.is_playing,
-                state.prodj.enabled,
-                state.prodj.devices.clone(),
-                state.prodj.master_bpm,
-                state.prodj.current_track_artist.clone(),
-                state.prodj.current_track_title.clone(),
-            )
+            state.sync_source
         };
 
-        // Suppress unused warnings when features are disabled.
-        #[cfg(not(feature = "prodj"))]
-        let _ = (&prodj_master_bpm, &prodj_artist, &prodj_title);
+        ui.text_colored([0.0, 1.0, 1.0, 1.0], "Sync Source");
 
-        ui.text_colored([0.0, 1.0, 1.0, 1.0], "Tempo Sync");
-        ui.text(format!("Current source: {}", sync_source));
+        let sources: &[(&str, SyncSource)] = &[
+            ("Audio / Tap Tempo", SyncSource::Audio),
+            #[cfg(feature = "link")]
+            ("Ableton Link", SyncSource::AbletonLink),
+            #[cfg(feature = "prodj")]
+            ("ProDJ Link", SyncSource::ProDj),
+        ];
+
+        for &(label, variant) in sources {
+            let mut selected = sync_source == variant;
+            if ui.radio_button(label, &mut selected, true) && selected {
+                sync_source = variant;
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.sync_source = variant;
+            }
+        }
+
         ui.separator();
 
-        // ── Ableton Link ──
-        #[cfg(feature = "link")]
-        {
-            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Ableton Link");
-            if ui.checkbox("Enable Link", &mut link_enabled) {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.link_command = if link_enabled {
-                    LinkCommand::Enable
-                } else {
-                    LinkCommand::Disable
+        // ── Per-source detail panels ─────────────────────────────────────────
+        match sync_source {
+            SyncSource::Audio => {
+                let bpm = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.audio.bpm
                 };
+                ui.text_colored([0.0, 1.0, 1.0, 1.0], "Audio / Tap Tempo");
+                ui.text(format!("BPM: {:.2}", bpm));
+                ui.text_disabled("Use the Tap Tempo button or audio beat detection.");
             }
 
-            ui.text(format!("Peers: {}", link_peers));
-            ui.text(format!("BPM: {:.2}", link_bpm));
-            ui.text(format!("Playing: {}", if link_playing { "Yes" } else { "No" }));
-
-            // Beat phase progress bar
-            ui.text("Beat phase");
-            imgui::ProgressBar::new(link_phase)
-                .overlay_text(format!("{:.0}%", link_phase * 100.0))
-                .build(ui);
-
-            let mut quantum_f32 = link_quantum as f32;
-            if ui.slider("Quantum", 1.0_f32, 16.0_f32, &mut quantum_f32) {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.link_command = LinkCommand::SetQuantum(quantum_f32 as f64);
-            }
-
-            ui.separator();
-        }
-
-        #[cfg(not(feature = "link"))]
-        {
-            ui.text_disabled("Ableton Link support not compiled in.");
-            ui.text_disabled("Enable the 'link' feature to use Link sync.");
-            ui.separator();
-        }
-
-        // ── ProDJ Link ──
-        #[cfg(feature = "prodj")]
-        {
-            ui.text_colored([0.0, 1.0, 1.0, 1.0], "ProDJ Link");
-            if ui.checkbox("Enable ProDJ Link", &mut prodj_enabled) {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.prodj_command = if prodj_enabled {
-                    ProDjCommand::Start
-                } else {
-                    ProDjCommand::Stop
+            #[cfg(feature = "link")]
+            SyncSource::AbletonLink => {
+                let (link_peers, link_bpm, link_phase, mut link_quantum, link_playing) = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        state.link.num_peers,
+                        state.link.bpm,
+                        state.link.beat_phase,
+                        state.link.quantum,
+                        state.link.is_playing,
+                    )
                 };
-            }
 
-            ui.text(format!("Master BPM: {:.2}", prodj_master_bpm));
+                ui.text_colored([0.0, 1.0, 1.0, 1.0], "Ableton Link");
+                ui.text(format!("Peers: {}", link_peers));
+                ui.text(format!("BPM: {:.2}", link_bpm));
+                ui.text(format!("Playing: {}", if link_playing { "Yes" } else { "No" }));
 
-            if !prodj_artist.is_empty() || !prodj_title.is_empty() {
-                ui.text(format!("Track: {} - {}", prodj_artist, prodj_title));
-            }
+                ui.text("Beat phase");
+                imgui::ProgressBar::new(link_phase)
+                    .overlay_text(format!("{:.0}%", link_phase * 100.0))
+                    .build(ui);
 
-            // Device list
-            if !prodj_devices.is_empty() {
-                ui.text("Discovered decks");
-                for device in &prodj_devices {
-                    let master_tag = if device.is_master { " [MASTER]" } else { "" };
-                    let playing_tag = if device.is_playing { "▶" } else { "⏸" };
-                    ui.text(format!(
-                        "{} Deck {}: {}{} | BPM: {:.2}",
-                        playing_tag,
-                        device.device_id,
-                        device.name,
-                        master_tag,
-                        device.bpm.unwrap_or(0.0)
-                    ));
+                let mut quantum_f32 = link_quantum as f32;
+                if ui.slider("Quantum", 1.0_f32, 16.0_f32, &mut quantum_f32) {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.link.quantum = quantum_f32 as f64;
+                    #[cfg(feature = "link")]
+                    {
+                        state.link_command = rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
+                    }
                 }
-            } else if prodj_enabled {
-                ui.text_disabled("No devices discovered yet...");
             }
 
-            ui.separator();
+            #[cfg(feature = "prodj")]
+            SyncSource::ProDj => {
+                let (prodj_devices, prodj_master_bpm, prodj_artist, prodj_title) = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        state.prodj.devices.clone(),
+                        state.prodj.master_bpm,
+                        state.prodj.current_track_artist.clone(),
+                        state.prodj.current_track_title.clone(),
+                    )
+                };
+
+                ui.text_colored([0.0, 1.0, 1.0, 1.0], "ProDJ Link");
+                ui.text(format!("Master BPM: {:.2}", prodj_master_bpm));
+
+                if !prodj_artist.is_empty() || !prodj_title.is_empty() {
+                    ui.text(format!("Track: {} - {}", prodj_artist, prodj_title));
+                }
+
+                if !prodj_devices.is_empty() {
+                    ui.text("Discovered decks");
+                    for device in &prodj_devices {
+                        let master_tag = if device.is_master { " [MASTER]" } else { "" };
+                        let playing_tag = if device.is_playing { "▶" } else { "⏸" };
+                        ui.text(format!(
+                            "{} Deck {}: {}{} | BPM: {:.2}",
+                            playing_tag,
+                            device.device_id,
+                            device.name,
+                            master_tag,
+                            device.bpm.unwrap_or(0.0)
+                        ));
+                    }
+                } else {
+                    ui.text_disabled("No devices discovered yet...");
+                }
+            }
+
+            // Fallback when a variant is selected but its feature is off (shouldn't
+            // happen at runtime, but keeps the exhaustiveness check happy).
+            #[allow(unreachable_patterns)]
+            _ => {
+                ui.text_disabled("Selected source is not compiled in.");
+            }
         }
 
-        #[cfg(not(feature = "prodj"))]
+        // ── MIDI Timecode ────────────────────────────────────────────────────
+        ui.separator();
+        ui.text_colored([0.0, 1.0, 1.0, 1.0], "MIDI Timecode (MTC)");
+
+        #[cfg(feature = "mtc")]
         {
-            ui.text_disabled("ProDJ Link support not compiled in.");
-            ui.text_disabled("Enable the 'prodj' feature to use ProDJ sync.");
-            ui.separator();
+            let (running, playing, position, source) = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                (
+                    state.mtc.running,
+                    state.mtc.playing,
+                    state.mtc.position,
+                    state.mtc.source_device.clone(),
+                )
+            };
+
+            let (status_color, status_text) = if playing {
+                ([0.0_f32, 1.0, 0.0, 1.0], "Playing")
+            } else if running {
+                ([1.0_f32, 0.8, 0.0, 1.0], "Stopped")
+            } else {
+                ([0.5_f32, 0.5, 0.5, 1.0], "No signal")
+            };
+
+            ui.text("Status:");
+            ui.same_line();
+            ui.text_colored(status_color, status_text);
+
+            if !source.is_empty() {
+                ui.text(format!("Source:    {}", source));
+            }
+            ui.text(format!("Position:  {}  [{}]", position, position.frame_rate.name()));
+            ui.text(format!("Elapsed:   {:.3}s", position.as_seconds_f64()));
+            ui.text_disabled("Listening on all MIDI ports automatically.");
+        }
+
+        #[cfg(not(feature = "mtc"))]
+        {
+            ui.text_disabled("MIDI Timecode support not compiled in.");
+            ui.text_disabled("Enable the 'mtc' feature to receive MTC.");
         }
     }
 }

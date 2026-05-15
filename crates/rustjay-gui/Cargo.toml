@@ -32,3 +32,4 @@ ndi     = ["rustjay-core/ndi"]
 
 link   = ["rustjay-core/link"]
 prodj  = ["rustjay-core/prodj"]
+mtc    = ["rustjay-control/mtc"]

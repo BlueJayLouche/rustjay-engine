@@ -338,6 +338,29 @@ impl HsbParams {
     pub fn reset(&mut self) { *self = Self::default(); }
 }
 
+/// Selects which external source drives the engine's tempo and beat phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SyncSource {
+    /// Audio beat detection and tap tempo. Default.
+    #[default]
+    Audio,
+    /// Ableton Link — joins a shared Link session.
+    AbletonLink,
+    /// ProDJ Link — reads tempo from Pioneer CDJ/XDJ gear.
+    ProDj,
+}
+
+impl SyncSource {
+    /// Human-readable label for UI display.
+    pub fn name(self) -> &'static str {
+        match self {
+            SyncSource::Audio       => "Audio / Tap Tempo",
+            SyncSource::AbletonLink => "Ableton Link",
+            SyncSource::ProDj       => "ProDJ Link",
+        }
+    }
+}
+
 /// Live state of Ableton Link sync.
 #[derive(Debug, Clone)]
 pub struct LinkState {
@@ -381,6 +404,101 @@ pub struct CdjDevice {
     pub is_master: bool,
     /// Current BPM reported by the deck, if available.
     pub bpm: Option<f32>,
+}
+
+/// SMPTE frame rate reported by an MTC source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MtcFrameRate {
+    /// 24 frames per second.
+    Fps24,
+    /// 25 frames per second.
+    Fps25,
+    /// 29.97 frames per second, drop-frame.
+    Fps2997Drop,
+    /// 30 frames per second.
+    Fps30,
+}
+
+impl MtcFrameRate {
+    /// Nominal frames per second as a float.
+    pub fn fps(self) -> f32 {
+        match self {
+            MtcFrameRate::Fps24       => 24.0,
+            MtcFrameRate::Fps25       => 25.0,
+            MtcFrameRate::Fps2997Drop => 29.97,
+            MtcFrameRate::Fps30       => 30.0,
+        }
+    }
+
+    /// Short human-readable label.
+    pub fn name(self) -> &'static str {
+        match self {
+            MtcFrameRate::Fps24       => "24fps",
+            MtcFrameRate::Fps25       => "25fps",
+            MtcFrameRate::Fps2997Drop => "29.97fps DF",
+            MtcFrameRate::Fps30       => "30fps",
+        }
+    }
+}
+
+impl Default for MtcFrameRate {
+    fn default() -> Self { Self::Fps25 }
+}
+
+/// A SMPTE HH:MM:SS:FF timecode position.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SmpteTime {
+    /// Hours component (0–23).
+    pub hours: u8,
+    /// Minutes component (0–59).
+    pub minutes: u8,
+    /// Seconds component (0–59).
+    pub seconds: u8,
+    /// Frames component (0 to fps-1).
+    pub frames: u8,
+    /// Frame rate reported by the MTC source.
+    pub frame_rate: MtcFrameRate,
+}
+
+impl SmpteTime {
+    /// Timecode as fractional elapsed seconds.
+    pub fn as_seconds_f64(self) -> f64 {
+        let fps = self.frame_rate.fps() as f64;
+        self.hours as f64 * 3600.0
+            + self.minutes as f64 * 60.0
+            + self.seconds as f64
+            + self.frames as f64 / fps
+    }
+}
+
+impl std::fmt::Display for SmpteTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds, self.frames)
+    }
+}
+
+/// Live state of MIDI Timecode (MTC) receive.
+#[derive(Debug, Clone)]
+pub struct MtcState {
+    /// `true` once any MTC message has been received on any MIDI port.
+    pub running: bool,
+    /// `true` while quarter-frame messages are arriving (transport playing/shuttling).
+    pub playing: bool,
+    /// Most recently assembled SMPTE timecode position.
+    pub position: SmpteTime,
+    /// Name of the MIDI port currently sending MTC (empty string if none yet).
+    pub source_device: String,
+}
+
+impl Default for MtcState {
+    fn default() -> Self {
+        Self {
+            running: false,
+            playing: false,
+            position: SmpteTime::default(),
+            source_device: String::new(),
+        }
+    }
 }
 
 /// Live state of ProDJ Link sync.
@@ -587,7 +705,8 @@ impl GuiTab {
             GuiTab::Osc,
             GuiTab::Web,
             GuiTab::Settings,
-            GuiTab::Sync,
+            // Sync is folded into the Audio tab; kept as a variant for
+            // serialization / hidden_tabs filtering but not shown by default.
         ]
     }
 }
@@ -698,6 +817,12 @@ pub struct EngineState {
     /// Pending ProDJ command.
     pub prodj_command: ProDjCommand,
 
+    /// MIDI Timecode (MTC) receive state.
+    pub mtc: MtcState,
+
+    /// User-selected tempo sync source (drives LFOs and beat-phase).
+    pub sync_source: SyncSource,
+
     // ── Effect-declared parameters ───────────────────────────────────────────
 
     /// Effect-declared parameter descriptors (populated at init).
@@ -762,6 +887,8 @@ impl EngineState {
             link_command: LinkCommand::None,
             prodj: ProDjState::default(),
             prodj_command: ProDjCommand::None,
+            mtc: MtcState::default(),
+            sync_source: SyncSource::Audio,
             param_descriptors: Vec::new(),
             custom_param_bases: HashMap::new(),
             custom_params: HashMap::new(),
@@ -774,41 +901,30 @@ impl EngineState {
         self.output_fullscreen = !self.output_fullscreen;
     }
 
-    /// Resolved BPM from the highest-priority active sync source.
+    /// BPM from the user-selected sync source.
     ///
-    /// Priority: Ableton Link → ProDJ Link master → audio analysis.
+    /// Falls back to audio BPM if the selected source has not yet produced a
+    /// valid tempo (e.g. Link enabled but no session state captured yet).
     pub fn effective_bpm(&self) -> f32 {
-        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
-            self.link.bpm
-        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
-            self.prodj.master_bpm
-        } else {
-            self.audio.bpm
+        match self.sync_source {
+            SyncSource::AbletonLink if self.link.bpm > 0.0 => self.link.bpm,
+            SyncSource::ProDj if self.prodj.master_bpm > 0.0 => self.prodj.master_bpm,
+            _ => self.audio.bpm,
         }
     }
 
-    /// Resolved beat phase from the highest-priority active sync source.
-    ///
-    /// Priority: Ableton Link → ProDJ Link master → audio analysis.
+    /// Beat phase (0–1) from the user-selected sync source.
     pub fn effective_beat_phase(&self) -> f32 {
-        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
-            self.link.beat_phase
-        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
-            self.prodj.master_beat_phase
-        } else {
-            self.audio.beat_phase
+        match self.sync_source {
+            SyncSource::AbletonLink if self.link.bpm > 0.0 => self.link.beat_phase,
+            SyncSource::ProDj if self.prodj.master_bpm > 0.0 => self.prodj.master_beat_phase,
+            _ => self.audio.beat_phase,
         }
     }
 
-    /// Human-readable name of the sync source currently driving tempo.
+    /// Human-readable name of the source currently driving tempo.
     pub fn effective_sync_source(&self) -> &'static str {
-        if self.link.enabled && self.link.num_peers > 0 && self.link.bpm > 0.0 {
-            "Link"
-        } else if self.prodj.enabled && self.prodj.master_bpm > 0.0 {
-            "ProDJ"
-        } else {
-            "Audio"
-        }
+        self.sync_source.name()
     }
 
     /// Get the modulated value of a custom parameter.
