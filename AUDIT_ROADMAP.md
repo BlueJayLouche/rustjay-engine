@@ -54,12 +54,13 @@ The engine consumes `prodjlink-rs` via a git dep (`branch = "main"` — unpinned
 
 ---
 
-### Task 1.2 — Strip unsafe characters from ProDJ Link strings at parse boundary
+### Task 1.2 — Strip unsafe characters from ProDJ Link strings at parse boundary ✅ DONE
 **Repo:** `prodjlink-rs`  
 **File:** `src/lib.rs`  
 **Lines:** 592, 704–710, 1065–1075, 1383–1393  
 **Severity:** Security Critical (DOM XSS compound vector)  
-**Effort:** 1–2 hrs
+**Effort:** 1–2 hrs  
+**Completed:** 2026-05-16 — `sanitize_text()` helper added above struct definitions; applied at all four decode sites (keep-alive name, CDJ status name, menu-packet UTF-16 title/artist, render-response UTF-16 title/artist). Strips control chars, bidi overrides, and HTML metacharacters (entity-encoded). Both repos pass `cargo check`.
 
 **Problem:** `name`, `track_title`, and `track_artist` are decoded from attacker-controlled LAN packets and exposed as plain `String` with no sanitization. The engine's web UI renders these via `innerHTML` (engine audit H-1), so a malicious Pioneer-compatible device on the LAN can execute arbitrary JS in any connected browser.
 
@@ -249,11 +250,12 @@ Response::builder()
 
 ---
 
-### Task 1.6 — Add `cargo audit` and `cargo deny` to CI for both repos
+### Task 1.6 — Add `cargo audit` and `cargo deny` to CI for both repos ✅ DONE
 **Repos:** Both  
 **Files:** `.github/workflows/ci.yml` in each repo  
 **Severity:** Security Medium (supply chain hygiene)  
-**Effort:** 30 min per repo
+**Effort:** 30 min per repo  
+**Completed:** 2026-05-16 — `cargo audit` step added to `prodjlink-rs/.github/workflows/ci.yml`; `.github/workflows/ci.yml` created for `rustjay-engine` (was missing entirely) with `cargo check --workspace`, `cargo clippy`, `cargo test`, and `cargo audit`.
 
 **Fix:** Add to each CI workflow:
 ```yaml
