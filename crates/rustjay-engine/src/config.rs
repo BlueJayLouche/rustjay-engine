@@ -20,6 +20,7 @@ pub(crate) struct MidiMappingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OscConfig {
+    pub host: String,
     pub port: u16,
     pub enabled: bool,
     pub base_address: String,
@@ -27,7 +28,7 @@ pub(crate) struct OscConfig {
 
 impl Default for OscConfig {
     fn default() -> Self {
-        Self { port: 9001, enabled: false, base_address: "/rustjay".to_string() }
+        Self { host: "127.0.0.1".to_string(), port: 9001, enabled: false, base_address: "/rustjay".to_string() }
     }
 }
 
@@ -61,6 +62,7 @@ pub(crate) struct AppSettings {
     pub midi_device: Option<String>,
     pub midi_mappings: Vec<MidiMappingConfig>,
     pub osc: OscConfig,
+    pub web_host: String,
     pub web_port: u16,
     pub ui_scale: f32,
     pub show_preview: bool,
@@ -99,6 +101,7 @@ impl Default for AppSettings {
             midi_device: None,
             midi_mappings: Vec::new(),
             osc: OscConfig::default(),
+            web_host: "127.0.0.1".to_string(),
             web_port: 8081,
             ui_scale: 1.0,
             show_preview: true,
@@ -174,7 +177,9 @@ impl AppSettings {
         {
             state.v4l2_output.device_path = self.v4l2_device_path.clone();
         }
+        state.osc_host = self.osc.host.clone();
         state.osc_port = self.osc.port;
+        state.web_host = self.web_host.clone();
         state.web_port = self.web_port;
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
@@ -216,10 +221,12 @@ impl AppSettings {
             midi_device: None,
             midi_mappings: Vec::new(),
             osc: OscConfig {
+                host: state.osc_host.clone(),
                 port: state.osc_port,
                 enabled: state.osc_enabled,
                 base_address: "/rustjay".to_string(),
             },
+            web_host: state.web_host.clone(),
             web_port: state.web_port,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,

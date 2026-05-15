@@ -151,8 +151,9 @@ impl<P: EffectPlugin> App<P> {
             }
         }
 
+        let osc_host = shared_state.lock().unwrap_or_else(|e| e.into_inner()).osc_host.clone();
         let osc_server = {
-            let server = OscServer::new(9000, "/rustjay");
+            let server = OscServer::new(&osc_host, 9000, "/rustjay");
             if let Ok(mut state) = server.state().lock() {
                 state.register_default_parameters();
                 state.register_parameters(&descriptors);
@@ -182,9 +183,13 @@ impl<P: EffectPlugin> App<P> {
             }
         };
 
-        let web_port = shared_state.lock().unwrap_or_else(|e| e.into_inner()).web_port;
+        let (web_host, web_port) = {
+            let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (state.web_host.clone(), state.web_port)
+        };
         let (web_server, web_command_tx) = {
             let config = WebConfig {
+                host: web_host,
                 port: web_port,
                 app_name: app_name.clone(),
                 enabled: false,

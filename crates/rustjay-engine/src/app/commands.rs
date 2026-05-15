@@ -336,7 +336,8 @@ impl<P: EffectPlugin> App<P> {
             OscCommand::SetPort(port) => {
                 if let Some(ref mut server) = self.osc_server {
                     server.stop();
-                    let new_server = OscServer::new(port, "/rustjay");
+                    let host = lock(&self.shared_state).osc_host.clone();
+                    let new_server = OscServer::new(&host, port, "/rustjay");
                     if let Ok(mut state) = new_server.state().lock() {
                         state.register_default_parameters();
                     }
@@ -451,7 +452,8 @@ impl<P: EffectPlugin> App<P> {
             WebCommand::SetPort(port) => {
                 if let Some(ref mut server) = self.web_server {
                     server.stop();
-                    let config = WebConfig { port, app_name: "rustjay".to_string(), enabled: false };
+                    let host = lock(&self.shared_state).web_host.clone();
+                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false };
                     let (new_server, cmd_tx) = WebServer::new(config);
                     *server = new_server;
                     self.web_command_tx = Some(cmd_tx);

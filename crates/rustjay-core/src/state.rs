@@ -783,6 +783,8 @@ pub struct EngineState {
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.
     pub osc_enabled: bool,
+    /// OSC server listen host.
+    pub osc_host: String,
     /// OSC server listen port.
     pub osc_port: u16,
 
@@ -802,6 +804,8 @@ pub struct EngineState {
     pub web_command: WebCommand,
     /// Whether the web remote server is running.
     pub web_enabled: bool,
+    /// Web server listen host.
+    pub web_host: String,
     /// Web server listen port.
     pub web_port: u16,
     /// Web server app name path segment.
@@ -872,6 +876,7 @@ impl EngineState {
             midi_command: MidiCommand::None,
             osc_command: OscCommand::None,
             osc_enabled: false,
+            osc_host: "127.0.0.1".to_string(),
             osc_port: 9001,
             preset_command: PresetCommand::None,
             preset_names: Vec::new(),
@@ -880,6 +885,7 @@ impl EngineState {
             input_discovering: false,
             web_command: WebCommand::None,
             web_enabled: false,
+            web_host: "127.0.0.1".to_string(),
             web_port: 8081,
             web_app_name: "rustjay-template".to_string(),
             lfo: LfoState::new(),

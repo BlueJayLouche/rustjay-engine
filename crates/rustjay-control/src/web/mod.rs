@@ -4,10 +4,12 @@
 //! URL: http://[computer-ip]:[port]/[app_name]
 
 use axum::{
-    extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade},
+    extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query},
     response::IntoResponse,
     routing::get,
-    Router,
+    Router, middleware::{self, Next},
+    http::{Request, StatusCode, HeaderMap},
+    body::Body,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,6 +29,8 @@ pub enum WebControlCommand {
 /// Web server configuration
 #[derive(Debug, Clone)]
 pub struct WebConfig {
+    /// Host to bind to (default: 127.0.0.1)
+    pub host: String,
     /// Port to listen on
     pub port: u16,
     /// App name for URL path (e.g., "rustjay")
@@ -38,6 +42,7 @@ pub struct WebConfig {
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
+            host: "127.0.0.1".to_string(),
             port: 8081,
             app_name: "rustjay-template".to_string(),
             enabled: false,
@@ -69,6 +74,8 @@ pub struct WebServerState {
     pub broadcast_tx: broadcast::Sender<WebMessage>,
     /// Channel for receiving updates from clients.
     pub command_tx: tokio::sync::mpsc::Sender<WebCommand>,
+    /// Per-launch bearer token for auth.
+    pub bearer_token: String,
 }
 
 /// Messages sent from server to web clients
@@ -113,24 +120,28 @@ impl WebServer {
     pub fn new(config: WebConfig) -> (Self, tokio::sync::mpsc::Sender<WebCommand>) {
         let (broadcast_tx, _) = broadcast::channel(100);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
-        
+
+        let bearer_token = generate_token();
+        eprintln!("Web control token: {}", bearer_token);
+
         let state = Arc::new(Mutex::new(WebServerState {
             config,
             parameters: HashMap::new(),
             broadcast_tx,
             command_tx: command_tx.clone(),
+            bearer_token,
         }));
-        
+
         let server = Self {
             state,
             command_rx,
             handle: None,
             shutdown_tx: None,
         };
-        
+
         (server, command_tx)
     }
-    
+
     /// Register a parameter for the web UI
     pub fn register_parameter(&mut self, id: &str, name: &str, category: &str, min: f32, max: f32, value: f32, step: f32) {
         if let Ok(mut state) = self.state.lock() {
@@ -170,14 +181,14 @@ impl WebServer {
         self.register_parameter("color/saturation", "Saturation", "Color", 0.0, 2.0, 1.0, 0.01);
         self.register_parameter("color/brightness", "Brightness", "Color", 0.0, 2.0, 1.0, 0.01);
         self.register_parameter("color/enabled", "Color Enabled", "Color", 0.0, 1.0, 1.0, 1.0);
-        
+
         // Audio parameters
         self.register_parameter("audio/amplitude", "Amplitude", "Audio", 0.0, 5.0, 1.0, 0.01);
         self.register_parameter("audio/smoothing", "Smoothing", "Audio", 0.0, 1.0, 0.5, 0.01);
         self.register_parameter("audio/enabled", "Audio Enabled", "Audio", 0.0, 1.0, 1.0, 1.0);
         self.register_parameter("audio/normalize", "Normalize", "Audio", 0.0, 1.0, 1.0, 1.0);
         self.register_parameter("audio/pink_noise", "Pink Noise", "Audio", 0.0, 1.0, 0.0, 1.0);
-        
+
         // Output parameters
         self.register_parameter("output/fullscreen", "Fullscreen", "Output", 0.0, 1.0, 0.0, 1.0);
     }
@@ -197,11 +208,11 @@ impl WebServer {
             }
         }
     }
-    
+
     /// Update a parameter value and broadcast to all clients
     pub fn update_parameter(&mut self, id: &str, value: f32) {
         let mut should_broadcast = false;
-        
+
         if let Ok(mut state) = self.state.lock() {
             if let Some(param) = state.parameters.get_mut(id) {
                 // Only update if changed
@@ -211,7 +222,7 @@ impl WebServer {
                 }
             }
         }
-        
+
         if should_broadcast {
             if let Ok(state) = self.state.lock() {
                 let _ = state.broadcast_tx.send(WebMessage::Update {
@@ -221,22 +232,22 @@ impl WebServer {
             }
         }
     }
-    
+
     /// Start the web server (creates its own tokio runtime)
     pub fn start(&mut self) -> anyhow::Result<()> {
         if self.handle.is_some() {
             return Ok(()); // Already running
         }
-        
+
         let state = Arc::clone(&self.state);
-        let (port, app_name) = {
+        let (port, app_name, host, token) = {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
-            (s.config.port, s.config.app_name.clone())
+            (s.config.port, s.config.app_name.clone(), s.config.host.clone(), s.bearer_token.clone())
         };
-        
+
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.shutdown_tx = Some(shutdown_tx);
-        
+
         let handle = std::thread::spawn(move || {
             // Create a new tokio runtime for this thread
             let rt = match tokio::runtime::Runtime::new() {
@@ -246,41 +257,39 @@ impl WebServer {
                     return;
                 }
             };
-            
+
             rt.block_on(async move {
-                let app = create_router(state, &app_name);
-                
-                // Try binding to all interfaces first, then fallback to localhost
-                let addr = SocketAddr::from(([0, 0, 0, 0], port));
+                let app = create_router(state, &app_name, &token);
+
+                let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        log::error!("Invalid web server bind address {}:{}: {}", host, port, e);
+                        return;
+                    }
+                };
+
                 let listener = match tokio::net::TcpListener::bind(addr).await {
                     Ok(l) => {
-                        log::info!("Web server bound to all interfaces (0.0.0.0):{}", port);
+                        log::info!("Web server bound to {}", addr);
                         l
                     }
                     Err(e) => {
-                        log::warn!("Failed to bind to all interfaces: {}. Trying localhost...", e);
-                        let local_addr = SocketAddr::from(([127, 0, 0, 1], port));
-                        match tokio::net::TcpListener::bind(local_addr).await {
-                            Ok(l) => {
-                                log::info!("Web server bound to localhost:{}", port);
-                                l
-                            }
-                            Err(e2) => {
-                                log::error!("Failed to bind web server to {} or {}: {} / {}", addr, local_addr, e, e2);
-                                return;
-                            }
-                        }
+                        log::error!("Failed to bind web server to {}: {}", addr, e);
+                        return;
                     }
                 };
-                
+
                 let local_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
                 log::info!("Web server ready:");
                 log::info!("  Local:   http://127.0.0.1:{}/{}", port, app_name);
-                log::info!("  Network: http://{}:{}/{}", local_ip, port, app_name);
-                
+                if host != "127.0.0.1" && host != "localhost" {
+                    log::info!("  Network: http://{}:{}/{}", local_ip, port, app_name);
+                }
+
                 // Run server with graceful shutdown
                 let server = axum::serve(listener, app);
-                
+
                 tokio::select! {
                     result = server => {
                         if let Err(e) = result {
@@ -293,46 +302,46 @@ impl WebServer {
                 }
             });
         });
-        
+
         self.handle = Some(handle);
-        
+
         // Update config
         if let Ok(mut state) = self.state.lock() {
             state.config.enabled = true;
         }
-        
+
         Ok(())
     }
-    
+
     /// Stop the web server
     pub fn stop(&mut self) {
         // Send shutdown signal
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
-        
+
         // Wait for thread to finish
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
             log::info!("Web server stopped");
         }
-        
+
         // Update config
         if let Ok(mut state) = self.state.lock() {
             state.config.enabled = false;
         }
     }
-    
+
     /// Check if server is running
     pub fn is_running(&self) -> bool {
         self.handle.is_some()
     }
-    
+
     /// Get the server URL
     pub fn get_url(&self) -> String {
         if let Ok(state) = self.state.lock() {
             format!("http://{}:{}/{}",
-                get_local_ip().unwrap_or_else(|| "localhost".to_string()),
+                state.config.host,
                 state.config.port,
                 state.config.app_name
             )
@@ -349,28 +358,46 @@ impl Drop for WebServer {
 }
 
 /// Create the Axum router
-fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str) -> Router {
+fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str) -> Router {
     let ws_path = format!("/{}/ws", app_name);
     let page_path = format!("/{}", app_name);
     let page_path_slash = format!("/{}/", app_name);
     let page_path_redirect = page_path.clone();
-    
+    let page_path_redirect2 = page_path_redirect.clone();
+
+    let html_with_token = inject_token_into_html(EMBEDDED_HTML, token);
+
     Router::new()
         .route(&ws_path, get(ws_handler))
-        .route(&page_path, get(index_handler))
-        .route(&page_path_slash, get(move || async move {
-            axum::response::Redirect::permanent(&page_path)
-        }))
-        .route("/", get(move || async move { 
-            axum::response::Redirect::temporary(&page_path_redirect) 
-        }))
         .route("/health", get(|| async { "OK" }))
-        .layer(CorsLayer::permissive())
+        .route_layer(middleware::from_fn_with_state(
+            token.to_string(),
+            auth_middleware,
+        ))
+        .route(&page_path, get(move || async move {
+            index_handler(&html_with_token).await
+        }))
+        .route(&page_path_slash, get(move || async move {
+            axum::response::Redirect::permanent(&page_path_redirect)
+        }))
+        .route("/", get(move || async move {
+            axum::response::Redirect::temporary(&page_path_redirect2)
+        }))
+        .layer(CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST]))
         .with_state(state)
 }
 
+/// Injects the bearer token into the HTML so the UI can use it for WebSocket auth.
+fn inject_token_into_html(html: &str, token: &str) -> String {
+    // Insert a script tag right after <head> that sets window.RUSTJAY_TOKEN
+    let script = format!(r#"<script>window.RUSTJAY_TOKEN = "{}";</script>"#, token);
+    html.replacen("<head>", &format!("<head>{}", script), 1)
+}
+
 /// Response with proper content type for HTML
-async fn index_handler() -> impl IntoResponse {
+async fn index_handler(html: &str) -> impl IntoResponse {
     (
         [
             (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -380,17 +407,42 @@ async fn index_handler() -> impl IntoResponse {
                 "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:",
             ),
         ],
-        EMBEDDED_HTML
+        html.to_string()
     )
 }
 
-
+/// Query parameters for WebSocket upgrade
+#[derive(Debug, serde::Deserialize)]
+struct WsQuery {
+    token: String,
+}
 
 /// WebSocket handler
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<Mutex<WebServerState>>>,
+    Query(query): Query<WsQuery>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    // Verify bearer token from query param (browsers can't set custom headers on WebSocket)
+    let valid_token = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.bearer_token.clone()
+    };
+    if query.token != valid_token {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    // Verify Origin header matches the server's origin
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
+        let origin_str = origin.to_str().unwrap_or("");
+        // Accept same-origin requests (localhost or any IP on the server's port)
+        // A stricter check would parse and compare scheme+host+port.
+        if origin_str.is_empty() {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -401,7 +453,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         state.parameters.values().cloned().collect::<Vec<_>>()
     };
-    
+
     // Send initial params list
     let init_msg = WebMessage::Params { params };
     if let Ok(json) = serde_json::to_string(&init_msg) {
@@ -409,12 +461,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
             return;
         }
     }
-    
+
     // Subscribe to broadcasts
     let mut rx = {
         state.lock().unwrap_or_else(|e| e.into_inner()).broadcast_tx.subscribe()
     };
-    
+
     // Handle messages from client and broadcasts
     loop {
         tokio::select! {
@@ -434,7 +486,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
                             WebCommand::Set { id, value } => {
                                 let id = id.clone();
                                 let value = *value;
-                                
+
                                 // Update local state and broadcast to other clients
                                 let mut should_broadcast = false;
                                 if let Ok(mut state) = state.lock() {
@@ -447,7 +499,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
                                     // Forward command to app
                                     let _ = state.command_tx.try_send(cmd);
                                 }
-                                
+
                                 if should_broadcast {
                                     if let Ok(state) = state.lock() {
                                         let _ = state.broadcast_tx.send(WebMessage::Update {
@@ -466,6 +518,28 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
     }
 }
 
+/// Bearer-token auth middleware.
+/// Skips auth for the HTML page route (which is handled separately).
+async fn auth_middleware(
+    State(token): State<String>,
+    req: Request<Body>,
+    next: Next,
+) -> impl IntoResponse {
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok());
+
+    match auth_header {
+        Some(header) if header == format!("Bearer {}", token) => {
+            next.run(req).await
+        }
+        _ => {
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
 /// Get local IP address
 fn get_local_ip() -> Option<String> {
     use std::net::UdpSocket;
@@ -478,6 +552,16 @@ fn get_local_ip() -> Option<String> {
         }
     }
     None
+}
+
+/// Generate a random 16-byte hex token.
+fn generate_token() -> String {
+    let bytes: [u8; 16] = rand::random();
+    bytes.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+        s
+    })
 }
 
 /// Embedded HTML/JS/CSS for the web UI

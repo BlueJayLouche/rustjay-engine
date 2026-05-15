@@ -60,6 +60,7 @@ toml    = "1.0"
 chrono  = { version = "0.4", features = ["serde"] }
 instant = "0.1"
 dirs    = "6.0"
+rand    = "0.8"
 
 # Workspace-internal crates
 rustjay-core    = { path = "crates/rustjay-core", version = "0.1.0" }
