@@ -52,6 +52,10 @@ pub fn build_stream_f32(
     let mut beat_counter = 0u32;
     let mut norm_peak = 0.01f32;
 
+    let hann_window: Vec<f32> = (0..fft_size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / fft_size as f32).cos()))
+        .collect();
+
     let stream = device.build_input_stream(
         config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -65,7 +69,7 @@ pub fn build_stream_f32(
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, fft_size, &r2c, &mut scratch,
+                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
                     &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
                     &mut beat_energy, &mut beat_history, &mut beat_counter,
                     &mut norm_peak,
@@ -110,6 +114,10 @@ pub fn build_stream_i16(
     let mut beat_counter = 0u32;
     let mut norm_peak = 0.01f32;
 
+    let hann_window: Vec<f32> = (0..fft_size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / fft_size as f32).cos()))
+        .collect();
+
     let stream = device.build_input_stream(
         config,
         move |data: &[i16], _: &cpal::InputCallbackInfo| {
@@ -126,7 +134,7 @@ pub fn build_stream_i16(
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, fft_size, &r2c, &mut scratch,
+                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
                     &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
                     &mut beat_energy, &mut beat_history, &mut beat_counter,
                     &mut norm_peak,
@@ -171,6 +179,10 @@ pub fn build_stream_u16(
     let mut beat_counter = 0u32;
     let mut norm_peak = 0.01f32;
 
+    let hann_window: Vec<f32> = (0..fft_size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / fft_size as f32).cos()))
+        .collect();
+
     let stream = device.build_input_stream(
         config,
         move |data: &[u16], _: &cpal::InputCallbackInfo| {
@@ -187,7 +199,7 @@ pub fn build_stream_u16(
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, fft_size, &r2c, &mut scratch,
+                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
                     &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
                     &mut beat_energy, &mut beat_history, &mut beat_counter,
                     &mut norm_peak,
