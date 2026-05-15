@@ -26,7 +26,7 @@ impl ControlGui {
             let hsb = targets.len() - 1; // count of non-None HSB targets
             let mut names = std::collections::HashMap::new();
             // Append custom modulatable params
-            for d in &state.param_descriptors {
+            for d in state.param_descriptors.iter() {
                 if d.is_modulatable() {
                     targets.push(LfoTarget::Custom(d.id.clone()));
                     names.insert(d.id.clone(), d.name.clone());

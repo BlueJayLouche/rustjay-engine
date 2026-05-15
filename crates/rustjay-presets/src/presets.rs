@@ -99,7 +99,9 @@ impl Preset {
             lfo_bank: state.lfo.bank.clone(),
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
-            custom_values: state.custom_param_bases.clone(),
+            custom_values: state.param_descriptors.iter().enumerate()
+                .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
+                .collect(),
         }
     }
     
@@ -124,8 +126,10 @@ impl Preset {
         state.audio_routing.enabled = self.audio_routing_enabled;
         // Restore custom parameter values
         for (id, value) in &self.custom_values {
-            state.custom_param_bases.insert(id.clone(), *value);
-            state.custom_params.insert(id.clone(), *value);
+            if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
+                state.custom_param_bases[i] = *value;
+                state.custom_params[i] = *value;
+            }
         }
     }
     

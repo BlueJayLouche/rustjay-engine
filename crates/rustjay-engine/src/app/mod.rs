@@ -143,11 +143,13 @@ impl<P: EffectPlugin> App<P> {
         let hidden = plugin.hidden_tabs();
         {
             let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.param_descriptors = descriptors.clone();
+            state.param_descriptors = Arc::new(descriptors.clone());
             state.hidden_tabs = hidden;
-            for d in &descriptors {
-                state.custom_param_bases.insert(d.id.clone(), d.default);
-                state.custom_params.insert(d.id.clone(), d.default);
+            state.custom_param_bases.resize(descriptors.len(), 0.0);
+            state.custom_params.resize(descriptors.len(), 0.0);
+            for (i, d) in descriptors.iter().enumerate() {
+                state.custom_param_bases[i] = d.default;
+                state.custom_params[i] = d.default;
             }
         }
 

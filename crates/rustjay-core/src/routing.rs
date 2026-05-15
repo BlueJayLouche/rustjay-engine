@@ -390,24 +390,22 @@ impl RoutingMatrix {
         (new_hue, new_sat, new_bright)
     }
 
-    /// Apply modulations to a generic parameter map.
-    /// Reads base values from `params`, applies audio routing modulations,
-    /// and writes modulated values back.
-    pub fn apply_to_params(&self, params: &mut HashMap<String, f32>, descriptors: &[ParameterDescriptor]) {
-        for desc in descriptors {
+    /// Apply modulations to a parameter slice.
+    /// Reads base values from `bases`, applies audio routing modulations,
+    /// and writes modulated values into `params`.
+    pub fn apply_to_params(&self, params: &mut [f32], bases: &[f32], descriptors: &[ParameterDescriptor]) {
+        for (i, desc) in descriptors.iter().enumerate() {
             if !desc.is_modulatable() {
                 continue;
             }
             let mod_value = self.get_modulation(ModulationTarget::Custom(desc.id.clone()));
-            if let Some(base) = params.get(&desc.id) {
-                let range = desc.max - desc.min;
-                let modulated = if range > 0.0 {
-                    (base + mod_value * range).clamp(desc.min, desc.max)
-                } else {
-                    *base
-                };
-                params.insert(desc.id.clone(), modulated);
-            }
+            let base = bases[i];
+            let range = desc.max - desc.min;
+            params[i] = if range > 0.0 {
+                (base + mod_value * range).clamp(desc.min, desc.max)
+            } else {
+                base
+            };
         }
     }
     

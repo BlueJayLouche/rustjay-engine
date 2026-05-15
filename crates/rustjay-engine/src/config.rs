@@ -218,9 +218,9 @@ impl AppSettings {
         state.show_preview = self.show_preview;
         // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
-            if state.param_descriptors.iter().any(|d| &d.id == id) {
-                state.custom_param_bases.insert(id.clone(), *value);
-                state.custom_params.insert(id.clone(), *value);
+            if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
+                state.custom_param_bases[i] = *value;
+                state.custom_params[i] = *value;
             }
         }
     }
@@ -263,7 +263,9 @@ impl AppSettings {
             web_port: state.web_port,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
-            custom_params: state.custom_param_bases.clone(),
+            custom_params: state.param_descriptors.iter().enumerate()
+                .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
+                .collect(),
         }
     }
 }

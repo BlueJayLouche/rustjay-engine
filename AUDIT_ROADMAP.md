@@ -396,7 +396,7 @@ Also replace the `unwrap()` in the `request_animation_frame` closure with `if le
 
 ---
 
-### Task 2.5 — Replace `custom_params` HashMap clone with `Vec<f32>` indexed by descriptor position
+### Task 2.5 — Replace `custom_params` HashMap clone with `Vec<f32>` indexed by descriptor position ✅ DONE
 **Repo:** `rustjay-engine`  
 **File:** `crates/rustjay-engine/src/app/update.rs`  
 **Lines:** 133, 137, 157  
