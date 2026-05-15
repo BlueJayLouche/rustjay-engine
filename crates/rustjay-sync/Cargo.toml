@@ -18,4 +18,4 @@ rustjay-core = { path = "../rustjay-core", version = "0.1.0" }
 log = { workspace = true }
 
 rusty_link = { version = "0.4", optional = true }
-prodjlink-rs = { git = "https://github.com/BlueJayLouche/prodjlink-rs", rev = "d4c38a52225b9e725c5b130de23641cea76629b2", optional = true }
+prodjlink-rs = { git = "https://github.com/BlueJayLouche/prodjlink-rs", rev = "e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f", optional = true }
