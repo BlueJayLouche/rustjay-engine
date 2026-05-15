@@ -201,8 +201,9 @@ unsafe fn read_sender_info(name: &str) -> anyhow::Result<(HANDLE, u32, u32)> {
     // Spout2 stores the HANDLE as 32-bit via HandleToLong (actually HandleToULong).
     // Zero-extend to usize, then convert to handle pointer.
     let handle = HANDLE(info.share_handle as usize as *mut _);
-    let width = info.width;
-    let height = info.height;
+    const MAX_SPOUT_DIM: u32 = 16384;
+    let width = info.width.min(MAX_SPOUT_DIM);
+    let height = info.height.min(MAX_SPOUT_DIM);
 
     log::debug!(
         "[Spout] Sender '{}': handle=0x{:08x}, {}x{}, fmt={}",
@@ -427,7 +428,18 @@ impl SpoutInputReceiver {
                 return false;
             }
 
-            let needed = (w * h * 4) as usize;
+            let needed = (w as usize)
+                .checked_mul(h as usize)
+                .and_then(|n| n.checked_mul(4))
+                .filter(|&n| n <= 32 * 1024 * 1024) // reject > 32 MB (8K max)
+                .ok_or_else(|| {
+                    log::error!("[Spout Input] Dimensions out of range: {}x{}", w, h);
+                })
+                .unwrap_or(0);
+            if needed == 0 {
+                self.d3d_context.Unmap(staging_tex, 0);
+                return false;
+            }
             if self.pixel_buffer.len() != needed {
                 self.pixel_buffer.resize(needed, 0);
             }
