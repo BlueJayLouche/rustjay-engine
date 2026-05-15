@@ -113,6 +113,9 @@ pub struct WebServer {
     pub command_rx: tokio::sync::mpsc::Receiver<WebCommand>,
     handle: Option<std::thread::JoinHandle<()>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Last value broadcast for each parameter.  Used for diff-tracking so
+    /// unchanged parameters skip the mutex entirely.
+    last_sent: HashMap<String, f32>,
 }
 
 impl WebServer {
@@ -137,6 +140,7 @@ impl WebServer {
             command_rx,
             handle: None,
             shutdown_tx: None,
+            last_sent: HashMap::new(),
         };
 
         (server, command_tx)
@@ -209,8 +213,21 @@ impl WebServer {
         }
     }
 
-    /// Update a parameter value and broadcast to all clients
+    /// Update a parameter value and broadcast to all clients.
+    ///
+    /// Uses a fast-path `last_sent` cache so unchanged values skip the
+    /// state mutex entirely — this removes ~N mutex acquisitions per frame
+    /// where N is the number of registered parameters.
     pub fn update_parameter(&mut self, id: &str, value: f32) {
+        const THRESHOLD: f32 = 0.001;
+
+        // Fast path: if we already sent this value, do nothing.
+        if let Some(&last) = self.last_sent.get(id) {
+            if (value - last).abs() < THRESHOLD {
+                return;
+            }
+        }
+
         let mut should_broadcast = false;
 
         if let Ok(mut state) = self.state.lock() {
@@ -224,6 +241,7 @@ impl WebServer {
         }
 
         if should_broadcast {
+            self.last_sent.insert(id.to_string(), value);
             if let Ok(state) = self.state.lock() {
                 let _ = state.broadcast_tx.send(WebMessage::Update {
                     id: id.to_string(),
