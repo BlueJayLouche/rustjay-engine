@@ -375,6 +375,10 @@ async fn index_handler() -> impl IntoResponse {
         [
             (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (axum::http::header::CONNECTION, "keep-alive"),
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:",
+            ),
         ],
         EMBEDDED_HTML
     )
