@@ -148,6 +148,8 @@ impl WebServer {
 
     /// Register a parameter for the web UI
     pub fn register_parameter(&mut self, id: &str, name: &str, category: &str, min: f32, max: f32, value: f32, step: f32) {
+        // Clear stale diff-tracking entry so the initial broadcast is never skipped.
+        self.last_sent.remove(id);
         if let Ok(mut state) = self.state.lock() {
             state.parameters.insert(id.to_string(), WebParameter {
                 id: id.to_string(),
@@ -164,6 +166,7 @@ impl WebServer {
 
     /// Register an enum parameter for the web UI (rendered as a select/dropdown)
     pub fn register_enum_parameter(&mut self, id: &str, name: &str, category: &str, options: Vec<String>, value: f32) {
+        self.last_sent.remove(id);
         if let Ok(mut state) = self.state.lock() {
             state.parameters.insert(id.to_string(), WebParameter {
                 id: id.to_string(),
@@ -220,6 +223,11 @@ impl WebServer {
     /// where N is the number of registered parameters.
     pub fn update_parameter(&mut self, id: &str, value: f32) {
         const THRESHOLD: f32 = 0.001;
+
+        // NaN/inf would loop forever (abs diff always false); reject at boundary.
+        if !value.is_finite() {
+            return;
+        }
 
         // Fast path: if we already sent this value, do nothing.
         if let Some(&last) = self.last_sent.get(id) {

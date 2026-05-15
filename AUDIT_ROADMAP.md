@@ -575,7 +575,8 @@ track_history.push_back(record);
 **Repo:** `rustjay-engine`  
 **Files:** `crates/rustjay-engine/src/app/update.rs`, `events.rs`  
 **Severity:** Performance Critical  
-**Effort:** 1 week
+**Effort:** 1 week  
+**Partial:** 2026-05-16 — Command-pop consolidation landed as a standalone PR: `dispatch_commands` now pops all 9 command fields in a single `lock()` call (was 9 separate locks), saving 8 mutex acquires per frame unconditionally. Each `process_*` method now accepts its command as a parameter. Full snapshot→apply redesign is the remaining work.
 
 **Problem:** `about_to_wait` acquires `Arc<Mutex<EngineState>>` 15–22 times per frame across `update_audio`, `update_lfo`, `update_midi`, `update_osc`, `update_web`, `update_input`, the renderer, the FPS tracker, and `dispatch_commands`.
 
@@ -589,12 +590,13 @@ track_history.push_back(record);
 
 ---
 
-### Task 3.2 — MTC decoder: replace `Mutex` with `AtomicU64` packed SMPTE
+### Task 3.2 — MTC decoder: replace `Mutex` with `AtomicU64` packed SMPTE ✅ DONE
 **Repo:** `rustjay-engine`  
 **File:** `crates/rustjay-control/src/midi/mtc.rs`  
 **Lines:** 193–207  
 **Severity:** Performance Critical + Security Medium (priority inversion)  
-**Effort:** 1 day
+**Effort:** 1 day  
+**Completed:** 2026-05-16 — `MtcRxState` and `Arc<Mutex<…>>` removed. `MtcPublished` added with `smpte: AtomicU64` (bits[4:0]=HH, [10:5]=MM, [16:11]=SS, [21:17]=FF, [23:22]=rate, [24]=running, [25]=playing), `last_qf_ms: AtomicU64`, and `source_device: Mutex<String>` (rarely changes). Each MIDI port closure owns its own `MtcDecoder` — no sharing, eliminating all 240 hot-path Mutex acquires/sec. `tick()` and `clone_state()` use atomic loads only. Exhaustive SMPTE round-trip unit test added (12.4M cases).
 
 **Problem:** The MTC receive callback (on midir's real-time MIDI thread) acquires a `std::sync::Mutex` on every quarter-frame message — 240 times/sec at 30 fps MTC. Risk of priority inversion if the main thread holds the mutex during a slow operation.
 
@@ -614,12 +616,13 @@ let hours = (packed & 0xFF) as u8;
 
 ---
 
-### Task 3.3 — Persist readback staging buffers across frames
+### Task 3.3 — Persist readback staging buffers across frames ✅ DONE
 **Repo:** `rustjay-engine`  
 **File:** `crates/rustjay-io/src/output/mod.rs`  
 **Lines:** 142–146  
 **Severity:** Performance High  
-**Effort:** Half day
+**Effort:** Half day  
+**Completed:** 2026-05-16 — `SlotState::Available` now carries `Option<(wgpu::Buffer, u64)>`. On harvest, the unmapped buffer is stored back in the slot cache instead of being dropped. On `submit_copy`, the cached buffer is reused if the size matches; a new allocation only occurs on resolution change. Eliminates ~480 MB/sec GPU heap churn at 1080p/60fps NDI. Misleading "Drop it; a new one is cheap" comment removed.
 
 **Problem:** A new `wgpu::Buffer` (8 MB for 1080p NDI) is allocated on every frame when NDI output is active — ~500 MB/s of GPU buffer churn.
 
@@ -635,7 +638,7 @@ let staging_buffer = &self.staging.as_ref().unwrap().0;
 
 ---
 
-### Task 3.4 — Diff-track web parameter broadcast
+### Task 3.4 — Diff-track web parameter broadcast ✅ DONE
 **Repo:** `rustjay-engine`  
 **File:** `crates/rustjay-engine/src/app/update.rs`  
 **Lines:** 289–309  
@@ -655,14 +658,17 @@ server.update_parameter(param_id, new_value);
 
 **Acceptance:** With no parameters changing, CPU usage from the web server path drops to near zero. With rapid parameter changes, updates still propagate within one frame.
 
+**Edge cases fixed 2026-05-16:** `register_parameter` / `register_enum_parameter` now call `self.last_sent.remove(id)` so a re-registered param always sends its initial value (was silently skipped if the stale cached value matched). `update_parameter` now returns early on `!value.is_finite()` to prevent a NaN from looping as a continuous broadcast.
+
 ---
 
-### Task 3.5 — Fix broadcast address calculation in prodjlink-rs
+### Task 3.5 — Fix broadcast address calculation in prodjlink-rs ✅ DONE
 **Repo:** `prodjlink-rs`  
 **File:** `src/lib.rs`  
 **Line:** 376  
 **Severity:** Security Medium  
-**Effort:** 1–2 hrs
+**Effort:** 1–2 hrs  
+**Completed:** 2026-05-16 — Added `if-addrs = "0.13"` dependency. `compute_broadcast(local_ip)` uses `if_addrs::get_if_addrs()` to find the real netmask for the interface matching `local_ip`, computing broadcast as `ip | !mask`; falls back to /24 with a warning. Status socket now binds to `local_ip:50002` instead of `0.0.0.0:50002` to reject packets arriving on other interfaces (VPN, secondary NIC), with fallback to `0.0.0.0` if the specific-IP bind fails. Added `set_multicast_loop_v4(false)` on the announce socket.
 
 **Problem:** `[local_ip[0], local_ip[1], local_ip[2], 255]` hard-codes `/24` assumption, incorrect on `/16`, `/25`, or other prefix lengths.
 
@@ -689,10 +695,12 @@ fn compute_broadcast(local_ip: Ipv4Addr) -> Ipv4Addr {
 
 ---
 
-### Task 3.6 — Add cargo-fuzz targets for prodjlink-rs packet parsers
+### Task 3.6 — Add cargo-fuzz targets for prodjlink-rs packet parsers ✅ DONE
 **Repo:** `prodjlink-rs`  
 **Severity:** Security Medium (long-term robustness)  
-**Effort:** 2–3 hrs
+**Effort:** 2–3 hrs  
+**Original completion:** 2026-05-16 (targets created).  
+**Critical fix 2026-05-16:** The original fuzz targets called shadow re-implementations in `pub mod fuzz`, not the real parsers — meaning the fuzz corpus exercised no production code paths. Fixed by: (1) extracting `parse_render_response_from_bytes(&[u8])` from `parse_render_response` so the buffer-scanning logic is callable without a `TcpStream`; (2) rewriting all four fuzz stubs to call `ProDjLinkClient::parse_cdj_status`, `parse_mixer_on_air`, `parse_menu_packets`, and `parse_render_response_from_bytes` directly, constructing a minimal `ProDjLinkState` for state-bearing parsers.
 
 **Problem:** No fuzz testing exists for the UDP/TCP packet parsers, which are the primary attack surface.
 
@@ -706,6 +714,60 @@ fn compute_broadcast(local_ip: Ipv4Addr) -> Ipv4Addr {
 3. Add a CI step that runs `cargo fuzz run <target> -- -max_total_time=60` on PRs touching the parser.
 
 **Acceptance:** `cargo fuzz run fuzz_cdj_status` runs without panic for 60 seconds against random input.
+
+---
+
+## Phase 3 Additions — New Findings (2026-05-16)
+
+New issues identified during the Phase 3 implementation audit. Not in the original roadmap.
+
+### Finding A — `discover_dbserver_port` accepts attacker-controlled port ✅ DONE
+**Repo:** `prodjlink-rs`  
+**File:** `src/lib.rs` line 1037  
+**Severity:** Security Medium (CWE-345)  
+**Completed:** 2026-05-16 — Added range check: port < 1024 or > 49151 returns `None` with a warning. Prevents an attacker on the LAN from redirecting the metadata fetcher to an arbitrary port (e.g. a service on the CDJ host that accepts raw TCP writes).
+
+---
+
+### Finding B — TCP metadata fetch threads starvable by slowloris
+**Repo:** `prodjlink-rs`  
+**File:** `src/lib.rs` (fetch thread spawning, `MAX_FETCH_THREADS = 4`)  
+**Severity:** Security Medium (DoS)  
+**Effort:** 1–2 hrs
+
+**Problem:** Four malicious peers can hold TCP connections open indefinitely (the per-call 5-second `set_read_timeout` resets on each partial read), filling all four fetch-thread slots and starving real CDJ metadata fetches.
+
+**Fix:** Add a per-connection wall-clock deadline enforced inside `fetch_metadata` — if `start.elapsed() > Duration::from_secs(10)` break the read loop regardless of partial progress. Alternatively, move `fetch_metadata` to a `tokio` runtime and use `tokio::time::timeout`.
+
+**Acceptance:** A peer that dribbles one byte every 4 seconds cannot hold a fetch thread for more than 10 seconds.
+
+---
+
+### Finding C — `std::sync::Mutex` poison silently continued in engine
+**Repo:** `rustjay-engine`  
+**File:** `crates/rustjay-engine/src/app/commands.rs` and `update.rs` (all `lock()` call sites)  
+**Severity:** Security Low / Reliability Medium  
+**Effort:** 30 min
+
+**Problem:** Every `lock()` call uses `unwrap_or_else(|e| e.into_inner())`, silently resuming on a poisoned mutex with no log entry. A panic in any worker thread would leave `EngineState` in an inconsistent snapshot that the engine continues to use.
+
+**Fix:** Add `log::error!("[Engine] Mutex poisoned — recovering: {:?}", e)` in each `into_inner()` call, or migrate `shared_state` to `parking_lot::Mutex` (no poisoning) as part of Task 3.1.
+
+**Acceptance:** A panic in a worker thread produces a visible error log entry before resuming.
+
+---
+
+### Finding D — `get_pseudo_mac` leaks host IP in keep-alive MAC field
+**Repo:** `prodjlink-rs`  
+**File:** `src/lib.rs` line ~271  
+**Severity:** Security Low (CWE-200, information disclosure)  
+**Effort:** 15 min
+
+**Problem:** `[0x02, 0xC0, 0x11, local_ip[1], local_ip[2], local_ip[3]]` encodes 24 bits of the host's LAN IP in the broadcasted keep-alive MAC address, visible to all hosts on the broadcast domain.
+
+**Fix:** Generate a random MAC once at startup (seed with `rand::random::<[u8;3]>()`) and cache it. Persist across restarts if MAC stability matters for rekordbox device identity.
+
+**Acceptance:** The keep-alive MAC field does not encode the host IP.
 
 ---
 

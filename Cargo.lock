@@ -2894,6 +2894,7 @@ dependencies = [
 [[package]]
 name = "prodjlink-rs"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/prodjlink-rs?rev=e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f#e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f"
 dependencies = [
  "libc",
  "log",
