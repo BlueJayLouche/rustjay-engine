@@ -121,10 +121,43 @@ impl AppSettings {
             log::info!("No config file found at {:?}, using defaults", path);
             return Ok(Self::default());
         }
+        let metadata = std::fs::metadata(&path)?;
+        if metadata.len() > 1_048_576 {
+            return Err(anyhow::anyhow!("Config file too large: {} bytes", metadata.len()));
+        }
         let content = std::fs::read_to_string(&path)?;
         let settings: AppSettings = serde_json::from_str(&content)?;
+        settings.validate()?;
         log::info!("Loaded settings from {:?}", path);
         Ok(settings)
+    }
+
+    /// Validate config fields are within acceptable ranges.
+    fn validate(&self) -> anyhow::Result<()> {
+        const MAX_DIM: u32 = 4096;
+        const VALID_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
+
+        if self.internal_width > MAX_DIM || self.internal_height > MAX_DIM
+            || self.output_width > MAX_DIM || self.output_height > MAX_DIM
+        {
+            return Err(anyhow::anyhow!(
+                "Output/internal dimensions out of range (max {})",
+                MAX_DIM
+            ));
+        }
+        if !VALID_FFT_SIZES.contains(&self.audio_fft_size) {
+            return Err(anyhow::anyhow!(
+                "Invalid audio_fft_size: {} (valid: {:?})",
+                self.audio_fft_size, VALID_FFT_SIZES
+            ));
+        }
+        if self.custom_params.len() > 256 {
+            return Err(anyhow::anyhow!(
+                "Too many custom params: {} (max 256)",
+                self.custom_params.len()
+            ));
+        }
+        Ok(())
     }
 
     pub fn save(&self, app_name: &str) -> anyhow::Result<()> {
