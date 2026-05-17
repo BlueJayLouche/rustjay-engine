@@ -42,10 +42,10 @@ struct SputnikUniforms {
     y_phasemod: u32,
     y_ringmod:  u32,
 
-    z_phasemod: u32,
-    z_ringmod:  u32,
-    pad2:       u32,
-    pad3:       u32,
+    z_phasemod:  u32,
+    z_ringmod:   u32,
+    tex_width:   f32,
+    tex_height:  f32,
 
     mvp: mat4x4<f32>,
 }

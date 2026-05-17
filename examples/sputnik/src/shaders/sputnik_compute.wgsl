@@ -47,10 +47,10 @@ struct SputnikUniforms {
     y_phasemod: u32,
     y_ringmod:  u32,
 
-    z_phasemod: u32,
-    z_ringmod:  u32,
-    pad2:       u32,
-    pad3:       u32,
+    z_phasemod:  u32,
+    z_ringmod:   u32,
+    tex_width:   f32,
+    tex_height:  f32,
 
     mvp: mat4x4<f32>,
 }
@@ -90,8 +90,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let v  = &vertices[index];
     let tc = (*v).texcoord;
 
-    // Reconstruct base position from texcoord — matches generate_mesh_data().
-    let base_x = tc.x * 2.0 - 1.0;
+    // Reconstruct base position from texcoord, aspect-corrected to input texture.
+    let tex_aspect = u.tex_width / u.tex_height;
+    let base_x = (tc.x * 2.0 - 1.0) * tex_aspect;
     let base_y = 1.0 - tc.y * 2.0;
 
     // Distance from UV centre for Z spatial modulation.
