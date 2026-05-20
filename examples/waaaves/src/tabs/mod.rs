@@ -88,6 +88,49 @@ pub fn delay_control(
     }
 }
 
+/// Consume a pending pixel-pick into the matching state field.
+/// Must be called unconditionally at the top of each tab's draw() so that a
+/// collapsed section never leaves pick_state stuck in Pending.
+pub fn apply_pending_pick(state: &mut WaaavesState, engine: &mut EngineState) {
+    if let PickState::Pending { target } = state.pick_state {
+        if let Some(rgb) = engine.picked_color.take() {
+            let (r, g, b, prefix): (&mut f32, &mut f32, &mut f32, &str) = match target {
+                KeyTarget::Ch2 => (
+                    &mut state.block1.ch2_key_value_r,
+                    &mut state.block1.ch2_key_value_g,
+                    &mut state.block1.ch2_key_value_b,
+                    "ch2",
+                ),
+                KeyTarget::Fb1 => (
+                    &mut state.block1.fb1_key_value_r,
+                    &mut state.block1.fb1_key_value_g,
+                    &mut state.block1.fb1_key_value_b,
+                    "fb1",
+                ),
+                KeyTarget::Fb2 => (
+                    &mut state.block2.fb2_key_value_r,
+                    &mut state.block2.fb2_key_value_g,
+                    &mut state.block2.fb2_key_value_b,
+                    "fb2",
+                ),
+                KeyTarget::Final => (
+                    &mut state.block3.final_key_value_r,
+                    &mut state.block3.final_key_value_g,
+                    &mut state.block3.final_key_value_b,
+                    "final",
+                ),
+            };
+            *r = rgb[0];
+            *g = rgb[1];
+            *b = rgb[2];
+            engine.set_param_base(&format!("{prefix}_key_value_r"), rgb[0]);
+            engine.set_param_base(&format!("{prefix}_key_value_g"), rgb[1]);
+            engine.set_param_base(&format!("{prefix}_key_value_b"), rgb[2]);
+            state.pick_state = PickState::Idle;
+        }
+    }
+}
+
 /// Key-color RGB sliders + Pick button.
 pub fn key_color(
     ui: &imgui::Ui,
@@ -99,18 +142,6 @@ pub fn key_color(
     g: &mut f32,
     b: &mut f32,
 ) {
-    // Apply pending pick result
-    if let PickState::Pending { target: t } = *pick_state {
-        if t == target {
-            if let Some(rgb) = engine.picked_color.take() {
-                *r = rgb[0];
-                *g = rgb[1];
-                *b = rgb[2];
-                *pick_state = PickState::Idle;
-            }
-        }
-    }
-
     sf(ui, engine, &format!("R##{prefix}_kr"), &format!("{prefix}_key_value_r"), r, 0.0, 1.0);
     sf(ui, engine, &format!("G##{prefix}_kg"), &format!("{prefix}_key_value_g"), g, 0.0, 1.0);
     sf(ui, engine, &format!("B##{prefix}_kb"), &format!("{prefix}_key_value_b"), b, 0.0, 1.0);

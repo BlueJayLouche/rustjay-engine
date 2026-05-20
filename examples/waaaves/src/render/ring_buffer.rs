@@ -16,6 +16,7 @@ pub struct RingBuffer {
 impl RingBuffer {
     /// Create a new ring buffer with `capacity` slots of the given resolution.
     pub fn new(device: &wgpu::Device, width: u32, height: u32, capacity: usize) -> Self {
+        let capacity = capacity.max(1);
         let mut textures = Vec::with_capacity(capacity);
         for i in 0..capacity {
             let texture = device.create_texture(&wgpu::TextureDescriptor {

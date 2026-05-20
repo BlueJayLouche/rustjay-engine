@@ -12,6 +12,8 @@ impl AnyGuiTab for Block1Tab {
             .downcast_mut::<WaaavesState>()
             .expect("Block1Tab expects WaaavesState");
 
+        apply_pending_pick(state, engine);
+
         // ── CH1 Geometry ────────────────────────────────────────────────────
         if ui.collapsing_header("CH1 Geometry", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             co(ui, engine, "Input##ch1", &mut state.block1.ch1_input_select, INPUT1_SELECT_OPTS);

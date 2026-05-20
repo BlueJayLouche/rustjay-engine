@@ -12,6 +12,8 @@ impl AnyGuiTab for Block2Tab {
             .downcast_mut::<WaaavesState>()
             .expect("Block2Tab expects WaaavesState");
 
+        apply_pending_pick(state, engine);
+
         // ── Block 2 Input ───────────────────────────────────────────────────
         if ui.collapsing_header("Block 2 Input", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             co(

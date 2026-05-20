@@ -12,6 +12,8 @@ impl AnyGuiTab for Block3Tab {
             .downcast_mut::<WaaavesState>()
             .expect("Block3Tab expects WaaavesState");
 
+        apply_pending_pick(state, engine);
+
         // ── Block 1 Output Geometry ─────────────────────────────────────────
         if ui.collapsing_header("Block 1 Output Geometry", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             geometry_section(
@@ -179,9 +181,12 @@ impl AnyGuiTab for Block3Tab {
                 1.0,
             );
             ui.text("Key Color");
-            sf(ui, engine, "R##final_kr", "final_key_value_r", &mut state.block3.final_key_value_r, 0.0, 1.0);
-            sf(ui, engine, "G##final_kg", "final_key_value_g", &mut state.block3.final_key_value_g, 0.0, 1.0);
-            sf(ui, engine, "B##final_kb", "final_key_value_b", &mut state.block3.final_key_value_b, 0.0, 1.0);
+            key_color(
+                ui, &mut state.pick_state, engine, KeyTarget::Final, "final",
+                &mut state.block3.final_key_value_r,
+                &mut state.block3.final_key_value_g,
+                &mut state.block3.final_key_value_b,
+            );
         }
 
         // ── Final Dither ────────────────────────────────────────────────────

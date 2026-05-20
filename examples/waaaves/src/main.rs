@@ -169,7 +169,7 @@ impl EffectPlugin for WaaavesEffect {
         // 3. Ring buffer resize — reallocate when max_delay_frames or resolution changes
         let delay_changed = state.max_delay_frames != self.cached_max_delay;
         if resolution_changed || delay_changed || self.fb1.is_none() {
-            let capacity = state.max_delay_frames as usize;
+            let capacity = (state.max_delay_frames as usize).max(1);
             if let Some(fb1) = self.fb1.as_mut() {
                 fb1.resize(device, w, h, capacity);
             } else {
