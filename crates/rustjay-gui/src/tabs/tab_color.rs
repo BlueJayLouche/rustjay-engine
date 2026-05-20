@@ -89,11 +89,6 @@ impl ControlGui {
             // LFO Controls
             ui.text("LFO Modulation");
 
-            if ui.button("Open LFO Window") {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.show_window = true;
-            }
-
             // Display active LFO count
             let active_lfos = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());

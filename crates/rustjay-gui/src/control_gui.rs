@@ -272,15 +272,6 @@ impl ControlGui {
                 });
         }
 
-        // LFO Control Window (conditional)
-        let show_lfo = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.lfo.show_window
-        };
-
-        if show_lfo {
-            self.build_lfo_window(ui);
-        }
     }
 
     /// Build the menu bar
@@ -406,6 +397,7 @@ impl ControlGui {
                 GuiTab::Osc => self.build_osc_tab(ui),
                 GuiTab::Web => self.build_web_tab(ui),
                 GuiTab::Settings => self.build_settings_tab(ui),
+                GuiTab::Lfo => self.build_lfo_tab(ui),
                 GuiTab::Sync => self.build_sync_tab(ui),
             }
         }

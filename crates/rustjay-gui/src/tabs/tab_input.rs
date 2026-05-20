@@ -4,29 +4,21 @@ use rustjay_core::InputCommand;
 impl ControlGui {
     /// Build the Input tab
     pub(crate) fn build_input_tab(&mut self, ui: &imgui::Ui) {
-        let (is_active, _source_type, source_name, is_discovering) = {
+        let (is_active, source_name, is_discovering, is_active2, source_name2) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.input.is_active,
-                state.input.input_type,
                 state.input.source_name.clone(),
                 state.input_discovering,
+                state.second_input.is_active,
+                state.second_input.source_name.clone(),
             )
         };
 
-        ui.text("Video Input Source");
+        ui.text("Video Input Sources");
         ui.separator();
 
-        // Status
-        if is_active {
-            ui.text_colored([0.0, 1.0, 0.0, 1.0], &format!("Active: {}", source_name));
-        } else {
-            ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
-        }
-
-        ui.spacing();
-
-        // Refresh Sources button - prominently at the top
+        // Refresh Sources button
         if is_discovering {
             ui.text_colored([1.0, 0.8, 0.2, 1.0], "Discovering sources...");
         } else {
@@ -43,6 +35,43 @@ impl ControlGui {
         ui.separator();
         ui.spacing();
 
+        // Input 1 status
+        ui.text("Input 1");
+        if is_active {
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], &format!("Active: {}", source_name));
+        } else {
+            ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
+        }
+        if is_active && ui.button("Stop Input 1") {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.input_command = InputCommand::StopInput;
+        }
+
+        ui.spacing();
+        ui.separator();
+        ui.spacing();
+
+        // Input 2 status
+        ui.text("Input 2");
+        if is_active2 {
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], &format!("Active: {}", source_name2));
+        } else {
+            ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
+        }
+        if is_active2 && ui.button("Stop Input 2") {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.second_input_command = InputCommand::StopInput;
+        }
+
+        ui.spacing();
+        ui.separator();
+        ui.spacing();
+
+        // Source selectors with dual Start buttons
+        self.build_source_selectors(ui);
+    }
+
+    fn build_source_selectors(&mut self, ui: &imgui::Ui) {
         // Webcam section — on Linux, webcams are shown in the V4L2 section below.
         #[cfg(not(target_os = "linux"))]
         {
@@ -51,9 +80,19 @@ impl ControlGui {
                 let device_names: Vec<&str> = self.webcam_devices.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select Webcam", &mut self.selected_webcam, &device_names);
 
-                if ui.button("Start Webcam") {
+                if ui.button("Start Input 1") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::StartWebcam {
+                        device_index: self.selected_webcam as usize,
+                        width: 1920,
+                        height: 1080,
+                        fps: 30,
+                    };
+                }
+                ui.same_line();
+                if ui.button("Start Input 2") {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.second_input_command = InputCommand::StartWebcam {
                         device_index: self.selected_webcam as usize,
                         width: 1920,
                         height: 1080,
@@ -77,12 +116,20 @@ impl ControlGui {
                 let source_names: Vec<&str> = self.ndi_sources.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select NDI Source", &mut self.selected_ndi, &source_names);
 
-                if ui.button("Start NDI") {
+                if ui.button("Start Input 1") {
                     let source_name = self.ndi_sources.get(self.selected_ndi as usize)
                         .cloned()
                         .unwrap_or_default();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::StartNdi { source_name };
+                }
+                ui.same_line();
+                if ui.button("Start Input 2") {
+                    let source_name = self.ndi_sources.get(self.selected_ndi as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.second_input_command = InputCommand::StartNdi { source_name };
                 }
             } else {
                 ui.text_disabled("No NDI sources found");
@@ -104,11 +151,22 @@ impl ControlGui {
                 let server_name_refs: Vec<&str> = server_names.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select Syphon Server", &mut self.selected_syphon, &server_name_refs);
 
-                if ui.button("Start Syphon") {
+                if ui.button("Start Input 1") {
                     let server_info = self.syphon_servers.get(self.selected_syphon).cloned();
                     if let Some(info) = server_info {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.input_command = InputCommand::StartSyphon {
+                            server_name: info.display_name().to_string(),
+                            server_uuid: info.uuid.clone(),
+                        };
+                    }
+                }
+                ui.same_line();
+                if ui.button("Start Input 2") {
+                    let server_info = self.syphon_servers.get(self.selected_syphon).cloned();
+                    if let Some(info) = server_info {
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.second_input_command = InputCommand::StartSyphon {
                             server_name: info.display_name().to_string(),
                             server_uuid: info.uuid.clone(),
                         };
@@ -140,10 +198,19 @@ impl ControlGui {
                     &label_refs,
                 );
 
-                if ui.button("Start V4L2 Input") {
+                if ui.button("Start Input 1") {
                     if let Some(info) = self.v4l2_capture_devices.get(self.selected_v4l2_capture) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.input_command = InputCommand::StartV4l2 {
+                            device_path: info.path.clone(),
+                        };
+                    }
+                }
+                ui.same_line();
+                if ui.button("Start Input 2") {
+                    if let Some(info) = self.v4l2_capture_devices.get(self.selected_v4l2_capture) {
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.second_input_command = InputCommand::StartV4l2 {
                             device_path: info.path.clone(),
                         };
                     }
@@ -168,7 +235,7 @@ impl ControlGui {
                     .collect();
                 ui.combo_simple_string("Select Spout Sender", &mut self.selected_spout, &sender_names);
 
-                if ui.button("Start Spout") {
+                if ui.button("Start Input 1") {
                     let sender_name = self.spout_senders
                         .get(self.selected_spout)
                         .map(|s| s.name.clone())
@@ -176,19 +243,18 @@ impl ControlGui {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::StartSpout { sender_name };
                 }
+                ui.same_line();
+                if ui.button("Start Input 2") {
+                    let sender_name = self.spout_senders
+                        .get(self.selected_spout)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.second_input_command = InputCommand::StartSpout { sender_name };
+                }
             } else {
                 ui.text_disabled("No Spout senders found");
             }
-        }
-
-        ui.spacing();
-        ui.separator();
-        ui.spacing();
-
-        // Stop button
-        if is_active && ui.button("Stop Input") {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.input_command = InputCommand::StopInput;
         }
     }
 
