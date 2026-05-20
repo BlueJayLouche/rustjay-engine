@@ -673,6 +673,8 @@ pub enum GuiTab {
     Settings,
     /// Tempo sync (Ableton Link + ProDJ).
     Sync,
+    /// LFO modulation control.
+    Lfo,
 }
 
 impl GuiTab {
@@ -690,6 +692,7 @@ impl GuiTab {
             GuiTab::Web      => "Web",
             GuiTab::Settings => "Settings",
             GuiTab::Sync     => "Sync",
+            GuiTab::Lfo      => "LFO",
         }
     }
 
@@ -706,6 +709,7 @@ impl GuiTab {
             GuiTab::Osc,
             GuiTab::Web,
             GuiTab::Settings,
+            GuiTab::Lfo,
             // Sync is folded into the Audio tab; kept as a variant for
             // serialization / hidden_tabs filtering but not shown by default.
         ]
@@ -728,10 +732,22 @@ pub struct EngineState {
     /// Output window height in pixels.
     pub output_height: u32,
 
-    /// Current video input state.
+    /// Current video input state (slot 1).
     pub input: InputState,
-    /// Pending input command.
+    /// Pending input command (slot 1).
     pub input_command: InputCommand,
+    /// Second video input state (slot 2).
+    pub second_input: InputState,
+    /// Pending command for the second input.
+    pub second_input_command: InputCommand,
+    /// Shared texture view for the second input (None if no active source).
+    pub second_input_view: Option<Arc<wgpu::TextureView>>,
+    /// Shared sampler for the second input.
+    pub second_input_sampler: Option<Arc<wgpu::Sampler>>,
+    /// UV coordinate requested for GPU pixel readback (set by GUI on pick-click).
+    pub pick_request: Option<[f32; 2]>,
+    /// RGB result of the most recent GPU readback (cleared after GUI consumes it).
+    pub picked_color: Option<[f32; 3]>,
 
     /// HSB colour parameters.
     pub hsb_params: HsbParams,
@@ -856,6 +872,12 @@ impl EngineState {
             output_height: 1080,
             input: InputState::default(),
             input_command: InputCommand::None,
+            second_input: InputState::default(),
+            second_input_command: InputCommand::None,
+            second_input_view: None,
+            second_input_sampler: None,
+            pick_request: None,
+            picked_color: None,
             hsb_params: HsbParams::default(),
             color_enabled: true,
             audio: AudioState { enabled: true, amplitude: 1.0, smoothing: 0.5, normalize: true, ..Default::default() },

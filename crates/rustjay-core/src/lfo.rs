@@ -160,7 +160,7 @@ impl Default for LfoTarget {
 /// Single LFO configuration and state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lfo {
-    /// LFO index (0, 1, 2)
+    /// LFO index (0–7)
     pub index: usize,
     /// Whether this LFO is enabled
     pub enabled: bool,
@@ -308,23 +308,18 @@ impl Default for Lfo {
     }
 }
 
-/// Collection of 3 LFOs
-/// Collection of three LFOs.
+/// Collection of LFOs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LfoBank {
-    /// The three LFOs.
-    pub lfos: [Lfo; 3],
+    /// The LFOs (default capacity 8).
+    pub lfos: Vec<Lfo>,
 }
 
 impl LfoBank {
-    /// Create a new bank with three default LFOs.
+    /// Create a new bank with eight default LFOs.
     pub fn new() -> Self {
         Self {
-            lfos: [
-                Lfo::new(0),
-                Lfo::new(1),
-                Lfo::new(2),
-            ],
+            lfos: (0..8).map(Lfo::new).collect(),
         }
     }
     
@@ -333,29 +328,6 @@ impl LfoBank {
         for lfo in &mut self.lfos {
             lfo.update(bpm, delta_time, beat_phase);
         }
-    }
-    
-    /// Get modulation values for HSB parameters.
-    /// Returns (hue_mod, sat_mod, bright_mod).
-    #[deprecated(note = "Use `get_modulations` for generic parameter support.")]
-    pub fn get_hsb_modulations(&self) -> (f32, f32, f32) {
-        let mut hue = 0.0;
-        let mut sat = 0.0;
-        let mut bright = 0.0;
-        
-        for lfo in &self.lfos {
-            if !lfo.enabled {
-                continue;
-            }
-            match lfo.target {
-                LfoTarget::HueShift => hue = lfo.output,
-                LfoTarget::Saturation => sat = lfo.output,
-                LfoTarget::Brightness => bright = lfo.output,
-                _ => {}
-            }
-        }
-        
-        (hue, sat, bright)
     }
     
     /// Get modulation values for all targets.
@@ -419,22 +391,6 @@ impl LfoState {
         }
     }
     
-    /// Apply LFO modulations to base HSB values.
-    /// Returns modulated (hue, saturation, brightness).
-    #[deprecated(note = "Use `LfoBank::get_modulations` for generic parameter support.")]
-    #[allow(deprecated)]
-    pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
-        let (hue_mod, sat_mod, bright_mod) = self.bank.get_hsb_modulations();
-        
-        // Apply modulation with appropriate ranges
-        // Hue: add modulation * 180 degrees (full range)
-        // Sat/Bright: add modulation * 2.0 (full range)
-        let hue = (base_hue + hue_mod * 180.0).clamp(-180.0, 180.0);
-        let sat = (base_sat + sat_mod * 2.0).clamp(0.0, 2.0);
-        let bright = (base_bright + bright_mod * 2.0).clamp(0.0, 2.0);
-        
-        (hue, sat, bright)
-    }
 }
 
 #[cfg(test)]
