@@ -11,15 +11,16 @@ fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, Engi
 
 /// All pending commands popped from shared state in a single lock acquisition.
 struct PendingCommands {
-    input:  InputCommand,
-    output: OutputCommand,
-    audio:  AudioCommand,
-    midi:   MidiCommand,
-    osc:    OscCommand,
-    preset: PresetCommand,
-    web:    WebCommand,
-    link:   LinkCommand,
-    prodj:  ProDjCommand,
+    input:         InputCommand,
+    second_input:  InputCommand,
+    output:        OutputCommand,
+    audio:         AudioCommand,
+    midi:          MidiCommand,
+    osc:           OscCommand,
+    preset:        PresetCommand,
+    web:           WebCommand,
+    link:          LinkCommand,
+    prodj:         ProDjCommand,
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -29,18 +30,20 @@ impl<P: EffectPlugin> App<P> {
         let cmds = {
             let mut s = lock(&self.shared_state);
             PendingCommands {
-                input:  std::mem::replace(&mut s.input_command,  InputCommand::None),
-                output: std::mem::replace(&mut s.output_command, OutputCommand::None),
-                audio:  std::mem::replace(&mut s.audio_command,  AudioCommand::None),
-                midi:   std::mem::replace(&mut s.midi_command,   MidiCommand::None),
-                osc:    std::mem::replace(&mut s.osc_command,    OscCommand::None),
-                preset: std::mem::replace(&mut s.preset_command, PresetCommand::None),
-                web:    std::mem::replace(&mut s.web_command,    WebCommand::None),
-                link:   std::mem::replace(&mut s.link_command,   LinkCommand::None),
-                prodj:  std::mem::replace(&mut s.prodj_command,  ProDjCommand::None),
+                input:         std::mem::replace(&mut s.input_command,         InputCommand::None),
+                second_input:  std::mem::replace(&mut s.second_input_command,  InputCommand::None),
+                output:        std::mem::replace(&mut s.output_command,        OutputCommand::None),
+                audio:         std::mem::replace(&mut s.audio_command,         AudioCommand::None),
+                midi:          std::mem::replace(&mut s.midi_command,          MidiCommand::None),
+                osc:           std::mem::replace(&mut s.osc_command,           OscCommand::None),
+                preset:        std::mem::replace(&mut s.preset_command,        PresetCommand::None),
+                web:           std::mem::replace(&mut s.web_command,           WebCommand::None),
+                link:          std::mem::replace(&mut s.link_command,          LinkCommand::None),
+                prodj:         std::mem::replace(&mut s.prodj_command,         ProDjCommand::None),
             }
         };
         self.process_input_commands(cmds.input);
+        self.process_second_input_commands(cmds.second_input);
         self.process_output_commands(cmds.output);
         self.process_audio_commands(cmds.audio);
         self.process_midi_commands(cmds.midi);
@@ -52,64 +55,82 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_input_commands(&mut self, command: InputCommand) {
+        self.process_input_command_internal(command, false);
+    }
+
+    fn process_second_input_commands(&mut self, command: InputCommand) {
+        self.process_input_command_internal(command, true);
+    }
+
+    fn process_input_command_internal(&mut self, command: InputCommand, is_second: bool) {
+        let mut manager_opt = if is_second {
+            self.second_input_manager.as_mut()
+        } else {
+            self.input_manager.as_mut()
+        };
+        let slot_prefix = if is_second { "Input 2" } else { "Input 1" };
 
         match command {
             InputCommand::StartWebcam { device_index, width, height, fps } => {
-                log::info!("Starting webcam: device={}", device_index);
-                if let Some(ref mut manager) = self.input_manager {
+                log::info!("{} starting webcam: device={}", slot_prefix, device_index);
+                if let Some(ref mut manager) = manager_opt {
                     match manager.start_webcam(device_index, width, height, fps) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            state.input.is_active = true;
-                            state.input.input_type = rustjay_core::InputType::Webcam;
-                            state.input.source_name = format!("Webcam {}", device_index);
+                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            input.is_active = true;
+                            input.input_type = rustjay_core::InputType::Webcam;
+                            input.source_name = format!("Webcam {}", device_index);
                         }
-                        Err(e) => log::error!("Failed to start webcam: {:?}", e),
+                        Err(e) => log::error!("{} failed to start webcam: {:?}", slot_prefix, e),
                     }
                 }
             }
             #[cfg(feature = "ndi")]
             InputCommand::StartNdi { source_name } => {
-                log::info!("Starting NDI: {}", source_name);
-                if let Some(ref mut manager) = self.input_manager {
+                log::info!("{} starting NDI: {}", slot_prefix, source_name);
+                if let Some(ref mut manager) = manager_opt {
                     match manager.start_ndi(&source_name) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            state.input.is_active = true;
-                            state.input.input_type = rustjay_core::InputType::Ndi;
-                            state.input.source_name = source_name;
+                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            input.is_active = true;
+                            input.input_type = rustjay_core::InputType::Ndi;
+                            input.source_name = source_name;
                         }
-                        Err(e) => log::error!("Failed to start NDI: {:?}", e),
+                        Err(e) => log::error!("{} failed to start NDI: {:?}", slot_prefix, e),
                     }
                 }
             }
             #[cfg(target_os = "macos")]
             InputCommand::StartSyphon { server_name, server_uuid } => {
-                log::info!("Starting Syphon: {} (uuid={})", server_name, server_uuid);
-                if let Some(ref mut manager) = self.input_manager {
+                log::info!("{} starting Syphon: {} (uuid={})", slot_prefix, server_name, server_uuid);
+                if let Some(ref mut manager) = manager_opt {
                     match manager.start_syphon(&server_name, &server_uuid) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            state.input.is_active = true;
-                            state.input.input_type = rustjay_core::InputType::Syphon;
-                            state.input.source_name = server_name;
+                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            input.is_active = true;
+                            input.input_type = rustjay_core::InputType::Syphon;
+                            input.source_name = server_name;
                         }
-                        Err(e) => log::error!("Failed to start Syphon: {:?}", e),
+                        Err(e) => log::error!("{} failed to start Syphon: {:?}", slot_prefix, e),
                     }
                 }
             }
             #[cfg(target_os = "windows")]
             InputCommand::StartSpout { sender_name } => {
-                log::info!("Starting Spout: {}", sender_name);
-                if let Some(ref mut manager) = self.input_manager {
+                log::info!("{} starting Spout: {}", slot_prefix, sender_name);
+                if let Some(ref mut manager) = manager_opt {
                     match manager.start_spout(&sender_name) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            state.input.is_active = true;
-                            state.input.input_type = rustjay_core::InputType::Spout;
-                            state.input.source_name = sender_name;
+                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            input.is_active = true;
+                            input.input_type = rustjay_core::InputType::Spout;
+                            input.source_name = sender_name;
                         }
-                        Err(e) => log::error!("Failed to start Spout: {:?}", e),
+                        Err(e) => log::error!("{} failed to start Spout: {:?}", slot_prefix, e),
                     }
                 }
             }
@@ -119,35 +140,39 @@ impl<P: EffectPlugin> App<P> {
                     .rsplit("video")
                     .next()
                     .and_then(|s| s.parse::<u32>().ok());
-                match (index, self.input_manager.as_mut()) {
+                match (index, manager_opt) {
                     (Some(idx), Some(manager)) => {
-                        log::info!("Starting V4L2 input: {} (index {})", device_path, idx);
+                        log::info!("{} starting V4L2 input: {} (index {})", slot_prefix, device_path, idx);
                         match manager.start_webcam(idx as usize, 1920, 1080, 30) {
                             Ok(_) => {
                                 let mut state = lock(&self.shared_state);
-                                state.input.is_active = true;
-                                state.input.input_type = rustjay_core::InputType::V4l2;
-                                state.input.source_name = device_path;
+                                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                                input.is_active = true;
+                                input.input_type = rustjay_core::InputType::V4l2;
+                                input.source_name = device_path;
                             }
-                            Err(e) => log::error!("Failed to start V4L2 input: {:?}", e),
+                            Err(e) => log::error!("{} failed to start V4L2 input: {:?}", slot_prefix, e),
                         }
                     }
-                    (None, _) => log::error!("StartV4l2: could not parse device index from '{}'", device_path),
+                    (None, _) => log::error!("{} StartV4l2: could not parse device index from '{}'", slot_prefix, device_path),
                     _ => {}
                 }
             }
             InputCommand::StopInput => {
-                if let Some(ref mut manager) = self.input_manager {
+                if let Some(ref mut manager) = manager_opt {
                     manager.stop();
                     let mut state = lock(&self.shared_state);
-                    state.input.is_active = false;
-                    state.input.source_name.clear();
+                    let input = if is_second { &mut state.second_input } else { &mut state.input };
+                    input.is_active = false;
+                    input.source_name.clear();
                 }
             }
             InputCommand::RefreshDevices => {
-                if let Some(ref mut manager) = self.input_manager {
+                if let Some(ref mut manager) = manager_opt {
                     manager.begin_refresh_devices();
-                    lock(&self.shared_state).input_discovering = true;
+                    if !is_second {
+                        lock(&self.shared_state).input_discovering = true;
+                    }
                 }
             }
             _ => {}

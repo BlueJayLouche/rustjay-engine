@@ -67,6 +67,7 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) imgui_renderer: Option<ImGuiRenderer>,
 
     pub(crate) input_manager: Option<InputManager>,
+    pub(crate) second_input_manager: Option<InputManager>,
     pub(crate) audio_analyzer: Option<AudioAnalyzer>,
     pub(crate) midi_manager: Option<MidiManager>,
     pub(crate) osc_server: Option<OscServer>,
@@ -219,6 +220,7 @@ impl<P: EffectPlugin> App<P> {
             control_gui: None,
             imgui_renderer: None,
             input_manager: Some(InputManager::new()),
+            second_input_manager: Some(InputManager::new()),
             audio_analyzer: Some(analyzer),
             midi_manager,
             osc_server,

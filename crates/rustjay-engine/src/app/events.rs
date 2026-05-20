@@ -66,6 +66,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         manager.initialize(device, queue);
                         log::info!("InputManager initialized with GPU resources");
                     }
+                    if let (Some(ref mut manager), Some(ref device), Some(ref queue)) =
+                        (self.second_input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
+                    {
+                        manager.initialize(device, queue);
+                        log::info!("Second InputManager initialized with GPU resources");
+                    }
                 }
                 Err(err) => {
                     log::error!("Failed to create output engine: {}", err);
@@ -385,6 +391,9 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             server.stop();
         }
         if let Some(ref mut manager) = self.input_manager {
+            manager.stop();
+        }
+        if let Some(ref mut manager) = self.second_input_manager {
             manager.stop();
         }
         if let Some(ref mut engine) = self.output_engine {

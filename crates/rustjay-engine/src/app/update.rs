@@ -5,82 +5,118 @@ use std::sync::Arc;
 
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
-        if let Some(ref mut manager) = self.input_manager {
-            #[cfg(feature = "ndi")]
-            if manager.input_type() == InputType::Ndi && manager.is_ndi_source_lost() {
-                log::warn!("[NDI] Source lost — clearing active input state");
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.input.is_active = false;
-                state.input.source_name = "Signal lost".to_string();
-            }
+        self.update_input_slot(false);
+        self.update_input_slot(true);
+    }
 
-            manager.update();
+    fn update_input_slot(&mut self, is_second: bool) {
+        let manager_opt = if is_second {
+            self.second_input_manager.as_mut()
+        } else {
+            self.input_manager.as_mut()
+        };
+        let Some(manager) = manager_opt else { return };
 
-            #[cfg(target_os = "macos")]
-            if manager.input_type() == InputType::Syphon {
-                if manager.has_frame() {
-                    let dims = manager.syphon_output_texture().map(|t| (t.width(), t.height()));
-                    if let Some((width, height)) = dims {
-                        if let Some(texture) = manager.syphon_output_texture() {
-                            if let Some(ref mut engine) = self.output_engine {
+        #[cfg(feature = "ndi")]
+        if manager.input_type() == InputType::Ndi && manager.is_ndi_source_lost() {
+            log::warn!("[NDI] Source lost — clearing input {} state", if is_second { 2 } else { 1 });
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let input = if is_second { &mut state.second_input } else { &mut state.input };
+            input.is_active = false;
+            input.source_name = "Signal lost".to_string();
+        }
+
+        manager.update();
+
+        #[cfg(target_os = "macos")]
+        if manager.input_type() == InputType::Syphon {
+            if manager.has_frame() {
+                let dims = manager.syphon_output_texture().map(|t| (t.width(), t.height()));
+                if let Some((width, height)) = dims {
+                    if let Some(texture) = manager.syphon_output_texture() {
+                        if let Some(ref mut engine) = self.output_engine {
+                            if is_second {
+                                engine.second_input_texture.set_external_texture(texture);
+                            } else {
                                 engine.input_texture.set_external_texture(texture);
                             }
                         }
-                        manager.clear_syphon_frame();
-                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.input.width = width;
-                        state.input.height = height;
                     }
-                }
-            } else {
-                if let Some(frame_data) = manager.take_frame() {
-                    let (width, height) = manager.resolution();
-                    if let Some(ref mut engine) = self.output_engine {
-                        engine.input_texture.update(&frame_data, width, height);
-                    }
+                    manager.clear_syphon_frame();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.input.width = width;
-                    state.input.height = height;
+                    let input = if is_second { &mut state.second_input } else { &mut state.input };
+                    input.width = width;
+                    input.height = height;
                 }
             }
+        } else {
+            if let Some(frame_data) = manager.take_frame() {
+                let (width, height) = manager.resolution();
+                if let Some(ref mut engine) = self.output_engine {
+                    if is_second {
+                        engine.second_input_texture.update(&frame_data, width, height);
+                    } else {
+                        engine.input_texture.update(&frame_data, width, height);
+                    }
+                }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                input.width = width;
+                input.height = height;
+            }
+        }
 
-            #[cfg(target_os = "windows")]
-            {
-                if manager.input_type() == InputType::Spout {
-                    if manager.has_frame() {
-                        let (width, height) = manager.resolution();
-                        if let Some(pixels) = manager.spout_pixels() {
-                            if let Some(ref mut engine) = self.output_engine {
+        #[cfg(target_os = "windows")]
+        {
+            if manager.input_type() == InputType::Spout {
+                if manager.has_frame() {
+                    let (width, height) = manager.resolution();
+                    if let Some(pixels) = manager.spout_pixels() {
+                        if let Some(ref mut engine) = self.output_engine {
+                            if is_second {
+                                engine.second_input_texture.update(pixels, width, height);
+                            } else {
                                 engine.input_texture.update(pixels, width, height);
                             }
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                            state.input.width = width;
-                            state.input.height = height;
                         }
-                        manager.clear_spout_frame();
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        let input = if is_second { &mut state.second_input } else { &mut state.input };
+                        input.width = width;
+                        input.height = height;
                     }
-                } else if let Some(frame_data) = manager.take_frame() {
-                    let (width, height) = manager.resolution();
-                    if let Some(ref mut engine) = self.output_engine {
+                    manager.clear_spout_frame();
+                }
+            } else if let Some(frame_data) = manager.take_frame() {
+                let (width, height) = manager.resolution();
+                if let Some(ref mut engine) = self.output_engine {
+                    if is_second {
+                        engine.second_input_texture.update(&frame_data, width, height);
+                    } else {
                         engine.input_texture.update(&frame_data, width, height);
                     }
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.input.width = width;
-                    state.input.height = height;
                 }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                input.width = width;
+                input.height = height;
             }
+        }
 
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            {
-                if let Some(frame_data) = manager.take_frame() {
-                    let (width, height) = manager.resolution();
-                    if let Some(ref mut engine) = self.output_engine {
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            if let Some(frame_data) = manager.take_frame() {
+                let (width, height) = manager.resolution();
+                if let Some(ref mut engine) = self.output_engine {
+                    if is_second {
+                        engine.second_input_texture.update(&frame_data, width, height);
+                    } else {
                         engine.input_texture.update(&frame_data, width, height);
                     }
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.input.width = width;
-                    state.input.height = height;
                 }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                input.width = width;
+                input.height = height;
             }
         }
     }
