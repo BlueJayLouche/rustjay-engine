@@ -83,3 +83,7 @@ panic         = "abort"
 
 [profile.dev]
 opt-level = 1
+
+[profile.profiling]
+inherits = "release"
+debug = 1
