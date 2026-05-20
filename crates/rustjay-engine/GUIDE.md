@@ -274,7 +274,9 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 ### LFO modulation
 
 ```rust,ignore
-let (hue_mod, sat_mod, bright_mod) = engine.lfo.bank.get_hsb_modulations();
+// get_modulations() returns a HashMap<String, f32> keyed by parameter id.
+let mods = engine.lfo.bank.get_modulations();
+let hue_mod = mods.get("hue").copied().unwrap_or(0.0);
 ```
 
 ### Preset save/load
