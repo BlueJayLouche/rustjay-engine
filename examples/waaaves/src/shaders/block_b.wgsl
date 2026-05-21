@@ -541,8 +541,8 @@ fn process_fb2(uv: vec2<f32>, coords: vec2<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
-    let uv = vec2<f32>(texcoord.x, 1.0 - texcoord.y);
-    let coords = uv;
+    let uv = texcoord;
+    let coords = texcoord;
     
     // input_tex and fb2_tex are render targets (top-to-bottom) — use raw texcoord.
     let input_color = process_input(texcoord, texcoord);

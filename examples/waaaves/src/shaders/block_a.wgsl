@@ -559,8 +559,10 @@ fn process_channel(uv: vec2<f32>, coords: vec2<f32>,
 
 @fragment
 fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
-    let uv = vec2<f32>(texcoord.x, 1.0 - texcoord.y);
-    let coords = uv;
+    // All textures in this engine (webcam, render targets, ring buffers) are
+    // stored top-to-bottom.  No Y flip needed — sample with raw texcoord.
+    let uv = texcoord;
+    let coords = texcoord;
     
     // === CHANNEL 1 Processing ===
     let ch1_color = process_channel(
