@@ -30,9 +30,13 @@ pub struct WaaavesEffect {
     // Ring buffers
     fb1: Option<render::ring_buffer::RingBuffer>,
     fb2: Option<render::ring_buffer::RingBuffer>,
-    // Uniform buffer
-    uniform_buf: Option<wgpu::Buffer>,
-    uniform_bg: Option<wgpu::BindGroup>,
+    // Per-pass uniform buffers and bind groups
+    uniform_buf_a: Option<wgpu::Buffer>,
+    uniform_buf_b: Option<wgpu::Buffer>,
+    uniform_buf_c: Option<wgpu::Buffer>,
+    uniform_bg_a: Option<wgpu::BindGroup>,
+    uniform_bg_b: Option<wgpu::BindGroup>,
+    uniform_bg_c: Option<wgpu::BindGroup>,
     // Sampler
     sampler: Option<wgpu::Sampler>,
     // Dummy black texture
@@ -63,8 +67,12 @@ impl Default for WaaavesEffect {
             intermediate_b: None,
             fb1: None,
             fb2: None,
-            uniform_buf: None,
-            uniform_bg: None,
+            uniform_buf_a: None,
+            uniform_buf_b: None,
+            uniform_buf_c: None,
+            uniform_bg_a: None,
+            uniform_bg_b: None,
+            uniform_bg_c: None,
             sampler: None,
             dummy: None,
             cached_width: 0,
@@ -122,12 +130,15 @@ impl EffectPlugin for WaaavesEffect {
         self.sampler = Some(passes::create_sampler(device));
         self.dummy = Some(passes::create_dummy_texture(device, queue));
 
-        let uniform_size = std::mem::size_of::<WaaavesUniforms>() as u64;
-        let uniform_buf = passes::create_uniform_buffer(device, uniform_size);
-        self.uniform_bg = Some(passes::create_uniform_bind_group(
-            device, bgl_uniform, &uniform_buf,
-        ));
-        self.uniform_buf = Some(uniform_buf);
+        let buf_a = passes::create_uniform_buffer(device, std::mem::size_of::<BlockAUniforms>() as u64);
+        let buf_b = passes::create_uniform_buffer(device, std::mem::size_of::<BlockBUniforms>() as u64);
+        let buf_c = passes::create_uniform_buffer(device, std::mem::size_of::<BlockCUniforms>() as u64);
+        self.uniform_bg_a = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_a));
+        self.uniform_bg_b = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_b));
+        self.uniform_bg_c = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_c));
+        self.uniform_buf_a = Some(buf_a);
+        self.uniform_buf_b = Some(buf_b);
+        self.uniform_buf_c = Some(buf_c);
     }
 
     fn prepare(
@@ -137,13 +148,32 @@ impl EffectPlugin for WaaavesEffect {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        // 1. Uniform upload (every frame)
+        // 1. Uniform upload (every frame) — each pass gets its own buffer at offset 0.
         let uniforms = WaaavesUniforms::from_state(state, engine);
-        queue.write_buffer(
-            self.uniform_buf.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&uniforms),
-        );
+        queue.write_buffer(self.uniform_buf_a.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_a));
+        queue.write_buffer(self.uniform_buf_b.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_b));
+        queue.write_buffer(self.uniform_buf_c.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_c));
+
+        // Beat-sync delay: recompute fb1/fb2 delay_time from BPM when sync is on
+        let bpm = engine.effective_bpm();
+        if bpm > 0.0 {
+            if state.block1.fb1_delay_time_sync {
+                state.block1.fb1_delay_time = sync_to_frames(
+                    state.block1.fb1_delay_time_division,
+                    bpm,
+                    60.0,
+                    state.max_delay_frames,
+                );
+            }
+            if state.block2.fb2_delay_time_sync {
+                state.block2.fb2_delay_time = sync_to_frames(
+                    state.block2.fb2_delay_time_division,
+                    bpm,
+                    60.0,
+                    state.max_delay_frames,
+                );
+            }
+        }
 
         // 2. Intermediate texture resize — create or recreate when resolution changes
         let w = engine.resolution.internal_width;
@@ -326,7 +356,9 @@ impl EffectPlugin for WaaavesEffect {
     ) -> bool {
         let dummy_view = &self.dummy.as_ref().unwrap().1;
         let sampler = self.sampler.as_ref().unwrap();
-        let uniform_bg = self.uniform_bg.as_ref().unwrap();
+        let uniform_bg_a = self.uniform_bg_a.as_ref().unwrap();
+        let uniform_bg_b = self.uniform_bg_b.as_ref().unwrap();
+        let uniform_bg_c = self.uniform_bg_c.as_ref().unwrap();
 
         // ch1 = engine primary input; ch2 = engine second input or dummy
         let ch1_view = input_view.unwrap_or(dummy_view);
@@ -381,7 +413,7 @@ impl EffectPlugin for WaaavesEffect {
             });
             rpass.set_pipeline(self.pipeline_a.as_ref().unwrap());
             rpass.set_bind_group(0, &bg0_a, &[]);
-            rpass.set_bind_group(1, uniform_bg, &[]);
+            rpass.set_bind_group(1, uniform_bg_a, &[]);
             rpass.set_bind_group(2, bg2_a, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
@@ -404,7 +436,7 @@ impl EffectPlugin for WaaavesEffect {
             });
             rpass.set_pipeline(self.pipeline_b.as_ref().unwrap());
             rpass.set_bind_group(0, bg0_b, &[]);
-            rpass.set_bind_group(1, uniform_bg, &[]);
+            rpass.set_bind_group(1, uniform_bg_b, &[]);
             rpass.set_bind_group(2, bg2_b, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
@@ -427,7 +459,7 @@ impl EffectPlugin for WaaavesEffect {
             });
             rpass.set_pipeline(self.pipeline_c.as_ref().unwrap());
             rpass.set_bind_group(0, bg0_c, &[]);
-            rpass.set_bind_group(1, uniform_bg, &[]);
+            rpass.set_bind_group(1, uniform_bg_c, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
@@ -450,6 +482,45 @@ impl EffectPlugin for WaaavesEffect {
         self.fb2.as_mut().unwrap().advance();
 
         true
+    }
+}
+
+/// Convert a beat-division index to a frame count.
+/// Division table: ["1/32","1/16","1/8","1/4","1/2","1","2","4"].
+fn sync_to_frames(division_index: i32, bpm: f32, fps: f32, max: u32) -> u32 {
+    let mult = match division_index {
+        0 => 1.0 / 32.0,
+        1 => 1.0 / 16.0,
+        2 => 1.0 / 8.0,
+        3 => 1.0 / 4.0,
+        4 => 1.0 / 2.0,
+        5 => 1.0,
+        6 => 2.0,
+        7 => 4.0,
+        _ => 1.0,
+    };
+    let frames = mult * (60.0 / bpm) * fps;
+    frames.round().clamp(1.0, max as f32) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_to_frames_one_beat_at_120bpm_60fps() {
+        // division_index 5 = "1" beat
+        assert_eq!(sync_to_frames(5, 120.0, 60.0, 30), 30);
+    }
+
+    #[test]
+    fn sync_to_frames_clamps_to_max() {
+        assert_eq!(sync_to_frames(5, 120.0, 60.0, 10), 10);
+    }
+
+    #[test]
+    fn sync_to_frames_minimum_one() {
+        assert_eq!(sync_to_frames(0, 300.0, 60.0, 30), 1);
     }
 }
 
