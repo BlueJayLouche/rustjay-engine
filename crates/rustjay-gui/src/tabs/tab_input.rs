@@ -80,7 +80,7 @@ impl ControlGui {
                 let device_names: Vec<&str> = self.webcam_devices.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select Webcam", &mut self.selected_webcam, &device_names);
 
-                if ui.button("Start Input 1") {
+                if ui.button("Start Input 1##webcam") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::StartWebcam {
                         device_index: self.selected_webcam as usize,
@@ -90,7 +90,7 @@ impl ControlGui {
                     };
                 }
                 ui.same_line();
-                if ui.button("Start Input 2") {
+                if ui.button("Start Input 2##webcam") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.second_input_command = InputCommand::StartWebcam {
                         device_index: self.selected_webcam as usize,
@@ -116,7 +116,7 @@ impl ControlGui {
                 let source_names: Vec<&str> = self.ndi_sources.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select NDI Source", &mut self.selected_ndi, &source_names);
 
-                if ui.button("Start Input 1") {
+                if ui.button("Start Input 1##ndi") {
                     let source_name = self.ndi_sources.get(self.selected_ndi as usize)
                         .cloned()
                         .unwrap_or_default();
@@ -124,7 +124,7 @@ impl ControlGui {
                     state.input_command = InputCommand::StartNdi { source_name };
                 }
                 ui.same_line();
-                if ui.button("Start Input 2") {
+                if ui.button("Start Input 2##ndi") {
                     let source_name = self.ndi_sources.get(self.selected_ndi as usize)
                         .cloned()
                         .unwrap_or_default();
@@ -151,7 +151,7 @@ impl ControlGui {
                 let server_name_refs: Vec<&str> = server_names.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select Syphon Server", &mut self.selected_syphon, &server_name_refs);
 
-                if ui.button("Start Input 1") {
+                if ui.button("Start Input 1##syphon") {
                     let server_info = self.syphon_servers.get(self.selected_syphon).cloned();
                     if let Some(info) = server_info {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -162,7 +162,7 @@ impl ControlGui {
                     }
                 }
                 ui.same_line();
-                if ui.button("Start Input 2") {
+                if ui.button("Start Input 2##syphon") {
                     let server_info = self.syphon_servers.get(self.selected_syphon).cloned();
                     if let Some(info) = server_info {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -198,7 +198,7 @@ impl ControlGui {
                     &label_refs,
                 );
 
-                if ui.button("Start Input 1") {
+                if ui.button("Start Input 1##v4l2") {
                     if let Some(info) = self.v4l2_capture_devices.get(self.selected_v4l2_capture) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.input_command = InputCommand::StartV4l2 {
@@ -207,7 +207,7 @@ impl ControlGui {
                     }
                 }
                 ui.same_line();
-                if ui.button("Start Input 2") {
+                if ui.button("Start Input 2##v4l2") {
                     if let Some(info) = self.v4l2_capture_devices.get(self.selected_v4l2_capture) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.second_input_command = InputCommand::StartV4l2 {
@@ -235,7 +235,7 @@ impl ControlGui {
                     .collect();
                 ui.combo_simple_string("Select Spout Sender", &mut self.selected_spout, &sender_names);
 
-                if ui.button("Start Input 1") {
+                if ui.button("Start Input 1##spout") {
                     let sender_name = self.spout_senders
                         .get(self.selected_spout)
                         .map(|s| s.name.clone())
@@ -244,7 +244,7 @@ impl ControlGui {
                     state.input_command = InputCommand::StartSpout { sender_name };
                 }
                 ui.same_line();
-                if ui.button("Start Input 2") {
+                if ui.button("Start Input 2##spout") {
                     let sender_name = self.spout_senders
                         .get(self.selected_spout)
                         .map(|s| s.name.clone())
@@ -307,9 +307,9 @@ impl ControlGui {
     /// Build the output preview — fills the window with a center-crop
     pub(crate) fn build_output_preview(&mut self, ui: &imgui::Ui) {
         if let Some(texture_id) = self.output_preview_texture_id {
-            let (internal_width, internal_height) = {
+            let (internal_width, internal_height, pixel_pick_armed) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.resolution.internal_width, state.resolution.internal_height)
+                (state.resolution.internal_width, state.resolution.internal_height, state.pixel_pick_armed)
             };
 
             let avail = ui.content_region_avail();
@@ -338,6 +338,53 @@ impl ControlGui {
                 .uv0(uv0)
                 .uv1(uv1)
                 .build(ui);
+
+            if pixel_pick_armed {
+                let image_min = ui.item_rect_min();
+                let image_size = ui.item_rect_size();
+                let mouse_pos = ui.io().mouse_pos;
+
+                // Draw crosshair at mouse position
+                let draw_list = ui.get_foreground_draw_list();
+                let crosshair_size = 10.0;
+                draw_list
+                    .add_line(
+                        [mouse_pos[0] - crosshair_size, mouse_pos[1]],
+                        [mouse_pos[0] + crosshair_size, mouse_pos[1]],
+                        [1.0, 1.0, 1.0, 0.8],
+                    )
+                    .build();
+                draw_list
+                    .add_line(
+                        [mouse_pos[0], mouse_pos[1] - crosshair_size],
+                        [mouse_pos[0], mouse_pos[1] + crosshair_size],
+                        [1.0, 1.0, 1.0, 0.8],
+                    )
+                    .build();
+
+                ui.set_mouse_cursor(Some(imgui::MouseCursor::ResizeAll));
+
+                if ui.is_mouse_clicked(imgui::MouseButton::Left)
+                    && mouse_pos[0] >= image_min[0]
+                    && mouse_pos[0] <= image_min[0] + image_size[0]
+                    && mouse_pos[1] >= image_min[1]
+                    && mouse_pos[1] <= image_min[1] + image_size[1]
+                {
+                    let mut uv = [
+                        (mouse_pos[0] - image_min[0]) / image_size[0],
+                        (mouse_pos[1] - image_min[1]) / image_size[1],
+                    ];
+                    uv[0] = uv[0].clamp(0.0, 1.0);
+                    uv[1] = uv[1].clamp(0.0, 1.0);
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.pick_request = Some(uv);
+                }
+
+                if ui.is_key_pressed(imgui::Key::Escape) {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.pixel_pick_armed = false;
+                }
+            }
         } else {
             ui.text_disabled("No output preview available");
         }

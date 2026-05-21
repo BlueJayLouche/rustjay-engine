@@ -565,32 +565,68 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     let coords = texcoord;
     
     // === CHANNEL 1 Processing ===
-    let ch1_color = process_channel(
-        uv, uv, ch1_tex, ch1_sampler,
-        uniforms.ch1_input_width, uniforms.ch1_input_height,
-        uniforms.ch1_aspect, uniforms.ch1_crib_x, uniforms.ch1_scale, uniforms.ch1_hd_zcrib,
-        uniforms.ch1_xy_displace, uniforms.ch1_z_displace, uniforms.ch1_rotate,
-        uniforms.ch1_hsb_attenuate.xyz, uniforms.ch1_posterize, uniforms.ch1_posterize_inv,
-        uniforms.ch1_kaleidoscope, uniforms.ch1_kaleidoscope_slice,
-        uniforms.ch1_blur_amount, uniforms.ch1_blur_radius,
-        uniforms.ch1_sharpen_amount, uniforms.ch1_sharpen_radius, uniforms.ch1_filters_boost,
-        uniforms.ch1_switches, uniforms.ch1_geo_overflow, uniforms.ch1_hd_aspect_on
-    );
-    
+    // ch1_input_select: 0=Input1 (ch1_tex), 1=Input2 (ch2_tex)
+    var ch1_color: vec4<f32>;
+    let ch1_iw = select(uniforms.ch1_input_width, uniforms.ch2_input_width, uniforms.ch1_input_select != 0);
+    let ch1_ih = select(uniforms.ch1_input_height, uniforms.ch2_input_height, uniforms.ch1_input_select != 0);
+    if (uniforms.ch1_input_select == 0) {
+        ch1_color = process_channel(
+            uv, uv, ch1_tex, ch1_sampler,
+            ch1_iw, ch1_ih,
+            uniforms.ch1_aspect, uniforms.ch1_crib_x, uniforms.ch1_scale, uniforms.ch1_hd_zcrib,
+            uniforms.ch1_xy_displace, uniforms.ch1_z_displace, uniforms.ch1_rotate,
+            uniforms.ch1_hsb_attenuate.xyz, uniforms.ch1_posterize, uniforms.ch1_posterize_inv,
+            uniforms.ch1_kaleidoscope, uniforms.ch1_kaleidoscope_slice,
+            uniforms.ch1_blur_amount, uniforms.ch1_blur_radius,
+            uniforms.ch1_sharpen_amount, uniforms.ch1_sharpen_radius, uniforms.ch1_filters_boost,
+            uniforms.ch1_switches, uniforms.ch1_geo_overflow, uniforms.ch1_hd_aspect_on
+        );
+    } else {
+        ch1_color = process_channel(
+            uv, uv, ch2_tex, ch2_sampler,
+            ch1_iw, ch1_ih,
+            uniforms.ch1_aspect, uniforms.ch1_crib_x, uniforms.ch1_scale, uniforms.ch1_hd_zcrib,
+            uniforms.ch1_xy_displace, uniforms.ch1_z_displace, uniforms.ch1_rotate,
+            uniforms.ch1_hsb_attenuate.xyz, uniforms.ch1_posterize, uniforms.ch1_posterize_inv,
+            uniforms.ch1_kaleidoscope, uniforms.ch1_kaleidoscope_slice,
+            uniforms.ch1_blur_amount, uniforms.ch1_blur_radius,
+            uniforms.ch1_sharpen_amount, uniforms.ch1_sharpen_radius, uniforms.ch1_filters_boost,
+            uniforms.ch1_switches, uniforms.ch1_geo_overflow, uniforms.ch1_hd_aspect_on
+        );
+    }
+
     var ch1_final_color = ch1_color;
-    
+
     // === CHANNEL 2 Processing ===
-    let ch2_color = process_channel(
-        uv, uv, ch2_tex, ch2_sampler,
-        uniforms.ch2_input_width, uniforms.ch2_input_height,
-        uniforms.ch2_aspect, uniforms.ch2_crib_x, uniforms.ch2_scale, uniforms.ch2_hd_zcrib,
-        uniforms.ch2_xy_displace, uniforms.ch2_z_displace, uniforms.ch2_rotate,
-        uniforms.ch2_hsb_attenuate.xyz, uniforms.ch2_posterize, uniforms.ch2_posterize_inv,
-        uniforms.ch2_kaleidoscope, uniforms.ch2_kaleidoscope_slice,
-        uniforms.ch2_blur_amount, uniforms.ch2_blur_radius,
-        uniforms.ch2_sharpen_amount, uniforms.ch2_sharpen_radius, uniforms.ch2_filters_boost,
-        uniforms.ch2_switches, uniforms.ch2_geo_overflow, uniforms.ch2_hd_aspect_on
-    );
+    // ch2_input_select: 0=Input1 (ch1_tex), 1=Input2 (ch2_tex)
+    var ch2_color: vec4<f32>;
+    let ch2_iw = select(uniforms.ch1_input_width, uniforms.ch2_input_width, uniforms.ch2_input_select != 0);
+    let ch2_ih = select(uniforms.ch1_input_height, uniforms.ch2_input_height, uniforms.ch2_input_select != 0);
+    if (uniforms.ch2_input_select == 0) {
+        ch2_color = process_channel(
+            uv, uv, ch1_tex, ch1_sampler,
+            ch2_iw, ch2_ih,
+            uniforms.ch2_aspect, uniforms.ch2_crib_x, uniforms.ch2_scale, uniforms.ch2_hd_zcrib,
+            uniforms.ch2_xy_displace, uniforms.ch2_z_displace, uniforms.ch2_rotate,
+            uniforms.ch2_hsb_attenuate.xyz, uniforms.ch2_posterize, uniforms.ch2_posterize_inv,
+            uniforms.ch2_kaleidoscope, uniforms.ch2_kaleidoscope_slice,
+            uniforms.ch2_blur_amount, uniforms.ch2_blur_radius,
+            uniforms.ch2_sharpen_amount, uniforms.ch2_sharpen_radius, uniforms.ch2_filters_boost,
+            uniforms.ch2_switches, uniforms.ch2_geo_overflow, uniforms.ch2_hd_aspect_on
+        );
+    } else {
+        ch2_color = process_channel(
+            uv, uv, ch2_tex, ch2_sampler,
+            ch2_iw, ch2_ih,
+            uniforms.ch2_aspect, uniforms.ch2_crib_x, uniforms.ch2_scale, uniforms.ch2_hd_zcrib,
+            uniforms.ch2_xy_displace, uniforms.ch2_z_displace, uniforms.ch2_rotate,
+            uniforms.ch2_hsb_attenuate.xyz, uniforms.ch2_posterize, uniforms.ch2_posterize_inv,
+            uniforms.ch2_kaleidoscope, uniforms.ch2_kaleidoscope_slice,
+            uniforms.ch2_blur_amount, uniforms.ch2_blur_radius,
+            uniforms.ch2_sharpen_amount, uniforms.ch2_sharpen_radius, uniforms.ch2_filters_boost,
+            uniforms.ch2_switches, uniforms.ch2_geo_overflow, uniforms.ch2_hd_aspect_on
+        );
+    }
 
     // === Mix CH1 and CH2 ===
     var mixed_color = mix_and_key(

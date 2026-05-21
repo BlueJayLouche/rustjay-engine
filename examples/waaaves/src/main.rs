@@ -392,7 +392,33 @@ impl EffectPlugin for WaaavesEffect {
         let fb1_read_idx = self.fb1.as_ref().unwrap().read_index(state.block1.fb1_delay_time as usize);
         let fb2_read_idx = self.fb2.as_ref().unwrap().read_index(state.block2.fb2_delay_time as usize);
         let bg2_a = &self.fb1_bind_groups[fb1_read_idx];
-        let bg0_b = self.bg_inter_b.as_ref().unwrap();
+        // block2_input_select: 0=Block1(default), 1=Input1, 2=Input2
+        let bg0_b_dynamic;
+        let bg0_b: &wgpu::BindGroup = match state.block2.block2_input_select {
+            1 => {
+                bg0_b_dynamic = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("waaaves_b_g0_input1"),
+                    layout: self.bgl_c.as_ref().unwrap(),
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(ch1_view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                    ],
+                });
+                &bg0_b_dynamic
+            }
+            2 => {
+                bg0_b_dynamic = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("waaaves_b_g0_input2"),
+                    layout: self.bgl_c.as_ref().unwrap(),
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(ch2_view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                    ],
+                });
+                &bg0_b_dynamic
+            }
+            _ => self.bg_inter_b.as_ref().unwrap(),
+        };
         let bg2_b = &self.fb2_bind_groups[fb2_read_idx];
         let bg0_c = self.bg_inter_c.as_ref().unwrap();
 
