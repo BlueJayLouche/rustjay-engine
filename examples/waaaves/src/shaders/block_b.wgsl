@@ -544,11 +544,10 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     let uv = vec2<f32>(texcoord.x, 1.0 - texcoord.y);
     let coords = uv;
     
-    // Process input
-    let input_color = process_input(uv, coords);
-    
-    // Process FB2
-    let fb2_color = process_fb2(uv, coords);
+    // input_tex and fb2_tex are render targets (top-to-bottom) — use raw texcoord.
+    let input_color = process_input(texcoord, texcoord);
+
+    let fb2_color = process_fb2(texcoord, texcoord);
     
     // Mix input and FB2
     var final_color = mix_and_key(
@@ -557,8 +556,8 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
         uniforms.fb2_key_order, uniforms.fb2_mix_overflow
     );
     
-    // Temporal Filter 1
-    let temporal1_color = textureSample(temporal_tex, temporal_sampler, uv);
+    // Temporal Filter 1  (temporal_tex is a render target — raw texcoord)
+    let temporal1_color = textureSample(temporal_tex, temporal_sampler, texcoord);
     var temporal1_hsb = rgb2hsb(temporal1_color.rgb);
     // Apply resonance to saturation and brightness
     temporal1_hsb.y = clamp(temporal1_hsb.y * (1.0 + uniforms.fb2_temporal1_res * 0.25), 0.0, 1.0);

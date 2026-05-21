@@ -403,8 +403,9 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     let px = u32(texcoord.x * uniforms.width);
     let py = u32(texcoord.y * uniforms.height);
 
+    // block1_tex / block2_tex are render targets (top-to-bottom) — raw texcoord.
     // ── Block1 geo re-processing ───────────────────────────────────────────
-    var b1 = uv;
+    var b1 = texcoord;
     b1 = do_kaleidoscope(b1, uniforms.block1_kaleidoscope, uniforms.block1_kaleidoscope_slice);
     b1 += uniforms.block1_xy_displace;
     b1 -= vec2<f32>(0.5);
@@ -418,7 +419,7 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
         uniforms.block1_blur_radius, uniforms.block1_blur_amount);
 
     // ── Block2 geo re-processing ───────────────────────────────────────────
-    var b2 = uv;
+    var b2 = texcoord;
     b2 = do_kaleidoscope(b2, uniforms.block2_kaleidoscope, uniforms.block2_kaleidoscope_slice);
     b2 += uniforms.block2_xy_displace;
     b2 -= vec2<f32>(0.5);

@@ -598,7 +598,9 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     );
     
     // === FB1 Processing ===
-    var fb1_coords = coords;
+    // fb1 is a render target (ring buffer copy of intermediate_a) — top-to-bottom,
+    // so sample with raw texcoord, not the video-input-correcting uv.
+    var fb1_coords = texcoord;
     
     // FB1 H/V Flip
     if (get_switch(uniforms.fb1_switches, 2u)) { // fb1_h_flip
