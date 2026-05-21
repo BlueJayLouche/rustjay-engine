@@ -99,6 +99,29 @@ impl ImGuiRenderer {
 
     /// Handle window event
     pub fn handle_event(&mut self, event: &winit::event::Event<()>) {
+        use winit::event::{Event, MouseScrollDelta, TouchPhase, WindowEvent};
+        // imgui-winit-support collapses PixelDelta to ±1.0, discarding magnitude.
+        // On macOS the trackpad fires many small PixelDelta events per second, so
+        // the sign-only mapping causes jumpy, over-sensitive scrolling. Instead,
+        // convert proportionally: 20 logical pixels of trackpad travel = 1 scroll line.
+        // LineDelta (discrete mouse wheel clicks) is passed through unchanged.
+        if let Event::WindowEvent {
+            window_id,
+            event: WindowEvent::MouseWheel { delta, phase, .. },
+        } = event
+        {
+            if window_id == &self.window.id() && *phase == TouchPhase::Moved {
+                let (h, v) = match delta {
+                    MouseScrollDelta::LineDelta(h, v) => (*h, *v),
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        let pos = pos.to_logical::<f32>(self.scale_factor);
+                        (pos.x / 20.0, pos.y / 20.0)
+                    }
+                };
+                self.context.io_mut().add_mouse_wheel_event([h, v]);
+                return;
+            }
+        }
         self.platform.handle_event(self.context.io_mut(), &self.window, event);
     }
 
