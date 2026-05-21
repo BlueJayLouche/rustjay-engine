@@ -738,7 +738,11 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block1_sharpen_amount: param("block1_sharpen_amount", p.block1_sharpen_amount, engine),
         block1_sharpen_radius: param("block1_sharpen_radius", p.block1_sharpen_radius, engine),
         block1_filters_boost: param("block1_filters_boost", p.block1_filters_boost, engine),
-        block1_dither: param("block1_dither", p.block1_dither, engine),
+        block1_dither: if p.block1_dither_switch {
+            1.0 / param("block1_dither", p.block1_dither, engine).max(1.0)
+        } else {
+            0.0
+        },
         block1_switches: if p.block1_colorize_switch { 1 } else { 0 },
         block1_colorize_mode: p.block1_colorize_hsb_rgb,
         block1_dither_type: p.block1_dither_type,
@@ -769,7 +773,11 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block2_sharpen_amount: param("block2_sharpen_amount", p.block2_sharpen_amount, engine),
         block2_sharpen_radius: param("block2_sharpen_radius", p.block2_sharpen_radius, engine),
         block2_filters_boost: param("block2_filters_boost", p.block2_filters_boost, engine),
-        block2_dither: param("block2_dither", p.block2_dither, engine),
+        block2_dither: if p.block2_dither_switch {
+            1.0 / param("block2_dither", p.block2_dither, engine).max(1.0)
+        } else {
+            0.0
+        },
         block2_switches: if p.block2_colorize_switch { 1 } else { 0 },
         block2_colorize_mode: p.block2_colorize_hsb_rgb,
         block2_dither_type: p.block2_dither_type,
