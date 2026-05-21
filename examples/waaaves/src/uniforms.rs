@@ -427,7 +427,11 @@ fn build_block_a(state: &WaaavesState, engine: &EngineState) -> BlockAUniforms {
         // Channel 2 mix
         ch2_mix_amount: param("ch2_mix_amount", p.ch2_mix_amount, engine),
         _pad_ch2_key: [0.0; 2],
-        ch2_key_value: Align16::new(p.ch2_key_value_r, p.ch2_key_value_g, p.ch2_key_value_b),
+        ch2_key_value: Align16::new(
+            param("ch2_key_value_r", p.ch2_key_value_r, engine),
+            param("ch2_key_value_g", p.ch2_key_value_g, engine),
+            param("ch2_key_value_b", p.ch2_key_value_b, engine),
+        ),
         ch2_key_threshold: param("ch2_key_threshold", p.ch2_key_threshold, engine),
         ch2_key_soft: param("ch2_key_soft", p.ch2_key_soft, engine),
         ch2_mix_type: p.ch2_mix_type,
@@ -480,7 +484,11 @@ fn build_block_a(state: &WaaavesState, engine: &EngineState) -> BlockAUniforms {
         // FB1 mix
         fb1_mix_amount: param("fb1_mix_amount", p.fb1_mix_amount, engine),
         _pad_fb1_key: [0.0; 2],
-        fb1_key_value: Align16::new(p.fb1_key_value_r, p.fb1_key_value_g, p.fb1_key_value_b),
+        fb1_key_value: Align16::new(
+            param("fb1_key_value_r", p.fb1_key_value_r, engine),
+            param("fb1_key_value_g", p.fb1_key_value_g, engine),
+            param("fb1_key_value_b", p.fb1_key_value_b, engine),
+        ),
         fb1_key_threshold: param("fb1_key_threshold", p.fb1_key_threshold, engine),
         fb1_key_soft: param("fb1_key_soft", p.fb1_key_soft, engine),
         fb1_mix_type: p.fb1_mix_type,
@@ -632,7 +640,11 @@ fn build_block_b(state: &WaaavesState, engine: &EngineState) -> BlockBUniforms {
         _pad1: 0.0,
 
         fb2_mix_amount: param("fb2_mix_amount", p.fb2_mix_amount, engine),
-        fb2_key_value: Align16::new(p.fb2_key_value_r, p.fb2_key_value_g, p.fb2_key_value_b),
+        fb2_key_value: Align16::new(
+            param("fb2_key_value_r", p.fb2_key_value_r, engine),
+            param("fb2_key_value_g", p.fb2_key_value_g, engine),
+            param("fb2_key_value_b", p.fb2_key_value_b, engine),
+        ),
         fb2_key_threshold: param("fb2_key_threshold", p.fb2_key_threshold, engine),
         fb2_key_soft: param("fb2_key_soft", p.fb2_key_soft, engine),
         fb2_mix_type: p.fb2_mix_type,
@@ -775,13 +787,29 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         // Columns of the 3×3 matrix: each vec packs "how much each source channel
         // contributes to the destination channel" (column-major from WGSL's perspective).
         // bg_into_fg_red.xyz = [r_to_r, g_to_r, b_to_r]
-        bg_into_fg_red:   Align16::new(p.matrix_mix_r_to_r, p.matrix_mix_g_to_r, p.matrix_mix_b_to_r),
-        bg_into_fg_green: Align16::new(p.matrix_mix_r_to_g, p.matrix_mix_g_to_g, p.matrix_mix_b_to_g),
-        bg_into_fg_blue:  Align16::new(p.matrix_mix_r_to_b, p.matrix_mix_g_to_b, p.matrix_mix_b_to_b),
+        bg_into_fg_red: Align16::new(
+            param("matrix_mix_r_to_r", p.matrix_mix_r_to_r, engine),
+            param("matrix_mix_g_to_r", p.matrix_mix_g_to_r, engine),
+            param("matrix_mix_b_to_r", p.matrix_mix_b_to_r, engine),
+        ),
+        bg_into_fg_green: Align16::new(
+            param("matrix_mix_r_to_g", p.matrix_mix_r_to_g, engine),
+            param("matrix_mix_g_to_g", p.matrix_mix_g_to_g, engine),
+            param("matrix_mix_b_to_g", p.matrix_mix_b_to_g, engine),
+        ),
+        bg_into_fg_blue: Align16::new(
+            param("matrix_mix_r_to_b", p.matrix_mix_r_to_b, engine),
+            param("matrix_mix_g_to_b", p.matrix_mix_g_to_b, engine),
+            param("matrix_mix_b_to_b", p.matrix_mix_b_to_b, engine),
+        ),
 
         final_mix_amount: param("final_mix_amount", p.final_mix_amount, engine),
         _pad_final_key: [0.0; 3],
-        final_key_value: Align16::new(p.final_key_value_r, p.final_key_value_g, p.final_key_value_b),
+        final_key_value: Align16::new(
+            param("final_key_value_r", p.final_key_value_r, engine),
+            param("final_key_value_g", p.final_key_value_g, engine),
+            param("final_key_value_b", p.final_key_value_b, engine),
+        ),
         final_key_threshold: param("final_key_threshold", p.final_key_threshold, engine),
         final_key_soft: param("final_key_soft", p.final_key_soft, engine),
         final_mix_type: p.final_mix_type,

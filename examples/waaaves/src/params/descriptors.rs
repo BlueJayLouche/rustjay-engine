@@ -38,6 +38,9 @@ pub fn waaaves_parameter_descriptors() -> Vec<ParameterDescriptor> {
         // Block 1 — CH2 Mix
         // =====================================================================
         f!("ch2_mix_amount",   "CH2 Mix Amount",   b1_ch2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("ch2_key_value_r",  "CH2 Key R",        b1_ch2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("ch2_key_value_g",  "CH2 Key G",        b1_ch2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("ch2_key_value_b",  "CH2 Key B",        b1_ch2.clone(), 0.0, 1.0, 0.0, 0.01),
         f!("ch2_key_threshold","CH2 Key Threshold",b1_ch2.clone(), 0.0, 1.0, 1.0, 0.01),
         f!("ch2_key_soft",     "CH2 Key Soft",     b1_ch2.clone(), 0.0, 1.0, 0.0, 0.01),
 
@@ -61,6 +64,9 @@ pub fn waaaves_parameter_descriptors() -> Vec<ParameterDescriptor> {
         // Block 1 — FB1 Mix
         // =====================================================================
         f!("fb1_mix_amount",   "FB1 Mix Amount",   b1_fb1.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb1_key_value_r",  "FB1 Key R",        b1_fb1.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb1_key_value_g",  "FB1 Key G",        b1_fb1.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb1_key_value_b",  "FB1 Key B",        b1_fb1.clone(), 0.0, 1.0, 0.0, 0.01),
         f!("fb1_key_threshold","FB1 Key Threshold",b1_fb1.clone(), 0.0, 1.0, 1.0, 0.01),
         f!("fb1_key_soft",     "FB1 Key Soft",     b1_fb1.clone(), 0.0, 1.0, 0.0, 0.01),
 
@@ -112,12 +118,18 @@ pub fn waaaves_parameter_descriptors() -> Vec<ParameterDescriptor> {
         f!("block2_input_kaleidoscope_amount", "B2 Input Kaleidoscope",        b2_in.clone(),  0.0,  1.0, 0.0, 0.01),
         f!("block2_input_kaleidoscope_slice",  "B2 Input Kaleidoscope Slice",  b2_in.clone(), -std::f32::consts::PI, std::f32::consts::PI, 0.0, 0.01),
         f!("block2_input_blur_amount",         "B2 Input Blur Amount",         b2_in.clone(),  0.0,  1.0, 0.0, 0.01),
+        f!("block2_input_blur_radius",         "B2 Input Blur Radius",         b2_in.clone(),  0.0, 10.0, 1.0, 0.1),
         f!("block2_input_sharpen_amount",      "B2 Input Sharpen Amount",      b2_in.clone(),  0.0,  1.0, 0.0, 0.01),
+        f!("block2_input_sharpen_radius",      "B2 Input Sharpen Radius",      b2_in.clone(),  0.0, 10.0, 1.0, 0.1),
+        f!("block2_input_filters_boost",       "B2 Input Filters Boost",       b2_in.clone(),  0.0,  1.0, 0.0, 0.01),
 
         // =====================================================================
         // Block 2 — FB2 Mix
         // =====================================================================
         f!("fb2_mix_amount",   "FB2 Mix Amount",   b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb2_key_value_r",  "FB2 Key R",        b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb2_key_value_g",  "FB2 Key G",        b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb2_key_value_b",  "FB2 Key B",        b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
         f!("fb2_key_threshold","FB2 Key Threshold",b2_fb2.clone(), 0.0, 1.0, 1.0, 0.01),
         f!("fb2_key_soft",     "FB2 Key Soft",     b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
 
@@ -152,9 +164,15 @@ pub fn waaaves_parameter_descriptors() -> Vec<ParameterDescriptor> {
         // =====================================================================
         // Block 2 — FB2 Filters
         // =====================================================================
-        f!("fb2_blur_amount",       "FB2 Blur Amount",       b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
-        f!("fb2_sharpen_amount",    "FB2 Sharpen Amount",    b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
-        f!("fb2_filters_boost",     "FB2 Filters Boost",     b2_fb2.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("fb2_blur_amount",          "FB2 Blur Amount",          b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_blur_radius",          "FB2 Blur Radius",          b2_fb2.clone(), 0.0, 10.0, 1.0, 0.1),
+        f!("fb2_sharpen_amount",       "FB2 Sharpen Amount",       b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_sharpen_radius",       "FB2 Sharpen Radius",       b2_fb2.clone(), 0.0, 10.0, 1.0, 0.1),
+        f!("fb2_temporal1_amount",     "FB2 Temporal1 Amount",     b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_temporal1_resonance",  "FB2 Temporal1 Resonance",  b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_temporal2_amount",     "FB2 Temporal2 Amount",     b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_temporal2_resonance",  "FB2 Temporal2 Resonance",  b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
+        f!("fb2_filters_boost",        "FB2 Filters Boost",        b2_fb2.clone(), 0.0,  1.0, 0.0, 0.01),
 
         // =====================================================================
         // Block 3 — B1 Re-process
@@ -238,7 +256,12 @@ pub fn waaaves_parameter_descriptors() -> Vec<ParameterDescriptor> {
         // =====================================================================
         // Block 3 — Final Mix
         // =====================================================================
-        f!("final_mix_amount",   "Final Mix Amount",   b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("final_mix_amount",    "Final Mix Amount",    b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("final_key_value_r",   "Final Key R",         b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("final_key_value_g",   "Final Key G",         b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("final_key_value_b",   "Final Key B",         b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
+        f!("final_key_threshold", "Final Key Threshold", b3_fin.clone(), 0.0, 1.0, 1.0, 0.01),
+        f!("final_key_soft",      "Final Key Soft",      b3_fin.clone(), 0.0, 1.0, 0.0, 0.01),
     ]
 }
 
@@ -250,7 +273,7 @@ mod tests {
     fn descriptor_count_in_range() {
         let d = waaaves_parameter_descriptors();
         assert!(d.len() >= 120, "got {} descriptors", d.len());
-        assert!(d.len() <= 150, "got {} descriptors", d.len());
+        assert!(d.len() <= 190, "got {} descriptors", d.len());
     }
 
     #[test]
