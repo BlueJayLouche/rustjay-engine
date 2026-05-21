@@ -287,9 +287,10 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                 .clamp(0.0, self.render_target.width as f32 - 1.0) as u32;
             let y = (uv[1] * self.render_target.height as f32)
                 .clamp(0.0, self.render_target.height as f32 - 1.0) as u32;
+            let aligned_row = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
             let buffer = Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Pixel Pick Readback"),
-                size: 4,
+                size: aligned_row as u64,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             }));
@@ -304,7 +305,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                     buffer: &buffer,
                     layout: wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(4),
+                        bytes_per_row: Some(aligned_row),
                         rows_per_image: Some(1),
                     },
                 },
