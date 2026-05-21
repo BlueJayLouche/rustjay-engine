@@ -13,6 +13,10 @@ impl AnyGuiTab for Block2Tab {
             .expect("Block2Tab expects WaaavesState");
 
         apply_pending_pick(state, engine);
+        if ui.is_key_pressed(imgui::Key::Escape) && matches!(state.pick_state, PickState::Armed { .. }) {
+            state.pick_state = PickState::Idle;
+        }
+        engine.pixel_pick_armed = matches!(state.pick_state, PickState::Armed { .. });
 
         // ── Block 2 Input ───────────────────────────────────────────────────
         if ui.collapsing_header("Block 2 Input", imgui::TreeNodeFlags::DEFAULT_OPEN) {

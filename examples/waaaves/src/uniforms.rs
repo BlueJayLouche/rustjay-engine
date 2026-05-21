@@ -298,7 +298,9 @@ pub struct BlockCUniforms {
     pub final_mix_type: i32,
     pub final_mix_overflow: i32,
     pub final_key_order: i32,
-    pub _pad17: [f32; 3],          // tail pad to reach 464 bytes total
+    pub final_dither: f32,
+    pub final_dither_type: i32,
+    pub _pad17: f32,               // tail pad to reach 464 bytes total
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +741,7 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block1_sharpen_radius: param("block1_sharpen_radius", p.block1_sharpen_radius, engine),
         block1_filters_boost: param("block1_filters_boost", p.block1_filters_boost, engine),
         block1_dither: if p.block1_dither_switch {
-            1.0 / param("block1_dither", p.block1_dither, engine).max(1.0)
+            param("block1_dither", p.block1_dither, engine).max(1.0)
         } else {
             0.0
         },
@@ -774,7 +776,7 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block2_sharpen_radius: param("block2_sharpen_radius", p.block2_sharpen_radius, engine),
         block2_filters_boost: param("block2_filters_boost", p.block2_filters_boost, engine),
         block2_dither: if p.block2_dither_switch {
-            1.0 / param("block2_dither", p.block2_dither, engine).max(1.0)
+            param("block2_dither", p.block2_dither, engine).max(1.0)
         } else {
             0.0
         },
@@ -823,7 +825,13 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         final_mix_type: p.final_mix_type,
         final_mix_overflow: p.final_mix_overflow,
         final_key_order: p.final_key_order,
-        _pad17: [0.0; 3],
+        final_dither: if p.final_dither_switch {
+            param("final_dither", p.final_dither, engine).max(1.0)
+        } else {
+            0.0
+        },
+        final_dither_type: p.final_dither_type,
+        _pad17: 0.0,
     }
 }
 
@@ -1074,7 +1082,9 @@ impl Default for BlockCUniforms {
             final_mix_type: 0,
             final_mix_overflow: 0,
             final_key_order: 0,
-            _pad17: [0.0; 3],
+            final_dither: 0.0,
+            final_dither_type: 0,
+            _pad17: 0.0,
         }
     }
 }

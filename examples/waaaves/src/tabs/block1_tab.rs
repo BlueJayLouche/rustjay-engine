@@ -13,6 +13,10 @@ impl AnyGuiTab for Block1Tab {
             .expect("Block1Tab expects WaaavesState");
 
         apply_pending_pick(state, engine);
+        if ui.is_key_pressed(imgui::Key::Escape) && matches!(state.pick_state, PickState::Armed { .. }) {
+            state.pick_state = PickState::Idle;
+        }
+        engine.pixel_pick_armed = matches!(state.pick_state, PickState::Armed { .. });
 
         // ── CH1 Geometry ────────────────────────────────────────────────────
         if ui.collapsing_header("CH1 Geometry", imgui::TreeNodeFlags::DEFAULT_OPEN) {

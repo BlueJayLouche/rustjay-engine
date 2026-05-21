@@ -99,7 +99,9 @@ struct BlockCUniforms {
     final_mix_type: i32,
     final_mix_overflow: i32,
     final_key_order: i32,
-    // tail: 12 bytes implicit padding to 464 bytes total
+    final_dither: f32,
+    final_dither_type: i32,
+    // 4 bytes implicit tail padding
 }
 
 // RGB to HSB conversion
@@ -277,7 +279,7 @@ fn blur_and_sharpen_c(tex: texture_2d<f32>, samp: sampler, coord: vec2<f32>,
     return vec4<f32>(hsb2rgb(b_hsb), 1.0);
 }
 
-// ── Bayer ordered dithering ───────────────────────────────────────────────────
+// ── Ordered dither matrices ───────────────────────────────────────────────────
 
 fn bayer4(x: u32, y: u32) -> f32 {
     let m = array<u32, 16>(
@@ -303,15 +305,67 @@ fn bayer8(x: u32, y: u32) -> f32 {
     return f32(m[(y % 8u) * 8u + (x % 8u)]) / 64.0;
 }
 
-fn apply_dither(color: vec3<f32>, px: u32, py: u32, amount: f32, dtype: i32) -> vec3<f32> {
-    if (amount < 0.001) { return color; }
+// ── Noise functions ───────────────────────────────────────────────────────────
+
+fn blue_noise(x: u32, y: u32, ch: u32) -> f32 {
+    var h = x ^ (x >> 4u) ^ (y * 2654435761u) ^ ch * 1013904223u;
+    h ^= h >> 13u;
+    h *= 1664525u;
+    h ^= h >> 16u;
+    return f32(h & 0xFFFFu) / 65535.0;
+}
+
+fn white_noise(x: u32, y: u32, ch: u32) -> f32 {
+    let fx = f32(x) + f32(ch) * 17.0;
+    return fract(sin(fx * 12.9898 + f32(y) * 78.233) * 43758.5453);
+}
+
+fn ign(x: u32, y: u32) -> f32 {
+    return fract(52.9829189 * fract(0.06711056 * f32(x) + 0.00583715 * f32(y)));
+}
+
+// ── Per-channel quantization dither ──────────────────────────────────────────
+
+fn quantize_dither(c: f32, palette: f32, threshold: f32) -> f32 {
+    return clamp(floor(c * palette + threshold - 0.5) / palette, 0.0, 1.0);
+}
+
+fn dither_channel(c: f32, x: u32, y: u32, palette: f32, dtype: i32, ch: u32) -> f32 {
     var threshold: f32;
     if (dtype == 1) {
-        threshold = bayer8(px, py);
+        threshold = bayer8(x, y);
+    } else if (dtype == 2) {
+        threshold = blue_noise(x, y, ch);
+    } else if (dtype == 3) {
+        threshold = white_noise(x, y, ch);
+    } else if (dtype == 4) {
+        threshold = ign(x, y);
+    } else if (dtype == 5) {
+        let row = y % 4u;
+        if (row == 0u) { threshold = 0.25; }
+        else if (row == 1u) { threshold = 0.75; }
+        else if (row == 2u) { threshold = 0.125; }
+        else { threshold = 0.625; }
+    } else if (dtype == 6) {
+        threshold = select(0.25, 0.75, ((x ^ y) & 1u) == 1u);
+    } else if (dtype == 7) {
+        threshold = f32(x % 8u) / 8.0;
+    } else if (dtype == 8) {
+        threshold = white_noise(x, y, ch + 8u);
+    } else if (dtype == 9) {
+        let noise = white_noise(x, y, ch);
+        return select(0.0, 1.0, c + (noise - 0.5) * 0.25 > 0.5);
+    } else if (dtype == 10) {
+        let ox = select(0u, 4u, (y & 1u) == 1u);
+        threshold = bayer4((x + ox) % 4u, y);
+    } else if (dtype == 11) {
+        threshold = bayer4(x, y) * 0.75 + blue_noise(x, y, ch) * 0.25;
+    } else if (dtype == 12) {
+        threshold = blue_noise(x + ch * 2u, y, 0u);
     } else {
-        threshold = bayer4(px, py);
+        threshold = bayer4(x, y);
     }
-    return color + (threshold - 0.5) * amount;
+    return quantize_dither(c, palette, threshold);
 }
 
 // ── Matrix Mixer ─────────────────────────────────────────────────────────────
@@ -448,7 +502,9 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     // ── Dither Block 1 ─────────────────────────────────────────────────────
     if (uniforms.block1_dither > 0.001) {
         block1_color = vec4<f32>(
-            apply_dither(block1_color.rgb, px, py, uniforms.block1_dither, uniforms.block1_dither_type),
+            dither_channel(block1_color.r, px, py, uniforms.block1_dither, uniforms.block1_dither_type, 0u),
+            dither_channel(block1_color.g, px, py, uniforms.block1_dither, uniforms.block1_dither_type, 1u),
+            dither_channel(block1_color.b, px, py, uniforms.block1_dither, uniforms.block1_dither_type, 2u),
             block1_color.a
         );
     }
@@ -469,7 +525,9 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     // ── Dither Block 2 ─────────────────────────────────────────────────────
     if (uniforms.block2_dither > 0.001) {
         block2_color = vec4<f32>(
-            apply_dither(block2_color.rgb, px, py, uniforms.block2_dither, uniforms.block2_dither_type),
+            dither_channel(block2_color.r, px, py, uniforms.block2_dither, uniforms.block2_dither_type, 0u),
+            dither_channel(block2_color.g, px, py, uniforms.block2_dither, uniforms.block2_dither_type, 1u),
+            dither_channel(block2_color.b, px, py, uniforms.block2_dither, uniforms.block2_dither_type, 2u),
             block2_color.a
         );
     }
@@ -488,7 +546,17 @@ fn fs_main(@location(0) texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     let mixed = matrix_mix(fg, bg);
 
     // ── Final Mix with keying ──────────────────────────────────────────────
-    let final_color = final_mix(vec4<f32>(mixed, 1.0), vec4<f32>(bg, 1.0));
+    var final_color = final_mix(vec4<f32>(mixed, 1.0), vec4<f32>(bg, 1.0));
+
+    // ── Final Dither ───────────────────────────────────────────────────────
+    if (uniforms.final_dither > 0.001) {
+        final_color = vec4<f32>(
+            dither_channel(final_color.r, px, py, uniforms.final_dither, uniforms.final_dither_type, 0u),
+            dither_channel(final_color.g, px, py, uniforms.final_dither, uniforms.final_dither_type, 1u),
+            dither_channel(final_color.b, px, py, uniforms.final_dither, uniforms.final_dither_type, 2u),
+            1.0
+        );
+    }
 
     return final_color;
 }

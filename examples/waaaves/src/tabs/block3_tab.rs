@@ -13,6 +13,10 @@ impl AnyGuiTab for Block3Tab {
             .expect("Block3Tab expects WaaavesState");
 
         apply_pending_pick(state, engine);
+        if ui.is_key_pressed(imgui::Key::Escape) && matches!(state.pick_state, PickState::Armed { .. }) {
+            state.pick_state = PickState::Idle;
+        }
+        engine.pixel_pick_armed = matches!(state.pick_state, PickState::Armed { .. });
 
         // ── Block 1 Output Geometry ─────────────────────────────────────────
         if ui.collapsing_header("Block 1 Output Geometry", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -194,6 +198,38 @@ impl AnyGuiTab for Block3Tab {
             cb(ui, engine, "Dither On##final", "final_dither_switch", &mut state.block3.final_dither_switch);
             co(ui, engine, "Dither Type##final", &mut state.block3.final_dither_type, DITHER_TYPE_OPTS);
             sf(ui, engine, "Dither##final", "final_dither", &mut state.block3.final_dither, 0.0, 32.0);
+        }
+
+        // ── Presets & Import ────────────────────────────────────────────────
+        if ui.collapsing_header("Presets & Import", imgui::TreeNodeFlags::empty()) {
+            if ui.button("Import Legacy Preset…") {
+                if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                    if let Ok(json) = std::fs::read_to_string(&path) {
+                        match crate::legacy_preset::import_legacy_preset(&json) {
+                            Ok(imported) => {
+                                let max_delay = state.max_delay_frames;
+                                *state = imported;
+                                state.max_delay_frames = max_delay;
+                                super::sync_all_params(state, engine);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to import legacy preset: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            ui.separator();
+            let w = engine.resolution.internal_width;
+            let h = engine.resolution.internal_height;
+            let mut max_delay = state.max_delay_frames as i32;
+            if ui.slider_config("Max Delay Frames", 1, 60).build(&mut max_delay) {
+                state.max_delay_frames = max_delay as u32;
+            }
+            let estimate_mb = (state.max_delay_frames as usize) * 2 * (w as usize) * (h as usize) * 4 / (1024 * 1024);
+            ui.same_line();
+            ui.text_disabled(format!("~{} MB @ {}×{}", estimate_mb, w, h));
         }
     }
 }
