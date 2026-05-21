@@ -2,6 +2,8 @@
 
 use rustjay_engine::prelude::*;
 
+mod legacy_preset;
+mod lfo_ui;
 mod params;
 mod render;
 mod state;
@@ -40,6 +42,11 @@ pub struct WaaavesEffect {
     cached_height: u32,
     // Cached max delay frames
     cached_max_delay: u32,
+    // Cached bind groups — rebuilt on resize, reused every frame
+    fb1_bind_groups: Vec<wgpu::BindGroup>,
+    fb2_bind_groups: Vec<wgpu::BindGroup>,
+    bg_inter_b: Option<wgpu::BindGroup>,
+    bg_inter_c: Option<wgpu::BindGroup>,
 }
 
 impl Default for WaaavesEffect {
@@ -63,6 +70,10 @@ impl Default for WaaavesEffect {
             cached_width: 0,
             cached_height: 0,
             cached_max_delay: 0,
+            fb1_bind_groups: Vec::new(),
+            fb2_bind_groups: Vec::new(),
+            bg_inter_b: None,
+            bg_inter_c: None,
         }
     }
 }
@@ -164,6 +175,47 @@ impl EffectPlugin for WaaavesEffect {
             self.intermediate_b = Some(create_intermediate("waaaves_intermediate_b"));
             self.cached_width = w;
             self.cached_height = h;
+
+            // Rebuild the two bind groups that reference these texture views.
+            let sampler = self.sampler.as_ref().unwrap();
+            let inter_a_view = &self.intermediate_a.as_ref().unwrap().1;
+            let inter_b_view = &self.intermediate_b.as_ref().unwrap().1;
+            self.bg_inter_b = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("waaaves_b_g0"),
+                layout: self.bgl_c.as_ref().unwrap(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(inter_a_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
+            self.bg_inter_c = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("waaaves_c_g0"),
+                layout: self.bgl_a.as_ref().unwrap(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(inter_a_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(inter_b_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
         }
 
         // 3. Ring buffer resize — reallocate when max_delay_frames or resolution changes
@@ -181,6 +233,77 @@ impl EffectPlugin for WaaavesEffect {
                 self.fb2 = Some(render::ring_buffer::RingBuffer::new(device, w, h, capacity));
             }
             self.cached_max_delay = state.max_delay_frames;
+
+            // Rebuild per-slot feedback bind groups (one per ring buffer slot).
+            // Use a temporary block so all immutable borrows end before the assignment.
+            let new_fb1_bgs = {
+                let capacity = self.fb1.as_ref().unwrap().capacity();
+                let bgl_b = self.bgl_b.as_ref().unwrap();
+                let sampler = self.sampler.as_ref().unwrap();
+                let dummy_view = &self.dummy.as_ref().unwrap().1;
+                let fb1 = self.fb1.as_ref().unwrap();
+                (0..capacity)
+                    .map(|i| {
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some(&format!("waaaves_fb1_bg_{i}")),
+                            layout: bgl_b,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(fb1.slot_view(i)),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(dummy_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::Sampler(sampler),
+                                },
+                            ],
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let new_fb2_bgs = {
+                let capacity = self.fb2.as_ref().unwrap().capacity();
+                let bgl_b = self.bgl_b.as_ref().unwrap();
+                let sampler = self.sampler.as_ref().unwrap();
+                let dummy_view = &self.dummy.as_ref().unwrap().1;
+                let fb2 = self.fb2.as_ref().unwrap();
+                (0..capacity)
+                    .map(|i| {
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some(&format!("waaaves_fb2_bg_{i}")),
+                            layout: bgl_b,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(fb2.slot_view(i)),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(dummy_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::Sampler(sampler),
+                                },
+                            ],
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            self.fb1_bind_groups = new_fb1_bgs;
+            self.fb2_bind_groups = new_fb2_bgs;
         }
     }
 
@@ -209,16 +332,7 @@ impl EffectPlugin for WaaavesEffect {
         let ch1_view = input_view.unwrap_or(dummy_view);
         let ch2_view = engine.second_input_view.as_deref().unwrap_or(dummy_view);
 
-        let fb1 = self.fb1.as_ref().unwrap();
-        let fb2 = self.fb2.as_ref().unwrap();
-
-        let inter_a_view = &self.intermediate_a.as_ref().unwrap().1;
-        let inter_b_view = &self.intermediate_b.as_ref().unwrap().1;
-
-        // ── Pass 0 — Block A ────────────────────────────────────────────────
-        let fb1_delay = state.block1.fb1_delay_time as usize;
-        let fb1_read = fb1.read_view(fb1_delay);
-
+        // bg0_a is still created per-frame — engine input views may change every frame.
         let bg0_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("waaaves_a_g0"),
             layout: self.bgl_a.as_ref().unwrap(),
@@ -241,34 +355,21 @@ impl EffectPlugin for WaaavesEffect {
                 },
             ],
         });
-        let bg2_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waaaves_a_g2"),
-            layout: self.bgl_b.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(fb1_read),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(dummy_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
 
+        // Look up all other bind groups from the pre-built caches.
+        let fb1_read_idx = self.fb1.as_ref().unwrap().read_index(state.block1.fb1_delay_time as usize);
+        let fb2_read_idx = self.fb2.as_ref().unwrap().read_index(state.block2.fb2_delay_time as usize);
+        let bg2_a = &self.fb1_bind_groups[fb1_read_idx];
+        let bg0_b = self.bg_inter_b.as_ref().unwrap();
+        let bg2_b = &self.fb2_bind_groups[fb2_read_idx];
+        let bg0_c = self.bg_inter_c.as_ref().unwrap();
+
+        // ── Pass 0 — Block A ────────────────────────────────────────────────
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_a"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: inter_a_view,
+                    view: &self.intermediate_a.as_ref().unwrap().1,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -281,57 +382,17 @@ impl EffectPlugin for WaaavesEffect {
             rpass.set_pipeline(self.pipeline_a.as_ref().unwrap());
             rpass.set_bind_group(0, &bg0_a, &[]);
             rpass.set_bind_group(1, uniform_bg, &[]);
-            rpass.set_bind_group(2, &bg2_a, &[]);
+            rpass.set_bind_group(2, bg2_a, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Pass 1 — Block B ────────────────────────────────────────────────
-        let fb2_delay = state.block2.fb2_delay_time as usize;
-        let fb2_read = fb2.read_view(fb2_delay);
-
-        let bg0_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waaaves_b_g0"),
-            layout: self.bgl_c.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(inter_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-        let bg2_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waaaves_b_g2"),
-            layout: self.bgl_b.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(fb2_read),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(dummy_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_b"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: inter_b_view,
+                    view: &self.intermediate_b.as_ref().unwrap().1,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -342,37 +403,14 @@ impl EffectPlugin for WaaavesEffect {
                 ..Default::default()
             });
             rpass.set_pipeline(self.pipeline_b.as_ref().unwrap());
-            rpass.set_bind_group(0, &bg0_b, &[]);
+            rpass.set_bind_group(0, bg0_b, &[]);
             rpass.set_bind_group(1, uniform_bg, &[]);
-            rpass.set_bind_group(2, &bg2_b, &[]);
+            rpass.set_bind_group(2, bg2_b, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Pass 2 — Block C ────────────────────────────────────────────────
-        let bg0_c = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waaaves_c_g0"),
-            layout: self.bgl_a.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(inter_a_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(inter_b_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
-
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_c"),
@@ -388,38 +426,28 @@ impl EffectPlugin for WaaavesEffect {
                 ..Default::default()
             });
             rpass.set_pipeline(self.pipeline_c.as_ref().unwrap());
-            rpass.set_bind_group(0, &bg0_c, &[]);
+            rpass.set_bind_group(0, bg0_c, &[]);
             rpass.set_bind_group(1, uniform_bg, &[]);
             rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Copy outputs to ring buffers and advance ────────────────────────
-        let fb1 = self.fb1.as_mut().unwrap();
-        let fb2 = self.fb2.as_mut().unwrap();
-        let inter_a_tex = &self.intermediate_a.as_ref().unwrap().0;
-        let inter_b_tex = &self.intermediate_b.as_ref().unwrap().0;
         let w = engine.resolution.internal_width;
         let h = engine.resolution.internal_height;
-        let extent = wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        };
-
+        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         encoder.copy_texture_to_texture(
-            inter_a_tex.as_image_copy(),
-            fb1.write_texture().as_image_copy(),
+            self.intermediate_a.as_ref().unwrap().0.as_image_copy(),
+            self.fb1.as_ref().unwrap().write_texture().as_image_copy(),
             extent,
         );
         encoder.copy_texture_to_texture(
-            inter_b_tex.as_image_copy(),
-            fb2.write_texture().as_image_copy(),
+            self.intermediate_b.as_ref().unwrap().0.as_image_copy(),
+            self.fb2.as_ref().unwrap().write_texture().as_image_copy(),
             extent,
         );
-
-        fb1.advance();
-        fb2.advance();
+        self.fb1.as_mut().unwrap().advance();
+        self.fb2.as_mut().unwrap().advance();
 
         true
     }

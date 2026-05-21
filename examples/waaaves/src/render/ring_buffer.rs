@@ -52,9 +52,18 @@ impl RingBuffer {
     /// Clamped to `[1, capacity - 1]` — minimum 1 because write_head holds an
     /// incomplete frame still being rendered into.
     pub fn read_view(&self, frames_back: usize) -> &wgpu::TextureView {
+        &self.textures[self.read_index(frames_back)].1
+    }
+
+    /// Compute the slot index `frames_back` behind the write head (same clamping as `read_view`).
+    pub fn read_index(&self, frames_back: usize) -> usize {
         let idx = frames_back.max(1).min(self.capacity.saturating_sub(1));
-        let read_index = (self.write_head + self.capacity - idx) % self.capacity;
-        &self.textures[read_index].1
+        (self.write_head + self.capacity - idx) % self.capacity
+    }
+
+    /// Texture view for a specific slot by raw index (for pre-building bind groups).
+    pub fn slot_view(&self, index: usize) -> &wgpu::TextureView {
+        &self.textures[index].1
     }
 
     /// Texture view for the current write head (render target).
