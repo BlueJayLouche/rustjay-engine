@@ -1,366 +1,968 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>RustJay Template Remote</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0a0a0f;
-            color: #fff;
-            padding: 16px;
-            touch-action: manipulation;
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 20px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid #333;
-        }
-        .header h1 {
-            font-size: 1.5rem;
-            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .status {
-            font-size: 0.8rem;
-            color: #888;
-            margin-top: 4px;
-        }
-        .status.connected { color: #0f0; }
-        .status.disconnected { color: #f00; }
-        
-        .category {
-            margin-bottom: 24px;
-        }
-        .category-title {
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #00d4ff;
-            margin-bottom: 12px;
-            padding-left: 4px;
-        }
-        
-        .control {
-            background: #151520;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 12px;
-        }
-        .control-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        .control-name {
-            font-size: 0.95rem;
-            font-weight: 500;
-        }
-        .control-value {
-            font-size: 0.85rem;
-            color: #888;
-            font-variant-numeric: tabular-nums;
-        }
-        
-        input[type="range"] {
-            width: 100%;
-            height: 40px;
-            -webkit-appearance: none;
-            appearance: none;
-            background: transparent;
-            cursor: pointer;
-        }
-        input[type="range"]::-webkit-slider-track {
-            height: 6px;
-            background: #333;
-            border-radius: 3px;
-        }
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 24px;
-            height: 24px;
-            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
-            border-radius: 50%;
-            margin-top: -9px;
-            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
-        }
-        input[type="range"]::-moz-range-track {
-            height: 6px;
-            background: #333;
-            border-radius: 3px;
-        }
-        input[type="range"]::-moz-range-thumb {
-            width: 24px;
-            height: 24px;
-            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
-            border-radius: 50%;
-            border: none;
-            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RUSTJAY // __APP__</title>
+<style>
+  :root {
+    --bg:        #07090b;
+    --bg-grid:   rgba(255,255,255,0.025);
+    --surface:   #0c1014;
+    --surface-2: #11161c;
+    --hair:      rgba(255,255,255,0.06);
+    --hair-2:    rgba(255,255,255,0.12);
+    --hair-3:    rgba(255,255,255,0.22);
+    --ink:       #e8ebee;
+    --ink-2:     #aab1b9;
+    --ink-3:     #6a7280;
+    --ink-4:     #3a4048;
+    --amber:     oklch(0.80 0.16 75);
+    --amber-d:   oklch(0.55 0.14 75);
+    --cool:      oklch(0.80 0.10 215);
+    --signal:    oklch(0.78 0.18 145);
+    --alert:     oklch(0.70 0.20 25);
+    --mono:      ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  }
 
-        select {
-            width: 100%;
-            padding: 10px 12px;
-            background: #1e1e2e;
-            color: #fff;
-            border: 1px solid #444;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            cursor: pointer;
-            -webkit-appearance: none;
-            appearance: none;
-        }
-        select:focus {
-            outline: none;
-            border-color: #00d4ff;
-        }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: var(--mono);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 14px 14px 40px;
+    touch-action: manipulation;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1, "zero" 1, "cv01" 1;
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(var(--bg-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+    background-size: 32px 32px;
+    background-position: -1px -1px;
+  }
 
-        .toggle {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .toggle-btn {
-            width: 56px;
-            height: 32px;
-            background: #333;
-            border-radius: 16px;
-            position: relative;
-            cursor: pointer;
-            transition: background 0.3s;
-        }
-        .toggle-btn.active {
-            background: linear-gradient(135deg, #00d4ff, #7b2cbf);
-        }
-        .toggle-btn::after {
-            content: '';
-            position: absolute;
-            width: 26px;
-            height: 26px;
-            background: #fff;
-            border-radius: 50%;
-            top: 3px;
-            left: 3px;
-            transition: transform 0.3s;
-        }
-        .toggle-btn.active::after {
-            transform: translateX(24px);
-        }
-        
-        .url-display {
-            text-align: center;
-            margin-top: 20px;
-            padding: 12px;
-            background: #151520;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            color: #888;
-            word-break: break-all;
-        }
-    </style>
+  /* ---------- chrome ---------- */
+  .frame {
+    max-width: 520px;
+    margin: 0 auto;
+  }
+
+  .hud {
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    padding: 14px 16px 12px;
+    margin-bottom: 18px;
+  }
+  .hud .corners i { position: absolute; width: 10px; height: 10px; border: 1px solid var(--amber); }
+  .hud .corners i.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  .hud .corners i.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+  .hud .corners i.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+  .hud .corners i.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+  .hud-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .hud-top .right { color: var(--ink-4); }
+  .hud-title {
+    margin-top: 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .hud-title h1 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .hud-title .slash { color: var(--amber); }
+  .hud-title .sub { color: var(--ink-3); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
+
+  .hud-meta {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px 14px;
+    font-size: 11px;
+    color: var(--ink-3);
+    align-items: center;
+  }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-4);
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.02);
+  }
+  .status.connected   { color: var(--signal); }
+  .status.connected .dot {
+    background: var(--signal);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--signal) 18%, transparent),
+                0 0 12px color-mix(in oklab, var(--signal) 70%, transparent);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .status.disconnected { color: var(--alert); }
+  .status.disconnected .dot {
+    background: var(--alert);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--alert) 18%, transparent);
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+  }
+  .bars {
+    display: inline-flex;
+    gap: 2px;
+    align-items: flex-end;
+  }
+  .bars span {
+    width: 3px; background: var(--ink-4);
+  }
+  .bars span:nth-child(1) { height: 4px; }
+  .bars span:nth-child(2) { height: 7px; }
+  .bars span:nth-child(3) { height: 10px; }
+  .bars span:nth-child(4) { height: 13px; }
+  .connected .bars span { background: var(--signal); }
+
+  .tok {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--hair);
+    color: var(--ink-3);
+  }
+  .tok .k { color: var(--ink-4); }
+  .tok .v { color: var(--ink-2); letter-spacing: 0.04em; word-break: break-all; text-align: right; }
+
+  /* ---------- category ---------- */
+  .category { margin-bottom: 22px; }
+  .cat-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 2px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-2);
+  }
+  .cat-head .glyph { color: var(--amber); }
+  .cat-head .rule {
+    flex: 1; height: 1px;
+    background-image: linear-gradient(to right, var(--hair-2) 50%, transparent 50%);
+    background-size: 6px 1px;
+  }
+  .cat-head .count { color: var(--ink-4); font-size: 10px; letter-spacing: 0.14em; }
+
+  /* ---------- control card ---------- */
+  .control {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    padding: 14px 14px 12px;
+    margin-bottom: 8px;
+  }
+  .control + .control { margin-top: 0; }
+
+  .control::before {
+    content: '';
+    position: absolute;
+    left: -1px; top: 12px; bottom: 12px;
+    width: 2px;
+    background: var(--ink-4);
+    transition: background 0.2s;
+  }
+  .control[data-active="1"]::before { background: var(--amber); }
+
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .label { min-width: 0; }
+  .name {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: 0.01em;
+  }
+  .id {
+    margin-top: 2px;
+    font-size: 10px;
+    color: var(--ink-4);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .readout {
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .readout .val {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--amber);
+    line-height: 1;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+  .readout .range {
+    margin-top: 3px;
+    font-size: 9.5px;
+    color: var(--ink-4);
+    letter-spacing: 0.12em;
+  }
+
+  /* ---------- slider ---------- */
+  .slider-wrap {
+    margin-top: 12px;
+    position: relative;
+  }
+  .ticks {
+    position: absolute;
+    left: 0; right: 0; bottom: 7px;
+    height: 8px;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      linear-gradient(to right, var(--hair-2) 1px, transparent 1px);
+    background-size: calc(100% / 20) 100%;
+    opacity: 0.6;
+    mask-image: linear-gradient(to bottom, transparent 30%, #000 30%);
+  }
+  .ticks::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 1px;
+    background: var(--hair);
+  }
+
+  input[type="range"] {
+    width: 100%;
+    height: 36px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background:
+      linear-gradient(to right, var(--amber) 0%, var(--amber) var(--fill, 50%), transparent var(--fill, 50%)),
+      repeating-linear-gradient(90deg, var(--ink-4) 0 1px, transparent 1px 4px);
+    background-blend-mode: normal;
+    background-color: rgba(255,255,255,0.04);
+    border: none;
+  }
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    background-color: rgba(255,255,255,0.04);
+    background-image: repeating-linear-gradient(90deg, var(--ink-4) 0 1px, transparent 1px 4px);
+    border: none;
+  }
+  input[type="range"]::-moz-range-progress {
+    height: 4px;
+    background: var(--amber);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 22px;
+    background: var(--amber);
+    border: none;
+    border-radius: 1px;
+    margin-top: -9px;
+    box-shadow:
+      0 0 0 2px var(--bg),
+      0 0 0 3px var(--amber),
+      0 0 14px color-mix(in oklab, var(--amber) 60%, transparent);
+    cursor: grab;
+  }
+  input[type="range"]::-webkit-slider-thumb:active { cursor: grabbing; }
+  input[type="range"]::-moz-range-thumb {
+    width: 14px; height: 22px;
+    background: var(--amber);
+    border: 2px solid var(--bg);
+    border-radius: 1px;
+    box-shadow:
+      0 0 0 1px var(--amber),
+      0 0 14px color-mix(in oklab, var(--amber) 60%, transparent);
+  }
+
+  .scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2px;
+    font-size: 9.5px;
+    color: var(--ink-4);
+    letter-spacing: 0.1em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- toggle ---------- */
+  .toggle {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--hair-2);
+    background: rgba(255,255,255,0.02);
+  }
+  .toggle button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.24em;
+    padding: 12px 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    position: relative;
+  }
+  .toggle button + button { border-left: 1px solid var(--hair-2); }
+  .toggle button[aria-pressed="true"] {
+    background: var(--amber);
+    color: #0a0a0a;
+    font-weight: 700;
+  }
+  .toggle .indicator {
+    display: inline-block;
+    width: 6px; height: 6px;
+    margin-right: 6px;
+    background: currentColor;
+    vertical-align: middle;
+    transform: translateY(-1px);
+    opacity: 0.5;
+  }
+  .toggle button[aria-pressed="true"] .indicator { opacity: 1; }
+
+  /* ---------- select ---------- */
+  .select-wrap {
+    margin-top: 10px;
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: rgba(255,255,255,0.02);
+  }
+  .select-wrap::before {
+    content: '> ';
+    position: absolute;
+    left: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--amber);
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .select-wrap::after {
+    content: '▾';
+    position: absolute;
+    right: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--ink-3);
+    font-size: 11px;
+    pointer-events: none;
+  }
+  select {
+    width: 100%;
+    padding: 12px 28px 12px 28px;
+    background: transparent;
+    color: var(--ink);
+    border: none;
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  select:focus { outline: none; background: rgba(255,255,255,0.03); }
+  select option { background: #0c1014; color: var(--ink); }
+
+  /* ---------- footer ---------- */
+  .footer {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--hair);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 14px;
+    font-size: 10px;
+    color: var(--ink-4);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .footer .url {
+    grid-column: 1 / -1;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ink-3);
+    word-break: break-all;
+    font-size: 11px;
+    padding: 8px 0 0;
+  }
+  .footer .url .k { color: var(--ink-4); text-transform: uppercase; letter-spacing: 0.16em; margin-right: 6px; font-size: 9.5px; }
+
+  /* ---------- empty state ---------- */
+  .empty {
+    text-align: center;
+    color: var(--ink-3);
+    padding: 40px 16px;
+    border: 1px dashed var(--hair-2);
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  .empty .blink { animation: blink 1.1s steps(2,end) infinite; color: var(--amber); }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- collapsible category ---------- */
+  .cat-head {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .cat-head .chevron {
+    margin-left: 4px;
+    color: var(--ink-4);
+    font-size: 10px;
+    flex-shrink: 0;
+    display: inline-block;
+    transition: transform 0.18s, color 0.18s;
+  }
+  .cat-head[aria-expanded="true"]  .chevron { color: var(--amber); }
+  .cat-head[aria-expanded="false"] .chevron { transform: rotate(-90deg); }
+  .cat-body.closed { display: none; }
+
+  /* ---------- sticky category nav ---------- */
+  .cat-nav {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg);
+    border-bottom: 1px solid var(--hair);
+    margin-bottom: 16px;
+    padding: 7px 0;
+    overflow-x: auto;
+    display: flex;
+    gap: 5px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cat-nav::-webkit-scrollbar { display: none; }
+  .cat-nav-pill {
+    flex-shrink: 0;
+    padding: 5px 9px;
+    border: 1px solid var(--hair-2);
+    background: transparent;
+    color: var(--ink-4);
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    white-space: nowrap;
+    -webkit-appearance: none;
+    appearance: none;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .cat-nav-pill:active { opacity: 0.7; }
+  .cat-nav-pill.open {
+    background: color-mix(in oklab, var(--amber) 14%, transparent);
+    color: var(--amber);
+    border-color: var(--amber-d);
+  }
+
+  /* scanline accent — very subtle */
+  body::after {
+    content: '';
+    pointer-events: none;
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
+    z-index: 100;
+  }
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>RustJay Template Remote</h1>
-        <div class="status disconnected" id="status">Connecting...</div>
+
+<div class="frame">
+
+  <header class="hud">
+    <div class="corners"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+
+    <div class="hud-top">
+      <span>NODE // <span id="node-id">────</span></span>
+      <span class="right" id="clock">--:--:--</span>
     </div>
-    
-    <div id="controls"></div>
-    
-    <div class="url-display" id="url-display"></div>
-    
-    <script>
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const pathname = window.location.pathname.replace(/\/$/, '');
-        const token = window.RUSTJAY_TOKEN || '';
-        const wsUrl = wsProtocol + '//' + window.location.host + pathname + '/ws?token=' + encodeURIComponent(token);
-        const ws = new WebSocket(wsUrl);
-        let params = {};
-        
-        document.getElementById('url-display').textContent = window.location.href;
-        
-        ws.onopen = () => {
-            document.getElementById('status').textContent = 'Connected';
-            document.getElementById('status').className = 'status connected';
-        };
-        
-        ws.onclose = () => {
-            document.getElementById('status').textContent = 'Disconnected - Refresh to reconnect';
-            document.getElementById('status').className = 'status disconnected';
-        };
-        
-        ws.onerror = (err) => {
-            console.error('WebSocket error:', err);
-            document.getElementById('status').textContent = 'Connection Error';
-            document.getElementById('status').className = 'status disconnected';
-        };
-        
-        ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            
-            if (msg.type === 'params') {
-                params = {};
-                msg.params.forEach(p => params[p.id] = p);
-                renderControls(msg.params);
-            } else if (msg.type === 'update') {
-                if (params[msg.id]) {
-                    params[msg.id].value = msg.value;
-                    updateControlUI(msg.id, msg.value);
-                }
-            }
-        };
-        
-        function renderControls(paramsList) {
-            const container = document.getElementById('controls');
-            container.innerHTML = '';
-            
-            // Group by category
-            const categories = {};
-            paramsList.forEach(p => {
-                if (!categories[p.category]) categories[p.category] = [];
-                categories[p.category].push(p);
-            });
-            
-            Object.entries(categories).forEach(([catName, catParams]) => {
-                const catDiv = document.createElement('div');
-                catDiv.className = 'category';
-                
-                const title = document.createElement('div');
-                title.className = 'category-title';
-                title.textContent = catName;
-                catDiv.appendChild(title);
-                
-                catParams.forEach(p => {
-                    const control = createControl(p);
-                    catDiv.appendChild(control);
-                });
-                
-                container.appendChild(catDiv);
-            });
-        }
-        
-        function createControl(param) {
-            const div = document.createElement('div');
-            div.className = 'control';
-            div.dataset.id = param.id;
 
-            const isToggle = param.step >= 1 && (param.max - param.min) <= 1;
-            const isSelect = param.options && param.options.length > 0;
+    <div class="hud-title">
+      <h1>RUSTJAY<span class="slash">/</span>REMOTE</h1>
+      <span class="sub">PARAMETER&nbsp;BRIDGE&nbsp;v1.0</span>
+    </div>
 
-            if (isSelect) {
-                const header = document.createElement('div');
-                header.className = 'control-header';
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'control-name';
-                nameSpan.textContent = param.name;
-                header.appendChild(nameSpan);
-                div.appendChild(header);
+    <div class="hud-meta">
+      <div class="status disconnected" id="status">
+        <span class="dot"></span>
+        <span id="status-text">CONNECTING</span>
+      </div>
+      <div></div>
+      <div class="bars" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
 
-                const select = document.createElement('select');
-                param.options.forEach((o, i) => {
-                    const option = document.createElement('option');
-                    option.value = i;
-                    option.textContent = o;
-                    if (Math.round(param.value) === i) {
-                        option.selected = true;
-                    }
-                    select.appendChild(option);
-                });
-                select.addEventListener('change', () => updateParam(param.id, parseInt(select.value, 10)));
-                div.appendChild(select);
-            } else if (isToggle) {
-                const toggleDiv = document.createElement('div');
-                toggleDiv.className = 'toggle';
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'control-name';
-                nameSpan.textContent = param.name;
-                toggleDiv.appendChild(nameSpan);
+      <div class="tok">
+        <span class="k">SESSION</span>
+        <span class="v" id="session-id">────────</span>
+      </div>
+    </div>
+  </header>
 
-                const btn = document.createElement('div');
-                btn.className = 'toggle-btn' + (param.value > 0.5 ? ' active' : '');
-                btn.addEventListener('click', () => toggleParam(param.id));
-                toggleDiv.appendChild(btn);
-                div.appendChild(toggleDiv);
-            } else {
-                const header = document.createElement('div');
-                header.className = 'control-header';
-                const nameSpan = document.createElement('span');
-                nameSpan.className = 'control-name';
-                nameSpan.textContent = param.name;
-                header.appendChild(nameSpan);
-                const valSpan = document.createElement('span');
-                valSpan.className = 'control-value';
-                valSpan.id = 'val-' + param.id;
-                valSpan.textContent = formatValue(param.value);
-                header.appendChild(valSpan);
-                div.appendChild(header);
+  <main id="controls">
+    <div class="empty">
+      AWAITING&nbsp;PARAMETERS<span class="blink">_</span>
+    </div>
+  </main>
 
-                const input = document.createElement('input');
-                input.type = 'range';
-                input.min = param.min;
-                input.max = param.max;
-                input.step = param.step;
-                input.value = param.value;
-                input.addEventListener('input', () => updateParam(param.id, input.value));
-                div.appendChild(input);
-            }
+  <footer class="footer">
+    <div>RUSTJAY · __APP__</div>
+    <div id="param-count">00 PARAMS</div>
+    <div class="url"><span class="k">URI</span><span id="url-display">—</span></div>
+  </footer>
 
-            return div;
-        }
-        
-        function formatValue(val) {
-            if (Math.abs(val) >= 100) return val.toFixed(0);
-            if (Math.abs(val) >= 10) return val.toFixed(1);
-            return val.toFixed(2);
-        }
-        
-        function updateParam(id, value) {
-            const numValue = parseFloat(value);
-            params[id].value = numValue;
-            
-            const valDisplay = document.getElementById(`val-${id}`);
-            if (valDisplay) valDisplay.textContent = formatValue(numValue);
-            
-            ws.send(JSON.stringify({ type: 'set', id, value: numValue }));
-        }
-        
-        function toggleParam(id) {
-            const param = params[id];
-            const newValue = param.value > 0.5 ? 0 : 1;
-            param.value = newValue;
-            
-            const btn = document.querySelector(`[data-id="${id}"] .toggle-btn`);
-            if (btn) btn.classList.toggle('active', newValue > 0.5);
-            
-            ws.send(JSON.stringify({ type: 'set', id, value: newValue }));
-        }
-        
-        function updateControlUI(id, value) {
-            const control = document.querySelector(`[data-id="${id}"]`);
-            if (!control) return;
+</div>
 
-            const select = control.querySelector('select');
-            if (select && document.activeElement !== select) {
-                select.value = Math.round(value);
-            }
+<script>
+  // ---------- WebSocket protocol — unchanged ----------
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const pathname = window.location.pathname.replace(/\/$/, '');
+  const token = window.RUSTJAY_TOKEN || '';
+  const wsUrl = wsProtocol + '//' + window.location.host + pathname + '/ws?token=' + encodeURIComponent(token);
+  const ws = new WebSocket(wsUrl);
+  let params = {};
 
-            const input = control.querySelector('input[type="range"]');
-            if (input && document.activeElement !== input) {
-                input.value = value;
-            }
+  document.getElementById('url-display').textContent = window.location.href;
 
-            const valDisplay = document.getElementById(`val-${id}`);
-            if (valDisplay) valDisplay.textContent = formatValue(value);
+  // Session/node ids derived from token + host — visual only.
+  (function setIds() {
+    const sess = (token || '').slice(0, 12).toUpperCase().padEnd(12, '·');
+    document.getElementById('session-id').textContent = sess.match(/.{1,4}/g).join(' ');
+    const host = window.location.host || 'localhost';
+    const nodeHash = host.split('').reduce((a,c)=> (a*31 + c.charCodeAt(0)) & 0xffff, 0);
+    document.getElementById('node-id').textContent = nodeHash.toString(16).toUpperCase().padStart(4,'0');
+  })();
 
-            const toggle = control.querySelector('.toggle-btn');
-            if (toggle) toggle.classList.toggle('active', value > 0.5);
-        }
-    </script>
+  // Live clock.
+  (function clock() {
+    const el = document.getElementById('clock');
+    function tick() {
+      const d = new Date();
+      const z = n => String(n).padStart(2,'0');
+      el.textContent = `${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+    }
+    tick(); setInterval(tick, 1000);
+  })();
+
+  function setStatus(state, text) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + state;
+    document.getElementById('status-text').textContent = text;
+  }
+
+  ws.onopen = () => setStatus('connected', 'ONLINE');
+  ws.onclose = () => setStatus('disconnected', 'OFFLINE — REFRESH');
+  ws.onerror = () => { setStatus('disconnected', 'LINK ERROR'); };
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'params') {
+      params = {};
+      msg.params.forEach(p => params[p.id] = p);
+      renderControls(msg.params);
+    } else if (msg.type === 'update') {
+      if (params[msg.id]) {
+        params[msg.id].value = msg.value;
+        updateControlUI(msg.id, msg.value);
+      }
+    }
+  };
+
+  // ---------- category collapse state (localStorage-persisted) ----------
+  const _catMem = (() => {
+    try { return JSON.parse(localStorage.getItem('rj_cats') || '{}'); } catch { return {}; }
+  })();
+  function saveCatMem() {
+    try { localStorage.setItem('rj_cats', JSON.stringify(_catMem)); } catch {}
+  }
+  function getCatOpen(name, def) { return name in _catMem ? _catMem[name] : def; }
+  function setCatOpen(name, open, head, body) {
+    _catMem[name] = open;
+    saveCatMem();
+    head.setAttribute('aria-expanded', String(open));
+    body.classList.toggle('closed', !open);
+    syncNavPills();
+  }
+  function openCat(name) {
+    const el = document.getElementById('cat-' + slugify(name));
+    if (!el) return;
+    const h = el.querySelector('.cat-head'), b = el.querySelector('.cat-body');
+    if (h && b && h.getAttribute('aria-expanded') !== 'true') setCatOpen(name, true, h, b);
+  }
+  function jumpToCategory(name) {
+    openCat(name);
+    const el = document.getElementById('cat-' + slugify(name));
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function syncNavPills() {
+    const nav = document.getElementById('cat-nav');
+    if (!nav) return;
+    nav.querySelectorAll('.cat-nav-pill').forEach(pill => {
+      const el = document.getElementById('cat-' + slugify(pill.dataset.cat));
+      const open = el?.querySelector('.cat-head')?.getAttribute('aria-expanded') === 'true';
+      pill.classList.toggle('open', !!open);
+    });
+  }
+  function slugify(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
+  function abbrevCat(s) {
+    const m = s.match(/Block\s+(\d+)\s*[—–\-]+\s*(.*)/i);
+    if (m) return 'B' + m[1] + '·' + m[2].trim().toUpperCase();
+    return s.length > 12 ? s.slice(0, 12).toUpperCase() : s.toUpperCase();
+  }
+
+  // ---------- rendering ----------
+  function renderControls(paramsList) {
+    const container = document.getElementById('controls');
+    container.innerHTML = '';
+    document.getElementById('param-count').textContent =
+      String(paramsList.length).padStart(2,'0') + ' PARAMS';
+
+    // Group by category preserving order
+    const categories = {};
+    const order = [];
+    paramsList.forEach(p => {
+      if (!categories[p.category]) { categories[p.category] = []; order.push(p.category); }
+      categories[p.category].push(p);
+    });
+
+    const manyCategories = order.length > 4;
+
+    // Sticky nav for apps with several categories
+    if (order.length > 3) {
+      const nav = document.createElement('nav');
+      nav.className = 'cat-nav';
+      nav.id = 'cat-nav';
+      order.forEach(catName => {
+        const pill = document.createElement('button');
+        pill.className = 'cat-nav-pill';
+        pill.type = 'button';
+        pill.dataset.cat = catName;
+        pill.textContent = abbrevCat(catName);
+        pill.title = catName;
+        pill.addEventListener('click', () => jumpToCategory(catName));
+        nav.appendChild(pill);
+      });
+      container.appendChild(nav);
+    }
+
+    order.forEach((catName, i) => {
+      const catParams = categories[catName];
+      const catDiv = document.createElement('div');
+      catDiv.className = 'category';
+      catDiv.id = 'cat-' + slugify(catName);
+
+      // Default: collapse all when there are many categories; only first open otherwise
+      const defaultOpen = manyCategories ? i === 0 : true;
+      const isOpen = getCatOpen(catName, defaultOpen);
+
+      const head = document.createElement('div');
+      head.className = 'cat-head';
+      head.setAttribute('role', 'button');
+      head.setAttribute('aria-expanded', String(isOpen));
+      head.innerHTML = `
+        <span class="glyph">▌</span>
+        <span>${escapeHtml(catName)}</span>
+        <span class="rule"></span>
+        <span class="count">${String(catParams.length).padStart(2,'0')} CH · ${String(i+1).padStart(2,'0')}/${String(order.length).padStart(2,'0')}</span>
+        <span class="chevron" aria-hidden="true">▾</span>
+      `;
+
+      const body = document.createElement('div');
+      body.className = 'cat-body' + (isOpen ? '' : ' closed');
+      catParams.forEach(p => body.appendChild(createControl(p)));
+
+      head.addEventListener('click', () => {
+        const open = head.getAttribute('aria-expanded') === 'true';
+        setCatOpen(catName, !open, head, body);
+      });
+
+      catDiv.appendChild(head);
+      catDiv.appendChild(body);
+      container.appendChild(catDiv);
+    });
+
+    syncNavPills();
+  }
+
+  function createControl(param) {
+    const div = document.createElement('div');
+    div.className = 'control';
+    div.dataset.id = param.id;
+
+    const isSelect = param.options && param.options.length > 0;
+    const isToggle = !isSelect && param.step >= 1 && (param.max - param.min) <= 1;
+
+    if (isSelect) {
+      div.appendChild(headerRow(param, formatSelectVal(param)));
+      const wrap = document.createElement('div');
+      wrap.className = 'select-wrap';
+      const sel = document.createElement('select');
+      param.options.forEach((o, i) => {
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = o;
+        if (Math.round(param.value) === i) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', () => {
+        const v = parseInt(sel.value, 10);
+        updateParam(param.id, v);
+      });
+      wrap.appendChild(sel);
+      div.appendChild(wrap);
+      if (param.value > 0) div.dataset.active = '1';
+    } else if (isToggle) {
+      div.appendChild(headerRow(param, ''));
+      const t = document.createElement('div');
+      t.className = 'toggle';
+      const off = document.createElement('button');
+      off.type = 'button';
+      off.innerHTML = '<span class="indicator"></span>OFF';
+      off.setAttribute('aria-pressed', param.value <= 0.5);
+      const on = document.createElement('button');
+      on.type = 'button';
+      on.innerHTML = '<span class="indicator"></span>ON';
+      on.setAttribute('aria-pressed', param.value > 0.5);
+      off.addEventListener('click', () => setToggle(param.id, 0));
+      on.addEventListener('click', () => setToggle(param.id, 1));
+      t.appendChild(off); t.appendChild(on);
+      div.appendChild(t);
+      if (param.value > 0.5) div.dataset.active = '1';
+    } else {
+      div.appendChild(headerRow(param, formatValue(param.value) + unitFor(param)));
+      const wrap = document.createElement('div');
+      wrap.className = 'slider-wrap';
+      const ticks = document.createElement('div');
+      ticks.className = 'ticks';
+      wrap.appendChild(ticks);
+
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = param.min;
+      input.max = param.max;
+      input.step = param.step;
+      input.value = param.value;
+      setFill(input, param);
+      input.addEventListener('input', () => {
+        updateParam(param.id, input.value);
+        setFill(input, param);
+      });
+      wrap.appendChild(input);
+
+      const scale = document.createElement('div');
+      scale.className = 'scale';
+      scale.innerHTML = `
+        <span>${formatBound(param.min)}${unitFor(param)}</span>
+        <span>${formatBound((param.min+param.max)/2)}${unitFor(param)}</span>
+        <span>${formatBound(param.max)}${unitFor(param)}</span>
+      `;
+      wrap.appendChild(scale);
+
+      div.appendChild(wrap);
+      if (param.value !== param.min) div.dataset.active = '1';
+    }
+
+    return div;
+  }
+
+  function headerRow(param, valueText) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('div');
+    label.className = 'label';
+    const n = document.createElement('div'); n.className = 'name'; n.textContent = param.name;
+    const id = document.createElement('div'); id.className = 'id'; id.textContent = param.id;
+    label.appendChild(n); label.appendChild(id);
+
+    const ro = document.createElement('div');
+    ro.className = 'readout';
+    const val = document.createElement('div');
+    val.className = 'val';
+    val.id = 'val-' + param.id;
+    val.textContent = valueText;
+    ro.appendChild(val);
+
+    if (param.options && param.options.length) {
+      // no numeric range for selects
+    } else if (!(param.step >= 1 && (param.max - param.min) <= 1)) {
+      const range = document.createElement('div');
+      range.className = 'range';
+      range.textContent = `${formatBound(param.min)}…${formatBound(param.max)}`;
+      ro.appendChild(range);
+    }
+    row.appendChild(label); row.appendChild(ro);
+    return row;
+  }
+
+  function setFill(input, param) {
+    const pct = ((parseFloat(input.value) - param.min) / (param.max - param.min)) * 100;
+    input.style.setProperty('--fill', pct + '%');
+  }
+
+  // ---------- formatting ----------
+  function formatValue(val) {
+    val = parseFloat(val);
+    if (Math.abs(val) >= 100) return val.toFixed(0);
+    if (Math.abs(val) >= 10)  return val.toFixed(1);
+    return val.toFixed(2);
+  }
+  function formatBound(val) {
+    val = parseFloat(val);
+    if (Number.isInteger(val)) return val.toString();
+    if (Math.abs(val) >= 10)   return val.toFixed(1);
+    return val.toFixed(2);
+  }
+  function formatSelectVal(param) {
+    const i = Math.round(param.value);
+    return (param.options[i] || '').toUpperCase();
+  }
+  function unitFor(param) {
+    // Light heuristics — purely cosmetic suffixes.
+    if (/hue/i.test(param.id)) return '°';
+    return '';
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  // ---------- IO ----------
+  function updateParam(id, value) {
+    const numValue = parseFloat(value);
+    params[id].value = numValue;
+    refreshReadout(id, numValue);
+    setActiveFlag(id, numValue);
+    ws.send(JSON.stringify({ type: 'set', id, value: numValue }));
+  }
+
+  function setToggle(id, value) {
+    const param = params[id];
+    param.value = value;
+    const ctl = document.querySelector(`[data-id="${cssEscape(id)}"]`);
+    if (ctl) {
+      const btns = ctl.querySelectorAll('.toggle button');
+      btns[0].setAttribute('aria-pressed', value <= 0.5);
+      btns[1].setAttribute('aria-pressed', value > 0.5);
+    }
+    setActiveFlag(id, value);
+    ws.send(JSON.stringify({ type: 'set', id, value }));
+  }
+
+  function refreshReadout(id, value) {
+    const p = params[id]; if (!p) return;
+    const el = document.getElementById('val-' + id);
+    if (!el) return;
+    if (p.options && p.options.length) {
+      el.textContent = (p.options[Math.round(value)] || '').toUpperCase();
+    } else if (p.step >= 1 && (p.max - p.min) <= 1) {
+      // toggle — no numeric display
+    } else {
+      el.textContent = formatValue(value) + unitFor(p);
+    }
+  }
+
+  function setActiveFlag(id, value) {
+    const ctl = document.querySelector(`[data-id="${cssEscape(id)}"]`);
+    if (!ctl) return;
+    const p = params[id];
+    let active = false;
+    if (p.options && p.options.length) active = value > 0;
+    else if (p.step >= 1 && (p.max - p.min) <= 1) active = value > 0.5;
+    else active = value !== p.min;
+    if (active) ctl.dataset.active = '1'; else delete ctl.dataset.active;
+  }
+
+  function updateControlUI(id, value) {
+    const control = document.querySelector(`[data-id="${cssEscape(id)}"]`);
+    if (!control) return;
+
+    const select = control.querySelector('select');
+    if (select && document.activeElement !== select) {
+      select.value = Math.round(value);
+    }
+    const input = control.querySelector('input[type="range"]');
+    if (input && document.activeElement !== input) {
+      input.value = value;
+      if (params[id]) setFill(input, params[id]);
+    }
+    const btns = control.querySelectorAll('.toggle button');
+    if (btns.length === 2) {
+      btns[0].setAttribute('aria-pressed', value <= 0.5);
+      btns[1].setAttribute('aria-pressed', value > 0.5);
+    }
+    refreshReadout(id, value);
+    setActiveFlag(id, value);
+  }
+
+  function cssEscape(s) {
+    return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+  }
+
+  // ---------- demo mode (only when not running under WS server) ----------
+  // Lets the page render with sample data when opened directly as a file.
+  setTimeout(() => {
+    if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.CLOSED) {
+      if (Object.keys(params).length === 0 && !window.RUSTJAY_TOKEN) {
+        const demo = [
+          {id:'color/hue_shift',  name:'Hue Shift',     category:'Color',  min:-180, max:180, value:24,   step:1},
+          {id:'color/saturation', name:'Saturation',    category:'Color',  min:0,    max:2,   value:1.18, step:0.01},
+          {id:'color/brightness', name:'Brightness',    category:'Color',  min:0,    max:2,   value:0.95, step:0.01},
+          {id:'color/enabled',    name:'Color Enabled', category:'Color',  min:0,    max:1,   value:1,    step:1},
+          {id:'audio/amplitude',  name:'Amplitude',     category:'Audio',  min:0,    max:5,   value:1.42, step:0.01},
+          {id:'audio/smoothing',  name:'Smoothing',     category:'Audio',  min:0,    max:1,   value:0.5,  step:0.01},
+          {id:'audio/enabled',    name:'Audio Enabled', category:'Audio',  min:0,    max:1,   value:1,    step:1},
+          {id:'audio/normalize',  name:'Normalize',     category:'Audio',  min:0,    max:1,   value:1,    step:1},
+          {id:'audio/pink_noise', name:'Pink Noise',    category:'Audio',  min:0,    max:1,   value:0,    step:1},
+          {id:'output/preset',    name:'Preset',        category:'Output', min:0,    max:3,   value:1,    step:1, options:['Default','Studio','Stage','Broadcast']},
+          {id:'output/fullscreen',name:'Fullscreen',    category:'Output', min:0,    max:1,   value:0,    step:1},
+        ];
+        params = {};
+        demo.forEach(p => params[p.id] = p);
+        renderControls(demo);
+        setStatus('disconnected', 'DEMO MODE');
+      }
+    }
+  }, 600);
+</script>
 </body>
 </html>

@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
-use tower_http::cors::CorsLayer;
 
 /// Commands for web server lifecycle control
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,9 +307,9 @@ impl WebServer {
 
                 let local_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
                 log::info!("Web server ready:");
-                log::info!("  Local:   http://127.0.0.1:{}/{}", port, app_name);
+                log::info!("  Local:   http://127.0.0.1:{}/{}?token={}", port, app_name, token);
                 if host != "127.0.0.1" && host != "localhost" {
-                    log::info!("  Network: http://{}:{}/{}", local_ip, port, app_name);
+                    log::info!("  Network: http://{}:{}/{}?token={}", local_ip, port, app_name, token);
                 }
 
                 // Run server with graceful shutdown
@@ -391,15 +390,11 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
     let page_path_redirect = page_path.clone();
     let page_path_redirect2 = page_path_redirect.clone();
 
-    let html_with_token = inject_token_into_html(EMBEDDED_HTML, token);
+    let html_with_token = inject_token_into_html(EMBEDDED_HTML, token, app_name);
 
-    Router::new()
+    // Protected routes: auth required for everything except /health.
+    let protected = Router::new()
         .route(&ws_path, get(ws_handler))
-        .route("/health", get(|| async { "OK" }))
-        .route_layer(middleware::from_fn_with_state(
-            token.to_string(),
-            auth_middleware,
-        ))
         .route(&page_path, get(move || async move {
             index_handler(&html_with_token).await
         }))
@@ -409,17 +404,22 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
         .route("/", get(move || async move {
             axum::response::Redirect::temporary(&page_path_redirect2)
         }))
-        .layer(CorsLayer::new()
-            .allow_origin(tower_http::cors::Any)
-            .allow_methods([axum::http::Method::GET, axum::http::Method::POST]))
+        .route_layer(middleware::from_fn_with_state(
+            token.to_string(),
+            auth_middleware,
+        ));
+
+    Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .merge(protected)
         .with_state(state)
 }
 
-/// Injects the bearer token into the HTML so the UI can use it for WebSocket auth.
-fn inject_token_into_html(html: &str, token: &str) -> String {
-    // Insert a script tag right after <head> that sets window.RUSTJAY_TOKEN
+/// Injects the bearer token and app name into the HTML.
+fn inject_token_into_html(html: &str, token: &str, app_name: &str) -> String {
     let script = format!(r#"<script>window.RUSTJAY_TOKEN = "{}";</script>"#, token);
-    html.replacen("<head>", &format!("<head>{}", script), 1)
+    let html = html.replacen("<head>", &format!("<head>{}", script), 1);
+    html.replace("__APP__", &app_name.to_uppercase())
 }
 
 /// Response with proper content type for HTML
@@ -430,7 +430,7 @@ async fn index_handler(html: &str) -> impl IntoResponse {
             (axum::http::header::CONNECTION, "keep-alive"),
             (
                 axum::http::header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:",
+                "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:",
             ),
         ],
         html.to_string()
@@ -459,12 +459,17 @@ async fn ws_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    // Verify Origin header matches the server's origin
-    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
-        let origin_str = origin.to_str().unwrap_or("");
-        // Accept same-origin requests (localhost or any IP on the server's port)
-        // A stricter check would parse and compare scheme+host+port.
-        if origin_str.is_empty() {
+    // Verify Origin header is present and non-empty (browser WebSocket requirement).
+    // Requests without an Origin header are rejected to prevent curl/scripts from
+    // bypassing origin checks.
+    match headers.get(axum::http::header::ORIGIN) {
+        Some(origin) => {
+            let origin_str = origin.to_str().unwrap_or("");
+            if origin_str.is_empty() {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        }
+        None => {
             return StatusCode::FORBIDDEN.into_response();
         }
     }
@@ -545,7 +550,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
 }
 
 /// Bearer-token auth middleware.
-/// Skips auth for the HTML page route (which is handled separately).
+/// Accepts the token via `Authorization: Bearer <token>` header or `?token=<token>` query param.
 async fn auth_middleware(
     State(token): State<String>,
     req: Request<Body>,
@@ -556,13 +561,22 @@ async fn auth_middleware(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
 
-    match auth_header {
-        Some(header) if header == format!("Bearer {}", token) => {
-            next.run(req).await
-        }
+    let auth_ok = match auth_header {
+        Some(header) if header == format!("Bearer {}", token) => true,
         _ => {
-            StatusCode::UNAUTHORIZED.into_response()
+            // Allow token via query parameter so the HTML page can be accessed
+            // directly in a browser (e.g. http://host:port/app_name?token=xxx).
+            req.uri()
+                .query()
+                .map(|q| q.contains(&format!("token={}", token)))
+                .unwrap_or(false)
         }
+    };
+
+    if auth_ok {
+        next.run(req).await
+    } else {
+        StatusCode::UNAUTHORIZED.into_response()
     }
 }
 
