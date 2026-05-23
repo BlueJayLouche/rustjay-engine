@@ -3,7 +3,7 @@
 
 use rustjay_core::{EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex};
 use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
-use wgpu::util::DeviceExt;
+use wgpu::util::{DeviceExt, StagingBelt};
 
 pub(crate) struct PluginRenderer<P: EffectPlugin> {
     pub plugin: P,
@@ -47,6 +47,9 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     compute_pipeline: Option<wgpu::ComputePipeline>,
     compute_bind_group: Option<wgpu::BindGroup>,
     compute_workgroups: (u32, u32, u32),
+
+    /// Reusable staging buffer pool for uniform uploads — avoids per-frame alloc.
+    staging_belt: StagingBelt,
 }
 
 /// Generate mesh vertex and index data from a descriptor.
@@ -421,6 +424,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             compute_pipeline,
             compute_bind_group,
             compute_workgroups,
+            // 4 KiB per chunk — fits all uniform writes for a multi-pass frame in one chunk.
+            staging_belt: StagingBelt::new(device.clone(), 4096),
         };
         renderer.plugin.init(device, queue);
         renderer
@@ -549,6 +554,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         engine_state: &EngineState,
         vertex_buffer: &wgpu::Buffer,
     ) {
+        self.staging_belt.recall();
         self.check_mesh_dirty(device, app_state);
 
         // Run compute pass if the plugin provides a compute shader.
@@ -578,6 +584,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             vertex_buffer,
             raw_input,
         ) {
+            self.staging_belt.finish();
             return;
         }
 
@@ -587,17 +594,22 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         if self.cached_graph.as_ref().map_or(false, |g| !g.passes.is_empty()) {
             let graph = self.cached_graph.take().expect("checked above");
             self.render_graph(
-                encoder, device, queue,
+                encoder, device,
                 input_texture, feedback_texture, render_target,
                 app_state, engine_state, vertex_buffer, &graph,
             );
             self.cached_graph = Some(graph);
+            self.staging_belt.finish();
             return;
         }
 
         // Single-pass path
         let uniforms = self.plugin.build_uniforms(app_state, engine_state);
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        {
+            let size = wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
+            let mut view = self.staging_belt.write_buffer(encoder, &self.uniform_buffer, 0, size);
+            view.copy_from_slice(bytemuck::bytes_of(&uniforms));
+        }
 
         let current_gen = input_texture.texture_generation;
         if self.cached_texture_gen != current_gen {
@@ -632,6 +644,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
 
         let Some(ref texture_bind_group) = self.cached_texture_bind_group else {
+            self.staging_belt.finish();
             return;
         };
 
@@ -667,13 +680,14 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         } else {
             render_pass.draw(0..6, 0..1);
         }
+        drop(render_pass);
+        self.staging_belt.finish();
     }
 
     fn render_graph(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         input_texture: &InputTexture,
         feedback_texture: Option<&PreviousFrameTexture>,
         render_target: &Texture,
@@ -835,7 +849,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
             // Write per-pass uniforms into this pass's dedicated buffer.
             let uniforms = self.plugin.build_pass_uniforms(i, app_state, engine_state);
-            queue.write_buffer(&self.graph_uniform_buffers[i], 0, bytemuck::bytes_of(&uniforms));
+            {
+                let size = wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
+                let mut view = self.staging_belt.write_buffer(
+                    encoder, &self.graph_uniform_buffers[i], 0, size,
+                );
+                view.copy_from_slice(bytemuck::bytes_of(&uniforms));
+            }
 
             let (iv, is) = match (input_view, input_sampler) {
                 (Some(v), Some(s)) => (v, s),
