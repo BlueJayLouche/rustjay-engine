@@ -9,6 +9,10 @@ fn default_fft_size() -> usize {
     rustjay_audio::DEFAULT_FFT_SIZE
 }
 
+fn default_target_fps() -> u32 {
+    60
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct MidiMappingConfig {
     pub cc: u8,
@@ -66,6 +70,8 @@ pub(crate) struct AppSettings {
     pub web_port: u16,
     pub ui_scale: f32,
     pub show_preview: bool,
+    #[serde(default = "default_target_fps")]
+    pub target_fps: u32,
     /// Effect-declared custom parameter values.
     #[serde(default)]
     pub custom_params: HashMap<String, f32>,
@@ -105,6 +111,7 @@ impl Default for AppSettings {
             web_port: 8081,
             ui_scale: 1.0,
             show_preview: true,
+            target_fps: 60,
             custom_params: HashMap::new(),
         }
     }
@@ -122,8 +129,9 @@ impl AppSettings {
             return Ok(Self::default());
         }
         let metadata = std::fs::metadata(&path)?;
-        if metadata.len() > 1_048_576 {
-            return Err(anyhow::anyhow!("Config file too large: {} bytes", metadata.len()));
+        // Limit file size to mitigate stack-overflow DoS from deeply nested JSON.
+        if metadata.len() > 65_536 {
+            return Err(anyhow::anyhow!("Config file too large: {} bytes (max 64 KiB)", metadata.len()));
         }
         let content = std::fs::read_to_string(&path)?;
         let settings: AppSettings = serde_json::from_str(&content)?;
@@ -155,6 +163,13 @@ impl AppSettings {
             return Err(anyhow::anyhow!(
                 "Too many custom params: {} (max 256)",
                 self.custom_params.len()
+            ));
+        }
+        const VALID_FPS: &[u32] = &[24, 30, 48, 60, 90, 120];
+        if !VALID_FPS.contains(&self.target_fps) {
+            return Err(anyhow::anyhow!(
+                "Invalid target_fps: {} (valid: {:?})",
+                self.target_fps, VALID_FPS
             ));
         }
         Ok(())
@@ -216,11 +231,14 @@ impl AppSettings {
         state.web_port = self.web_port;
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
+        state.target_fps = self.target_fps;
         // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
                 state.custom_param_bases[i] = *value;
                 state.custom_params[i] = *value;
+            } else {
+                log::warn!("Config parameter '{}' not found in current descriptors, skipping", id);
             }
         }
     }
@@ -263,6 +281,7 @@ impl AppSettings {
             web_port: state.web_port,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
+            target_fps: state.target_fps,
             custom_params: state.param_descriptors.iter().enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),

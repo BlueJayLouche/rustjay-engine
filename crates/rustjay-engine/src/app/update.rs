@@ -150,9 +150,7 @@ impl<P: EffectPlugin> App<P> {
             analyzer.set_smoothing(smoothing);
             analyzer.set_normalize(normalize);
             analyzer.set_pink_noise_shaping(pink_noise);
-        }
 
-        if let Some(ref analyzer) = self.audio_analyzer {
             let fft = analyzer.get_fft();
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
@@ -167,7 +165,7 @@ impl<P: EffectPlugin> App<P> {
 
                 // Always reset modulated params to their base values before applying
                 // this frame's modulations — prevents accumulation across frames.
-                state.custom_params = state.custom_param_bases.clone();
+                state.reset_custom_params_to_base();
 
                 if state.audio_routing.enabled {
                     let delta_time = self.frame_delta_time;

@@ -497,7 +497,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
             // Rebuild compute resources if the plugin uses a compute shader.
             if let Some(cs) = self.plugin.compute_shader() {
-                let vb = self.mesh_vertex_buffer.as_ref().unwrap();
+                let vb = match self.mesh_vertex_buffer.as_ref() {
+                    Some(vb) => vb,
+                    None => {
+                        log::warn!("Mesh vertex buffer missing after mesh update");
+                        return;
+                    }
+                };
                 let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
                 let (cp, cb, wg) = build_compute_resources(
                     device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
@@ -575,16 +581,18 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             return;
         }
 
-        // Multi-pass graph path — clone is cheap: Vec of small structs with &'static str fields.
-        if let Some(graph) = self.cached_graph.clone() {
-            if !graph.passes.is_empty() {
-                self.render_graph(
-                    encoder, device, queue,
-                    input_texture, feedback_texture, render_target,
-                    app_state, engine_state, vertex_buffer, &graph,
-                );
-                return;
-            }
+        // Multi-pass graph path.
+        // Take ownership to release the field borrow before calling &mut self method,
+        // then restore. This moves the Vec fat-pointer (no heap alloc) instead of cloning.
+        if self.cached_graph.as_ref().map_or(false, |g| !g.passes.is_empty()) {
+            let graph = self.cached_graph.take().expect("checked above");
+            self.render_graph(
+                encoder, device, queue,
+                input_texture, feedback_texture, render_target,
+                app_state, engine_state, vertex_buffer, &graph,
+            );
+            self.cached_graph = Some(graph);
+            return;
         }
 
         // Single-pass path
@@ -677,10 +685,16 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let target_width = render_target.width;
         let target_height = render_target.height;
 
-        // Ensure intermediate textures (one per non-final pass).
+        // Ensure intermediate textures (one per non-final pass, at the current target size).
         let needed_intermediates = graph.passes.len().saturating_sub(1);
-        if self.intermediate_textures.len() != needed_intermediates {
+        let size_changed = self.intermediate_textures.first()
+            .map(|t| t.width != target_width || t.height != target_height)
+            .unwrap_or(false);
+        if self.intermediate_textures.len() != needed_intermediates || size_changed {
             self.intermediate_textures.clear();
+            for bg in &mut self.cached_pass_bind_groups {
+                *bg = None;
+            }
             for i in 0..needed_intermediates {
                 self.intermediate_textures.push(Texture::create_render_target(
                     device, target_width, target_height,
@@ -864,7 +878,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 self.cached_pass_texture_gens[i] = current_gen;
             }
 
-            let bind_group = self.cached_pass_bind_groups[i].as_ref().unwrap();
+            let bind_group = match self.cached_pass_bind_groups[i].as_ref() {
+                Some(bg) => bg,
+                None => {
+                    log::warn!("Pass {} bind group missing, skipping render", i);
+                    continue;
+                }
+            };
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(pass.label),

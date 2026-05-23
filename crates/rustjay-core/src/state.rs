@@ -748,6 +748,8 @@ pub struct EngineState {
     pub pick_request: Option<[f32; 2]>,
     /// RGB result of the most recent GPU readback (cleared after GUI consumes it).
     pub picked_color: Option<[f32; 3]>,
+    /// Whether pixel-pick is armed (used by preview window to show crosshair).
+    pub pixel_pick_armed: bool,
 
     /// HSB colour parameters.
     pub hsb_params: HsbParams,
@@ -789,6 +791,8 @@ pub struct EngineState {
 
     /// Whether preview windows are shown.
     pub show_preview: bool,
+    /// Target render frame rate in frames per second.
+    pub target_fps: u32,
     /// UI scale factor.
     pub ui_scale: f32,
     /// Currently selected GUI tab.
@@ -878,6 +882,7 @@ impl EngineState {
             second_input_sampler: None,
             pick_request: None,
             picked_color: None,
+            pixel_pick_armed: false,
             hsb_params: HsbParams::default(),
             color_enabled: true,
             audio: AudioState { enabled: true, amplitude: 1.0, smoothing: 0.5, normalize: true, ..Default::default() },
@@ -895,6 +900,7 @@ impl EngineState {
             resolution: ResolutionState::default(),
             performance: PerformanceMetrics::default(),
             show_preview: true,
+            target_fps: 60,
             ui_scale: 1.0,
             current_tab: GuiTab::Input,
             midi_command: MidiCommand::None,
@@ -984,7 +990,17 @@ impl EngineState {
 
     /// Reset modulated params to base values (call before applying LFO + routing each frame).
     pub fn reset_custom_params_to_base(&mut self) {
-        self.custom_params.copy_from_slice(&self.custom_param_bases);
+        if self.custom_params.len() == self.custom_param_bases.len() {
+            self.custom_params.copy_from_slice(&self.custom_param_bases);
+        } else {
+            log::warn!(
+                "custom_params length mismatch ({} vs {}), falling back to partial copy",
+                self.custom_params.len(),
+                self.custom_param_bases.len()
+            );
+            let min_len = self.custom_params.len().min(self.custom_param_bases.len());
+            self.custom_params[..min_len].copy_from_slice(&self.custom_param_bases[..min_len]);
+        }
     }
 
     /// Get parameter descriptors for a given category.

@@ -136,9 +136,11 @@ impl<P: EffectPlugin> App<P> {
             }
             #[cfg(target_os = "linux")]
             InputCommand::StartV4l2 { device_path } => {
-                let index = device_path
-                    .rsplit("video")
-                    .next()
+                use std::path::Path;
+                let index = Path::new(&device_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix("video"))
                     .and_then(|s| s.parse::<u32>().ok());
                 match (index, manager_opt) {
                     (Some(idx), Some(manager)) => {
@@ -263,12 +265,14 @@ impl<P: EffectPlugin> App<P> {
                 if let (Some(ref output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())
                 {
-                    let (new_width, new_height) = {
+                    let (output_width, output_height, internal_width, internal_height) = {
                         let state = lock(&self.shared_state);
-                        (state.output_width, state.output_height)
+                        (state.output_width, state.output_height,
+                         state.resolution.internal_width, state.resolution.internal_height)
                     };
-                    engine.resize(new_width, new_height);
-                    let _ = output_window.request_inner_size(winit::dpi::LogicalSize::new(new_width, new_height));
+                    engine.resize(output_width, output_height);
+                    engine.resize_render_target(internal_width, internal_height);
+                    let _ = output_window.request_inner_size(winit::dpi::LogicalSize::new(output_width, output_height));
                 }
             }
             _ => {}
@@ -421,6 +425,7 @@ impl<P: EffectPlugin> App<P> {
                         Err(e) => log::error!("Failed to save preset: {}", e),
                     }
                 }
+                self.sync_preset_names_to_state();
             }
             PresetCommand::Load(index) => {
                 if let Some(ref mut bank) = self.preset_bank {
@@ -436,6 +441,7 @@ impl<P: EffectPlugin> App<P> {
                         log::error!("Failed to delete preset: {}", e);
                     }
                 }
+                self.sync_preset_names_to_state();
             }
             PresetCommand::ApplySlot(slot) => {
                 if let Some(ref mut bank) = self.preset_bank {
@@ -451,6 +457,7 @@ impl<P: EffectPlugin> App<P> {
                         log::error!("Failed to assign slot: {}", e);
                     }
                 }
+                self.sync_preset_names_to_state();
             }
             PresetCommand::Refresh => {
                 if let Some(ref mut bank) = self.preset_bank {
@@ -458,11 +465,10 @@ impl<P: EffectPlugin> App<P> {
                         log::error!("Failed to refresh presets: {}", e);
                     }
                 }
+                self.sync_preset_names_to_state();
             }
             _ => {}
         }
-
-        self.sync_preset_names_to_state();
     }
 
     fn sync_preset_names_to_state(&mut self) {

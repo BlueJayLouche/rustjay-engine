@@ -157,6 +157,24 @@ impl ControlGui {
         ui.text(format!("Output FPS: {:.1}", fps));
         ui.text(format!("Frame Time: {:.2} ms", frame_time_ms));
 
+        ui.spacing();
+        ui.text("Target FPS:");
+
+        let fps_options = [24u32, 30, 48, 60, 90, 120];
+        let fps_labels = ["24 fps", "30 fps", "48 fps", "60 fps (recommended)", "90 fps", "120 fps"];
+
+        let target_fps_val = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.target_fps
+        };
+
+        let mut current_idx = fps_options.iter().position(|&f| f == target_fps_val).unwrap_or(3);
+        if ui.combo_simple_string("##target_fps", &mut current_idx, &fps_labels) {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.target_fps = fps_options[current_idx];
+            state.save_settings_requested = true;
+        }
+
         ui.text_disabled("All textures use native BGRA format for optimal macOS performance.");
 
         ui.separator();

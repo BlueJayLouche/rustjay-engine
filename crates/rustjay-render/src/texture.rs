@@ -121,6 +121,14 @@ impl Texture {
 
     /// Update the texture contents from raw pixel data.
     pub fn update(&self, queue: &wgpu::Queue, data: &[u8]) {
+        let expected = (self.width * self.height * 4) as usize;
+        if data.len() != expected {
+            log::warn!(
+                "Texture update data size mismatch: got {} bytes, expected {} for {}x{}",
+                data.len(), expected, self.width, self.height
+            );
+            return;
+        }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -193,6 +201,14 @@ impl InputTexture {
 
     /// Upload raw pixel data, resizing if necessary.
     pub fn update(&mut self, data: &[u8], width: u32, height: u32) {
+        let expected = (width * height * 4) as usize;
+        if data.len() != expected {
+            log::warn!(
+                "InputTexture update data size mismatch: got {} bytes, expected {} for {}x{}",
+                data.len(), expected, width, height
+            );
+            return;
+        }
         if self.ext_view.is_some() {
             self.ext_view = None;
             self.ext_sampler = None;
@@ -245,17 +261,19 @@ impl InputTexture {
     /// Use an external texture as the input source.
     pub fn set_external_texture(&mut self, tex: &wgpu::Texture) {
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        // Sampler parameters never change — create once and reuse.
+        if self.ext_sampler.is_none() {
+            self.ext_sampler = Some(self.device.create_sampler(&wgpu::SamplerDescriptor {
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            }));
+        }
         self.ext_view = Some(view);
-        self.ext_sampler = Some(sampler);
         self.has_data = true;
         self.texture_generation += 1;
     }

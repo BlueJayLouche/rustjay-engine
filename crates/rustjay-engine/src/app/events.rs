@@ -51,7 +51,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.output_window = Some(Arc::clone(&window));
 
             let shared_state = Arc::clone(&self.shared_state);
-            let plugin = self.plugin.take().expect("plugin already consumed");
+            let plugin = match self.plugin.take() {
+                Some(p) => p,
+                None => {
+                    log::error!("Plugin already consumed — resumed() called twice?");
+                    return;
+                }
+            };
             match pollster::block_on(WgpuEngine::new(instance, window, shared_state, plugin)) {
                 Ok(engine) => {
                     log::info!("Output engine initialized");
@@ -360,11 +366,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        const TARGET_FRAME_DUR: std::time::Duration = std::time::Duration::from_micros(8333);
+        let target_fps = self.shared_state.lock().unwrap_or_else(|e| e.into_inner()).target_fps;
+        let target_frame_dur = std::time::Duration::from_micros(1_000_000 / target_fps as u64);
         let elapsed = now.elapsed();
-        if elapsed < TARGET_FRAME_DUR {
+        if elapsed < target_frame_dur {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
-                std::time::Instant::now() + (TARGET_FRAME_DUR - elapsed),
+                std::time::Instant::now() + (target_frame_dur - elapsed),
             ));
         }
     }
