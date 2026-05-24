@@ -138,23 +138,23 @@ fn do_rotate(coord: vec2<f32>, angle: f32, mode: i32) -> vec2<f32> {
     }
     let c = cos(angle);
     let s = sin(angle);
+    let centered = coord - vec2<f32>(0.5, 0.5);
 
-    var rotate_coord = vec2<f32>(0.0, 0.0);
-
-    // Mode 0: spiral effect (original)
     if (mode == 0) {
-        let delta = coord - vec2<f32>(0.5, 0.5);
-        rotate_coord.x = delta.x * c - delta.y * s + 0.5;
-        rotate_coord.y = delta.x * s + delta.y * c + 0.5;
+        // Pixel-space rotation: scale x by aspect ratio before rotating so the
+        // rotation behaves like the original GLSL mode 0 in raw pixel coords.
+        let aspect = uniforms.width / uniforms.height;
+        let sx = centered.x * aspect;
+        let rx = sx * c - centered.y * s;
+        let ry = sx * s + centered.y * c;
+        return vec2<f32>(rx / aspect + 0.5, ry + 0.5);
+    } else {
+        // UV-space rotation: aspect-preserving (mode 1)
+        return vec2<f32>(
+            centered.x * c - centered.y * s + 0.5,
+            centered.x * s + centered.y * c + 0.5
+        );
     }
-    // Mode 1: preserve aspect ratio
-    else {
-        let center_coord = coord - vec2<f32>(0.5, 0.5);
-        rotate_coord.x = center_coord.x * c - center_coord.y * s + 0.5;
-        rotate_coord.y = center_coord.x * s + center_coord.y * c + 0.5;
-    }
-
-    return rotate_coord;
 }
 
 fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
@@ -170,7 +170,7 @@ fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
     angle = min(angle, segment_angle - angle);
     result = radius * vec2<f32>(cos(angle), sin(angle));
     result = result * 0.5 + 0.5;
-    return do_rotate(result, -slice, 1);
+    return do_rotate(result, -slice, 0);
 }
 
 fn color_quantize(in_color: vec3<f32>, amount: f32, amount_inv: f32) -> vec3<f32> {

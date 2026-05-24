@@ -193,7 +193,7 @@ fn apply_solarize(in_bright: f32) -> f32 {
     return in_bright;
 }
 
-// Rotate coordinates
+// Rotate coordinates — UV-space, aspect-preserving (mode 1)
 fn do_rotate(coord: vec2<f32>, angle: f32) -> vec2<f32> {
     if (angle == 0.0) {
         return coord;
@@ -206,7 +206,26 @@ fn do_rotate(coord: vec2<f32>, angle: f32) -> vec2<f32> {
     return vec2<f32>(rotated_x + 0.5, rotated_y + 0.5);
 }
 
-// Kaleidoscope effect
+// Rotate in pixel-space (non-aspect-preserving, mode 0): stretches x by aspect
+// ratio before rotating, producing the same "always circular" distortion as the
+// original GLSL mode 0 which operated in raw pixel coordinates.
+fn do_rotate_mode0(coord: vec2<f32>, angle: f32) -> vec2<f32> {
+    if (angle == 0.0) {
+        return coord;
+    }
+    let aspect = uniforms.width / uniforms.height;
+    let centered = coord - vec2<f32>(0.5, 0.5);
+    let c = cos(angle);
+    let s = sin(angle);
+    let sx = centered.x * aspect;
+    let rx = sx * c - centered.y * s;
+    let ry = sx * s + centered.y * c;
+    return vec2<f32>(rx / aspect + 0.5, ry + 0.5);
+}
+
+// Kaleidoscope effect — asymmetric rotation matching original shader3:
+// pre-rotation uses mode 1 (aspect-preserving), counter-rotation uses mode 0
+// (pixel-space stretch), which creates the characteristic "twist" distortion.
 fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
     if (segments <= 0.0) {
         return coord;
@@ -220,7 +239,7 @@ fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
     angle = min(angle, segment_angle - angle);
     result = radius * vec2<f32>(cos(angle), sin(angle));
     result = result * 0.5 + 0.5;
-    return do_rotate(result, -slice);
+    return do_rotate_mode0(result, -slice);
 }
 
 // Wrap coordinates

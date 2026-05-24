@@ -51,10 +51,31 @@ mod tests {
 
     #[test]
     fn serde_round_trip() {
-        let state = WaaavesState::default();
+        let mut state = WaaavesState::default();
+        // Mutate several fields
+        state.block1.ch1_rotate = 1.23;
+        state.block1.fb1_mix_amount = 0.75;
+        state.block1.fb1_delay_time = 15;
+        state.block2.fb2_delay_time = 8;
+        state.block2.block2_input_rotate = 2.34;
+        state.block3.matrix_mix_r_to_r = 0.5;
+        state.block3.final_mix_amount = 0.9;
+        state.max_delay_frames = 45;
+        state.pick_state = PickState::Armed {
+            target: KeyTarget::Ch2,
+        };
+
         let json = serde_json::to_string(&state).unwrap();
         let restored: WaaavesState = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.max_delay_frames, state.max_delay_frames);
+
+        assert!((restored.block1.ch1_rotate - 1.23).abs() < 0.001);
+        assert!((restored.block1.fb1_mix_amount - 0.75).abs() < 0.001);
+        assert_eq!(restored.block1.fb1_delay_time, 15);
+        assert_eq!(restored.block2.fb2_delay_time, 8);
+        assert!((restored.block2.block2_input_rotate - 2.34).abs() < 0.001);
+        assert!((restored.block3.matrix_mix_r_to_r - 0.5).abs() < 0.001);
+        assert!((restored.block3.final_mix_amount - 0.9).abs() < 0.001);
+        assert_eq!(restored.max_delay_frames, 45);
         assert_eq!(restored.pick_state, PickState::Idle); // serde skip resets it
     }
 }
