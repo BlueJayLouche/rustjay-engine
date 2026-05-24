@@ -152,7 +152,8 @@ impl SpoutOutput {
         }
 
         unsafe {
-            let d3d_tex = self.shared_texture.as_ref().unwrap();
+            let d3d_tex = self.shared_texture.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("[Spout] submit_bytes called before texture creation"))?;
             let keyed_mutex: IDXGIKeyedMutex = d3d_tex.cast()?;
 
             keyed_mutex.AcquireSync(0, 0xFFFFFFFF)?;
@@ -276,6 +277,22 @@ impl SpoutOutput {
         }
 
         {
+            // Validate mapping size before raw pointer writes
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+            let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
+            let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+            let expected_size = SPOUT_MAX_SENDERS * SPOUT_MAX_NAME_LEN;
+            if mapped_size < expected_size {
+                UnmapViewOfFile(view).ok();
+                CloseHandle(hmap).ok();
+                return Err(anyhow::anyhow!(
+                    "[Spout] SpoutSenderNames mapping too small ({} < {})",
+                    mapped_size,
+                    expected_size
+                ));
+            }
+
             let base = view.Value as *mut u8;
             let name_bytes = self.sender_name.as_bytes();
             let mut already_present = false;
@@ -402,6 +419,18 @@ impl SpoutOutput {
 
         let view = MapViewOfFile(hmap, FILE_MAP_ALL_ACCESS, 0, 0, 0);
         if !view.Value.is_null() {
+            // Validate mapping size before raw pointer writes
+            let mut mbi = MEMORY_BASIC_INFORMATION::default();
+            let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+            let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
+            let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+            let expected_size = SPOUT_MAX_SENDERS * SPOUT_MAX_NAME_LEN;
+            if mapped_size < expected_size {
+                UnmapViewOfFile(view).ok();
+                CloseHandle(hmap).ok();
+                return;
+            }
+
             let base = view.Value as *mut u8;
             let name_bytes = self.sender_name.as_bytes();
 

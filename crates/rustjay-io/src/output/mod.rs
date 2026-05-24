@@ -107,7 +107,10 @@ impl ReadbackPool {
                         let buf_size = (w as u64) * 4 * (h as u64);
                         let buf = match std::mem::replace(slot, SlotState::Available { cached: None }) {
                             SlotState::Pending { buffer, .. } => buffer,
-                            _ => unreachable!(),
+                            _ => {
+                                log::error!("[ReadbackPool] Expected Pending slot but found another state");
+                                return None;
+                            }
                         };
                         *slot = SlotState::Available { cached: Some((buf, buf_size)) };
                         Some((data, w, h))

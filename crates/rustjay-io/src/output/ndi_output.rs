@@ -26,6 +26,7 @@ pub struct NdiOutputSender {
     frame_tx: ChannelSender<FrameData>,
     running: Arc<AtomicBool>,
     is_owner: bool,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl NdiOutputSender {
@@ -60,8 +61,6 @@ impl NdiOutputSender {
             );
         });
         
-        Box::leak(Box::new(thread_handle));
-        
         Ok(Self {
             name,
             width,
@@ -70,6 +69,7 @@ impl NdiOutputSender {
             frame_tx,
             running,
             is_owner: true,
+            thread_handle: Some(thread_handle),
         })
     }
     
@@ -182,6 +182,9 @@ impl NdiOutputSender {
             return;
         }
         self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
     
     /// Check if sender is running
@@ -200,6 +203,7 @@ impl Clone for NdiOutputSender {
             frame_tx: self.frame_tx.clone(),
             running: Arc::clone(&self.running),
             is_owner: false,
+            thread_handle: None,
         }
     }
 }
