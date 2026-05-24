@@ -193,17 +193,27 @@ impl<P: EffectPlugin> App<P> {
         let beat_phase = state.effective_beat_phase();
         state.lfo.bank.update(bpm, delta_time, beat_phase);
 
-        // Apply LFO modulations to custom params
-        let mods = state.lfo.bank.get_modulations();
+        // Apply LFO modulations to custom params — allocation-free after first frame.
+        // fill_modulations writes into the pre-allocated Vec inside LfoBank.
+        // We then snapshot the results onto the stack (max 8 entries × 16 B = 128 B)
+        // to release the borrow on state.lfo before the apply loop mutates state.custom_params.
         let descriptors = Arc::clone(&state.param_descriptors);
-        for (id, mod_value) in mods {
-            if let Some(i) = descriptors.iter().position(|d| d.id == id) {
-                let base = state.custom_param_bases[i];
-                let desc = &descriptors[i];
-                let range = desc.max - desc.min;
-                let modulated = (base + mod_value * range).clamp(desc.min, desc.max);
-                state.custom_params[i] = modulated;
+        state.lfo.bank.fill_modulations(&descriptors);
+        let mut accum = [(0usize, 0.0f32); 8];
+        let n = {
+            let src = state.lfo.bank.mod_accum();
+            let n = src.len().min(accum.len());
+            accum[..n].copy_from_slice(&src[..n]);
+            n
+        };
+        for &(idx, mod_val) in &accum[..n] {
+            if idx >= state.custom_params.len() {
+                continue;
             }
+            let base = state.custom_param_bases[idx];
+            let desc = &descriptors[idx];
+            let range = desc.max - desc.min;
+            state.custom_params[idx] = (base + mod_val * range).clamp(desc.min, desc.max);
         }
     }
 

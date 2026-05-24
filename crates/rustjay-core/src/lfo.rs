@@ -217,6 +217,9 @@ impl Lfo {
     
     /// Calculate the LFO output at current phase
     pub fn calculate_value(phase: f32, waveform: Waveform) -> f32 {
+        if !phase.is_finite() {
+            return 0.0;
+        }
         let phase = phase % 1.0;
         
         match waveform {
@@ -259,6 +262,11 @@ impl Lfo {
 
         let division = self.division.clamp(0, BEAT_DIVISIONS.len() - 1);
 
+        if !bpm.is_finite() || !delta_time.is_finite() || !beat_phase.is_finite() {
+            self.output = 0.0;
+            return;
+        }
+
         // Calculate effective rate
         let rate_hz = if self.tempo_sync {
             let beat_duration = 60.0 / bpm.max(1.0);
@@ -280,6 +288,9 @@ impl Lfo {
 
         // Accumulate phase at the correct rate
         self.phase = (self.phase + rate_hz * delta_time) % 1.0;
+        if !self.phase.is_finite() {
+            self.phase = 0.0;
+        }
 
         // Apply static phase offset (degrees → 0-1)
         let offset_normalized = self.phase_offset / 360.0;
@@ -313,6 +324,10 @@ impl Default for Lfo {
 pub struct LfoBank {
     /// The LFOs (default capacity 8).
     pub lfos: Vec<Lfo>,
+    /// Pre-allocated per-frame accumulation buffer: (param_index, summed_mod_value).
+    /// Cleared at the start of each apply call; never deallocated between frames.
+    #[serde(skip)]
+    mod_accum: Vec<(usize, f32)>,
 }
 
 impl LfoBank {
@@ -320,6 +335,7 @@ impl LfoBank {
     pub fn new() -> Self {
         Self {
             lfos: (0..8).map(Lfo::new).collect(),
+            mod_accum: Vec::with_capacity(8),
         }
     }
     
@@ -332,6 +348,9 @@ impl LfoBank {
     
     /// Get modulation values for all targets.
     /// Returns a map of `param_id → modulation_value`.
+    ///
+    /// Allocates on every call — use [`fill_modulations`](Self::fill_modulations) +
+    /// [`mod_accum`](Self::mod_accum) on the hot path.
     pub fn get_modulations(&self) -> HashMap<String, f32> {
         let mut mods = HashMap::new();
         for lfo in &self.lfos {
@@ -345,6 +364,32 @@ impl LfoBank {
             }
         }
         mods
+    }
+
+    /// Populate the internal accumulation buffer with summed LFO outputs per descriptor index.
+    ///
+    /// Call once per frame.  The result is then read back via [`mod_accum`](Self::mod_accum)
+    /// in a separate step so the caller can simultaneously borrow other state while iterating.
+    /// No heap allocation occurs after the first call (the Vec retains its capacity).
+    pub fn fill_modulations(&mut self, descriptors: &[crate::params::ParameterDescriptor]) {
+        self.mod_accum.clear();
+        for lfo in &self.lfos {
+            if !lfo.enabled {
+                continue;
+            }
+            let LfoTarget::Custom(id) = &lfo.target else { continue };
+            let Some(idx) = descriptors.iter().position(|d| d.id == *id) else { continue };
+            if let Some(entry) = self.mod_accum.iter_mut().find(|(i, _)| *i == idx) {
+                entry.1 += lfo.output;
+            } else {
+                self.mod_accum.push((idx, lfo.output));
+            }
+        }
+    }
+
+    /// Read the last accumulated (param_index, summed_mod_value) pairs.
+    pub fn mod_accum(&self) -> &[(usize, f32)] {
+        &self.mod_accum
     }
     
     /// Reset all LFO phases
