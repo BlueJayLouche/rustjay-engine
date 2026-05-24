@@ -259,6 +259,10 @@ impl InputTexture {
     }
 
     /// Use an external texture as the input source.
+    ///
+    /// Also copies into `self.texture` so plugins that need `raw_input` (e.g. delta's
+    /// FrameHistory) see a non-None value even when the source is Syphon / IOSurface-backed.
+    /// The Syphon output texture is created with COPY_SRC so this GPU blit is valid.
     pub fn set_external_texture(&mut self, tex: &wgpu::Texture) {
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         // Sampler parameters never change — create once and reuse.
@@ -274,6 +278,8 @@ impl InputTexture {
             }));
         }
         self.ext_view = Some(view);
+        // GPU-to-GPU blit so raw_input is non-None for plugins that need the owned texture.
+        self.update_from_texture(tex);
         self.has_data = true;
         self.texture_generation += 1;
     }
