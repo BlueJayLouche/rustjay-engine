@@ -96,7 +96,7 @@ impl NdiReceiver {
                 match finder.find_sources(Duration::from_millis(100)) {
                     Ok(sources) => {
                         for source in sources {
-                            if source.name.contains(&source_name) || source_name.contains(&source.name) {
+                            if source.name == source_name {
                                 found_source = Some(source);
                                 break;
                             }

@@ -514,7 +514,8 @@ impl InputManager {
     pub fn start_spout(&mut self, sender_name: impl Into<String>) -> Result<()> {
         let sender_name = sender_name.into();
         self.stop();
-        let mut receiver = SpoutInputReceiver::new();
+        let mut receiver = SpoutInputReceiver::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create Spout receiver: {}", e))?;
         receiver.connect(&sender_name)?;
         self.input_type = rustjay_core::InputType::Spout;
         self.active = true;

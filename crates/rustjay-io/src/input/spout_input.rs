@@ -167,10 +167,26 @@ unsafe fn read_sender_dimensions(name: &str) -> (u32, u32) {
 
     let view = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, 0);
     let result = if !view.Value.is_null() {
-        let info = &*(view.Value as *const SharedTextureInfo);
-        let dims = (info.width, info.height);
-        UnmapViewOfFile(view).ok();
-        dims
+        // Validate mapped region is large enough before dereferencing
+        let mut mbi = MEMORY_BASIC_INFORMATION::default();
+        let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+        let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
+        let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+        if mapped_size >= std::mem::size_of::<SharedTextureInfo>() {
+            let info = &*(view.Value as *const SharedTextureInfo);
+            let dims = (info.width, info.height);
+            UnmapViewOfFile(view).ok();
+            dims
+        } else {
+            log::warn!(
+                "[Spout] Sender '{}' shared memory too small ({} < {})",
+                name,
+                mapped_size,
+                std::mem::size_of::<SharedTextureInfo>()
+            );
+            UnmapViewOfFile(view).ok();
+            (0, 0)
+        }
     } else {
         (0, 0)
     };
@@ -194,6 +210,22 @@ unsafe fn read_sender_info(name: &str) -> anyhow::Result<(HANDLE, u32, u32)> {
         return Err(anyhow::anyhow!(
             "[Spout] MapViewOfFile failed for sender '{}'",
             name
+        ));
+    }
+
+    // Validate mapped region is large enough before dereferencing
+    let mut mbi = MEMORY_BASIC_INFORMATION::default();
+    let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+    let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
+    let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+    if mapped_size < std::mem::size_of::<SharedTextureInfo>() {
+        UnmapViewOfFile(view).ok();
+        CloseHandle(hmap).ok();
+        return Err(anyhow::anyhow!(
+            "[Spout] Sender '{}' shared memory too small ({} < {})",
+            name,
+            mapped_size,
+            std::mem::size_of::<SharedTextureInfo>()
         ));
     }
 
@@ -240,7 +272,7 @@ pub struct SpoutInputReceiver {
 
 impl SpoutInputReceiver {
     /// Create an unconnected receiver and initialise the D3D11 device.
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -255,18 +287,21 @@ impl SpoutInputReceiver {
                 None,
                 Some(&mut context),
             )
-            .expect("[Spout] SpoutInputReceiver: D3D11CreateDevice failed");
+            .map_err(|e| anyhow::anyhow!("[Spout] SpoutInputReceiver: D3D11CreateDevice failed: {}", e))?;
+
+            let d3d_device = device.ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no device"))?;
+            let d3d_context = context.ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no context"))?;
 
             log::info!("[Spout] SpoutInputReceiver: D3D11 device created");
-            Self {
-                d3d_device: device.expect("D3D11 device"),
-                d3d_context: context.expect("D3D11 context"),
+            Ok(Self {
+                d3d_device,
+                d3d_context,
                 sender_name: None,
                 shared_texture: None,
                 staging_texture: None,
                 resolution: (0, 0),
                 pixel_buffer: Vec::new(),
-            }
+            })
         }
     }
 
@@ -507,7 +542,8 @@ impl SpoutInputReceiver {
 
 impl Default for SpoutInputReceiver {
     fn default() -> Self {
-        Self::new()
+        // This may panic if D3D11 is unavailable; prefer new() for fallible construction.
+        Self::new().expect("SpoutInputReceiver::default() requires D3D11")
     }
 }
 
