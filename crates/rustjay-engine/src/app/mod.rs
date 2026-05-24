@@ -9,7 +9,7 @@ use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 use rustjay_core::EngineState;
 use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
 use rustjay_io::InputManager;
-use rustjay_presets::{PresetBank, default_presets_dir};
+use rustjay_presets::{PresetBank, presets_dir_for};
 use rustjay_render::WgpuEngine;
 use crate::config::{AppSettings, ConfigManager};
 use rustjay_core::EffectPlugin;
@@ -178,9 +178,9 @@ impl<P: EffectPlugin> App<P> {
             Some(server)
         };
 
-        let preset_bank = match default_presets_dir() {
+        let preset_bank = match presets_dir_for(&app_name) {
             Ok(presets_dir) => {
-                log::info!("Preset bank initialized");
+                log::info!("Preset bank initialized at {}", presets_dir.display());
                 let bank = PresetBank::new(presets_dir);
                 {
                     let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();

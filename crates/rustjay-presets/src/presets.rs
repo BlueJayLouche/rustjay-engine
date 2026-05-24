@@ -129,6 +129,8 @@ impl Preset {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
                 state.custom_param_bases[i] = *value;
                 state.custom_params[i] = *value;
+            } else {
+                log::warn!("Preset parameter '{}' not found in current descriptors, skipping", id);
             }
         }
     }
@@ -147,8 +149,9 @@ impl Preset {
     /// Load preset from file
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let metadata = std::fs::metadata(path)?;
-        if metadata.len() > 1_048_576 {
-            return Err(anyhow::anyhow!("Preset file too large: {} bytes", metadata.len()));
+        // Limit file size to mitigate stack-overflow DoS from deeply nested JSON.
+        if metadata.len() > 65_536 {
+            return Err(anyhow::anyhow!("Preset file too large: {} bytes (max 64 KiB)", metadata.len()));
         }
         let content = std::fs::read_to_string(path)?;
         let preset: Preset = serde_json::from_str(&content)?;
@@ -475,7 +478,15 @@ impl PresetBank {
     }
 }
 
-/// Get default presets directory
+/// Get the presets directory for a specific app (isolated per-app).
+pub fn presets_dir_for(app_name: &str) -> anyhow::Result<PathBuf> {
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+    Ok(config_dir.join("rustjay").join(app_name).join("presets"))
+}
+
+/// Get default presets directory (shared across all apps — prefer `presets_dir_for`).
+#[deprecated(note = "Use `presets_dir_for(app_name)` to keep presets isolated per app.")]
 pub fn default_presets_dir() -> anyhow::Result<PathBuf> {
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
