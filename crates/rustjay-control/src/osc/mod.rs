@@ -297,6 +297,13 @@ impl OscServer {
             state.host.clone()
         };
         let bind_addr: Ipv4Addr = host.parse().unwrap_or(Ipv4Addr::LOCALHOST);
+        if !bind_addr.is_loopback() {
+            log::warn!(
+                "OSC server binding to non-loopback address {}. OSC has no authentication — \
+                 anyone on the network can send control messages.",
+                bind_addr
+            );
+        }
         let addr = SocketAddrV4::new(bind_addr, port);
         let socket = UdpSocket::bind(addr)?;
         socket.set_nonblocking(true)?;
