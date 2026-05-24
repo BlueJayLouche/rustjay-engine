@@ -118,6 +118,7 @@ pub struct Block3Params {
     pub final_mix_type: i32,
     pub final_mix_overflow: i32,
     pub final_key_order: i32,
+    pub final_key_mode: i32,
 
     // Final dither
     pub final_dither: f32,
@@ -237,6 +238,7 @@ impl Default for Block3Params {
             final_mix_type: 0,
             final_mix_overflow: 0,
             final_key_order: 0,
+            final_key_mode: 0,
 
             final_dither: 16.0,
             final_dither_switch: false,

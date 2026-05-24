@@ -304,6 +304,48 @@ impl ControlGui {
         }
     }
 
+    /// Build the second input preview — fills the window with a center-crop
+    pub(crate) fn build_second_input_preview(&mut self, ui: &imgui::Ui) {
+        if let Some(texture_id) = self.second_input_preview_texture_id {
+            let (input_width, input_height) = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                (state.second_input.width, state.second_input.height)
+            };
+
+            let avail = ui.content_region_avail();
+            if avail[0] <= 0.0 || avail[1] <= 0.0 {
+                return;
+            }
+
+            let content_u = if input_width > 0 { (input_width as f32 / 1920.0).min(1.0) } else { 1.0 };
+            let content_v = if input_height > 0 { (input_height as f32 / 1080.0).min(1.0) } else { 1.0 };
+
+            let content_aspect = if input_width > 0 && input_height > 0 {
+                input_width as f32 / input_height as f32
+            } else {
+                16.0 / 9.0
+            };
+            let container_aspect = avail[0] / avail[1];
+
+            let (uv0, uv1) = if content_aspect > container_aspect {
+                let visible = container_aspect / content_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([pad * content_u, 0.0], [(1.0 - pad) * content_u, content_v])
+            } else {
+                let visible = content_aspect / container_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([0.0, pad * content_v], [content_u, (1.0 - pad) * content_v])
+            };
+
+            imgui::Image::new(texture_id, avail)
+                .uv0(uv0)
+                .uv1(uv1)
+                .build(ui);
+        } else {
+            ui.text_disabled("No input 2 preview available");
+        }
+    }
+
     /// Build the output preview — fills the window with a center-crop
     pub(crate) fn build_output_preview(&mut self, ui: &imgui::Ui) {
         if let Some(texture_id) = self.output_preview_texture_id {

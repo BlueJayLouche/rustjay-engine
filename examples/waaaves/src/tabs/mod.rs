@@ -144,19 +144,55 @@ pub fn apply_pending_pick(state: &mut WaaavesState, engine: &mut EngineState) {
 }
 
 /// Key-color RGB sliders + Pick button.
+/// When `key_mode == 0` (Lumakey), shows a single slider that drives all
+/// channels together with a grey preview.
+/// When `key_mode == 1` (Chromakey), shows a `color_edit3` picker plus the
+/// individual R/G/B sliders so LFO modulation still works.
 pub fn key_color(
     ui: &imgui::Ui,
     pick_state: &mut PickState,
     engine: &mut EngineState,
     target: KeyTarget,
     prefix: &str,
+    key_mode: i32,
     r: &mut f32,
     g: &mut f32,
     b: &mut f32,
 ) {
-    sf(ui, engine, &format!("R##{prefix}_kr"), &format!("{prefix}_key_value_r"), r, 0.0, 1.0);
-    sf(ui, engine, &format!("G##{prefix}_kg"), &format!("{prefix}_key_value_g"), g, 0.0, 1.0);
-    sf(ui, engine, &format!("B##{prefix}_kb"), &format!("{prefix}_key_value_b"), b, 0.0, 1.0);
+    if key_mode == 0 {
+        // Lumakey – single value driving all channels
+        let mut val = *r;
+        let label = &format!("Key Value##{prefix}_kv");
+        let id = &format!("{prefix}_key_value_r");
+        if ui.slider_config(label, 0.0, 1.0).build(&mut val) {
+            *r = val;
+            *g = val;
+            *b = val;
+            engine.set_param_base(&format!("{prefix}_key_value_r"), val);
+            engine.set_param_base(&format!("{prefix}_key_value_g"), val);
+            engine.set_param_base(&format!("{prefix}_key_value_b"), val);
+        }
+        draw_lfo_dots(ui, id, &engine.lfo.bank);
+        lfo_context_menu(ui, id, label, engine);
+
+        ui.same_line();
+        ui.color_button(&format!("Preview##{prefix}_preview"), [val, val, val, 1.0]);
+    } else {
+        // Chromakey – full color picker + individual sliders for LFO
+        let mut color = [*r, *g, *b];
+        if ui.color_edit3(&format!("##{prefix}_ce"), &mut color) {
+            *r = color[0];
+            *g = color[1];
+            *b = color[2];
+            engine.set_param_base(&format!("{prefix}_key_value_r"), color[0]);
+            engine.set_param_base(&format!("{prefix}_key_value_g"), color[1]);
+            engine.set_param_base(&format!("{prefix}_key_value_b"), color[2]);
+        }
+
+        sf(ui, engine, &format!("R##{prefix}_kr"), &format!("{prefix}_key_value_r"), r, 0.0, 1.0);
+        sf(ui, engine, &format!("G##{prefix}_kg"), &format!("{prefix}_key_value_g"), g, 0.0, 1.0);
+        sf(ui, engine, &format!("B##{prefix}_kb"), &format!("{prefix}_key_value_b"), b, 0.0, 1.0);
+    }
 
     let armed = matches!(*pick_state, PickState::Armed { target: t } if t == target);
     let pending = matches!(*pick_state, PickState::Pending { target: t } if t == target);
@@ -388,7 +424,7 @@ pub fn mix_key_section(
         1.0,
     );
     ui.text("Key Color");
-    key_color(ui, pick_state, engine, target, prefix, key_r, key_g, key_b);
+    key_color(ui, pick_state, engine, target, prefix, *key_mode, key_r, key_g, key_b);
 }
 /// Sync all waaaves parameter bases from state to engine.
 pub fn sync_all_params(state: &WaaavesState, engine: &mut EngineState) {

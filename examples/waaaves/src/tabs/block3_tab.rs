@@ -166,6 +166,7 @@ impl AnyGuiTab for Block3Tab {
             co(ui, engine, "Mix Type##final", &mut state.block3.final_mix_type, MIX_TYPE_OPTS);
             co(ui, engine, "Mix Overflow##final", &mut state.block3.final_mix_overflow, MIX_OVERFLOW_OPTS);
             co(ui, engine, "Key Order##final", &mut state.block3.final_key_order, KEY_ORDER_OPTS);
+            co(ui, engine, "Key Mode##final", &mut state.block3.final_key_mode, KEY_MODE_OPTS);
             sf(
                 ui,
                 engine,
@@ -187,6 +188,7 @@ impl AnyGuiTab for Block3Tab {
             ui.text("Key Color");
             key_color(
                 ui, &mut state.pick_state, engine, KeyTarget::Final, "final",
+                state.block3.final_key_mode,
                 &mut state.block3.final_key_value_r,
                 &mut state.block3.final_key_value_g,
                 &mut state.block3.final_key_value_b,

@@ -98,6 +98,21 @@ impl EffectPlugin for WaaavesEffect {
         WaaavesState::default()
     }
 
+    fn serialize_preset_state(&self, state: &WaaavesState) -> Option<String> {
+        serde_json::to_string(state).ok()
+    }
+
+    fn deserialize_preset_state(&self, data: &str, state: &mut WaaavesState) {
+        match serde_json::from_str::<WaaavesState>(data) {
+            Ok(restored) => *state = restored,
+            Err(e) => log::warn!("Failed to deserialize waaaves preset state: {}", e),
+        }
+    }
+
+    fn on_preset_applied(&self, state: &mut WaaavesState, engine: &mut EngineState) {
+        tabs::sync_all_params(state, engine);
+    }
+
     fn shader_source(&self) -> &'static str {
         include_str!("shaders/passthrough.wgsl")
     }

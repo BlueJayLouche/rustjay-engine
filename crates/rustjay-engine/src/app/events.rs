@@ -123,8 +123,10 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         match ControlGui::new(Arc::clone(&self.shared_state)) {
                             Ok(mut gui) => {
                                 let input_preview_id = renderer.create_preview_texture(1920, 1080);
+                                let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
                                 let output_preview_id = renderer.create_preview_texture(1920, 1080);
                                 gui.set_input_preview_texture(input_preview_id);
+                                gui.set_second_input_preview_texture(second_input_preview_id);
                                 gui.set_output_preview_texture(output_preview_id);
                                 log::info!("Created preview textures");
 

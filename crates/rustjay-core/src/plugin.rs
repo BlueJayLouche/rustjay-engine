@@ -158,6 +158,20 @@ pub trait EffectPlugin: Send + Sync + 'static {
         Self::State::default()
     }
 
+    /// Serialize plugin state for preset storage.
+    /// Return `Some(json_string)` to include plugin-specific data in the preset.
+    fn serialize_preset_state(&self, _state: &Self::State) -> Option<String> {
+        None
+    }
+
+    /// Deserialize plugin state from preset storage.
+    /// Called when a preset containing `plugin_state` is loaded.
+    fn deserialize_preset_state(&self, _data: &str, _state: &mut Self::State) {}
+
+    /// Called after a preset has been applied to the engine state.
+    /// Use this to sync restored plugin state back to the engine.
+    fn on_preset_applied(&self, _state: &mut Self::State, _engine: &mut EngineState) {}
+
     /// Lifecycle hook: called once when the wgpu device/queue are ready.
     /// Use this to create extra textures, bind groups, pipelines, etc.
     fn init(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}

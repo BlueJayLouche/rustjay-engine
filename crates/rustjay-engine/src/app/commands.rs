@@ -416,10 +416,13 @@ impl<P: EffectPlugin> App<P> {
         match command {
             PresetCommand::Save { name } => {
                 if let Some(ref mut bank) = self.preset_bank {
-                    let preset = {
+                    let mut preset = {
                         let state = lock(&self.shared_state);
                         rustjay_presets::Preset::from_state(&name, &state)
                     };
+                    if let Some(ref plugin) = self.plugin {
+                        preset.plugin_state = plugin.serialize_preset_state(&self.app_state);
+                    }
                     match bank.add_preset(preset) {
                         Ok(index) => log::info!("Saved preset '{}' at index {}", name, index),
                         Err(e) => log::error!("Failed to save preset: {}", e),
@@ -429,9 +432,18 @@ impl<P: EffectPlugin> App<P> {
             }
             PresetCommand::Load(index) => {
                 if let Some(ref mut bank) = self.preset_bank {
-                    let mut state = lock(&self.shared_state);
-                    if let Err(e) = bank.apply_preset(index, &mut state) {
-                        log::error!("Failed to load preset: {}", e);
+                    let plugin_state = bank.presets.get(index).and_then(|p| p.plugin_state.clone());
+                    {
+                        let mut state = lock(&self.shared_state);
+                        if let Err(e) = bank.apply_preset(index, &mut state) {
+                            log::error!("Failed to load preset: {}", e);
+                        }
+                        if let Some(ref plugin) = self.plugin {
+                            if let Some(ref data) = plugin_state {
+                                plugin.deserialize_preset_state(data, &mut self.app_state);
+                            }
+                            plugin.on_preset_applied(&mut self.app_state, &mut state);
+                        }
                     }
                 }
             }
@@ -445,9 +457,19 @@ impl<P: EffectPlugin> App<P> {
             }
             PresetCommand::ApplySlot(slot) => {
                 if let Some(ref mut bank) = self.preset_bank {
-                    let mut state = lock(&self.shared_state);
-                    if let Err(e) = bank.apply_slot(slot, &mut state) {
-                        log::warn!("Failed to apply preset slot {}: {}", slot, e);
+                    let plugin_state = bank.get_slot(slot)
+                        .and_then(|idx| bank.presets.get(idx).and_then(|p| p.plugin_state.clone()));
+                    {
+                        let mut state = lock(&self.shared_state);
+                        if let Err(e) = bank.apply_slot(slot, &mut state) {
+                            log::warn!("Failed to apply preset slot {}: {}", slot, e);
+                        }
+                        if let Some(ref plugin) = self.plugin {
+                            if let Some(ref data) = plugin_state {
+                                plugin.deserialize_preset_state(data, &mut self.app_state);
+                            }
+                            plugin.on_preset_applied(&mut self.app_state, &mut state);
+                        }
                     }
                 }
             }

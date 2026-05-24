@@ -71,6 +71,10 @@ pub struct Preset {
     /// Custom user-defined parameter values.
     #[serde(default)]
     pub custom_values: HashMap<String, f32>,
+
+    /// Optional plugin-specific state serialized as JSON.
+    #[serde(default)]
+    pub plugin_state: Option<String>,
 }
 
 impl Preset {
@@ -102,6 +106,7 @@ impl Preset {
             custom_values: state.param_descriptors.iter().enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),
+            plugin_state: None,
         }
     }
     
@@ -420,7 +425,9 @@ impl PresetBank {
         }
 
         let name = self.presets[index].name.clone();
+        let plugin_state = self.presets[index].plugin_state.clone();
         let mut preset = Preset::from_state(&name, state);
+        preset.plugin_state = plugin_state;
         preset.description = self.presets[index].description.clone();
         
         // Save to disk

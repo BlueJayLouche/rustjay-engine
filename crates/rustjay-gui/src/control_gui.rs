@@ -61,6 +61,8 @@ pub struct ControlGui {
     // Preview texture IDs
     /// ImGui texture ID for the input preview.
     pub input_preview_texture_id: Option<imgui::TextureId>,
+    /// ImGui texture ID for the second input preview.
+    pub second_input_preview_texture_id: Option<imgui::TextureId>,
     /// ImGui texture ID for the output preview.
     pub output_preview_texture_id: Option<imgui::TextureId>,
 
@@ -145,6 +147,7 @@ impl ControlGui {
             #[cfg(target_os = "linux")]
             v4l2_device_path: "/dev/video12".to_string(),
             input_preview_texture_id: None,
+            second_input_preview_texture_id: None,
             output_preview_texture_id: None,
             pending_internal_width: internal_w,
             pending_internal_height: internal_h,
@@ -161,6 +164,11 @@ impl ControlGui {
     /// Set input preview texture ID
     pub fn set_input_preview_texture(&mut self, texture_id: imgui::TextureId) {
         self.input_preview_texture_id = Some(texture_id);
+    }
+
+    /// Set second input preview texture ID
+    pub fn set_second_input_preview_texture(&mut self, texture_id: imgui::TextureId) {
+        self.second_input_preview_texture_id = Some(texture_id);
     }
 
     /// Set output preview texture ID
@@ -254,31 +262,53 @@ impl ControlGui {
         };
 
         if show_preview {
-            let preview_pos = [420.0, 10.0];
-            let preview_size = [
-                (window_size[0] - preview_pos[0] - 10.0).max(200.0),
-                (window_size[1] / 2.0 - 15.0).max(200.0),
-            ];
+            let is_active2 = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.second_input.is_active
+            };
 
-            ui.window("Input Preview")
-                .position(preview_pos, imgui::Condition::FirstUseEver)
-                .size(preview_size, imgui::Condition::FirstUseEver)
-                .build(|| {
-                    self.build_input_preview(ui);
-                });
+            let avail_width = (window_size[0] - 420.0 - 10.0).max(200.0);
+            let half_height = (window_size[1] / 2.0 - 15.0).max(200.0);
 
-            let output_preview_pos = [420.0, window_size[1] / 2.0 + 5.0];
-            let output_preview_size = [
-                (window_size[0] - output_preview_pos[0] - 10.0).max(200.0),
-                (window_size[1] / 2.0 - 15.0).max(200.0),
-            ];
+            if is_active2 {
+                let gap = 10.0f32;
+                let each_width = ((avail_width - gap) / 2.0).max(100.0);
 
-            ui.window("Output Preview")
-                .position(output_preview_pos, imgui::Condition::FirstUseEver)
-                .size(output_preview_size, imgui::Condition::FirstUseEver)
-                .build(|| {
-                    self.build_output_preview(ui);
-                });
+                ui.window("Input 1 Preview")
+                    .position([420.0, 10.0], imgui::Condition::FirstUseEver)
+                    .size([each_width, half_height], imgui::Condition::FirstUseEver)
+                    .build(|| {
+                        self.build_input_preview(ui);
+                    });
+
+                ui.window("Input 2 Preview")
+                    .position([420.0 + each_width + gap, 10.0], imgui::Condition::FirstUseEver)
+                    .size([each_width, half_height], imgui::Condition::FirstUseEver)
+                    .build(|| {
+                        self.build_second_input_preview(ui);
+                    });
+
+                ui.window("Output Preview")
+                    .position([420.0, window_size[1] / 2.0 + 5.0], imgui::Condition::FirstUseEver)
+                    .size([avail_width, half_height], imgui::Condition::FirstUseEver)
+                    .build(|| {
+                        self.build_output_preview(ui);
+                    });
+            } else {
+                ui.window("Input Preview")
+                    .position([420.0, 10.0], imgui::Condition::FirstUseEver)
+                    .size([avail_width, half_height], imgui::Condition::FirstUseEver)
+                    .build(|| {
+                        self.build_input_preview(ui);
+                    });
+
+                ui.window("Output Preview")
+                    .position([420.0, window_size[1] / 2.0 + 5.0], imgui::Condition::FirstUseEver)
+                    .size([avail_width, half_height], imgui::Condition::FirstUseEver)
+                    .build(|| {
+                        self.build_output_preview(ui);
+                    });
+            }
         }
 
         self.build_settings_window(ui);

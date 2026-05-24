@@ -383,10 +383,6 @@ impl<P: EffectPlugin> App<P> {
             .show_preview;
         if !show_preview { return; }
 
-        let input_uses_external = self.output_engine.as_ref()
-            .map(|e| e.input_texture.has_external_texture())
-            .unwrap_or(false);
-
         if let (Some(ref mut renderer), Some(ref gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
@@ -396,14 +392,20 @@ impl<P: EffectPlugin> App<P> {
             let mut any_work = false;
 
             {
-                let input_src = if input_uses_external {
-                    self.output_engine.as_ref().map(|e| &e.render_target.texture)
-                } else {
-                    self.output_engine
-                        .as_ref()
-                        .and_then(|e| e.input_texture.texture.as_ref().map(|t| &t.texture))
-                };
+                let input_src = self.output_engine
+                    .as_ref()
+                    .and_then(|e| e.input_texture.texture.as_ref().map(|t| &t.texture));
                 if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
+                    renderer.update_preview_texture(preview_id, tex, &mut encoder);
+                    any_work = true;
+                }
+            }
+
+            {
+                let second_input_src = self.output_engine
+                    .as_ref()
+                    .and_then(|e| e.second_input_texture.texture.as_ref().map(|t| &t.texture));
+                if let (Some(tex), Some(preview_id)) = (second_input_src, gui.second_input_preview_texture_id) {
                     renderer.update_preview_texture(preview_id, tex, &mut encoder);
                     any_work = true;
                 }
