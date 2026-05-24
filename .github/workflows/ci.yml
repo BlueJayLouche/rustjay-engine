@@ -16,6 +16,11 @@ jobs:
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Validate WGSL shaders
+        run: |
+          naga examples/waaaves/src/shaders/block_a.wgsl
+          naga examples/waaaves/src/shaders/block_b.wgsl
+          naga examples/waaaves/src/shaders/block_c.wgsl
       - name: Security audit
         run: |
           cargo install cargo-audit --quiet

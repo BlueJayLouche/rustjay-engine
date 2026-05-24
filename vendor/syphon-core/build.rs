@@ -16,13 +16,22 @@ fn main() {
         for path in &possible_paths {
             let framework_path = path.join("Syphon.framework");
             if framework_path.exists() {
-                let canonical = framework_path.canonicalize().unwrap();
-                let parent = canonical.parent().unwrap();
-                println!("cargo:rustc-link-search=framework={}", parent.display());
-                // Add rpath so the executable can find the framework at runtime
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", parent.display());
-                println!("cargo:warning=Found Syphon framework at: {}", canonical.display());
-                break;
+                match framework_path.canonicalize() {
+                    Ok(canonical) => {
+                        if let Some(parent) = canonical.parent() {
+                            println!("cargo:rustc-link-search=framework={}", parent.display());
+                            // Add rpath so the executable can find the framework at runtime
+                            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", parent.display());
+                            println!("cargo:warning=Found Syphon framework at: {}", canonical.display());
+                            break;
+                        } else {
+                            println!("cargo:warning=Found Syphon.framework but could not get parent directory");
+                        }
+                    }
+                    Err(e) => {
+                        println!("cargo:warning=Failed to canonicalize Syphon.framework path: {}", e);
+                    }
+                }
             }
         }
         

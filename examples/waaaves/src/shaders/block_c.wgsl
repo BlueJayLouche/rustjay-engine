@@ -197,6 +197,19 @@ fn do_rotate(coord: vec2<f32>, angle: f32) -> vec2<f32> {
                      centered.x * s + centered.y * c + 0.5);
 }
 
+// Pixel-space rotation: scale x by aspect ratio before rotating (mode 0 equivalent)
+fn do_rotate_mode0(coord: vec2<f32>, angle: f32) -> vec2<f32> {
+    if (angle == 0.0) { return coord; }
+    let aspect = uniforms.width / uniforms.height;
+    let centered = coord - vec2<f32>(0.5, 0.5);
+    let c = cos(angle);
+    let s = sin(angle);
+    let sx = centered.x * aspect;
+    let rx = sx * c - centered.y * s;
+    let ry = sx * s + centered.y * c;
+    return vec2<f32>(rx / aspect + 0.5, ry + 0.5);
+}
+
 fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
     if (segments <= 0.0) { return coord; }
     var result = do_rotate(coord, slice);
@@ -208,7 +221,7 @@ fn do_kaleidoscope(coord: vec2<f32>, segments: f32, slice: f32) -> vec2<f32> {
     angle = min(angle, seg_angle - angle);
     result = radius * vec2<f32>(cos(angle), sin(angle));
     result = result * 0.5 + 0.5;
-    return do_rotate(result, -slice);
+    return do_rotate_mode0(result, -slice);
 }
 
 fn shear_coord(coord: vec2<f32>, shear_matrix: vec4<f32>) -> vec2<f32> {
