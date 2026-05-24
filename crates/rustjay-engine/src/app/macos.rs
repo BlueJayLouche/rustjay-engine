@@ -1,6 +1,14 @@
 //! macOS-specific app delegate hooks to prevent termination when the last
 //! window is hidden, and to recreate (show) windows when the Dock icon is
 //! clicked or the app is reactivated.
+//!
+//! # Safety Note
+//!
+//! This function uses `class_addMethod` + `std::mem::transmute` to modify
+//! `WinitApplicationDelegate` at runtime. If winit's delegate class layout or
+//! method signatures change in a future version, this invokes undefined
+//! behavior. Monitor winit changelogs closely and consider upstreaming the
+//! needed hooks.
 
 use std::sync::OnceLock;
 use winit::event_loop::EventLoopProxy;

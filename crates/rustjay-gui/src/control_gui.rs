@@ -4,7 +4,7 @@
 
 #![allow(deprecated)]
 
-use rustjay_core::{GuiTab, InputCommand, EngineState, ParamCategory};
+use rustjay_core::{AudioCommand, GuiTab, InputCommand, EngineState, ParamCategory};
 use rustjay_io::InputManager;
 use std::sync::{Arc, Mutex};
 
@@ -78,6 +78,9 @@ pub struct ControlGui {
     /// Custom tabs provided by the active effect plugin.
     pub custom_tabs: Vec<Box<dyn AnyGuiTab>>,
     pub(crate) custom_tab_active: Option<usize>,
+
+    // Settings window visibility (toggled via View > Preferences)
+    pub(crate) show_settings: bool,
 }
 
 impl ControlGui {
@@ -151,6 +154,7 @@ impl ControlGui {
             saving_preset: false,
             custom_tabs: Vec::new(),
             custom_tab_active: None,
+            show_settings: false,
         })
     }
 
@@ -225,11 +229,16 @@ impl ControlGui {
     pub fn build_ui(&mut self, ui: &mut imgui::Ui, app_state: &mut dyn std::any::Any) {
         let window_size = ui.io().display_size;
 
+        let window_title = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            format!("{} - Controls", state.web_app_name)
+        };
+
         // Main control window
-        ui.window("RustJay Template - Controls")
+        ui.window(&window_title)
             .position([10.0, 10.0], imgui::Condition::FirstUseEver)
             .size([400.0, window_size[1] - 20.0], imgui::Condition::FirstUseEver)
-            .movable(false)
+            .movable(true)
             .collapsible(false)
             .resizable(true)
             .menu_bar(true)
@@ -272,17 +281,36 @@ impl ControlGui {
                 });
         }
 
+        self.build_settings_window(ui);
+    }
+
+    /// Floating Preferences window (opened via View > Preferences).
+    fn build_settings_window(&mut self, ui: &imgui::Ui) {
+        if !self.show_settings {
+            return;
+        }
+        let window_size = ui.io().display_size;
+        let mut still_open = true;
+        ui.window("Preferences")
+            .size([420.0, 520.0], imgui::Condition::FirstUseEver)
+            .position(
+                [
+                    (window_size[0] / 2.0 - 210.0).max(10.0),
+                    (window_size[1] / 2.0 - 260.0).max(10.0),
+                ],
+                imgui::Condition::FirstUseEver,
+            )
+            .collapsible(false)
+            .opened(&mut still_open)
+            .build(|| {
+                self.build_settings_tab(ui);
+            });
+        self.show_settings = still_open;
     }
 
     /// Build the menu bar
     fn build_menu_bar(&mut self, ui: &imgui::Ui) {
         ui.menu_bar(|| {
-            ui.menu("File", || {
-                if ui.menu_item("Exit") {
-                    // Signal exit - handled by app
-                }
-            });
-
             ui.menu("View", || {
                 let show_preview = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -292,113 +320,180 @@ impl ControlGui {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.show_preview = !state.show_preview;
                 }
-            });
-
-            ui.menu("Devices", || {
-                if ui.menu_item("Refresh All") {
+                if ui.menu_item_config("Preferences...").selected(self.show_settings).build() {
+                    self.show_settings = !self.show_settings;
+                }
+                ui.separator();
+                if ui.menu_item("Refresh All Devices") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::RefreshDevices;
+                    state.audio_command = AudioCommand::RefreshDevices;
                 }
             });
         });
     }
 
-    /// Build the main tabs dynamically.
+    /// Build the main tabs as four grouped sections: Signal, Parameters, Control, Manage.
     ///
-    /// Tabs are filtered by `EngineState::hidden_tabs` and category tabs
-    /// (Color, Motion) are only shown when the effect declares parameters
-    /// in those categories.
+    /// Each group is a top-level tab; individual feature tabs are nested inside.
+    /// Tabs are filtered by `EngineState::hidden_tabs`; Color/Motion are only shown
+    /// when the effect declares parameters in those categories.
+    /// Settings has moved to View > Preferences in the menu bar.
     fn build_tabs(&mut self, ui: &imgui::Ui, app_state: &mut dyn std::any::Any) {
-        let (current_tab, hidden_tabs, has_color_params, has_motion_params) = {
+        let (current_tab, hidden_tabs, has_color, has_motion) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let has_color = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Color);
-            let has_motion = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
-            (state.current_tab, state.hidden_tabs.clone(), has_color, has_motion)
+            let hc = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Color);
+            let hm = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
+            (state.current_tab, state.hidden_tabs.clone(), hc, hm)
         };
         let custom_tab_active = self.custom_tab_active;
 
-        // Build dynamic tab list: all standard tabs minus hidden ones,
-        // minus category tabs with no declared parameters.
-        let mut visible_tabs: Vec<GuiTab> = GuiTab::all()
-            .iter()
-            .filter(|t| !hidden_tabs.contains(t))
-            .filter(|t| {
-                match t {
-                    GuiTab::Color => has_color_params,
-                    GuiTab::Motion => has_motion_params,
-                    _ => true,
-                }
-            })
-            .copied()
-            .collect();
+        let vis = |tab: GuiTab| -> bool {
+            if hidden_tabs.contains(&tab) { return false; }
+            match tab {
+                GuiTab::Color  => has_color,
+                GuiTab::Motion => has_motion,
+                _ => true,
+            }
+        };
 
-        // Snapshot (index, name, replaces) so we can mutate self.custom_tab_active
-        // inside the loop without borrow conflicts.
+        // Snapshot custom tab info to avoid borrow conflicts while mutating self.
         let custom_info: Vec<(usize, String, Option<GuiTab>)> = self.custom_tabs
             .iter()
             .enumerate()
             .map(|(i, t)| (i, t.name().to_string(), t.replaces()))
             .collect();
 
-        if let Some(_tab_bar) = ui.tab_bar("##main_tabs") {
-            for tab in &visible_tabs {
-                // If a custom tab replaces this slot, render it here instead.
-                if let Some((idx, name, _)) = custom_info.iter()
-                    .find(|(_, _, r)| *r == Some(*tab))
-                {
-                    let idx = *idx;
-                    let is_selected = custom_tab_active == Some(idx);
-                    if let Some(_item) = ui.tab_item(name.as_str()) {
-                        if !is_selected {
-                            self.custom_tab_active = Some(idx);
-                        }
-                    }
-                } else {
-                    let is_selected = current_tab == *tab && custom_tab_active.is_none();
-                    if let Some(_item) = ui.tab_item(tab.name()) {
-                        if !is_selected {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                            state.current_tab = *tab;
-                            self.custom_tab_active = None;
+        // Group membership — tabs that belong to each section.
+        const SIGNAL:     &[GuiTab] = &[GuiTab::Input, GuiTab::Output];
+        const PARAMETERS: &[GuiTab] = &[GuiTab::Color, GuiTab::Motion, GuiTab::Audio, GuiTab::Lfo];
+        const CONTROL:    &[GuiTab] = &[GuiTab::Midi,  GuiTab::Osc,    GuiTab::Web];
+        const MANAGE:     &[GuiTab] = &[GuiTab::Presets];
+
+        let group_any = |tabs: &[GuiTab]| -> bool {
+            tabs.iter().any(|&t| vis(t))
+            || custom_info.iter().any(|(_, _, r)| r.map_or(false, |r| tabs.contains(&r)))
+        };
+
+        if let Some(_groups) = ui.tab_bar("##groups") {
+            // ── Signal ─────────────────────────────────────────────────────
+            if group_any(SIGNAL) {
+                if let Some(_g) = ui.tab_item("Signal") {
+                    if let Some(_inner) = ui.tab_bar("##signal") {
+                        for &tab in SIGNAL {
+                            self.render_inner_tab(ui, app_state, tab, &custom_info,
+                                current_tab, custom_tab_active, vis(tab));
                         }
                     }
                 }
             }
 
-            // Append custom tabs that don't replace any built-in.
+            // ── Parameters ─────────────────────────────────────────────────
+            if group_any(PARAMETERS) {
+                if let Some(_g) = ui.tab_item("Parameters") {
+                    if let Some(_inner) = ui.tab_bar("##params") {
+                        for &tab in PARAMETERS {
+                            self.render_inner_tab(ui, app_state, tab, &custom_info,
+                                current_tab, custom_tab_active, vis(tab));
+                        }
+                    }
+                }
+            }
+
+            // ── Control ────────────────────────────────────────────────────
+            if group_any(CONTROL) {
+                if let Some(_g) = ui.tab_item("Control") {
+                    if let Some(_inner) = ui.tab_bar("##control") {
+                        for &tab in CONTROL {
+                            self.render_inner_tab(ui, app_state, tab, &custom_info,
+                                current_tab, custom_tab_active, vis(tab));
+                        }
+                    }
+                }
+            }
+
+            // ── Manage ─────────────────────────────────────────────────────
+            if group_any(MANAGE) {
+                if let Some(_g) = ui.tab_item("Manage") {
+                    if let Some(_inner) = ui.tab_bar("##manage") {
+                        for &tab in MANAGE {
+                            self.render_inner_tab(ui, app_state, tab, &custom_info,
+                                current_tab, custom_tab_active, vis(tab));
+                        }
+                    }
+                }
+            }
+
+            // ── Custom non-replacing tabs appended as peer group tabs ──────
             for (idx, name, replaces) in &custom_info {
                 if replaces.is_none() {
-                    let is_selected = custom_tab_active == Some(*idx);
-                    if let Some(_item) = ui.tab_item(name.as_str()) {
-                        if !is_selected {
-                            self.custom_tab_active = Some(*idx);
+                    let idx = *idx;
+                    let name = name.clone();
+                    if let Some(_g) = ui.tab_item(&name) {
+                        if custom_tab_active != Some(idx) {
+                            self.custom_tab_active = Some(idx);
+                        }
+                        if let Some(ct) = self.custom_tabs.get_mut(idx) {
+                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            ct.draw(ui, app_state, &mut state);
                         }
                     }
                 }
             }
         }
+    }
 
-        ui.separator();
+    /// Render one inner tab slot, honouring custom-tab replacement.
+    ///
+    /// Content is rendered inline (inside the tab item block) so each group's
+    /// inner tab bar is self-contained.
+    fn render_inner_tab(
+        &mut self,
+        ui: &imgui::Ui,
+        app_state: &mut dyn std::any::Any,
+        tab: GuiTab,
+        custom_info: &[(usize, String, Option<GuiTab>)],
+        current_tab: GuiTab,
+        custom_tab_active: Option<usize>,
+        is_visible: bool,
+    ) {
+        if !is_visible { return; }
 
-        if let Some(idx) = self.custom_tab_active {
-            if let Some(tab) = self.custom_tabs.get_mut(idx) {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                tab.draw(ui, app_state, &mut state);
+        // Custom tab replacing this slot?
+        if let Some((ci, cname, _)) = custom_info.iter().find(|(_, _, r)| *r == Some(tab)) {
+            let ci = *ci;
+            let cname = cname.clone();
+            if let Some(_t) = ui.tab_item(&cname) {
+                if custom_tab_active != Some(ci) {
+                    self.custom_tab_active = Some(ci);
+                }
+                if let Some(ct) = self.custom_tabs.get_mut(ci) {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    ct.draw(ui, app_state, &mut state);
+                }
             }
-        } else {
-            match current_tab {
-                GuiTab::Input => self.build_input_tab(ui),
-                GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
-                GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
-                GuiTab::Audio => self.build_audio_tab(ui),
-                GuiTab::Output => self.build_output_tab(ui),
+            return;
+        }
+
+        // Standard tab.
+        if let Some(_t) = ui.tab_item(tab.name()) {
+            if current_tab != tab || custom_tab_active.is_some() {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.current_tab = tab;
+                self.custom_tab_active = None;
+            }
+            match tab {
+                GuiTab::Input   => self.build_input_tab(ui),
+                GuiTab::Output  => self.build_output_tab(ui),
+                GuiTab::Color   => self.build_param_category_tab(ui, ParamCategory::Color),
+                GuiTab::Motion  => self.build_param_category_tab(ui, ParamCategory::Motion),
+                GuiTab::Audio   => self.build_audio_tab(ui),
+                GuiTab::Lfo     => self.build_lfo_tab(ui),
+                GuiTab::Midi    => self.build_midi_tab(ui),
+                GuiTab::Osc     => self.build_osc_tab(ui),
+                GuiTab::Web     => self.build_web_tab(ui),
                 GuiTab::Presets => self.build_presets_tab(ui),
-                GuiTab::Midi => self.build_midi_tab(ui),
-                GuiTab::Osc => self.build_osc_tab(ui),
-                GuiTab::Web => self.build_web_tab(ui),
-                GuiTab::Settings => self.build_settings_tab(ui),
-                GuiTab::Lfo => self.build_lfo_tab(ui),
-                GuiTab::Sync => self.build_sync_tab(ui),
+                GuiTab::Settings | GuiTab::Sync => {}
             }
         }
     }

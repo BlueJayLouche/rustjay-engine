@@ -707,10 +707,10 @@ impl GuiTab {
             GuiTab::Midi,
             GuiTab::Osc,
             GuiTab::Web,
-            GuiTab::Settings,
             GuiTab::Lfo,
-            // Sync is folded into the Audio tab; kept as a variant for
-            // serialization / hidden_tabs filtering but not shown by default.
+            // Settings lives in View > Preferences (menu bar), not a tab.
+            // Sync is folded into the Audio tab.
+            // Both variants are kept for serialization / hidden_tabs filtering.
         ]
     }
 }
