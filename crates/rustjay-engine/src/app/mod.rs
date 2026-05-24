@@ -90,6 +90,18 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) last_frame_time: std::time::Instant,
     pub(crate) frame_delta_time: f32,
 
+    /// Scratch buffer for dirty MIDI values — cleared and reused each frame to avoid HashMap allocation.
+    pub(crate) midi_dirty_scratch: Vec<(String, f32)>,
+    /// Last texture generation copied to the input preview — skip copy when unchanged.
+    pub(crate) last_input_preview_gen: u64,
+
+    /// Cached audio analysis parameters — updated at end of each update_audio so the read
+    /// at the top of the next frame can skip a shared_state lock acquisition.
+    pub(crate) cached_audio_amplitude: f32,
+    pub(crate) cached_audio_smoothing: f32,
+    pub(crate) cached_audio_normalize: bool,
+    pub(crate) cached_audio_pink_noise: bool,
+
     // Plugin state
     pub(crate) plugin: Option<P>,
     pub(crate) app_state: P::State,
@@ -152,6 +164,9 @@ impl<P: EffectPlugin> App<P> {
                 state.custom_param_bases[i] = d.default;
                 state.custom_params[i] = d.default;
             }
+            state.param_osc_addresses = descriptors.iter()
+                .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
+                .collect();
         }
 
         let osc_host = shared_state.lock().unwrap_or_else(|e| e.into_inner()).osc_host.clone();
@@ -239,6 +254,12 @@ impl<P: EffectPlugin> App<P> {
             control_visible: true,
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,
+            midi_dirty_scratch: Vec::new(),
+            last_input_preview_gen: 0,
+            cached_audio_amplitude: 1.0,
+            cached_audio_smoothing: 0.5,
+            cached_audio_normalize: true,
+            cached_audio_pink_noise: false,
             plugin: Some(plugin),
             app_state: initial_state,
             custom_tabs: tabs,

@@ -4,7 +4,6 @@
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use crate::lfo::LfoState;
 use crate::routing::AudioRoutingState;
@@ -863,6 +862,10 @@ pub struct EngineState {
     /// Effects read these in `build_uniforms`.
     pub custom_params: Vec<f32>,
 
+    /// Pre-computed OSC address strings (`"/category/id"`) for each effect parameter.
+    /// Populated once at init alongside `param_descriptors`; avoids per-frame `format!()` calls.
+    pub param_osc_addresses: Vec<String>,
+
     /// Tabs hidden by the active effect (populated at init from `EffectPlugin::hidden_tabs`).
     pub hidden_tabs: Vec<GuiTab>,
 }
@@ -928,6 +931,7 @@ impl EngineState {
             param_descriptors: Arc::new(Vec::new()),
             custom_param_bases: Vec::new(),
             custom_params: Vec::new(),
+            param_osc_addresses: Vec::new(),
             hidden_tabs: Vec::new(),
         }
     }

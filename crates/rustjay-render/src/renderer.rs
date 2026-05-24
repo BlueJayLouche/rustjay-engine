@@ -106,7 +106,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             .iter()
             .copied()
             .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
-            .unwrap_or(surface_caps.formats[0]);
+            .or_else(|| surface_caps.formats.first().copied())
+            .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -120,7 +121,12 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         };
         surface.configure(&device, &surface_config);
 
-        let render_target = Texture::create_render_target(&device, 1920, 1080, "Render Target");
+        let (render_width, render_height) = {
+            let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (s.resolution.internal_width, s.resolution.internal_height)
+        };
+
+        let render_target = Texture::create_render_target(&device, render_width, render_height, "Render Target");
         let input_texture = InputTexture::new(Arc::clone(&device), Arc::clone(&queue));
         let second_input_texture = InputTexture::new(Arc::clone(&device), Arc::clone(&queue));
 
@@ -140,7 +146,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         drop(engine_state);
 
         let previous_frame = if plugin_renderer.cached_graph.as_ref().map(|g| g.feedback).unwrap_or(false) {
-            Some(PreviousFrameTexture::new(&device, 1920, 1080))
+            Some(PreviousFrameTexture::new(&device, render_width, render_height))
         } else {
             None
         };
@@ -184,6 +190,19 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.surface.configure(&self.device, &self.surface_config);
             log::debug!("Resized to {}x{}", width, height);
         }
+    }
+
+    /// Recreate the internal render target at a new resolution.
+    pub fn resize_render_target(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 { return; }
+        if self.render_target.width == width && self.render_target.height == height { return; }
+        self.render_target = Texture::create_render_target(&self.device, width, height, "Render Target");
+        self.blit_bind_group = self.blit_pipeline.create_bind_group(&self.device, &self.render_target.view);
+        if let Some(ref mut pf) = self.previous_frame {
+            *pf = PreviousFrameTexture::new(&self.device, width, height);
+        }
+        self.plugin_renderer.intermediate_textures.clear();
+        log::info!("Internal render target resized to {}x{}", width, height);
     }
 
     /// Start NDI output with the given name.
@@ -319,52 +338,72 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         // is not reentrant; holding the guard while calling .lock() again hangs).
         drop(engine_state);
 
+        // Acquire the surface texture now — after all GPU commands are encoded but before
+        // submit — so the blit can be appended to the same encoder, saving one Metal
+        // command buffer allocation and submission per frame.
+        let surface_texture = if !occluded {
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(st)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(st) => Some(st),
+                err => {
+                    log::debug!("Surface unavailable ({:?}), reconfiguring", err);
+                    self.surface.configure(&self.device, &self.surface_config);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Append blit to the main encoder before the single submit.
+        if let Some(ref st) = surface_texture {
+            let surface_view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.blit_pipeline.blit(&mut encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
 
         if let Some(buffer) = readback_buffer {
-            // Synchronous readback: one-frame GPU stall is acceptable for a
-            // per-click event and avoids locking shared_state inside an async
-            // callback (which can deadlock if wgpu polls while the mutex is
-            // already held elsewhere in the render loop).
-            buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-            self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-            let color = {
-                let view = buffer.slice(..).get_mapped_range();
-                let bytes: &[u8] = &view;
-                if bytes.len() >= 4 {
-                    // BGRA8: [b, g, r, a]
-                    Some([
-                        bytes[2] as f32 / 255.0,
-                        bytes[1] as f32 / 255.0,
-                        bytes[0] as f32 / 255.0,
-                    ])
-                } else {
-                    None
-                }
-            };
+            // Time-bounded synchronous readback: a pixel pick is a rare per-click
+            // event, but we never block indefinitely in case the GPU/driver hangs.
+            use std::sync::atomic::{AtomicBool, Ordering};
+            let mapped = std::sync::Arc::new(AtomicBool::new(false));
+            let mapped_clone = std::sync::Arc::clone(&mapped);
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |_| {
+                mapped_clone.store(true, Ordering::SeqCst);
+            });
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(5);
+            while !mapped.load(Ordering::SeqCst) && start.elapsed() < timeout {
+                self.device.poll(wgpu::PollType::Poll).ok();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if mapped.load(Ordering::SeqCst) {
+                let color = {
+                    let view = buffer.slice(..).get_mapped_range();
+                    let bytes: &[u8] = &view;
+                    if bytes.len() >= 4 {
+                        // BGRA8: [b, g, r, a]
+                        Some([
+                            bytes[2] as f32 / 255.0,
+                            bytes[1] as f32 / 255.0,
+                            bytes[0] as f32 / 255.0,
+                        ])
+                    } else {
+                        None
+                    }
+                };
+                self.shared_state.lock().unwrap_or_else(|e| e.into_inner()).picked_color = color;
+            } else {
+                log::warn!("Pixel pick readback timed out after 5s");
+            }
             buffer.unmap();
-            self.shared_state.lock().unwrap_or_else(|e| e.into_inner()).picked_color = color;
         }
 
         self.output_manager.submit_frame(&self.render_target.texture, &self.device, &self.queue);
 
-        if !occluded {
-            match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(surface_texture)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
-                    let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut blit_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Blit Encoder"),
-                    });
-                    self.blit_pipeline.blit(&mut blit_encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer);
-                    self.queue.submit(std::iter::once(blit_encoder.finish()));
-                    surface_texture.present();
-                }
-                err => {
-                    log::debug!("Surface unavailable ({:?}), reconfiguring", err);
-                    self.surface.configure(&self.device, &self.surface_config);
-                }
-            }
+        if let Some(st) = surface_texture {
+            st.present();
         }
 
         self.fps_frame_count += 1;

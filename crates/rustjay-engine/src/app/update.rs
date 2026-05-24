@@ -142,14 +142,13 @@ impl<P: EffectPlugin> App<P> {
         }
 
         if let Some(ref analyzer) = self.audio_analyzer {
-            let (amplitude, smoothing, normalize, pink_noise) = {
-                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.audio.amplitude, state.audio.smoothing, state.audio.normalize, state.audio.pink_noise_shaping)
-            };
-            analyzer.set_amplitude(amplitude);
-            analyzer.set_smoothing(smoothing);
-            analyzer.set_normalize(normalize);
-            analyzer.set_pink_noise_shaping(pink_noise);
+            // Push last-frame's cached params to the analyzer — avoids a lock acquisition
+            // on the hot path. The cache is refreshed below at the end of the same call so
+            // it is at most one frame stale (16 ms at 60 fps — imperceptible for audio params).
+            analyzer.set_amplitude(self.cached_audio_amplitude);
+            analyzer.set_smoothing(self.cached_audio_smoothing);
+            analyzer.set_normalize(self.cached_audio_normalize);
+            analyzer.set_pink_noise_shaping(self.cached_audio_pink_noise);
 
             let fft = analyzer.get_fft();
             let volume = analyzer.get_volume();
@@ -183,6 +182,11 @@ impl<P: EffectPlugin> App<P> {
                     state.custom_param_bases = custom_param_bases;
                 }
             }
+            // Refresh cache from state so next frame's push uses current values.
+            self.cached_audio_amplitude  = state.audio.amplitude;
+            self.cached_audio_smoothing  = state.audio.smoothing;
+            self.cached_audio_normalize  = state.audio.normalize;
+            self.cached_audio_pink_noise = state.audio.pink_noise_shaping;
         }
     }
 
@@ -245,46 +249,38 @@ impl<P: EffectPlugin> App<P> {
         }
 
         if let Some(ref manager) = self.midi_manager {
-            let mut dirty_values: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+            // Collect dirty MIDI values into the pre-allocated scratch Vec (no HashMap alloc).
+            self.midi_dirty_scratch.clear();
             {
                 let midi_state_arc = manager.state();
                 let mut midi_state = midi_state_arc.lock().unwrap_or_else(|e| e.into_inner());
                 for mapping in &mut midi_state.mappings {
                     if mapping.is_dirty() {
-                        let value = mapping.get_scaled_value();
-                        dirty_values.insert(mapping.param_path.clone(), value);
+                        self.midi_dirty_scratch.push((mapping.param_path.clone(), mapping.get_scaled_value()));
                     }
                 }
             }
 
-            if !dirty_values.is_empty() {
+            if !self.midi_dirty_scratch.is_empty() {
                 if let Ok(mut shared) = self.shared_state.lock() {
-                    if let Some(&v) = dirty_values.get("color/hue_shift") {
-                        shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
-                    }
-                    if let Some(&v) = dirty_values.get("color/saturation") {
-                        shared.hsb_params.saturation = v.clamp(0.0, 2.0);
-                    }
-                    if let Some(&v) = dirty_values.get("color/brightness") {
-                        shared.hsb_params.brightness = v.clamp(0.0, 2.0);
-                    }
-                    if let Some(&v) = dirty_values.get("audio/amplitude") {
-                        shared.audio.amplitude = v.clamp(0.0, 5.0);
-                    }
-                    if let Some(&v) = dirty_values.get("audio/smoothing") {
-                        shared.audio.smoothing = v.clamp(0.0, 1.0);
-                    }
-                    // Also write to custom_param_bases for effect-declared params
-                    for (path, value) in &dirty_values {
-                        if let Some(id) = path.split('/').last() {
-                            if shared.param_descriptors.iter().any(|d| d.id == id) {
-                                shared.set_param_base(id, *value);
+                    for (path, value) in &self.midi_dirty_scratch {
+                        match path.as_str() {
+                            "color/hue_shift"  => shared.hsb_params.hue_shift  = value.clamp(-180.0, 180.0),
+                            "color/saturation" => shared.hsb_params.saturation  = value.clamp(0.0, 2.0),
+                            "color/brightness" => shared.hsb_params.brightness  = value.clamp(0.0, 2.0),
+                            "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
+                            "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
+                            _ => {
+                                if let Some(id) = path.split('/').last() {
+                                    if shared.param_descriptors.iter().any(|d| d.id == id) {
+                                        shared.set_param_base(id, *value);
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-
         }
 
         // MTC: refresh port list, age out playing flag, copy state into EngineState.
@@ -325,10 +321,11 @@ impl<P: EffectPlugin> App<P> {
 
                     // Effect-declared custom params
                     let descriptors = Arc::clone(&shared.param_descriptors);
-                    for desc in descriptors.iter() {
-                        let addr = format!("/{}/{}", desc.category.name().to_lowercase(), desc.id);
-                        if let Some(v) = osc_state.get_value_if_dirty(&addr) {
-                            shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
+                    for (i, desc) in descriptors.iter().enumerate() {
+                        if let Some(addr) = shared.param_osc_addresses.get(i) {
+                            if let Some(v) = osc_state.get_value_if_dirty(addr) {
+                                shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
+                            }
                         }
                     }
                 }
@@ -351,10 +348,14 @@ impl<P: EffectPlugin> App<P> {
                 server.update_parameter("audio/pink_noise", if state.audio.pink_noise_shaping { 1.0 } else { 0.0 });
                 server.update_parameter("output/fullscreen", if state.output_fullscreen { 1.0 } else { 0.0 });
                 // Broadcast custom param values
-                for desc in state.param_descriptors.iter() {
-                    let id = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
-                    let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
-                    server.update_parameter(&id, value);
+                let descriptors = Arc::clone(&state.param_descriptors);
+                for (i, desc) in descriptors.iter().enumerate() {
+                    if let Some(addr) = state.param_osc_addresses.get(i) {
+                        // OSC addresses are "/category/id"; web uses "category/id" (no leading slash)
+                        let id = addr.trim_start_matches('/');
+                        let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
+                        server.update_parameter(id, value);
+                    }
                 }
             }
         }
@@ -386,6 +387,13 @@ impl<P: EffectPlugin> App<P> {
             .map(|e| e.input_texture.has_external_texture())
             .unwrap_or(false);
 
+        // For non-external inputs (webcam/NDI), skip the preview copy when the
+        // input frame hasn't changed since we last copied it.
+        let input_gen = self.output_engine.as_ref()
+            .map(|e| e.input_texture.texture_generation)
+            .unwrap_or(0);
+        let input_preview_stale = input_uses_external || input_gen != self.last_input_preview_gen;
+
         if let (Some(ref mut renderer), Some(ref gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
@@ -394,7 +402,7 @@ impl<P: EffectPlugin> App<P> {
             );
             let mut any_work = false;
 
-            {
+            if input_preview_stale {
                 let input_src = if input_uses_external {
                     self.output_engine.as_ref().map(|e| &e.render_target.texture)
                 } else {
@@ -405,6 +413,9 @@ impl<P: EffectPlugin> App<P> {
                 if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
                     renderer.update_preview_texture(preview_id, tex, &mut encoder);
                     any_work = true;
+                    if !input_uses_external {
+                        self.last_input_preview_gen = input_gen;
+                    }
                 }
             }
 

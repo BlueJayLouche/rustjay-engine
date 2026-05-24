@@ -240,7 +240,12 @@ impl AudioRoute {
         let smoothing = if diff > 0.0 { self.attack } else { self.release };
         
         // Exponential smoothing
-        let smoothing_factor = (-delta_time / smoothing.max(0.001)).exp();
+        let dt = delta_time.max(0.0);
+        let smoothing = smoothing.max(0.001);
+        if !dt.is_finite() || !smoothing.is_finite() {
+            return;
+        }
+        let smoothing_factor = (-dt / smoothing).exp();
         self.smoothed_fft = self.smoothed_fft * smoothing_factor + target_value * (1.0 - smoothing_factor);
         
         // Calculate modulation value
@@ -338,7 +343,7 @@ impl RoutingMatrix {
     }
     
     /// Get the modulation value for a specific target
-    /// 
+    ///
     /// If multiple routes target the same parameter, their values are summed
     /// and clamped to a reasonable range.
     pub fn get_modulation(&self, target: ModulationTarget) -> f32 {
@@ -347,8 +352,19 @@ impl RoutingMatrix {
             .filter(|r| r.target == target && r.enabled)
             .map(|r| r.current_value)
             .sum();
-        
+
         // Clamp to reasonable range
+        total.clamp(-2.0, 2.0)
+    }
+
+    /// Like `get_modulation` but accepts a plain string id for `Custom` targets.
+    /// Avoids the `String` allocation in `ModulationTarget::Custom(id.clone())` on hot paths.
+    pub fn get_modulation_for_str(&self, id: &str) -> f32 {
+        let total: f32 = self.routes
+            .iter()
+            .filter(|r| r.enabled && matches!(&r.target, ModulationTarget::Custom(s) if s == id))
+            .map(|r| r.current_value)
+            .sum();
         total.clamp(-2.0, 2.0)
     }
     
@@ -398,7 +414,7 @@ impl RoutingMatrix {
             if !desc.is_modulatable() {
                 continue;
             }
-            let mod_value = self.get_modulation(ModulationTarget::Custom(desc.id.clone()));
+            let mod_value = self.get_modulation_for_str(&desc.id);
             let base = bases[i];
             let range = desc.max - desc.min;
             params[i] = if range > 0.0 {
