@@ -12,12 +12,12 @@ struct VertexOutput {
     @location(0)       texcoord: vec2<f32>,
 }
 
-// Must match SputnikUniforms in main.rs exactly (192 bytes).
+// Must match SputnikUniforms in main.rs exactly (208 bytes).
 struct SputnikUniforms {
     displacement_scale: f32,
     bright_invert:      u32,
-    pad0:               u32,
-    pad1:               u32,
+    x_offset:           f32,
+    y_offset:           f32,
 
     audio_bands_a: vec4<f32>,
     audio_bands_b: vec4<f32>,
@@ -46,6 +46,11 @@ struct SputnikUniforms {
     z_ringmod:   u32,
     tex_width:   f32,
     tex_height:  f32,
+
+    z_offset:          f32,
+    audio_reactivity:  f32,
+    pad0:              u32,
+    pad1:              u32,
 
     mvp: mat4x4<f32>,
 }
@@ -80,7 +85,7 @@ fn vs_main(
         u.audio_bands_b.z, u.audio_bands_b.w,
     );
     let band_idx  = clamp(u32(texcoord.x * 8.0), 0u, 7u);
-    let audio_lift = bands[band_idx];
+    let audio_lift = bands[band_idx] * u.audio_reactivity;
 
     // Video + audio displacement applied to Y; Z carries the depth component.
     let displacement = (bright + audio_lift) * u.displacement_scale;

@@ -9,7 +9,7 @@ use rustjay_engine::prelude::*;
 
 struct SputnikEffect;
 
-/// GPU uniform block — 192 bytes, 16-byte aligned throughout.
+/// GPU uniform block — 208 bytes, 16-byte aligned throughout.
 ///
 /// Layout must exactly match `SputnikUniforms` in both WGSL shaders.
 /// All offsets are listed in comments; verify against the WGSL struct if
@@ -20,7 +20,8 @@ struct SputnikUniforms {
     // offset   0 — 16 bytes
     displacement_scale: f32,
     bright_invert: u32,
-    _pad0: [u32; 2],
+    x_offset: f32,
+    y_offset: f32,
 
     // offset  16 — 32 bytes (two vec4s)
     audio_bands_a: [f32; 4],
@@ -56,7 +57,12 @@ struct SputnikUniforms {
     tex_width:   f32,
     tex_height:  f32,
 
-    // offset 128 — MVP matrix (64 bytes, 16-byte aligned)
+    // offset 128 — offset and audio reactivity (16 bytes)
+    z_offset: f32,
+    audio_reactivity: f32,
+    _pad0: [u32; 2],
+
+    // offset 144 — MVP matrix (64 bytes, 16-byte aligned)
     mvp: glam::Mat4,
 }
 
@@ -70,6 +76,11 @@ struct SputnikState {
     // Video displacement
     displacement_scale: f32,
     bright_invert: bool,
+
+    // Offsets applied before LFO displacement
+    x_offset: f32,
+    y_offset: f32,
+    z_offset: f32,
 
     // LFO X — horizontal displacement
     x_lfo_rate:      f32,
@@ -106,7 +117,7 @@ struct SputnikState {
     camera_tilt:     f32,
 
     // Audio
-    audio_band_weights: [f32; 8],
+    audio_reactivity: f32,
 
     // Per-frame LFO phase accumulators — not saved to disk.
     #[serde(skip)]
@@ -125,6 +136,9 @@ impl Default for SputnikState {
             topology:  0,
             displacement_scale: 0.3,
             bright_invert: false,
+            x_offset: 0.0,
+            y_offset: 0.0,
+            z_offset: 0.0,
             x_lfo_rate:      1.0,
             x_lfo_amp:       0.1,
             x_lfo_freq:      2.0,
@@ -151,7 +165,7 @@ impl Default for SputnikState {
             z_beat_division: 2, // 1/4 note
             camera_distance: 3.0,
             camera_tilt:     0.0,
-            audio_band_weights: [0.0; 8],
+            audio_reactivity: 0.0,
             x_lfo_arg: 0.0,
             y_lfo_arg: 0.0,
             z_lfo_arg: 0.0,
@@ -166,6 +180,10 @@ impl EffectPlugin for SputnikEffect {
     fn app_name(&self) -> &str { "sputnik" }
 
     fn default_state(&self) -> SputnikState { SputnikState::default() }
+
+    fn hidden_tabs(&self) -> Vec<GuiTab> {
+        vec![GuiTab::Motion]
+    }
 
     fn shader_source(&self) -> &'static str {
         include_str!("shaders/sputnik.wgsl")
@@ -190,17 +208,21 @@ impl EffectPlugin for SputnikEffect {
         let cat = ParamCategory::Custom("Sputnik".into());
         vec![
             ParameterDescriptor::float("displacement_scale", "Displacement", cat.clone(), 0.0,  2.0,  0.3,  0.01),
-            ParameterDescriptor::float("x_lfo_rate",  "X Rate",  cat.clone(), 0.0, 10.0, 1.0,  0.01),
-            ParameterDescriptor::float("x_lfo_amp",   "X Amp",   cat.clone(), 0.0,  1.0, 0.1,  0.01),
-            ParameterDescriptor::float("x_lfo_freq",  "X Freq",  cat.clone(), 0.0, 20.0, 2.0,  0.01),
-            ParameterDescriptor::float("y_lfo_rate",  "Y Rate",  cat.clone(), 0.0, 10.0, 0.7,  0.01),
-            ParameterDescriptor::float("y_lfo_amp",   "Y Amp",   cat.clone(), 0.0,  1.0, 0.05, 0.01),
-            ParameterDescriptor::float("y_lfo_freq",  "Y Freq",  cat.clone(), 0.0, 20.0, 3.0,  0.01),
-            ParameterDescriptor::float("z_lfo_rate",  "Z Rate",  cat.clone(), 0.0, 10.0, 0.3,  0.01),
-            ParameterDescriptor::float("z_lfo_amp",   "Z Amp",   cat.clone(), 0.0,  1.0, 0.0,  0.01),
-            ParameterDescriptor::float("z_lfo_freq",  "Z Freq",  cat.clone(), 0.0, 20.0, 1.0,  0.01),
+            ParameterDescriptor::float("x_offset", "X Offset", cat.clone(), -2.0, 2.0, 0.0, 0.01),
+            ParameterDescriptor::float("y_offset", "Y Offset", cat.clone(), -2.0, 2.0, 0.0, 0.01),
+            ParameterDescriptor::float("z_offset", "Z Offset", cat.clone(), 0.0, 1.0, 0.0, 0.01),
+            ParameterDescriptor::float("x_lfo_rate",  "X LFO Rate",  cat.clone(), 0.0, 10.0, 1.0,  0.01),
+            ParameterDescriptor::float("x_lfo_amp",   "X LFO Amp",   cat.clone(), 0.0,  1.0, 0.1,  0.01),
+            ParameterDescriptor::float("x_lfo_freq",  "X LFO Freq",  cat.clone(), 0.0, 20.0, 2.0,  0.01),
+            ParameterDescriptor::float("y_lfo_rate",  "Y LFO Rate",  cat.clone(), 0.0, 10.0, 0.7,  0.01),
+            ParameterDescriptor::float("y_lfo_amp",   "Y LFO Amp",   cat.clone(), 0.0,  1.0, 0.05, 0.01),
+            ParameterDescriptor::float("y_lfo_freq",  "Y LFO Freq",  cat.clone(), 0.0, 20.0, 3.0,  0.01),
+            ParameterDescriptor::float("z_lfo_rate",  "Z LFO Rate",  cat.clone(), 0.0, 10.0, 0.3,  0.01),
+            ParameterDescriptor::float("z_lfo_amp",   "Z LFO Amp",   cat.clone(), 0.0,  1.0, 0.0,  0.01),
+            ParameterDescriptor::float("z_lfo_freq",  "Z LFO Freq",  cat.clone(), 0.0, 20.0, 1.0,  0.01),
             ParameterDescriptor::float("camera_distance", "Camera Dist", cat.clone(), 0.5, 10.0, 3.0, 0.01),
             ParameterDescriptor::float("camera_tilt",     "Camera Tilt", cat.clone(), -1.0, 1.0, 0.0, 0.01),
+            ParameterDescriptor::float("audio_reactivity", "Audio Reactivity", cat.clone(), 0.0, 2.0, 0.0, 0.01),
         ]
     }
 
@@ -245,6 +267,9 @@ impl EffectPlugin for SputnikEffect {
         };
 
         let displacement_scale = engine.get_param("displacement_scale").unwrap_or(s.displacement_scale);
+        let x_offset = engine.get_param("x_offset").unwrap_or(s.x_offset);
+        let y_offset = engine.get_param("y_offset").unwrap_or(s.y_offset);
+        let z_offset = engine.get_param("z_offset").unwrap_or(s.z_offset);
         let x_lfo_amp  = engine.get_param("x_lfo_amp").unwrap_or(s.x_lfo_amp);
         let x_lfo_freq = engine.get_param("x_lfo_freq").unwrap_or(s.x_lfo_freq);
         let y_lfo_amp  = engine.get_param("y_lfo_amp").unwrap_or(s.y_lfo_amp);
@@ -253,12 +278,13 @@ impl EffectPlugin for SputnikEffect {
         let z_lfo_freq = engine.get_param("z_lfo_freq").unwrap_or(s.z_lfo_freq);
         let camera_distance = engine.get_param("camera_distance").unwrap_or(s.camera_distance);
         let camera_tilt     = engine.get_param("camera_tilt").unwrap_or(s.camera_tilt);
+        let audio_reactivity = engine.get_param("audio_reactivity").unwrap_or(s.audio_reactivity);
 
         let mut bands_a = [0.0f32; 4];
         let mut bands_b = [0.0f32; 4];
         for i in 0..4 {
-            bands_a[i] = engine.audio.fft[i]     * s.audio_band_weights[i];
-            bands_b[i] = engine.audio.fft[i + 4] * s.audio_band_weights[i + 4];
+            bands_a[i] = engine.audio.fft[i]     * audio_reactivity;
+            bands_b[i] = engine.audio.fft[i + 4] * audio_reactivity;
         }
 
         let projection = glam::Mat4::perspective_rh(
@@ -279,7 +305,8 @@ impl EffectPlugin for SputnikEffect {
         SputnikUniforms {
             displacement_scale,
             bright_invert:  s.bright_invert as u32,
-            _pad0:          [0; 2],
+            x_offset,
+            y_offset,
             audio_bands_a:  bands_a,
             audio_bands_b:  bands_b,
             x_lfo_arg:      s.x_lfo_arg,
@@ -302,6 +329,9 @@ impl EffectPlugin for SputnikEffect {
             z_ringmod:      s.z_ringmod  as u32,
             tex_width,
             tex_height,
+            z_offset,
+            audio_reactivity,
+            _pad0: [0; 2],
             mvp,
         }
     }
@@ -313,55 +343,20 @@ struct SputnikTab;
 
 const SHAPE_LABELS: [&str; 4] = ["Sine", "Square", "Sawtooth", "Noise"];
 
-/// Draw one LFO axis section. Returns true if any engine-declared param changed.
-fn lfo_section(
-    ui:           &imgui::Ui,
-    label:        &str,
-    rate:         &mut f32,
-    amp:          &mut f32,
-    freq:         &mut f32,
-    shape:        &mut u32,
-    phasemod:     &mut bool,
-    ringmod:      &mut bool,
-    tempo_sync:   &mut bool,
-    beat_division: &mut usize,
-    bpm:          f32,
-) -> bool {
+/// Draw a float parameter slider reading from / writing to engine state.
+fn param_slider(ui: &imgui::Ui, engine: &mut EngineState, id: &str, label: &str, min: f32, max: f32) {
+    let mut val = engine.get_param_base(id).unwrap_or(0.0);
+    if ui.slider_config(label, min, max).build(&mut val) {
+        engine.set_param_base(id, val);
+    }
+}
+
+/// Compact LFO axis row: rate, amp, freq sliders.
+fn lfo_axis_sliders(ui: &imgui::Ui, engine: &mut EngineState, label: &str, prefix: &str) {
     ui.text(label);
-    let mut changed = false;
-
-    if *tempo_sync {
-        let mut div = *beat_division;
-        let _w = ui.push_item_width(110.0);
-        if ui.combo_simple_string(&format!("Beat Div##{label}_div"), &mut div, &BEAT_DIVISION_NAMES) {
-            *beat_division = div;
-        }
-        ui.same_line();
-        ui.text_disabled(&format!("= {:.2} Hz", beat_division_to_hz(*beat_division, bpm)));
-    } else {
-        changed |= ui.slider_config(&format!("Rate##{label}_rate"), 0.0, 10.0).build(rate);
-    }
-
-    if ui.checkbox(&format!("Tempo Sync##{label}"), tempo_sync) {
-        // switching mode is not an engine-param change, but we treat rate as dirty
-        // so set_param_base("x_lfo_rate", ...) keeps the base consistent.
-        changed = true;
-    }
-
-    changed |= ui.slider_config(&format!("Amp##{label}_amp"),   0.0,  1.0).build(amp);
-    changed |= ui.slider_config(&format!("Freq##{label}_freq"), 0.0, 20.0).build(freq);
-
-    ui.text("Shape");
-    for (i, &name) in SHAPE_LABELS.iter().enumerate() {
-        if ui.radio_button_bool(&format!("{name}##{label}shape{i}"), *shape == i as u32) {
-            *shape = i as u32;
-        }
-        if i < 3 { ui.same_line(); }
-    }
-    ui.checkbox(&format!("Phase mod##{label}"), phasemod);
-    ui.same_line();
-    ui.checkbox(&format!("Ring mod##{label}"),  ringmod);
-    changed
+    param_slider(ui, engine, &format!("{prefix}_lfo_rate"), "Rate", 0.0, 10.0);
+    param_slider(ui, engine, &format!("{prefix}_lfo_amp"),  "Amp",  0.0, 1.0);
+    param_slider(ui, engine, &format!("{prefix}_lfo_freq"), "Freq", 0.0, 20.0);
 }
 
 impl AnyGuiTab for SputnikTab {
@@ -399,74 +394,61 @@ impl AnyGuiTab for SputnikTab {
 
         ui.separator();
 
+        // ── Offsets ───────────────────────────────────────────────────────
+        ui.text("Offsets");
+        param_slider(ui, engine, "x_offset", "X Offset", -2.0, 2.0);
+        param_slider(ui, engine, "y_offset", "Y Offset", -2.0, 2.0);
+        param_slider(ui, engine, "z_offset", "Z Offset", 0.0, 1.0);
+
+        ui.separator();
+
         // ── Video displacement ────────────────────────────────────────────
         ui.text("Video Displacement");
-        if ui.slider_config("Displacement", 0.0_f32, 2.0_f32).build(&mut s.displacement_scale) {
-            engine.set_param_base("displacement_scale", s.displacement_scale);
-        }
+        param_slider(ui, engine, "displacement_scale", "Displacement", 0.0, 2.0);
         ui.checkbox("Invert brightness", &mut s.bright_invert);
 
         ui.separator();
 
-        // ── LFO system ────────────────────────────────────────────────────
-        let bpm = engine.effective_bpm();
-        ui.text(&format!("LFO System  ({:.1} BPM)", bpm));
+        // ── LFO Parameters ────────────────────────────────────────────────
+        ui.text("LFO Parameters");
+        lfo_axis_sliders(ui, engine, "X (horizontal)", "x");
+        lfo_axis_sliders(ui, engine, "Y (vertical)",   "y");
+        lfo_axis_sliders(ui, engine, "Z (zoom pulse)", "z");
 
-        // X axis — rate/amp/freq are engine-declared params; shape/mod flags are state-only.
-        if lfo_section(
-            ui, "X (horizontal)",
-            &mut s.x_lfo_rate, &mut s.x_lfo_amp, &mut s.x_lfo_freq, &mut s.x_lfo_shape,
-            &mut s.x_phasemod, &mut s.x_ringmod,
-            &mut s.x_tempo_sync, &mut s.x_beat_division, bpm,
-        ) {
-            engine.set_param_base("x_lfo_rate", s.x_lfo_rate);
-            engine.set_param_base("x_lfo_amp",  s.x_lfo_amp);
-            engine.set_param_base("x_lfo_freq", s.x_lfo_freq);
-        }
         ui.separator();
 
-        if lfo_section(
-            ui, "Y (vertical)",
-            &mut s.y_lfo_rate, &mut s.y_lfo_amp, &mut s.y_lfo_freq, &mut s.y_lfo_shape,
-            &mut s.y_phasemod, &mut s.y_ringmod,
-            &mut s.y_tempo_sync, &mut s.y_beat_division, bpm,
-        ) {
-            engine.set_param_base("y_lfo_rate", s.y_lfo_rate);
-            engine.set_param_base("y_lfo_amp",  s.y_lfo_amp);
-            engine.set_param_base("y_lfo_freq", s.y_lfo_freq);
-        }
-        ui.separator();
-
-        if lfo_section(
-            ui, "Z (zoom pulse)",
-            &mut s.z_lfo_rate, &mut s.z_lfo_amp, &mut s.z_lfo_freq, &mut s.z_lfo_shape,
-            &mut s.z_phasemod, &mut s.z_ringmod,
-            &mut s.z_tempo_sync, &mut s.z_beat_division, bpm,
-        ) {
-            engine.set_param_base("z_lfo_rate", s.z_lfo_rate);
-            engine.set_param_base("z_lfo_amp",  s.z_lfo_amp);
-            engine.set_param_base("z_lfo_freq", s.z_lfo_freq);
+        // ── LFO Shape ─────────────────────────────────────────────────────
+        ui.text("LFO Shape");
+        for (label, shape, phasemod, ringmod) in [
+            ("X", &mut s.x_lfo_shape, &mut s.x_phasemod, &mut s.x_ringmod),
+            ("Y", &mut s.y_lfo_shape, &mut s.y_phasemod, &mut s.y_ringmod),
+            ("Z", &mut s.z_lfo_shape, &mut s.z_phasemod, &mut s.z_ringmod),
+        ] {
+            ui.text(label);
+            ui.same_line();
+            for (i, &name) in SHAPE_LABELS.iter().enumerate() {
+                if ui.radio_button_bool(&format!("{name}##{label}shape{i}"), *shape == i as u32) {
+                    *shape = i as u32;
+                }
+                if i < 3 { ui.same_line(); }
+            }
+            ui.checkbox(&format!("Phase mod##{label}"), phasemod);
+            ui.same_line();
+            ui.checkbox(&format!("Ring mod##{label}"),  ringmod);
         }
 
         ui.separator();
 
         // ── Camera ────────────────────────────────────────────────────────
-        ui.text("Camera (3D Perspective)");
-        if ui.slider_config("Distance", 0.5_f32, 10.0_f32).build(&mut s.camera_distance) {
-            engine.set_param_base("camera_distance", s.camera_distance);
-        }
-        if ui.slider_config("Tilt", -1.0_f32, 1.0_f32).build(&mut s.camera_tilt) {
-            engine.set_param_base("camera_tilt", s.camera_tilt);
-        }
+        ui.text("Camera");
+        param_slider(ui, engine, "camera_distance", "Distance", 0.5, 10.0);
+        param_slider(ui, engine, "camera_tilt",     "Tilt",    -1.0, 1.0);
 
         ui.separator();
 
-        // ── Audio band weights ─────────────────────────────────────────────
-        ui.text("Audio Band Weights");
-        for i in 0..8usize {
-            let label = format!("Band {}", i + 1);
-            ui.slider_config(&label, 0.0_f32, 2.0_f32).build(&mut s.audio_band_weights[i]);
-        }
+        // ── Audio ─────────────────────────────────────────────────────────
+        ui.text("Audio");
+        param_slider(ui, engine, "audio_reactivity", "Reactivity", 0.0, 2.0);
     }
 }
 

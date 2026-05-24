@@ -17,12 +17,12 @@ struct Vertex {
     texcoord: vec2<f32>,
 }
 
-// Must match SputnikUniforms in main.rs exactly (192 bytes).
+// Must match SputnikUniforms in main.rs exactly (208 bytes).
 struct SputnikUniforms {
     displacement_scale: f32,
     bright_invert:      u32,
-    pad0:               u32,
-    pad1:               u32,
+    x_offset:           f32,
+    y_offset:           f32,
 
     audio_bands_a: vec4<f32>,
     audio_bands_b: vec4<f32>,
@@ -51,6 +51,11 @@ struct SputnikUniforms {
     z_ringmod:   u32,
     tex_width:   f32,
     tex_height:  f32,
+
+    z_offset:          f32,
+    audio_reactivity:  f32,
+    pad0:              u32,
+    pad1:              u32,
 
     mvp: mat4x4<f32>,
 }
@@ -98,6 +103,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Distance from UV centre for Z spatial modulation.
     let dist = length(tc - vec2<f32>(0.5, 0.5));
 
+    // Apply static offsets before LFO displacement.
+    var pos = vec2<f32>(base_x + u.x_offset, base_y + u.y_offset);
+
     // First pass: raw LFO values (spatial position + current phase).
     let x_raw = lfo(u.x_lfo_arg + tc.x * u.x_lfo_freq, u.x_lfo_shape);
     let y_raw = lfo(u.y_lfo_arg + tc.y * u.y_lfo_freq, u.y_lfo_shape);
@@ -128,9 +136,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if u.x_ringmod != 0u { x_disp = x_disp * z_lfo; }
     if u.y_ringmod != 0u { y_disp = y_disp * z_lfo; }
 
-    // Z LFO scales the base XY position — zoom-pulse effect.
-    // (Mirrors original: newPosition.xy *= (1.0 - zLfo))
-    var pos = vec2<f32>(base_x, base_y) * (1.0 - z_scale);
+    // Z offset + Z LFO scale the base XY position — zoom-pulse effect.
+    let z_total = z_scale + u.z_offset;
+    pos = pos * (1.0 - z_total);
     pos.x += x_disp;
     pos.y += y_disp;
 
