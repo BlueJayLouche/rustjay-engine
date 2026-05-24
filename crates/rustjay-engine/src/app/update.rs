@@ -387,13 +387,6 @@ impl<P: EffectPlugin> App<P> {
             .map(|e| e.input_texture.has_external_texture())
             .unwrap_or(false);
 
-        // For non-external inputs (webcam/NDI), skip the preview copy when the
-        // input frame hasn't changed since we last copied it.
-        let input_gen = self.output_engine.as_ref()
-            .map(|e| e.input_texture.texture_generation)
-            .unwrap_or(0);
-        let input_preview_stale = input_uses_external || input_gen != self.last_input_preview_gen;
-
         if let (Some(ref mut renderer), Some(ref gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
@@ -402,7 +395,7 @@ impl<P: EffectPlugin> App<P> {
             );
             let mut any_work = false;
 
-            if input_preview_stale {
+            {
                 let input_src = if input_uses_external {
                     self.output_engine.as_ref().map(|e| &e.render_target.texture)
                 } else {
@@ -413,9 +406,6 @@ impl<P: EffectPlugin> App<P> {
                 if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
                     renderer.update_preview_texture(preview_id, tex, &mut encoder);
                     any_work = true;
-                    if !input_uses_external {
-                        self.last_input_preview_gen = input_gen;
-                    }
                 }
             }
 

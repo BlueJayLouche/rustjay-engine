@@ -92,8 +92,6 @@ pub(crate) struct App<P: EffectPlugin> {
 
     /// Scratch buffer for dirty MIDI values — cleared and reused each frame to avoid HashMap allocation.
     pub(crate) midi_dirty_scratch: Vec<(String, f32)>,
-    /// Last texture generation copied to the input preview — skip copy when unchanged.
-    pub(crate) last_input_preview_gen: u64,
 
     /// Cached audio analysis parameters — updated at end of each update_audio so the read
     /// at the top of the next frame can skip a shared_state lock acquisition.
@@ -255,7 +253,6 @@ impl<P: EffectPlugin> App<P> {
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,
             midi_dirty_scratch: Vec::new(),
-            last_input_preview_gen: 0,
             cached_audio_amplitude: 1.0,
             cached_audio_smoothing: 0.5,
             cached_audio_normalize: true,
