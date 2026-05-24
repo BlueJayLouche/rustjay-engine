@@ -16,83 +16,71 @@ impl ControlGui {
             )
         };
 
-        ui.text("Audio Analysis");
-        ui.separator();
+        // ── Device ────────────────────────────────────────────────────────────
+        if ui.collapsing_header("Input Device", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+            if ui.button("Refresh Audio Devices") {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.audio_command = AudioCommand::RefreshDevices;
+            }
 
-        // Audio Device Selection
-        ui.text_colored([0.0, 1.0, 1.0, 1.0], "Input Device");
+            ui.spacing();
 
-        if ui.button("Refresh Audio Devices") {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.audio_command = AudioCommand::RefreshDevices;
-        }
+            if !self.audio_devices.is_empty() {
+                let device_names: Vec<&str> = self.audio_devices.iter().map(|s| s.as_str()).collect();
 
-        ui.spacing();
+                if let Some(ref current) = selected_device {
+                    if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
+                        self.selected_audio_device = idx;
+                    }
+                }
 
-        if !self.audio_devices.is_empty() {
-            let device_names: Vec<&str> = self.audio_devices.iter().map(|s| s.as_str()).collect();
+                if ui.combo_simple_string("Select Audio Device", &mut self.selected_audio_device, &device_names) {
+                    let device_name = self.audio_devices.get(self.selected_audio_device).cloned();
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.audio_command = AudioCommand::SelectDevice(device_name.unwrap_or_default());
+                }
 
-            if let Some(ref current) = selected_device {
-                if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
-                    self.selected_audio_device = idx;
+                if let Some(ref device) = selected_device {
+                    ui.text(format!("Active: {}", device));
+                }
+            } else {
+                ui.text_disabled("No audio devices found. Click Refresh.");
+            }
+
+            ui.spacing();
+            if ui.checkbox("Enable Audio Analysis", &mut enabled) {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.audio.enabled = enabled;
+                if enabled {
+                    state.audio_command = AudioCommand::Start;
+                } else {
+                    state.audio_command = AudioCommand::Stop;
                 }
             }
-
-            if ui.combo_simple_string("Select Audio Device", &mut self.selected_audio_device, &device_names) {
-                let device_name = self.audio_devices.get(self.selected_audio_device).cloned();
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.audio_command = AudioCommand::SelectDevice(device_name.unwrap_or_default());
-            }
-
-            if let Some(ref device) = selected_device {
-                ui.text(format!("Active: {}", device));
-            }
-        } else {
-            ui.text_disabled("No audio devices found. Click Refresh.");
+            ui.spacing();
         }
 
-        ui.spacing();
-        ui.separator();
-        ui.spacing();
-
-        // Enable/disable
-        if ui.checkbox("Enable Audio Analysis", &mut enabled) {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.audio.enabled = enabled;
-            if enabled {
-                state.audio_command = AudioCommand::Start;
-            } else {
-                state.audio_command = AudioCommand::Stop;
-            }
-        }
-
-        ui.spacing();
-
-        if enabled {
+        // ── Analysis Settings ─────────────────────────────────────────────────
+        // Only relevant when audio analysis is running.
+        if enabled && ui.collapsing_header("Analysis Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             let (mut normalize, mut pink_noise, current_fft_size) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 (state.audio.normalize, state.audio.pink_noise_shaping, state.audio.fft_size)
             };
-
-            // Amplitude
-            ui.text("Input Amplitude");
+            ui.text("Amplitude");
             if ui.slider("Amplitude", 0.1, 5.0, &mut amplitude) {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.audio.amplitude = amplitude;
             }
 
-            // Smoothing
-            ui.text("Smoothing (0 = instant, 0.99 = very slow)");
+            ui.text("Smoothing");
+            ui.same_line();
+            ui.text_disabled("(0 = instant, 0.99 = very slow)");
             if ui.slider("Smoothing", 0.0, 0.95, &mut smoothing) {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.audio.smoothing = smoothing.clamp(0.0, 0.99);
             }
 
-            ui.spacing();
-            ui.separator();
-            ui.spacing();
-
-            // FFT Size dropdown
             {
                 use rustjay_audio::{FFT_SIZES, FFT_SIZE_LABELS};
                 let mut selected_idx = FFT_SIZES.iter().position(|&s| s == current_fft_size).unwrap_or(2);
@@ -109,13 +97,6 @@ impl ControlGui {
                 }
             }
 
-            ui.spacing();
-            ui.separator();
-            ui.spacing();
-
-            // Processing options
-            ui.text("Processing Options");
-
             if ui.checkbox("Normalize Bands", &mut normalize) {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.audio.normalize = normalize;
@@ -131,11 +112,10 @@ impl ControlGui {
             ui.text_disabled("(Compensates for pink noise spectrum)");
 
             ui.spacing();
-            ui.separator();
-            ui.spacing();
+        }
 
-            // ── Tempo & Sync ───────────────────────────────────────────────────
-            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Tempo & Sync");
+        // ── Tempo & Sync ───────────────────────────────────────────────────────
+        if ui.collapsing_header("Tempo & Sync", imgui::TreeNodeFlags::DEFAULT_OPEN) {
 
             let mut sync_source = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -290,39 +270,67 @@ impl ControlGui {
             }
 
             ui.spacing();
-            ui.separator();
-            ui.spacing();
+        } // end Tempo & Sync
 
-            // FFT visualization
-            ui.text("Frequency Bands");
-            let band_names = ["Sub Bass", "Bass", "Low Mid", "Mid", "High Mid", "High", "Very High", "Presence"];
-            for (&value, name) in fft.iter().zip(band_names.iter()) {
-                let width = 200.0 * value;
-                ui.text(format!("{}", name));
+        // ── Frequency Monitor ─────────────────────────────────────────────────
+        if enabled && ui.collapsing_header("Frequency Monitor", imgui::TreeNodeFlags::empty()) {
+            const BAND_NAMES:   [&str; 8]       = ["Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres"];
+            const BAND_COLORS:  [[f32; 4]; 8]   = [
+                [0.80, 0.10, 0.10, 1.0], // Sub     — deep red
+                [0.90, 0.45, 0.05, 1.0], // Bass    — orange
+                [0.85, 0.75, 0.05, 1.0], // Lo Mid  — amber
+                [0.40, 0.85, 0.10, 1.0], // Mid     — yellow-green
+                [0.05, 0.85, 0.35, 1.0], // Hi Mid  — green
+                [0.05, 0.80, 0.90, 1.0], // High    — cyan
+                [0.25, 0.40, 0.95, 1.0], // V.High  — blue
+                [0.75, 0.20, 0.95, 1.0], // Pres    — violet
+            ];
+
+            // Fixed three-column layout: [label | bar | value]
+            // row_start_x anchors all rows to the same x regardless of label length.
+            let avail_w     = ui.content_region_avail()[0];
+            let row_start_x = ui.cursor_pos()[0];
+            let label_col   = 50.0_f32; // wide enough for "V.High"
+            let val_col     = 34.0_f32; // wide enough for "0.00"
+            let gap         = 6.0_f32;
+            let bar_w       = (avail_w - label_col - val_col - gap).max(20.0);
+            let bar_x       = row_start_x + label_col;
+            let val_x       = bar_x + bar_w + gap;
+
+            for (i, (&value, &name)) in fft.iter().zip(BAND_NAMES.iter()).enumerate() {
+                let color = BAND_COLORS[i];
+                let row_y = ui.cursor_pos()[1];
+
+                // Label — left-aligned, variable width, always readable
+                ui.text_colored(color, name);
+
+                // Bar — pinned to fixed column start
                 ui.same_line();
-                ui.text(format!(": {:.2}", value));
-                let draw_list = ui.get_window_draw_list();
-                let pos = ui.cursor_screen_pos();
-                draw_list.add_rect(
-                    pos,
-                    [pos[0] + width, pos[1] + 10.0],
-                    [0.0, 1.0, 0.0, 1.0],
-                ).filled(true).build();
-                ui.new_line();
+                ui.set_cursor_pos([bar_x, row_y]);
+                {
+                    let _fill = ui.push_style_color(imgui::StyleColor::PlotHistogram, color);
+                    let _bg   = ui.push_style_color(imgui::StyleColor::FrameBg, [0.10, 0.10, 0.10, 1.0]);
+                    imgui::ProgressBar::new(value)
+                        .size([bar_w, 11.0])
+                        .overlay_text("")
+                        .build(ui);
+                }
+
+                // Value — pinned to fixed column start, right of bar
+                ui.same_line();
+                ui.set_cursor_pos([val_x, row_y]);
+                ui.text_colored(color, format!("{:.2}", value));
             }
 
             ui.spacing();
             ui.text(format!("Volume: {:.2}", volume));
-
             ui.spacing();
-            ui.separator();
-            ui.spacing();
+        }
 
-            // Audio Routing section
+        // ── Audio Routing ─────────────────────────────────────────────────────
+        if enabled && ui.collapsing_header("Audio Routing", imgui::TreeNodeFlags::empty()) {
             self.build_audio_routing_section(ui);
-
-        } else {
-            ui.text_disabled("Audio analysis is disabled");
+            ui.spacing();
         }
     }
 

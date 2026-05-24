@@ -12,52 +12,39 @@ impl ControlGui {
         // ── Quick Slots ──────────────────────────────────────────────────────
         ui.text("Quick Slots");
         ui.separator();
-        ui.new_line();
 
-        let button_size = [80.0, 50.0];
-        let spacing = 8.0;
-        let total_width = 4.0 * button_size[0] + 3.0 * spacing;
-        let start_x = (ui.window_content_region_max()[0] - ui.window_content_region_min()[0] - total_width) / 2.0;
+        // Compute a button width that tiles 4-per-row with 6px gaps.
+        let avail = ui.content_region_avail()[0];
+        let btn_w = ((avail - 18.0) / 4.0).max(50.0); // 3 gaps × 6px = 18px
+        let btn_size = [btn_w, 50.0];
 
-        for row in 0..2 {
-            let y_pos = ui.cursor_screen_pos()[1];
-            for col in 0..4 {
-                let slot = row * 4 + col + 1;
-                let x_pos = start_x + col as f32 * (button_size[0] + spacing);
-                ui.set_cursor_screen_pos([x_pos, y_pos]);
+        for slot in 1..=8usize {
+            let has_preset = slot_names[slot - 1].is_some();
+            let color = if has_preset { [0.2, 0.6, 1.0, 1.0] } else { [0.3, 0.3, 0.3, 1.0] };
+            let label = if let Some(ref name) = slot_names[slot - 1] {
+                let short: String = name.chars().take(7).collect();
+                format!("{}\n{}", slot, short)
+            } else {
+                format!("{}\n--", slot)
+            };
 
-                let has_preset = slot_names[slot - 1].is_some();
-                let color = if has_preset {
-                    [0.2, 0.6, 1.0, 1.0]
-                } else {
-                    [0.3, 0.3, 0.3, 1.0]
-                };
-
-                let label = if let Some(ref name) = slot_names[slot - 1] {
-                    // Truncate long names to fit button
-                    let short: String = name.chars().take(7).collect();
-                    format!("{}\n{}", slot, short)
-                } else {
-                    format!("{}\n--", slot)
-                };
-
-                let _col = ui.push_style_color(imgui::StyleColor::Button, color);
-                if ui.button_with_size(&label, button_size) && has_preset {
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.preset_command = PresetCommand::ApplySlot(slot);
-                }
-
-                if ui.is_item_hovered() {
-                    if let Some(ref name) = slot_names[slot - 1] {
-                        ui.tooltip_text(format!("Slot {}: {} (click to apply)", slot, name));
-                    } else {
-                        ui.tooltip_text(format!("Slot {} — right-click a preset below to assign", slot));
-                    }
-                }
-
-                ui.same_line_with_spacing(0.0, spacing);
+            let _col = ui.push_style_color(imgui::StyleColor::Button, color);
+            if ui.button_with_size(&label, btn_size) && has_preset {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.preset_command = PresetCommand::ApplySlot(slot);
             }
-            ui.new_line();
+
+            if ui.is_item_hovered() {
+                if let Some(ref name) = slot_names[slot - 1] {
+                    ui.tooltip_text(format!("Slot {}: {} (click to apply)", slot, name));
+                } else {
+                    ui.tooltip_text(format!("Slot {} — right-click a preset below to assign", slot));
+                }
+            }
+
+            if slot % 4 != 0 {
+                ui.same_line_with_spacing(0.0, 6.0);
+            }
         }
 
         ui.spacing();

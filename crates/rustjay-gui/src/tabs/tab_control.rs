@@ -96,7 +96,7 @@ impl ControlGui {
 
         ui.separator();
         ui.text("Active Mappings");
-        ui.text_disabled("MIDI mappings will appear here");
+        ui.text_disabled("No mappings configured yet — use MIDI Learn above");
     }
 
     /// Build the OSC tab with dynamically-generated addresses.
@@ -202,8 +202,7 @@ impl ControlGui {
         }
 
         ui.separator();
-        ui.text("Recent Messages");
-        ui.text_disabled("(Last 100 OSC messages will appear here)");
+        ui.text_disabled("Send an OSC message to the address above to confirm connectivity");
     }
 
     /// Build the Web tab.
