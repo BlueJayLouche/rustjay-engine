@@ -513,29 +513,48 @@ impl<P: EffectPlugin> App<P> {
                     if let Err(e) = server.start() {
                         log::error!("Failed to start web server: {}", e);
                     } else {
-                        lock(&self.shared_state).web_enabled = true;
-                        log::info!("Web server started at {}", server.get_url());
+                        let token = server.get_token();
+                        let full_url = server.get_full_url();
+                        let mut state = lock(&self.shared_state);
+                        state.web_enabled = true;
+                        state.web_token = token;
+                        state.web_full_url = full_url.clone();
+                        log::info!("Web server started — access at {}", full_url);
                     }
                 }
             }
             WebCommand::Stop => {
                 if let Some(ref mut server) = self.web_server {
                     server.stop();
-                    lock(&self.shared_state).web_enabled = false;
+                    let mut state = lock(&self.shared_state);
+                    state.web_enabled = false;
+                    state.web_token = String::new();
+                    state.web_full_url = String::new();
                 }
             }
             WebCommand::SetPort(port) => {
                 if let Some(ref mut server) = self.web_server {
                     server.stop();
-                    let host = lock(&self.shared_state).web_host.clone();
-                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false };
+                    let (host, lan_trust) = {
+                        let s = lock(&self.shared_state);
+                        (s.web_host.clone(), s.web_lan_trust)
+                    };
+                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false, lan_trust };
                     let (new_server, cmd_tx) = WebServer::new(config);
                     *server = new_server;
                     self.web_command_tx = Some(cmd_tx);
                     let mut state = lock(&self.shared_state);
                     state.web_port = port;
                     state.web_enabled = false;
+                    state.web_token = String::new();
+                    state.web_full_url = String::new();
                 }
+            }
+            WebCommand::SetLanTrust(enabled) => {
+                if let Some(ref server) = self.web_server {
+                    server.set_lan_trust(enabled);
+                }
+                lock(&self.shared_state).web_lan_trust = enabled;
             }
             _ => {}
         }

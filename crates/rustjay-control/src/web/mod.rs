@@ -28,7 +28,7 @@ pub enum WebControlCommand {
 /// Web server configuration
 #[derive(Debug, Clone)]
 pub struct WebConfig {
-    /// Host to bind to (default: 127.0.0.1)
+    /// Host to bind to (default: 0.0.0.0 — all interfaces)
     pub host: String,
     /// Port to listen on
     pub port: u16,
@@ -36,15 +36,18 @@ pub struct WebConfig {
     pub app_name: String,
     /// Whether server is running
     pub enabled: bool,
+    /// When true, clients on the same LAN subnet connect without a token.
+    pub lan_trust: bool,
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
-            host: "127.0.0.1".to_string(),
+            host: "0.0.0.0".to_string(),
             port: 8081,
             app_name: "rustjay-template".to_string(),
             enabled: false,
+            lan_trust: false,
         }
     }
 }
@@ -75,6 +78,8 @@ pub struct WebServerState {
     pub command_tx: tokio::sync::mpsc::Sender<WebCommand>,
     /// Per-launch bearer token for auth.
     pub bearer_token: String,
+    /// When true, clients on the same LAN subnet skip token auth.
+    pub lan_trust: bool,
 }
 
 /// Messages sent from server to web clients
@@ -124,7 +129,7 @@ impl WebServer {
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
 
         let bearer_token = generate_token();
-        eprintln!("Web control token: {}", bearer_token);
+        let lan_trust = config.lan_trust;
 
         let state = Arc::new(Mutex::new(WebServerState {
             config,
@@ -132,6 +137,7 @@ impl WebServer {
             broadcast_tx,
             command_tx: command_tx.clone(),
             bearer_token,
+            lan_trust,
         }));
 
         let server = Self {
@@ -362,7 +368,7 @@ impl WebServer {
         self.handle.is_some()
     }
 
-    /// Get the server URL
+    /// Get the server URL (no token)
     pub fn get_url(&self) -> String {
         if let Ok(state) = self.state.lock() {
             format!("http://{}:{}/{}",
@@ -372,6 +378,35 @@ impl WebServer {
             )
         } else {
             String::new()
+        }
+    }
+
+    /// Get the bearer token.
+    pub fn get_token(&self) -> String {
+        self.state.lock()
+            .map(|s| s.bearer_token.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get the full access URL including the auth token, using the actual local IP.
+    pub fn get_full_url(&self) -> String {
+        if let Ok(state) = self.state.lock() {
+            let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
+            format!("http://{}:{}/{}?token={}",
+                ip,
+                state.config.port,
+                state.config.app_name,
+                state.bearer_token,
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    /// Live-update the LAN trust setting without restarting the server.
+    pub fn set_lan_trust(&self, enabled: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.lan_trust = enabled;
         }
     }
 }
@@ -393,6 +428,7 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
     let html_with_token = inject_token_into_html(EMBEDDED_HTML, token, app_name);
 
     // Protected routes: auth required for everything except /health.
+    // Auth middleware receives the shared state so it can read `lan_trust` live.
     let protected = Router::new()
         .route(&ws_path, get(ws_handler))
         .route(&page_path, get(move || async move {
@@ -405,7 +441,7 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
             axum::response::Redirect::temporary(&page_path_redirect2)
         }))
         .route_layer(middleware::from_fn_with_state(
-            token.to_string(),
+            Arc::clone(&state),
             auth_middleware,
         ));
 
@@ -450,12 +486,13 @@ async fn ws_handler(
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Verify bearer token from query param (browsers can't set custom headers on WebSocket)
-    let valid_token = {
-        let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        state.bearer_token.clone()
+    // Verify bearer token from query param (browsers can't set custom headers on WebSocket).
+    // Skip when lan_trust is enabled.
+    let (valid_token, lan_trust) = {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        (s.bearer_token.clone(), s.lan_trust)
     };
-    if query.token != valid_token {
+    if !lan_trust && query.token != valid_token {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
@@ -551,11 +588,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
 
 /// Bearer-token auth middleware.
 /// Accepts the token via `Authorization: Bearer <token>` header or `?token=<token>` query param.
+/// When `lan_trust` is enabled in server state, all requests pass through without a token.
 async fn auth_middleware(
-    State(token): State<String>,
+    State(state): State<Arc<Mutex<WebServerState>>>,
     req: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
+    let (token, lan_trust) = {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        (s.bearer_token.clone(), s.lan_trust)
+    };
+
+    if lan_trust {
+        return next.run(req).await;
+    }
+
     let auth_header = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)

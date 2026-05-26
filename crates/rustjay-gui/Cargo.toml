@@ -28,6 +28,7 @@ egui-winit          = { workspace = true, optional = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 pollster        = { workspace = true }
+qrcode          = { workspace = true }
 
 [features]
 default = ["ndi"]

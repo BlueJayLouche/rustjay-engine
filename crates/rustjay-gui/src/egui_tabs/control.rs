@@ -115,8 +115,15 @@ impl EguiControlGui {
 
         let mut port_i32 = port as i32;
         ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut port_i32).speed(1.0).range(1024..=65535));
-            ui.label("Port");
+            let response = ui.add(egui::DragValue::new(&mut port_i32).speed(1.0).range(1024..=65535));
+            ui.label("Receive Port");
+            if response.changed() {
+                let new_port = port_i32.clamp(1024, 65535) as u16;
+                if new_port != port {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.osc_command = OscCommand::SetPort(new_port);
+                }
+            }
             if running {
                 if ui.button("⏹ Stop Server").clicked() {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -185,15 +192,36 @@ impl EguiControlGui {
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Send an OSC message to the address above to confirm connectivity").size(11.0).color(TEXT_SECONDARY));
+        ui.label(egui::RichText::new("OSC is receive-only — Rustjay listens for incoming control messages.").size(11.0).color(TEXT_SECONDARY));
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(egui::RichText::new("Recent Messages").color(ACCENT_CYAN).strong());
+        let messages = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.osc_message_log.clone()
+        };
+        if messages.is_empty() {
+            ui.label(egui::RichText::new("No messages received yet.").size(11.0).color(TEXT_SECONDARY));
+        } else {
+            egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+                for (addr, value, _time) in messages.iter().rev().take(20) {
+                    ui.label(egui::RichText::new(format!("{} = {:.3}", addr, value)).monospace().size(12.0));
+                }
+            });
+        }
     }
 
     pub(crate) fn build_web_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Web Remote Control");
         ui.add_space(8.0);
 
-        let (enabled, port, app_name) = {
+        let (enabled, port, app_name, full_url, lan_trust) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.web_enabled, state.web_port, state.web_app_name.clone())
+            (state.web_enabled, state.web_port, state.web_app_name.clone(),
+             state.web_full_url.clone(), state.web_lan_trust)
         };
 
         ui.horizontal(|ui| {
@@ -230,23 +258,101 @@ impl EguiControlGui {
         ui.separator();
         ui.add_space(8.0);
 
-        if enabled {
-            ui.label(egui::RichText::new("Access URL:").color(ACCENT_CYAN).strong());
-            let local_ip = crate::control_gui::get_local_ip().unwrap_or_else(|| "localhost".to_string());
-            let url = format!("http://{}:{}/{}", local_ip, port, app_name);
-            ui.label(egui::RichText::new(&url).monospace().size(13.0));
+        if enabled && !full_url.is_empty() {
+            // ── QR code ─────────────────────────────────────────────────────────
+            // Determine the URL to encode: with LAN trust the token is omitted
+            // from the QR so people can bookmark the plain URL; the token URL
+            // still works normally for clients that have it.
+            let qr_url = if lan_trust {
+                // Strip token from URL for LAN trust mode (clients need no token)
+                full_url.split('?').next().unwrap_or(&full_url).to_string()
+            } else {
+                full_url.clone()
+            };
 
-            if ui.button("📋 Copy URL to Clipboard").clicked() {
-                if let Err(e) = crate::control_gui::copy_to_clipboard(&url) {
+            // Rebuild the matrix only when the URL changes.
+            let need_rebuild = self.qr_cache.as_ref().map_or(true, |(u, _)| u != &qr_url);
+            if need_rebuild {
+                if let Ok(code) = qrcode::QrCode::new(qr_url.as_bytes()) {
+                    let width = code.width();
+                    let matrix: Vec<Vec<bool>> = (0..width)
+                        .map(|row| (0..width)
+                            .map(|col| code[(row, col)] == qrcode::Color::Dark)
+                            .collect())
+                        .collect();
+                    self.qr_cache = Some((qr_url.clone(), matrix));
+                }
+            }
+
+            if let Some((_, matrix)) = &self.qr_cache {
+                let qr_size = 200.0_f32;
+                let width = matrix.len();
+                let cell = qr_size / width as f32;
+
+                // Reserve space and draw the QR code using the painter.
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(qr_size, qr_size),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter();
+                // White background with a quiet zone
+                painter.rect_filled(rect, 4.0, egui::Color32::WHITE);
+                let top_left = rect.min;
+                for (row, cols) in matrix.iter().enumerate() {
+                    for (col, &dark) in cols.iter().enumerate() {
+                        if dark {
+                            let min = top_left + egui::vec2(col as f32 * cell, row as f32 * cell);
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(min, egui::vec2(cell, cell)),
+                                0.0,
+                                egui::Color32::BLACK,
+                            );
+                        }
+                    }
+                }
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Scan with your phone to connect instantly").size(11.0).color(TEXT_SECONDARY));
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+
+            // ── URL + copy button ────────────────────────────────────────────────
+            ui.label(egui::RichText::new("Access URL:").color(ACCENT_CYAN).strong());
+            ui.label(egui::RichText::new(&full_url).monospace().size(11.0).color(TEXT_SECONDARY));
+            if ui.button("📋 Copy URL").clicked() {
+                if let Err(e) = crate::control_gui::copy_to_clipboard(&full_url) {
                     log::warn!("Failed to copy URL to clipboard: {}", e);
                 }
             }
 
-            ui.add_space(8.0);
-            ui.label("Scan with your phone or open in a browser on the same network.");
-            ui.label(egui::RichText::new("The web interface provides real-time control of all parameters.").size(11.0).color(TEXT_SECONDARY));
+        } else if enabled {
+            ui.label(egui::RichText::new("Server starting…").color(TEXT_SECONDARY));
         } else {
-            ui.label(egui::RichText::new("Start the server to get the access URL.").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("Start the server to get the QR code and URL.").color(TEXT_SECONDARY));
+            // Clear cached QR when server is stopped.
+            self.qr_cache = None;
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── LAN Trust toggle ─────────────────────────────────────────────────
+        ui.label(egui::RichText::new("Security").color(ACCENT_CYAN).strong());
+        let mut lan_trust_mut = lan_trust;
+        if ui.checkbox(&mut lan_trust_mut, "Trusted LAN Mode").changed() {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.web_command = WebCommand::SetLanTrust(lan_trust_mut);
+        }
+        if lan_trust {
+            ui.label(egui::RichText::new("Any device on your local network can connect without a token.")
+                .size(11.0).color(egui::Color32::from_rgb(255, 200, 100)));
+        } else {
+            ui.label(egui::RichText::new("Token auth required — only devices with the QR code or URL can connect.")
+                .size(11.0).color(TEXT_SECONDARY));
         }
 
         ui.add_space(8.0);

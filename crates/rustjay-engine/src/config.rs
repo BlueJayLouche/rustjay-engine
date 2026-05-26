@@ -68,6 +68,8 @@ pub(crate) struct AppSettings {
     pub osc: OscConfig,
     pub web_host: String,
     pub web_port: u16,
+    #[serde(default)]
+    pub web_lan_trust: bool,
     pub ui_scale: f32,
     pub show_preview: bool,
     #[serde(default = "default_target_fps")]
@@ -107,8 +109,9 @@ impl Default for AppSettings {
             midi_device: None,
             midi_mappings: Vec::new(),
             osc: OscConfig::default(),
-            web_host: "127.0.0.1".to_string(),
+            web_host: "0.0.0.0".to_string(),
             web_port: 8081,
+            web_lan_trust: false,
             ui_scale: 1.0,
             show_preview: true,
             target_fps: 60,
@@ -134,7 +137,13 @@ impl AppSettings {
             return Err(anyhow::anyhow!("Config file too large: {} bytes (max 64 KiB)", metadata.len()));
         }
         let content = std::fs::read_to_string(&path)?;
-        let settings: AppSettings = serde_json::from_str(&content)?;
+        let mut settings: AppSettings = serde_json::from_str(&content)?;
+        // Migrate: old configs set web_host to "127.0.0.1" (the former default),
+        // which makes the web remote unreachable from phones. Upgrade to 0.0.0.0.
+        if settings.web_host == "127.0.0.1" {
+            log::info!("Migrating web_host from 127.0.0.1 to 0.0.0.0 for LAN access");
+            settings.web_host = "0.0.0.0".to_string();
+        }
         settings.validate()?;
         log::info!("Loaded settings from {:?}", path);
         Ok(settings)
@@ -229,6 +238,7 @@ impl AppSettings {
         state.osc_port = self.osc.port;
         state.web_host = self.web_host.clone();
         state.web_port = self.web_port;
+        state.web_lan_trust = self.web_lan_trust;
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
         state.target_fps = self.target_fps;
@@ -279,6 +289,7 @@ impl AppSettings {
             },
             web_host: state.web_host.clone(),
             web_port: state.web_port,
+            web_lan_trust: state.web_lan_trust,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
             target_fps: state.target_fps,

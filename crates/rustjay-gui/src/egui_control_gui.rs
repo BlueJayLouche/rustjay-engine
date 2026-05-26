@@ -72,6 +72,9 @@ pub struct EguiControlGui {
 
     // Active sidebar tab
     pub(crate) active_tab: GuiTab,
+
+    // QR code cache: (url that was encoded, matrix of dark/light modules)
+    pub(crate) qr_cache: Option<(String, Vec<Vec<bool>>)>,
 }
 
 impl EguiControlGui {
@@ -148,6 +151,7 @@ impl EguiControlGui {
             preset_name_buffer: String::new(),
             saving_preset: false,
             active_tab: GuiTab::Input,
+            qr_cache: None,
         })
     }
 

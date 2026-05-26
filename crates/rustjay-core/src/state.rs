@@ -214,6 +214,8 @@ pub enum WebCommand {
     Stop,
     /// Change the web server port.
     SetPort(u16),
+    /// Enable or disable LAN trust mode (skip token auth for local network clients).
+    SetLanTrust(bool),
 }
 
 impl Default for WebCommand {
@@ -832,6 +834,12 @@ pub struct EngineState {
     pub web_port: u16,
     /// Web server app name path segment.
     pub web_app_name: String,
+    /// Bearer token for the web remote (populated once the server starts).
+    pub web_token: String,
+    /// Full access URL including token query param (populated once the server starts).
+    pub web_full_url: String,
+    /// When true, clients on the same LAN subnet connect without a token.
+    pub web_lan_trust: bool,
 
     /// Ableton Link sync state.
     pub link: LinkState,
@@ -921,9 +929,12 @@ impl EngineState {
             input_discovering: false,
             web_command: WebCommand::None,
             web_enabled: false,
-            web_host: "127.0.0.1".to_string(),
+            web_host: "0.0.0.0".to_string(),
             web_port: 8081,
             web_app_name: "rustjay-template".to_string(),
+            web_token: String::new(),
+            web_full_url: String::new(),
+            web_lan_trust: false,
             lfo: LfoState::new(),
             link: LinkState::default(),
             link_command: LinkCommand::None,
