@@ -43,6 +43,9 @@
 
 # Examples
 
+- [Delta — RGB Delay](examples/delta.md)
+- [delta-egui — egui Backend](examples/delta-egui.md)
+- [Waaaves — Multi-Pass Feedback](examples/waaaves.md)
 - [ISF Shader Viewer](examples/isf-example.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
