@@ -452,27 +452,29 @@ impl EguiControlGui {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.active_tab {
-                    GuiTab::Input => self.build_input_tab(ui),
-                    GuiTab::Output => self.build_output_tab(ui),
-                    GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
-                    GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
-                    GuiTab::Audio => self.build_audio_tab(ui),
-                    GuiTab::Lfo => self.build_lfo_tab(ui),
-                    GuiTab::Midi => self.build_midi_tab(ui),
-                    GuiTab::Osc => self.build_osc_tab(ui),
-                    GuiTab::Web => self.build_web_tab(ui),
-                    GuiTab::Presets => self.build_presets_tab(ui),
-                    GuiTab::Settings => self.build_settings_tab(ui),
-                    GuiTab::Sync => { /* Sync is folded into Audio */ }
-                }
+                // Check if a custom tab replaces the currently active built-in tab
+                let custom_replacement = self.custom_tabs.iter().enumerate().find(|(_, t)| t.replaces() == Some(self.active_tab));
 
-                // Custom tabs that replace built-ins
-                if let Some((idx, _t)) = self.custom_tabs.iter().enumerate().find(|(_, t)| t.replaces() == Some(self.active_tab)) {
+                if let Some((idx, _t)) = custom_replacement {
                     if let Some(ct) = self.custom_tabs.get_mut(idx) {
                         if let Ok(mut state) = self.shared_state.lock() {
                             ct.draw(ui, app_state, &mut state);
                         }
+                    }
+                } else {
+                    match self.active_tab {
+                        GuiTab::Input => self.build_input_tab(ui),
+                        GuiTab::Output => self.build_output_tab(ui),
+                        GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
+                        GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
+                        GuiTab::Audio => self.build_audio_tab(ui),
+                        GuiTab::Lfo => self.build_lfo_tab(ui),
+                        GuiTab::Midi => self.build_midi_tab(ui),
+                        GuiTab::Osc => self.build_osc_tab(ui),
+                        GuiTab::Web => self.build_web_tab(ui),
+                        GuiTab::Presets => self.build_presets_tab(ui),
+                        GuiTab::Settings => self.build_settings_tab(ui),
+                        GuiTab::Sync => { /* Sync is folded into Audio */ }
                     }
                 }
             });
