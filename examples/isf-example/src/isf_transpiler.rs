@@ -31,15 +31,22 @@ pub fn generate_wgsl(isf: &Isf, glsl_src: &str) -> Result<Transpiled, String> {
 
     // Step 2: determine entry-point pattern
     let has_main_image = glsl_body.contains("void mainImage");
-    let has_image_input = isf.inputs.iter().any(|i| matches!(i.ty, InputType::Image));
+    // has_image_input: true when any image/audio input is present, OR when the GLSL source uses
+    // IMG sampling macros (persistent-buffer shaders that reference their own rendered output).
+    let has_image_input = isf.inputs.iter().any(|i| matches!(
+        i.ty, InputType::Image | InputType::Audio(_) | InputType::AudioFft(_)
+    )) || {
+        let sampling_macros = ["IMG_NORM_PIXEL", "IMG_PIXEL", "IMG_THIS_PIXEL", "IMG_THIS_NORM_PIXEL"];
+        sampling_macros.iter().any(|m| glsl_body.contains(m))
+    };
 
     // Step 3: collect ISF inputs → uniform index
-    // Scalars (Float/Bool/Long) get one slot; Point2D gets two (_x, _y); Color gets four (_r/_g/_b/_a).
+    // Scalars (Float/Bool/Long/Event) get one slot; Point2D gets two (_x, _y); Color gets four.
     let mut uniform_index: UniformIndex = Vec::new();
     let mut idx = 0usize;
     for input in &isf.inputs {
         match &input.ty {
-            InputType::Float(_) | InputType::Bool(_) | InputType::Long(_) => {
+            InputType::Float(_) | InputType::Bool(_) | InputType::Long(_) | InputType::Event => {
                 uniform_index.push((input.name.clone(), idx));
                 idx += 1;
             }
@@ -198,7 +205,7 @@ fn preprocess_glsl(
     src = src.replace("RENDERSIZE[0]", "isf_u.rendersize_x");
     src = src.replace("RENDERSIZE[1]", "isf_u.rendersize_y");
     src = replace_word(&src, "RENDERSIZE", "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)");
-    src = replace_word(&src, "FRAMEINDEX", "u32(isf_u.frame)");
+    src = replace_word(&src, "FRAMEINDEX", "isf_u.frame");
     src = replace_word(&src, "TIME", "isf_u.time");
     src = replace_word(&src, "TIMEDELTA", "(1.0/60.0)");
     src = replace_word(&src, "PASSINDEX", "0");
@@ -208,6 +215,33 @@ fn preprocess_glsl(
     // After strip_uniform_declarations removes the declaration, replace bare uses.
     if !uniform_index.iter().any(|(n, _)| n == "renderSize") {
         src = replace_word(&src, "renderSize", "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)");
+    }
+
+    // ISF image-rect variables (e.g. `_inputImage_imgRect`, `_maskImage_imgRect`).
+    // These hold the normalized texture rect (x, y, w, h) of an image input.
+    // Substitute the identity rect (0,0,1,1) — valid for validation purposes.
+    if src.contains("_imgRect") {
+        let mut out2 = String::with_capacity(src.len());
+        for line in src.lines() {
+            if line.contains("_imgRect") {
+                let mut s = line.to_owned();
+                while let Some(pos) = s.find("_imgRect") {
+                    let suffix_end = pos + "_imgRect".len();
+                    let bytes = s.as_bytes();
+                    let mut start = pos;
+                    while start > 0 && (bytes[start-1].is_ascii_alphanumeric() || bytes[start-1] == b'_') {
+                        start -= 1;
+                    }
+                    s = format!("{}vec4<f32>(0.0, 0.0, 1.0, 1.0){}", &s[..start], &s[suffix_end..]);
+                }
+                out2.push_str(&s);
+            } else {
+                out2.push_str(line);
+            }
+            out2.push('\n');
+        }
+        if !src.ends_with('\n') && out2.ends_with('\n') { out2.pop(); }
+        src = out2;
     }
 
     // --- GLSL built-ins not in WGSL ---
@@ -224,7 +258,9 @@ fn preprocess_glsl(
     src = src.replace("isf_FragNormCoord", "_isf_uv");
     src = src.replace("vv_FragNormCoord", "_isf_uv");
 
-    // ISF image macros (only when there is a bound image input)
+    // IMG_SIZE doesn't need t_input/s_input — always safe to replace.
+    src = replace_img_size(&src);
+    // IMG sampling macros need t_input/s_input (declared in preamble when has_image_input).
     if has_image_input {
         src = replace_img_macros(&src);
     }
@@ -268,13 +304,13 @@ fn preprocess_glsl(
             _ => vec![],
         })
         .collect();
-    // Bool inputs are stored as f32 in the uniform struct, but GLSL uses them as bool.
-    // Replace bool inputs with `(isf_u.NAME != 0.0)` so WGSL if-conditions get a bool.
+    // Bool/Event inputs stored as f32, but GLSL uses them as bool.
+    // Replace with `(isf_u.NAME != 0.0)` so WGSL if-conditions get a bool.
     // Long inputs are also stored as f32, but GLSL uses them as int.
     // Replace long inputs with `i32(isf_u.NAME)` so integer contexts work in WGSL.
     // Do longest names first to avoid partial matches.
     let bool_inputs: std::collections::HashSet<&str> = isf.inputs.iter()
-        .filter(|i| matches!(i.ty, InputType::Bool(_)))
+        .filter(|i| matches!(i.ty, InputType::Bool(_) | InputType::Event))
         .map(|i| i.name.as_str())
         .collect();
     let long_inputs: std::collections::HashSet<&str> = isf.inputs.iter()
@@ -370,6 +406,10 @@ fn preprocess_glsl(
     src = fix_builtin_type_mismatches(&src);
     src = fix_swizzle_compound_assignments(&src);
 
+    // --- Fix i32/u32 cast comparisons with f32: `i32(expr) == f32_val` → `f32(i32(expr)) == f32_val`
+    //     GLSL allows implicit int→float coercion in comparisons; WGSL requires exact types.
+    src = fix_int_cast_comparisons(&src);
+
     // --- Fix oversized vec constructors: `vec3<f32>(vec2_expr, s1, s2)` has 4 components.
     //     GLSL drivers silently truncate; WGSL is strict (reports "expects 3, got 4").
     src = fix_oversized_vec_constructors(&src);
@@ -402,6 +442,36 @@ fn preprocess_glsl(
         if src.contains(coord_name) {
             injected_locals.push(def.to_string());
         }
+    }
+
+    // texcoord0–7: ISF neighbor varyings (stripped above). Inject as _isf_uv placeholders.
+    for n in 0usize..8 {
+        let name = format!("texcoord{}", n);
+        if src.contains(&name) {
+            injected_locals.push(format!("    let {}: vec2<f32> = _isf_uv;", name));
+        }
+    }
+
+    // texOffsets: ISF multi-pass neighbor-coord array (stripped above). Inject a stub.
+    if src.contains("texOffsets") {
+        injected_locals.push(
+            "    let texOffsets = array<vec2<f32>, 8>(\
+            _isf_uv + vec2<f32>(-2.0/isf_u.rendersize_x, 0.0), \
+            _isf_uv + vec2<f32>(-1.0/isf_u.rendersize_x, 0.0), \
+            _isf_uv, \
+            _isf_uv + vec2<f32>(1.0/isf_u.rendersize_x, 0.0), \
+            _isf_uv + vec2<f32>(2.0/isf_u.rendersize_x, 0.0), \
+            _isf_uv + vec2<f32>(0.0, -1.0/isf_u.rendersize_y), \
+            _isf_uv + vec2<f32>(0.0, 1.0/isf_u.rendersize_y), \
+            _isf_uv + vec2<f32>(0.0, 2.0/isf_u.rendersize_y));".to_string()
+        );
+    }
+
+    // rotmat: ISF rotation matrix varying. Inject identity mat2x2 placeholder.
+    if src.contains("rotmat") {
+        injected_locals.push(
+            "    let rotmat: mat2x2<f32> = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);".to_string()
+        );
     }
 
     // --- Entry point ---
@@ -982,31 +1052,38 @@ fn expand_fn_like_macros(src: &str) -> String {
     let mut result = body_lines.join("\n");
     if src.ends_with('\n') { result.push('\n'); }
 
-    for (name, params, body) in &macros {
-        let mut s2 = String::with_capacity(result.len());
-        let mut rest: &str = &result;
-        let pattern = format!("{}(", name);
-        loop {
-            let Some(pos) = rest.find(&pattern) else { break };
-            let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
-            if is_word_char(before) {
-                s2.push_str(&rest[..pos + 1]);
-                rest = &rest[pos + 1..];
-                continue;
+    // Fixed-point: repeat expansion passes until no more macro calls remain.
+    // Needed for macros that expand into calls to other macros (e.g. Median's s2/mn3/mx3 chain).
+    let max_passes = 16;
+    for _pass in 0..max_passes {
+        let prev = result.clone();
+        for (name, params, body) in &macros {
+            let mut s2 = String::with_capacity(result.len());
+            let mut rest: &str = &result;
+            let pattern = format!("{}(", name);
+            loop {
+                let Some(pos) = rest.find(&pattern) else { break };
+                let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+                if is_word_char(before) {
+                    s2.push_str(&rest[..pos + 1]);
+                    rest = &rest[pos + 1..];
+                    continue;
+                }
+                s2.push_str(&rest[..pos]);
+                rest = &rest[pos + pattern.len()..];
+                let (args_str, after) = extract_balanced(rest, ')');
+                rest = after;
+                let args = split_top_level_commas(args_str);
+                let mut expanded = body.clone();
+                for (param, arg) in params.iter().zip(args.iter()) {
+                    expanded = replace_word(&expanded, param, arg.trim());
+                }
+                s2.push_str(&expanded);
             }
-            s2.push_str(&rest[..pos]);
-            rest = &rest[pos + pattern.len()..];
-            let (args_str, after) = extract_balanced(rest, ')');
-            rest = after;
-            let args = split_top_level_commas(args_str);
-            let mut expanded = body.clone();
-            for (param, arg) in params.iter().zip(args.iter()) {
-                expanded = replace_word(&expanded, param, arg.trim());
-            }
-            s2.push_str(&expanded);
+            s2.push_str(rest);
+            result = s2;
         }
-        s2.push_str(rest);
-        result = s2;
+        if result == prev { break; }
     }
     result
 }
@@ -1156,15 +1233,29 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                 }
             }
         }
-        if let Some((orig, renamed)) = new_local_rename.take() {
-            active_renames.push((orig, renamed));
-        }
+        // Track if this line is the declaration that introduced a new local rename.
+        let just_declared: Option<(String, String)> = new_local_rename.take().map(|(orig, renamed)| {
+            active_renames.push((orig.clone(), renamed.clone()));
+            (orig, renamed)
+        });
 
         // Apply active renames in function bodies.
         if depth_before > 0 && !active_renames.is_empty() {
             let mut new_line = line.to_owned();
-            for (orig, renamed) in &active_renames {
-                new_line = replace_word(&new_line, orig, renamed);
+            if let Some((ref orig, ref renamed)) = just_declared {
+                // Declaration line: apply all pre-existing renames fully, but for the
+                // newly declared name only rename the first occurrence (the LHS identifier).
+                // The RHS references to the same name are ISF inputs and must remain
+                // unrenamed so the ISF substitution pass can convert them to isf_u.NAME.
+                for (o, r) in &active_renames {
+                    if o == orig { continue; }
+                    new_line = replace_word(&new_line, o, r);
+                }
+                new_line = replace_word_first(&new_line, orig, renamed);
+            } else {
+                for (orig, renamed) in &active_renames {
+                    new_line = replace_word(&new_line, orig, renamed);
+                }
             }
             out.push_str(&new_line);
             out.push('\n');
@@ -1190,20 +1281,29 @@ fn find_matching_close(src: &str, close: char) -> Option<usize> {
 }
 
 fn strip_isf_coord_varyings(src: &str) -> String {
-    const ISF_COORD_NAMES: &[&str] = &[
-        "left_coord", "right_coord", "above_coord", "below_coord",
-        "lefta_coord", "righta_coord", "leftb_coord", "rightb_coord",
-        "translated_coord", "texOffsets",
+    // Strip ALL module-scope `varying T name;` and `in T name;` declarations.
+    // GLSL varyings have no equivalent in WGSL; ISF-specific ones are re-injected as
+    // local `let` bindings inside fs_main.
+    const GLSL_TYPES: &[&str] = &[
+        "float", "int", "uint", "bool",
+        "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "mat2", "mat3", "mat4",
     ];
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
         let t = line.trim();
-        let is_coord_decl = ISF_COORD_NAMES.iter().any(|name| {
-            t.contains(name)
-                && (t.starts_with("varying ") || t.starts_with("in "))
-                && (t.ends_with(';') || t.ends_with("] ;") || t.contains('['))
-        });
-        if !is_coord_decl {
+        let is_varying_decl = (t.starts_with("varying ") || t.starts_with("in "))
+            && t.ends_with(';')
+            && GLSL_TYPES.iter().any(|ty| {
+                let rest = if t.starts_with("varying ") { &t[8..] } else { &t[3..] };
+                let rest = rest.trim_start();
+                rest.starts_with(ty) && {
+                    let after = rest[ty.len()..].trim_start();
+                    // Must be `IDENT` or `IDENT[N]`, not a function
+                    !after.starts_with('(')
+                }
+            });
+        if !is_varying_decl {
             out.push_str(line);
             out.push('\n');
         }
@@ -1395,6 +1495,28 @@ fn split_first_top_level_comma(src: &str) -> (&str, &str) {
 // Word replacement (respects word boundaries)
 // ---------------------------------------------------------------------------
 
+/// Like `replace_word` but only replaces the FIRST whole-word occurrence of `word`.
+fn replace_word_first(src: &str, word: &str, replacement: &str) -> String {
+    let mut rest = src;
+    while let Some(pos) = rest.find(word) {
+        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let after_pos = pos + word.len();
+        let after = if after_pos < rest.len() { rest.as_bytes()[after_pos] as char } else { ' ' };
+        if is_word_char(before) || before == '.' || is_word_char(after) {
+            rest = &rest[pos + 1..];
+            continue;
+        }
+        // Found first whole-word occurrence — replace it and return
+        let prefix_len = src.len() - rest.len();
+        let mut out = String::with_capacity(src.len());
+        out.push_str(&src[..prefix_len + pos]);
+        out.push_str(replacement);
+        out.push_str(&rest[after_pos..]);
+        return out;
+    }
+    src.to_owned() // no match
+}
+
 fn replace_word(src: &str, word: &str, replacement: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
@@ -1545,7 +1667,7 @@ fn convert_stpq_swizzles(src: &str) -> String {
             let mut k = j;
             while k < bytes.len() && "stpq".contains(bytes[k] as char) { k += 1; }
             let swizzle_len = k - j;
-            if swizzle_len >= 1 && swizzle_len <= 4 {
+            if swizzle_len >= 2 && swizzle_len <= 4 {
                 // Ensure what follows is not a word char (e.g. `.step` should not match `.st`)
                 let after_ok = k >= bytes.len() || !is_word_char(bytes[k] as char);
                 if after_ok {
@@ -2133,32 +2255,27 @@ fn convert_arg_list(args: &str) -> String {
         .join(", ")
 }
 
-fn glsl_type_to_wgsl(t: &str) -> &'static str {
+fn glsl_type_to_wgsl(t: &str) -> std::borrow::Cow<'_, str> {
     match t {
-        "float" => "f32",
-        "int" => "i32",
-        "uint" => "u32",
-        "bool" => "bool",
-        "void" => "void",
-        "vec2" => "vec2<f32>",
-        "vec3" => "vec3<f32>",
-        "vec4" => "vec4<f32>",
-        "ivec2" => "vec2<i32>",
-        "ivec3" => "vec3<i32>",
-        "ivec4" => "vec4<i32>",
-        "uvec2" => "vec2<u32>",
-        "uvec3" => "vec3<u32>",
-        "uvec4" => "vec4<u32>",
-        "mat2" | "mat2x2" => "mat2x2<f32>",
-        "mat3" | "mat3x3" => "mat3x3<f32>",
-        "mat4" | "mat4x4" => "mat4x4<f32>",
-        other => {
-            // Return as-is (may be a user-defined type)
-            // SAFETY: we only have 'static input types above; for others we fall through
-            // In practice ISF shaders rarely use custom struct types
-            let _ = other;
-            "f32" // best-effort fallback
-        }
+        "float"          => "f32".into(),
+        "int"            => "i32".into(),
+        "uint"           => "u32".into(),
+        "bool"           => "bool".into(),
+        "void"           => "void".into(),
+        "vec2"           => "vec2<f32>".into(),
+        "vec3"           => "vec3<f32>".into(),
+        "vec4"           => "vec4<f32>".into(),
+        "ivec2"          => "vec2<i32>".into(),
+        "ivec3"          => "vec3<i32>".into(),
+        "ivec4"          => "vec4<i32>".into(),
+        "uvec2"          => "vec2<u32>".into(),
+        "uvec3"          => "vec3<u32>".into(),
+        "uvec4"          => "vec4<u32>".into(),
+        "mat2" | "mat2x2" => "mat2x2<f32>".into(),
+        "mat3" | "mat3x3" => "mat3x3<f32>".into(),
+        "mat4" | "mat4x4" => "mat4x4<f32>".into(),
+        // User-defined struct types: pass through unchanged.
+        other => other.into(),
     }
 }
 
@@ -2206,6 +2323,18 @@ fn convert_var_declarations(src: &str) -> String {
         "mat2", "mat3", "mat4",
     ];
 
+    // Collect user-defined struct type names so `TypeName varName;` can be converted.
+    let mut struct_names: Vec<String> = Vec::new();
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("struct ") {
+            let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            if name_end > 0 {
+                struct_names.push(rest[..name_end].to_owned());
+            }
+        }
+    }
+
     let mut out = String::with_capacity(src.len());
     let mut in_struct = false;
     let mut struct_brace_depth = 0i32;
@@ -2236,10 +2365,43 @@ fn convert_var_declarations(src: &str) -> String {
             out.push('\n');
             continue;
         }
-        out.push_str(&try_convert_var_decl(line, &glsl_types));
+        let converted = try_convert_var_decl(line, &glsl_types);
+        // If the primitive-type pass left it unchanged, try struct-type variable declarations.
+        if converted == line {
+            let trimmed = line.trim();
+            if let Some(struct_wgsl) = try_convert_struct_var_decl(trimmed, &struct_names) {
+                let indent = &line[..line.len() - trimmed.len()];
+                out.push_str(indent);
+                out.push_str(&struct_wgsl);
+            } else {
+                out.push_str(&converted);
+            }
+        } else {
+            out.push_str(&converted);
+        }
         out.push('\n');
     }
     out
+}
+
+/// Convert `StructType varName;` or `StructType varName = expr;` to WGSL `var varName: StructType`.
+fn try_convert_struct_var_decl(trimmed: &str, struct_names: &[String]) -> Option<String> {
+    for name in struct_names {
+        let prefix = format!("{} ", name);
+        if !trimmed.starts_with(&prefix) { continue; }
+        let rest = trimmed[prefix.len()..].trim_start();
+        let ident_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        if ident_end == 0 { continue; }
+        let ident = &rest[..ident_end];
+        let after = rest[ident_end..].trim_start();
+        if after == ";" || after.is_empty() {
+            return Some(format!("var {}: {};", ident, name));
+        } else if let Some(expr_rest) = after.strip_prefix('=') {
+            let expr = expr_rest.trim().trim_end_matches(';');
+            return Some(format!("var {}: {} = {};", ident, name, expr));
+        }
+    }
+    None
 }
 
 /// Convert a GLSL struct field `type name;` to WGSL `name: wgsl_type,`
@@ -2859,11 +3021,27 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
     // `f32(...)` literal cast
     if arg.starts_with("f32(") { return Some("f32".to_owned()); }
 
-    // Swizzle: `expr.xyzw` → type from swizzle length
-    // Find the last `.` that's followed only by swizzle chars
+    // Swizzle: `expr.xyzw` → type from swizzle length.
+    // Only treat as a whole-expression trailing swizzle if the part before the `.` has
+    // no top-level arithmetic operators. Otherwise expressions like `wave - loc.x` would
+    // pick up `.x` from `loc.x` and incorrectly return f32 when the expression is vec4.
     if let Some(dot_pos) = arg.rfind('.') {
+        let before_dot = &arg[..dot_pos];
         let swizzle = &arg[dot_pos + 1..];
-        if !swizzle.is_empty() && swizzle.chars().all(|c| "xyzwrgba".contains(c)) {
+        let has_top_level_op = {
+            let mut depth = 0i32;
+            let mut found = false;
+            for c in before_dot.chars() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    '+' | '-' | '*' | '/' if depth == 0 => { found = true; break; }
+                    _ => {}
+                }
+            }
+            found
+        };
+        if !has_top_level_op && !swizzle.is_empty() && swizzle.chars().all(|c| "xyzwrgba".contains(c)) {
             return Some(match swizzle.len() {
                 1 => "f32".to_owned(),
                 2 => "vec2<f32>".to_owned(),
@@ -2917,6 +3095,25 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
                 if next_after_sw.is_empty()
                     || next_after_sw.starts_with(|c: char| !c.is_alphanumeric() && c != '_')
                 {
+                    return Some(match sw_len {
+                        1 => "f32".to_owned(),
+                        2 => "vec2<f32>".to_owned(),
+                        3 => "vec3<f32>".to_owned(),
+                        4 => "vec4<f32>".to_owned(),
+                        _ => unreachable!(),
+                    });
+                }
+            }
+        }
+
+        // Pattern: `(base_ident + ... ).swizzle` where a swizzle is applied to a group that
+        // CONTAINS the base identifier. after_ident is like ` + sample1 + ...).rgb / ...`.
+        // Find the first `)` in after_ident; if what follows is `.swizzle`, use that type.
+        if let Some(close_pos) = after_ident.find(')') {
+            let after_close = after_ident[close_pos + 1..].trim_start();
+            if let Some(sw_part) = after_close.strip_prefix('.') {
+                let sw_len = sw_part.find(|c: char| !"xyzwrgba".contains(c)).unwrap_or(sw_part.len());
+                if sw_len > 0 && sw_len <= 4 {
                     return Some(match sw_len {
                         1 => "f32".to_owned(),
                         2 => "vec2<f32>".to_owned(),
@@ -3266,10 +3463,14 @@ fn fix_builtin_call(
             continue;
         };
 
-        // Broadcast scalar literals to the detected vector type
+        // Broadcast scalar values to the detected vector type.
+        // Wrap scalar literals and ISF uniform fields (isf_u.* — always f32).
+        // Leave args alone if they are already the right vector type.
         let new_args: Vec<String> = args.iter().map(|arg| {
             let a = arg.trim();
-            if is_scalar_literal(a) {
+            let already_vec = infer_call_arg_type(a, var_types)
+                .map_or(false, |ty| ty.starts_with("vec"));
+            if !already_vec && (is_scalar_literal(a) || a.starts_with("isf_u.")) {
                 format!("{}({})", vty, a)
             } else {
                 a.to_owned()
@@ -3285,6 +3486,67 @@ fn fix_builtin_call(
         out.push(')');
     }
 
+    out
+}
+
+/// Fix `i32(expr) == f32_val` comparisons to `f32(i32(expr)) == f32_val`.
+/// GLSL allows implicit int→float coercion; WGSL requires matching types in comparisons.
+fn fix_int_cast_comparisons(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        out.push_str(&fix_int_cast_cmp_in_line(line));
+        out.push('\n');
+    }
+    if !src.ends_with('\n') && out.ends_with('\n') { out.pop(); }
+    out
+}
+
+fn fix_int_cast_cmp_in_line(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains("i32(") && !line.contains("u32(") {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let mut result = line.to_owned();
+    for cast in &["i32(", "u32("] {
+        result = fix_cast_cmp_one(&result, cast);
+    }
+    std::borrow::Cow::Owned(result)
+}
+
+fn fix_cast_cmp_one(line: &str, cast: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        let Some(pos) = rest.find(cast) else {
+            out.push_str(rest);
+            break;
+        };
+        // Word boundary check
+        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        if is_word_char(before) {
+            out.push_str(&rest[..pos + 1]);
+            rest = &rest[pos + 1..];
+            continue;
+        }
+        let after_cast = &rest[pos + cast.len()..];
+        let (inner, after_paren) = extract_balanced(after_cast, ')');
+        // Check what follows: optional whitespace then == or !=
+        let after_trimmed = after_paren.trim_start();
+        let is_eq = after_trimmed.starts_with("==") || after_trimmed.starts_with("!=");
+        if is_eq {
+            // Wrap: cast(inner) → f32(cast(inner))
+            out.push_str(&rest[..pos]);
+            out.push_str("f32(");
+            out.push_str(cast);
+            out.push_str(inner);
+            out.push_str("))");
+            rest = after_paren;
+        } else {
+            // Leave as-is: advance past this cast
+            let consumed = pos + cast.len() + inner.len() + 1;
+            out.push_str(&rest[..consumed]);
+            rest = after_paren;
+        }
+    }
     out
 }
 
@@ -4474,6 +4736,21 @@ mod tests {
     }
 
     #[test]
+    fn test_vec4_rgb_plus_alpha_preserved() {
+        use std::collections::HashMap;
+        let mut var_types = HashMap::new();
+        var_types.insert("sample0".to_string(), "vec4<f32>".to_string());
+        var_types.insert("sample1".to_string(), "vec4<f32>".to_string());
+        var_types.insert("sample2".to_string(), "vec4<f32>".to_string());
+        // The line: return vec4<f32>((sample0 + sample1 + sample2).rgb / (3.0), 1.0);
+        let line = "\t\treturn  vec4<f32>((sample0 + sample1 + sample2).rgb / (3.0), 1.0);";
+        let result = fix_vec_constructors_in_line(line, &var_types);
+        eprintln!("input:  {}", line);
+        eprintln!("output: {}", result);
+        assert!(result.contains("1.0"), "1.0 should be preserved: {}", result);
+    }
+
+    #[test]
     fn test_colorcycle_transpiles() {
         let wgsl = transpile_shader("ColorCycle.fs");
         eprintln!("=== ColorCycle WGSL ===\n{}", wgsl);
@@ -4668,9 +4945,10 @@ mod tests {
         if !lib_dir.exists() { return; }
         
         let samples = &[
-            "Luminance Melt.fs",
+            "Gloom.fs",
+            "Mosaic.fs",
             "Hexagonalize.fs",
-            "Auto Colors Histogram.fs",
+            "Test-Audio.fs",
         ];
         
         for name in samples {
