@@ -118,6 +118,8 @@ impl ControlGui {
 
         ui.separator();
 
+        ui.text("Receive Port:");
+        ui.same_line();
         let mut port_i32 = port as i32;
         ui.set_next_item_width(100.0);
         if ui.input_int("##osc_port", &mut port_i32).build() {
@@ -203,6 +205,25 @@ impl ControlGui {
 
         ui.separator();
         ui.text_disabled("Send an OSC message to the address above to confirm connectivity");
+        ui.text_disabled("OSC is receive-only — Rustjay listens for incoming control messages.");
+
+        ui.separator();
+        ui.text_colored([0.0, 1.0, 1.0, 1.0], "Recent Messages");
+        let messages = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.osc_message_log.clone()
+        };
+        if messages.is_empty() {
+            ui.text_disabled("No messages received yet.");
+        } else {
+            ui.child_window("osc_messages")
+                .size([0.0, 100.0])
+                .build(|| {
+                    for (addr, value, _time) in messages.iter().rev().take(20) {
+                        ui.text(format!("{} = {:.3}", addr, value));
+                    }
+                });
+        }
     }
 
     /// Build the Web tab.
