@@ -41,6 +41,10 @@
   - [Multi-Pass with RenderGraph](rendering/render-graph.md)
   - [Mesh Displacement](rendering/mesh-displacement.md)
 
+# Examples
+
+- [ISF Shader Viewer](examples/isf-example.md)
+
 ---
 
 [Keyboard Shortcuts & Feature Flags](reference.md)
