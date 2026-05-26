@@ -1,9 +1,139 @@
-/* rustjay-engine guide — minimal style adjustments */
+/* ── rustjay-engine guide — custom styles ── */
+
 :root {
+    --rj-accent:    #22d3ee;   /* cyan  */
+    --rj-accent2:   #a78bfa;   /* purple */
+    --rj-bg-hero:   #0d0f18;
+    --rj-bg-card:   #151824;
+    --rj-border:    rgba(34, 211, 238, 0.18);
+    --rj-text-dim:  #94a3b8;
     --sidebar-width: 260px;
 }
 
-.chapter li a { font-size: 0.95em; }
+/* ── Hero ────────────────────────────────────────────────────────────── */
 
-/* Slightly wider code blocks */
+.rj-hero {
+    background: var(--rj-bg-hero);
+    border: 1px solid var(--rj-border);
+    border-radius: 12px;
+    margin: 0 0 2.5rem 0;
+    padding: 3rem 2rem;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.rj-hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 60% 50% at 20% 50%, rgba(167,139,250,0.08) 0%, transparent 70%),
+        radial-gradient(ellipse 60% 50% at 80% 50%, rgba(34,211,238,0.08) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.rj-hero-inner {
+    position: relative;
+    max-width: 640px;
+    margin: 0 auto;
+}
+
+.rj-logo {
+    font-size: 2.6rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: #f1f5f9;
+    line-height: 1;
+    margin-bottom: 1rem;
+    font-family: "Fira Code", "Source Code Pro", monospace;
+}
+
+.rj-logo-accent {
+    color: var(--rj-accent);
+}
+
+.rj-tagline {
+    font-size: 1.05rem;
+    color: var(--rj-text-dim);
+    line-height: 1.65;
+    margin: 0 0 2rem 0;
+}
+
+/* ── CTA buttons ─────────────────────────────────────────────────────── */
+
+.rj-cta {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.rj-btn {
+    display: inline-block;
+    padding: 0.6rem 1.4rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-decoration: none !important;
+    transition: opacity 0.15s, transform 0.1s;
+    letter-spacing: 0.01em;
+}
+
+.rj-btn:hover {
+    opacity: 0.85;
+    transform: translateY(-1px);
+}
+
+.rj-btn-primary {
+    background: var(--rj-accent);
+    color: #0d0f18 !important;
+}
+
+.rj-btn-ghost {
+    background: transparent;
+    color: var(--rj-accent) !important;
+    border: 1px solid var(--rj-border);
+}
+
+/* ── Feature grid ────────────────────────────────────────────────────── */
+
+.rj-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 0 0 2.5rem 0;
+}
+
+.rj-feature {
+    background: var(--rj-bg-card);
+    border: 1px solid var(--rj-border);
+    border-radius: 8px;
+    padding: 1.25rem 1.25rem 1rem;
+}
+
+.rj-feature-icon {
+    font-size: 1.4rem;
+    color: var(--rj-accent);
+    margin-bottom: 0.5rem;
+    line-height: 1;
+}
+
+.rj-feature h3 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin: 0 0 0.4rem 0;
+    padding: 0;
+    border: none;
+}
+
+.rj-feature p {
+    font-size: 0.82rem;
+    color: var(--rj-text-dim);
+    line-height: 1.55;
+    margin: 0;
+}
+
+/* ── Misc tweaks ─────────────────────────────────────────────────────── */
 code { font-size: 0.88em; }
