@@ -1,3 +1,20 @@
+# Rust build output
 /target
+
+# Backup / scratch files
 Cargo.toml.old
 src.old/
+test_pod2
+profile.json.gz
+profile-*.json.gz
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# AI / tooling working directories
+.agents/
+
+# Spec / scratch directories created by tools
+**/.spec/
+**/.egui_theme_spec/
