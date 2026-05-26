@@ -99,7 +99,7 @@ pub mod prelude {
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
     #[cfg(feature = "egui")]
-    pub use rustjay_gui::AnyEguiTab;
+    pub use rustjay_gui::{AnyEguiTab, param_slider, param_slider_int};
     pub use rustjay_render::{WgpuEngine, Texture, InputTexture, PreviousFrameTexture};
     pub use crate::{run, run_with_tabs};
     #[cfg(feature = "egui")]

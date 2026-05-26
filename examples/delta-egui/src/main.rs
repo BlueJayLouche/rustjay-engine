@@ -537,56 +537,35 @@ impl AnyEguiTab for MotionTab {
             .downcast_mut::<DeltaState>()
             .expect("MotionTab expects DeltaState");
 
-        // Custom dark styling for this tab
         let _w = ui.push_id("motion_tab", |ui| {
             ui.heading("RGB Delay / Motion Extraction");
             ui.separator();
 
-            // Enable toggle
+            // Enable toggle is not an engine param — stays in local state.
             let mut enabled = state.enabled;
             if ui.checkbox(&mut enabled, "Enabled").changed() {
                 state.enabled = enabled;
             }
             ui.separator();
 
-            // Delays
-            ui.label(egui::RichText::new("Channel Delays (frames)").strong().color(egui::Color32::from_rgb(0, 180, 255)));
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Red").color(egui::Color32::from_rgb(255, 100, 100)));
-                if ui.add(egui::Slider::new(&mut state.red_delay, 0..=16).show_value(true)).changed() {
-                    engine.set_param_base("red_delay", state.red_delay as f32);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Green").color(egui::Color32::from_rgb(100, 255, 100)));
-                if ui.add(egui::Slider::new(&mut state.green_delay, 0..=16).show_value(true)).changed() {
-                    engine.set_param_base("green_delay", state.green_delay as f32);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blue").color(egui::Color32::from_rgb(100, 140, 255)));
-                if ui.add(egui::Slider::new(&mut state.blue_delay, 0..=16).show_value(true)).changed() {
-                    engine.set_param_base("blue_delay", state.blue_delay as f32);
-                }
-            });
+            ui.label(egui::RichText::new("Channel Delays (frames)").strong());
+            param_slider_int(ui, engine, "red_delay",   "Red",   0, 16);
+            param_slider_int(ui, engine, "green_delay", "Green", 0, 16);
+            param_slider_int(ui, engine, "blue_delay",  "Blue",  0, 16);
 
             ui.separator();
 
-            // Intensity & blend
-            ui.horizontal(|ui| {
-                ui.label("Intensity:");
-                if ui.add(egui::Slider::new(&mut state.intensity, 0.0..=1.0).show_value(true)).changed() {
-                    engine.set_param_base("intensity", state.intensity);
-                }
-            });
+            param_slider(ui, engine, "intensity", "Intensity", 0.0, 1.0);
 
+            // Blend mode: enum, not a plain float — handled inline.
             let blend_names: Vec<&str> = BlendMode::ALL.iter().map(|b| b.name()).collect();
-            let mut blend_idx = state.blend_mode as usize;
+            let mut blend_idx = engine.get_param_base("blend_mode").unwrap_or(0.0).round() as usize;
+            let prev_blend = blend_idx;
             ui.horizontal(|ui| {
                 ui.label("Blend Mode:");
                 egui::ComboBox::from_id_salt("blend_mode")
                     .width(ui.available_width())
-                    .selected_text(blend_names[blend_idx])
+                    .selected_text(blend_names[blend_idx.min(blend_names.len() - 1)])
                     .show_ui(ui, |ui| {
                         for (i, name) in blend_names.iter().enumerate() {
                             if ui.selectable_label(blend_idx == i, *name).clicked() {
@@ -595,68 +574,30 @@ impl AnyEguiTab for MotionTab {
                         }
                     });
             });
-            if blend_idx != state.blend_mode as usize {
-                state.blend_mode = BlendMode::ALL[blend_idx];
+            if blend_idx != prev_blend {
                 engine.set_param_base("blend_mode", blend_idx as f32);
             }
 
-            let mut grayscale = state.grayscale_input;
+            // Grayscale: bool param — handled inline.
+            let mut grayscale = engine.get_param_base("grayscale_input").unwrap_or(1.0) > 0.5;
             if ui.checkbox(&mut grayscale, "Grayscale Input").changed() {
-                state.grayscale_input = grayscale;
                 engine.set_param_base("grayscale_input", if grayscale { 1.0 } else { 0.0 });
             }
 
             ui.separator();
 
-            // Channel gains
-            ui.label(egui::RichText::new("Channel Gains").strong().color(egui::Color32::from_rgb(0, 180, 255)));
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Red").color(egui::Color32::from_rgb(255, 100, 100)));
-                if ui.add(egui::Slider::new(&mut state.red_gain, -2.0..=2.0).show_value(true)).changed() {
-                    engine.set_param_base("red_gain", state.red_gain);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Green").color(egui::Color32::from_rgb(100, 255, 100)));
-                if ui.add(egui::Slider::new(&mut state.green_gain, -2.0..=2.0).show_value(true)).changed() {
-                    engine.set_param_base("green_gain", state.green_gain);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blue").color(egui::Color32::from_rgb(100, 140, 255)));
-                if ui.add(egui::Slider::new(&mut state.blue_gain, -2.0..=2.0).show_value(true)).changed() {
-                    engine.set_param_base("blue_gain", state.blue_gain);
-                }
-            });
+            ui.label(egui::RichText::new("Channel Gains").strong());
+            param_slider(ui, engine, "red_gain",   "Red",   -2.0, 2.0);
+            param_slider(ui, engine, "green_gain", "Green", -2.0, 2.0);
+            param_slider(ui, engine, "blue_gain",  "Blue",  -2.0, 2.0);
 
             ui.separator();
 
-            // Mix options
-            ui.label(egui::RichText::new("Mix & Post").strong().color(egui::Color32::from_rgb(0, 180, 255)));
-            ui.horizontal(|ui| {
-                ui.label("Input Mix:");
-                if ui.add(egui::Slider::new(&mut state.input_mix, 0.0..=1.0).show_value(true)).changed() {
-                    engine.set_param_base("input_mix", state.input_mix);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Trail Fade:");
-                if ui.add(egui::Slider::new(&mut state.trail_fade, 0.0..=1.0).show_value(true)).changed() {
-                    engine.set_param_base("trail_fade", state.trail_fade);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Threshold:");
-                if ui.add(egui::Slider::new(&mut state.threshold, 0.0..=1.0).show_value(true)).changed() {
-                    engine.set_param_base("threshold", state.threshold);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Smoothing:");
-                if ui.add(egui::Slider::new(&mut state.smoothing, 0.0..=1.0).show_value(true)).changed() {
-                    engine.set_param_base("smoothing", state.smoothing);
-                }
-            });
+            ui.label(egui::RichText::new("Mix & Post").strong());
+            param_slider(ui, engine, "input_mix",  "Input Mix",  0.0, 1.0);
+            param_slider(ui, engine, "trail_fade", "Trail Fade", 0.0, 1.0);
+            param_slider(ui, engine, "threshold",  "Threshold",  0.0, 1.0);
+            param_slider(ui, engine, "smoothing",  "Smoothing",  0.0, 1.0);
         });
     }
 }

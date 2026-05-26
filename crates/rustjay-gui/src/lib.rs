@@ -26,6 +26,9 @@ pub mod egui_theme;
 #[cfg(feature = "egui")]
 /// Egui tab builders.
 pub mod egui_tabs;
+#[cfg(feature = "egui")]
+/// HUD widget helpers for egui.
+pub mod egui_widgets;
 
 pub use control_gui::ControlGui;
 pub use renderer::ImGuiRenderer;
@@ -33,7 +36,7 @@ pub use renderer::ImGuiRenderer;
 #[cfg(feature = "egui")]
 pub use egui_renderer::EguiRenderer;
 #[cfg(feature = "egui")]
-pub use egui_tab::AnyEguiTab;
+pub use egui_tab::{AnyEguiTab, param_slider, param_slider_int};
 #[cfg(feature = "egui")]
 pub use egui_control_gui::EguiControlGui;
 
