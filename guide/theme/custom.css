@@ -1,139 +1,624 @@
-/* ── rustjay-engine guide — custom styles ── */
+/* ─────────────────────────────────────────────────────────────────────────
+   rustjay-engine guide — HUD theme
+   Matches the web remote control aesthetic: near-black ground, amber signal,
+   square corners, monospace, hairline borders, corner brackets.
 
-:root {
-    --rj-accent:    #22d3ee;   /* cyan  */
-    --rj-accent2:   #a78bfa;   /* purple */
-    --rj-bg-hero:   #0d0f18;
-    --rj-bg-card:   #151824;
-    --rj-border:    rgba(34, 211, 238, 0.18);
-    --rj-text-dim:  #94a3b8;
+   Applied on top of mdbook's "navy" theme via `additional-css`.
+   Existing `.rj-*` class names are preserved so all pages keep working —
+   they now resolve to the HUD palette.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root,
+.navy,
+.coal,
+.ayu,
+html.navy,
+html.coal,
+html.ayu {
+    /* ── Palette (mirrors the web --css variables) ── */
+    --rj-bg:         #07090b;
+    --rj-bg-hero:    #0c1014;
+    --rj-bg-card:    #0c1014;
+    --rj-bg-elev:    #11161c;
+    --rj-hair:       rgba(255,255,255,0.06);
+    --rj-hair-2:     rgba(255,255,255,0.12);
+    --rj-hair-3:     rgba(255,255,255,0.22);
+
+    --rj-ink:        #e8ebee;
+    --rj-ink-2:      #aab1b9;
+    --rj-ink-3:      #6a7280;
+    --rj-ink-4:      #3a4048;
+
+    --rj-amber:      oklch(0.80 0.16 75);
+    --rj-amber-d:    oklch(0.55 0.14 75);
+    --rj-signal:     oklch(0.78 0.18 145);
+    --rj-alert:      oklch(0.70 0.20 25);
+    --rj-cool:       oklch(0.80 0.10 215);
+
+    /* Legacy aliases — old class names keep working */
+    --rj-accent:     var(--rj-amber);
+    --rj-accent2:    var(--rj-cool);
+    --rj-border:     var(--rj-hair-2);
+    --rj-text-dim:   var(--rj-ink-3);
+
+    --rj-mono:       ui-monospace, "JetBrains Mono", "Fira Code",
+                     "SF Mono", Menlo, Monaco, Consolas, monospace;
+
     --sidebar-width: 260px;
+
+    /* ── mdbook variable overrides (navy theme) ── */
+    --bg:                  var(--rj-bg) !important;
+    --fg:                  var(--rj-ink) !important;
+    --sidebar-bg:          #08090b !important;
+    --sidebar-fg:          var(--rj-ink-2) !important;
+    --sidebar-non-existant:var(--rj-ink-4) !important;
+    --sidebar-active:      var(--rj-amber) !important;
+    --sidebar-spacer:      var(--rj-hair) !important;
+    --scrollbar:           var(--rj-hair-3) !important;
+    --icons:               var(--rj-ink-3) !important;
+    --icons-hover:         var(--rj-amber) !important;
+    --links:               var(--rj-amber) !important;
+    --inline-code-color:   var(--rj-amber) !important;
+    --theme-popup-bg:      #0c1014 !important;
+    --theme-popup-border:  var(--rj-hair-2) !important;
+    --theme-hover:         #11161c !important;
+    --quote-bg:            #0c1014 !important;
+    --quote-border:        var(--rj-amber-d) !important;
+    --table-border-color:  var(--rj-hair-2) !important;
+    --table-header-bg:     #11161c !important;
+    --table-alternate-bg:  rgba(255,255,255,0.015) !important;
+    --searchbar-border-color: var(--rj-hair-2) !important;
+    --searchbar-bg:        #0c1014 !important;
+    --searchbar-fg:        var(--rj-ink) !important;
+    --searchbar-shadow-color: rgba(0,0,0,0.4) !important;
+    --searchresults-header-fg: var(--rj-ink-3) !important;
+    --searchresults-border-color: var(--rj-hair-2) !important;
+    --searchresults-li-bg: #0c1014 !important;
+    --search-mark-bg:      var(--rj-amber) !important;
+    --warning-border:      var(--rj-amber) !important;
+    --color-scheme:        dark;
 }
 
-/* ── Hero ────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────
+   Base — grid backdrop + scanline, like the web control page
+   ───────────────────────────────────────────────────────────────────────── */
 
-.rj-hero {
-    background: var(--rj-bg-hero);
-    border: 1px solid var(--rj-border);
-    border-radius: 12px;
-    margin: 0 0 2.5rem 0;
-    padding: 3rem 2rem;
-    text-align: center;
+html, body {
+    background: var(--rj-bg) !important;
+    color: var(--rj-ink);
+}
+
+body.navy, body.coal, body.ayu {
+    background-color: var(--rj-bg) !important;
+    background-image:
+        linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 32px 32px;
+    background-position: -1px -1px;
+}
+
+body::after {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
+    z-index: 9999;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Top menu bar
+   ───────────────────────────────────────────────────────────────────────── */
+
+.menu-bar {
+    background: linear-gradient(180deg, #11161c, #0c1014) !important;
+    border-bottom: 1px solid var(--rj-hair-2) !important;
+    font-family: var(--rj-mono);
+}
+.menu-bar .menu-title {
+    font-family: var(--rj-mono);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--rj-ink);
+    text-transform: uppercase;
+    font-size: 0.95rem;
+}
+.menu-bar .menu-title::after {
+    content: " · v1.0";
+    color: var(--rj-ink-4);
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    font-size: 0.7em;
+    margin-left: 0.4em;
+}
+.menu-bar .icon-button { color: var(--rj-ink-3); }
+.menu-bar .icon-button:hover { color: var(--rj-amber); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Sidebar
+   ───────────────────────────────────────────────────────────────────────── */
+
+.sidebar {
+    background: #08090b !important;
+    border-right: 1px solid var(--rj-hair-2);
+    font-family: var(--rj-mono);
+}
+.sidebar .chapter li.chapter-item {
+    line-height: 1.45;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+}
+.sidebar .chapter li.part-title {
+    color: var(--rj-ink-3) !important;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    font-size: 0.65rem !important;
+    padding-left: 1.2rem;
+    margin-top: 1.4rem;
     position: relative;
-    overflow: hidden;
+}
+.sidebar .chapter li.part-title::before {
+    content: "▌";
+    color: var(--rj-amber);
+    position: absolute;
+    left: 0.5rem;
+}
+.sidebar .chapter li a {
+    color: var(--rj-ink-2);
+    border-radius: 0 !important;
+    padding: 6px 10px 6px 18px !important;
+    position: relative;
+    transition: background 0.12s, color 0.12s;
+}
+.sidebar .chapter li a:hover {
+    background: rgba(255,255,255,0.03) !important;
+    color: var(--rj-ink);
+}
+.sidebar .chapter li a.active {
+    background: rgba(232,160,74,0.06) !important;
+    color: var(--rj-ink) !important;
+    font-weight: 600;
+}
+.sidebar .chapter li a.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 4px; bottom: 4px;
+    width: 2px;
+    background: var(--rj-amber);
+}
+.sidebar .chapter li.spacer {
+    height: 1px;
+    background: var(--rj-hair);
+    margin: 12px 14px;
+}
+.sidebar-resize-handle { background: transparent; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Content
+   ───────────────────────────────────────────────────────────────────────── */
+
+.content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--rj-ink-2);
+    line-height: 1.7;
+    font-size: 16px;
+}
+.content main { padding: 0 1.5rem 4rem; }
+
+.content h1, .content h2, .content h3, .content h4, .content h5 {
+    font-family: var(--rj-mono);
+    font-weight: 700;
+    color: var(--rj-ink);
+    letter-spacing: 0.01em;
+    border: none !important;
+    padding: 0 !important;
+}
+.content h1 {
+    font-size: 1.8rem;
+    margin: 0 0 1.5rem;
+    position: relative;
+    padding-bottom: 0.75rem !important;
+}
+.content h1::after {
+    content: "";
+    position: absolute;
+    left: 0; bottom: 0;
+    width: 48px; height: 2px;
+    background: var(--rj-amber);
+}
+.content h2 {
+    font-size: 1.25rem;
+    margin: 2.8rem 0 1.1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding-left: 14px !important;
+    position: relative;
+}
+.content h2::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 3px; height: 1em;
+    background: var(--rj-amber);
+}
+.content h3 {
+    font-size: 1.05rem;
+    margin: 2rem 0 0.8rem;
+    color: var(--rj-ink);
+    text-transform: none;
+    letter-spacing: 0.02em;
+}
+.content h3::before {
+    content: "› ";
+    color: var(--rj-amber);
 }
 
-.rj-hero::before {
+.content p { color: var(--rj-ink-2); }
+.content a { color: var(--rj-amber); text-decoration: none; border-bottom: 1px solid transparent; }
+.content a:hover { border-bottom-color: var(--rj-amber); }
+
+.content strong { color: var(--rj-ink); font-weight: 700; }
+.content em { color: var(--rj-ink); font-style: normal; background: rgba(232,160,74,0.08); padding: 0 0.25em; }
+
+.content hr {
+    border: none;
+    height: 1px;
+    background-image: linear-gradient(to right, var(--rj-hair-2) 50%, transparent 50%);
+    background-size: 6px 1px;
+    margin: 2.5rem 0;
+}
+
+.content ul, .content ol { padding-left: 1.4rem; }
+.content li { margin: 0.3rem 0; }
+.content ul li::marker { color: var(--rj-amber); }
+.content ol li::marker { color: var(--rj-ink-3); font-family: var(--rj-mono); }
+
+.content blockquote {
+    background: var(--rj-bg-elev) !important;
+    border-left: 2px solid var(--rj-amber) !important;
+    border-radius: 0 !important;
+    padding: 0.9rem 1.2rem !important;
+    margin: 1.5rem 0 !important;
+    color: var(--rj-ink-2) !important;
+    font-style: normal;
+    position: relative;
+}
+.content blockquote::before {
+    content: "NOTE";
+    position: absolute;
+    top: -8px; left: 12px;
+    background: var(--rj-bg);
+    color: var(--rj-amber);
+    font-family: var(--rj-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.22em;
+    padding: 0 6px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Code
+   ───────────────────────────────────────────────────────────────────────── */
+
+.content code {
+    font-family: var(--rj-mono) !important;
+    font-size: 0.88em;
+    background: rgba(232,160,74,0.08);
+    color: var(--rj-amber);
+    padding: 1px 6px;
+    border-radius: 0;
+    border: 1px solid rgba(232,160,74,0.18);
+}
+
+.content pre {
+    background: var(--rj-bg-hero) !important;
+    border: 1px solid var(--rj-hair-2) !important;
+    border-radius: 0 !important;
+    padding: 1.1rem 1.2rem !important;
+    margin: 1.3rem 0 !important;
+    position: relative;
+    overflow-x: auto;
+}
+.content pre::before {
     content: "";
     position: absolute;
     inset: 0;
-    background:
-        radial-gradient(ellipse 60% 50% at 20% 50%, rgba(167,139,250,0.08) 0%, transparent 70%),
-        radial-gradient(ellipse 60% 50% at 80% 50%, rgba(34,211,238,0.08) 0%, transparent 70%);
     pointer-events: none;
+    background:
+        linear-gradient(var(--rj-amber), var(--rj-amber)) top left   /10px 1px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) top left   /1px 10px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) top right  /10px 1px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) top right  /1px 10px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) bottom left/10px 1px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) bottom left/1px 10px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) bottom right/10px 1px no-repeat,
+        linear-gradient(var(--rj-amber), var(--rj-amber)) bottom right/1px 10px no-repeat;
 }
+.content pre > code {
+    background: transparent !important;
+    border: none !important;
+    color: var(--rj-ink) !important;
+    padding: 0 !important;
+    font-size: 0.9em !important;
+    line-height: 1.6;
+}
+.content pre .buttons button {
+    background: var(--rj-bg-elev) !important;
+    border: 1px solid var(--rj-hair-2) !important;
+    border-radius: 0 !important;
+    color: var(--rj-ink-3) !important;
+    font-family: var(--rj-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+.content pre .buttons button:hover {
+    color: var(--rj-amber) !important;
+    border-color: var(--rj-amber-d) !important;
+}
+
+/* Syntax highlighting tweaks (highlight.js classes mdbook uses) */
+.hljs-keyword, .hljs-built_in { color: var(--rj-amber) !important; }
+.hljs-string, .hljs-attr      { color: var(--rj-signal) !important; }
+.hljs-comment                  { color: var(--rj-ink-4) !important; font-style: normal; }
+.hljs-number, .hljs-literal    { color: var(--rj-cool) !important; }
+.hljs-type, .hljs-title.class_ { color: var(--rj-cool) !important; }
+.hljs-function .hljs-title     { color: var(--rj-ink) !important; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Tables
+   ───────────────────────────────────────────────────────────────────────── */
+
+.content table {
+    border-collapse: collapse;
+    border: 1px solid var(--rj-hair-2);
+    font-family: var(--rj-mono);
+    font-size: 0.85rem;
+}
+.content table th {
+    background: var(--rj-bg-elev) !important;
+    color: var(--rj-ink-3) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.75rem;
+    border-bottom: 1px solid var(--rj-hair-2) !important;
+}
+.content table td {
+    border: 1px solid var(--rj-hair) !important;
+    color: var(--rj-ink-2);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Search
+   ───────────────────────────────────────────────────────────────────────── */
+
+#searchbar {
+    background: var(--rj-bg-hero) !important;
+    border: 1px solid var(--rj-hair-2) !important;
+    border-radius: 0 !important;
+    color: var(--rj-ink) !important;
+    font-family: var(--rj-mono);
+    font-size: 13px;
+    padding: 10px 14px;
+}
+#searchbar:focus { border-color: var(--rj-amber-d) !important; outline: none; }
+#searchresults-outer {
+    background: var(--rj-bg-hero) !important;
+    border: 1px solid var(--rj-hair-2) !important;
+    border-radius: 0 !important;
+}
+mark { background: var(--rj-amber); color: #0a0a0a; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   .rj-hero — restyle of the introduction hero (HUD card with corner brackets)
+   ───────────────────────────────────────────────────────────────────────── */
+
+.rj-hero {
+    background: linear-gradient(180deg, var(--rj-bg-elev), var(--rj-bg-hero));
+    border: 1px solid var(--rj-hair-2);
+    border-radius: 0;
+    margin: 0 0 2.5rem 0;
+    padding: 2.6rem 2rem 2.2rem;
+    text-align: left;
+    position: relative;
+    overflow: visible;
+    font-family: var(--rj-mono);
+}
+.rj-hero::before, .rj-hero::after,
+.rj-hero > .rj-corner-bl, .rj-hero > .rj-corner-br {
+    content: "";
+    position: absolute;
+    width: 12px; height: 12px;
+    border: 1px solid var(--rj-amber);
+}
+.rj-hero::before { top: -1px; left: -1px;  border-right: 0; border-bottom: 0; }
+.rj-hero::after  { top: -1px; right: -1px; border-left: 0;  border-bottom: 0; }
+.rj-hero > .rj-corner-bl { bottom: -1px; left: -1px;  border-right: 0; border-top: 0; }
+.rj-hero > .rj-corner-br { bottom: -1px; right: -1px; border-left: 0;  border-top: 0; }
+
+.rj-hero-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10.5px;
+    color: var(--rj-ink-4);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 1.4rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px dashed var(--rj-hair-2);
+}
+.rj-hero-meta .rj-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--rj-signal);
+}
+.rj-hero-meta .rj-status::before {
+    content: "";
+    width: 8px; height: 8px;
+    background: var(--rj-signal);
+    box-shadow: 0 0 0 3px rgba(70,212,134,0.18),
+                0 0 12px rgba(70,212,134,0.7);
+    border-radius: 50%;
+    animation: rj-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rj-pulse { 50% { opacity: 0.45; } }
 
 .rj-hero-inner {
     position: relative;
-    max-width: 640px;
-    margin: 0 auto;
+    max-width: 720px;
+    margin: 0;
 }
-
 .rj-logo {
-    font-size: 2.6rem;
+    font-size: 2.4rem;
     font-weight: 700;
-    letter-spacing: -0.03em;
-    color: #f1f5f9;
+    letter-spacing: 0.02em;
+    color: var(--rj-ink);
     line-height: 1;
-    margin-bottom: 1rem;
-    font-family: "Fira Code", "Source Code Pro", monospace;
+    margin-bottom: 0.4rem;
+    font-family: var(--rj-mono);
+    text-transform: uppercase;
 }
-
-.rj-logo-accent {
-    color: var(--rj-accent);
+.rj-logo-accent { color: var(--rj-amber); }
+.rj-logo .rj-logo-sub {
+    display: block;
+    margin-top: 8px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.32em;
+    color: var(--rj-ink-3);
 }
-
 .rj-tagline {
-    font-size: 1.05rem;
-    color: var(--rj-text-dim);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 1.02rem;
+    color: var(--rj-ink-2);
     line-height: 1.65;
-    margin: 0 0 2rem 0;
+    margin: 1.4rem 0 1.8rem 0;
+    max-width: 56ch;
 }
+.rj-tagline strong { color: var(--rj-ink); }
 
-/* ── CTA buttons ─────────────────────────────────────────────────────── */
-
-.rj-cta {
-    display: flex;
-    gap: 0.75rem;
-    justify-content: center;
-    flex-wrap: wrap;
-}
-
+/* ── CTA buttons ── */
+.rj-cta { display: flex; gap: 0.6rem; flex-wrap: wrap; }
 .rj-btn {
-    display: inline-block;
-    padding: 0.6rem 1.4rem;
-    border-radius: 6px;
-    font-size: 0.9rem;
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.7rem 1.2rem;
+    border-radius: 0 !important;
+    font-family: var(--rj-mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
     text-decoration: none !important;
-    transition: opacity 0.15s, transform 0.1s;
-    letter-spacing: 0.01em;
+    border: 1px solid var(--rj-hair-2);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-
-.rj-btn:hover {
-    opacity: 0.85;
-    transform: translateY(-1px);
-}
-
+.rj-btn:hover { transform: none; opacity: 1; }
 .rj-btn-primary {
-    background: var(--rj-accent);
-    color: #0d0f18 !important;
+    background: var(--rj-amber);
+    color: #0a0a0a !important;
+    border-color: var(--rj-amber);
 }
-
+.rj-btn-primary:hover {
+    background: transparent;
+    color: var(--rj-amber) !important;
+    border-color: var(--rj-amber);
+}
 .rj-btn-ghost {
     background: transparent;
-    color: var(--rj-accent) !important;
-    border: 1px solid var(--rj-border);
+    color: var(--rj-ink-2) !important;
+    border-color: var(--rj-hair-2);
+}
+.rj-btn-ghost:hover {
+    color: var(--rj-amber) !important;
+    border-color: var(--rj-amber-d);
 }
 
-/* ── Feature grid ────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────
+   .rj-features — module grid restyle
+   ───────────────────────────────────────────────────────────────────────── */
 
 .rj-features {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1px;
+    background: var(--rj-hair-2);
+    border: 1px solid var(--rj-hair-2);
     margin: 0 0 2.5rem 0;
+    font-family: var(--rj-mono);
 }
-
 .rj-feature {
     background: var(--rj-bg-card);
-    border: 1px solid var(--rj-border);
-    border-radius: 8px;
-    padding: 1.25rem 1.25rem 1rem;
+    border: none;
+    border-radius: 0 !important;
+    padding: 1.4rem 1.3rem 1.2rem;
+    position: relative;
+    transition: background 0.12s;
 }
-
+.rj-feature::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 14px; bottom: 14px;
+    width: 2px;
+    background: var(--rj-ink-4);
+    transition: background 0.12s;
+}
+.rj-feature:hover { background: var(--rj-bg-elev); }
+.rj-feature:hover::before { background: var(--rj-amber); }
 .rj-feature-icon {
-    font-size: 1.4rem;
-    color: var(--rj-accent);
-    margin-bottom: 0.5rem;
+    display: inline-block;
+    font-size: 1.3rem;
+    color: var(--rj-amber);
+    margin-bottom: 0.6rem;
     line-height: 1;
 }
-
 .rj-feature h3 {
-    font-size: 0.9rem;
+    font-family: var(--rj-mono);
+    font-size: 0.78rem !important;
     font-weight: 700;
-    color: #e2e8f0;
-    margin: 0 0 0.4rem 0;
-    padding: 0;
-    border: none;
+    color: var(--rj-ink);
+    margin: 0 0 0.5rem 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.18em;
 }
-
+.rj-feature h3::before { content: none !important; }
 .rj-feature p {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.82rem;
-    color: var(--rj-text-dim);
+    color: var(--rj-ink-3);
     line-height: 1.55;
     margin: 0;
 }
 
-/* ── Misc tweaks ─────────────────────────────────────────────────────── */
-code { font-size: 0.88em; }
+/* ─────────────────────────────────────────────────────────────────────────
+   .rj-callsign — small uppercase chip used inline (e.g. "MIDI" "OSC" badges)
+   ───────────────────────────────────────────────────────────────────────── */
+
+.rj-callsign {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid var(--rj-hair-2);
+    color: var(--rj-amber);
+    font-family: var(--rj-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border-radius: 0;
+    background: rgba(232,160,74,0.04);
+}
+
+/* Print: drop the scanline + grid overlays */
+@media print {
+    body::after { display: none; }
+    body.navy { background-image: none !important; }
+}

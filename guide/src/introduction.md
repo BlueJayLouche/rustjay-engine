@@ -1,10 +1,16 @@
 <div class="rj-hero">
+  <span class="rj-corner-bl"></span><span class="rj-corner-br"></span>
+  <div class="rj-hero-meta">
+    <span>NODE // RUSTJAY · ENGINE</span>
+    <span class="rj-status">SYSTEM ONLINE</span>
+  </div>
   <div class="rj-hero-inner">
-    <div class="rj-logo">rustjay<span class="rj-logo-accent">-engine</span></div>
-    <p class="rj-tagline">A Rust framework for building real-time VJ applications.<br>
-    You bring the shader. The engine handles everything else.</p>
+    <div class="rj-logo">RUSTJAY<span class="rj-logo-accent">/</span>ENGINE
+      <span class="rj-logo-sub">REAL-TIME VISUAL PERFORMANCE FRAMEWORK</span>
+    </div>
+    <p class="rj-tagline">A Rust framework for building real-time VJ applications. <strong>You bring the shader.</strong> The engine handles GPU rendering, video I/O, audio analysis, parameter modulation, and network control.</p>
     <div class="rj-cta">
-      <a href="getting-started/index.html" class="rj-btn rj-btn-primary">Get Started →</a>
+      <a href="getting-started/index.html" class="rj-btn rj-btn-primary">▸ Get Started</a>
       <a href="https://github.com/BlueJayLouche/rustjay-engine" class="rj-btn rj-btn-ghost">GitHub ↗</a>
     </div>
   </div>
@@ -67,4 +73,4 @@ cargo run -p sputnik     # mesh displacement (Rutt-Etra style)
 
 ## How to use this guide
 
-Start with [Installation](installation.md), then work through [Your First Effect](getting-started/index.html). After that, the chapters are largely independent — jump to whatever is relevant to what you're building.
+Start with [Installation](installation.md), then work through [Your First Effect](getting-started/README.md). After that, the chapters are largely independent — jump to whatever is relevant to what you're building.
