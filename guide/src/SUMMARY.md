@@ -44,6 +44,7 @@
 # Examples
 
 - [ISF Shader Viewer](examples/isf-example.md)
+- [Web App (WebGPU + WASM)](examples/webapp.md)
 
 ---
 
