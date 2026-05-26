@@ -553,18 +553,21 @@ impl AnyEguiTab for MotionTab {
             ui.label(egui::RichText::new("Channel Delays (frames)").strong().color(egui::Color32::from_rgb(0, 180, 255)));
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Red").color(egui::Color32::from_rgb(255, 100, 100)));
-                ui.add(egui::Slider::new(&mut state.red_delay, 0..=16).show_value(true));
-                engine.set_param_base("red_delay", state.red_delay as f32);
+                if ui.add(egui::Slider::new(&mut state.red_delay, 0..=16).show_value(true)).changed() {
+                    engine.set_param_base("red_delay", state.red_delay as f32);
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Green").color(egui::Color32::from_rgb(100, 255, 100)));
-                ui.add(egui::Slider::new(&mut state.green_delay, 0..=16).show_value(true));
-                engine.set_param_base("green_delay", state.green_delay as f32);
+                if ui.add(egui::Slider::new(&mut state.green_delay, 0..=16).show_value(true)).changed() {
+                    engine.set_param_base("green_delay", state.green_delay as f32);
+                }
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Blue").color(egui::Color32::from_rgb(100, 140, 255)));
-                ui.add(egui::Slider::new(&mut state.blue_delay, 0..=16).show_value(true));
-                engine.set_param_base("blue_delay", state.blue_delay as f32);
+                if ui.add(egui::Slider::new(&mut state.blue_delay, 0..=16).show_value(true)).changed() {
+                    engine.set_param_base("blue_delay", state.blue_delay as f32);
+                }
             });
 
             ui.separator();
