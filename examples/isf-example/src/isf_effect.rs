@@ -1,7 +1,7 @@
 //! `IsfEffect` — loads an ISF GLSL shader at runtime, parses its inputs,
 //! transpiles to WGSL, and renders via a custom pipeline.
 
-use std::{collections::HashMap, path::Path, time::Instant};
+use std::{collections::HashMap, path::{Path, PathBuf}, time::{Instant, SystemTime}};
 
 use isf::{Isf, InputType};
 use rustjay_engine::prelude::*;
@@ -34,6 +34,11 @@ pub struct IsfEffect {
     pub isf: Isf,
     pub glsl_src: String,
     pub shader_name: String,
+
+    /// Path to the source `.fs` file — used for hot reload.
+    shader_path: PathBuf,
+    /// Last-seen mtime of the file — used to detect changes.
+    last_mtime: Option<SystemTime>,
 
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
@@ -69,6 +74,8 @@ impl IsfEffect {
             isf,
             glsl_src,
             shader_name,
+            shader_path: path.to_path_buf(),
+            last_mtime: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
             start_time: Instant::now(),
             transpile_error: None,
             pipeline: None,
@@ -182,6 +189,37 @@ impl EffectPlugin for IsfEffect {
         }
 
         IsfUniforms(data)
+    }
+
+    // -----------------------------------------------------------------------
+    // Hot reload — called every frame via prepare()
+    // -----------------------------------------------------------------------
+
+    fn prepare(
+        &mut self,
+        _app_state: &mut IsfState,
+        _engine: &EngineState,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Ok(meta) = std::fs::metadata(&self.shader_path) else { return };
+        let Ok(mtime) = meta.modified() else { return };
+        if self.last_mtime == Some(mtime) { return; }
+        self.last_mtime = Some(mtime);
+
+        let src = match std::fs::read_to_string(&self.shader_path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.transpile_error = Some(format!("Read error: {e}"));
+                return;
+            }
+        };
+        match isf::parse(&src) {
+            Ok(isf) => { self.isf = isf; self.glsl_src = src; }
+            Err(e)  => { self.transpile_error = Some(format!("ISF parse error: {e}")); return; }
+        }
+        log::info!("Hot-reloading shader: {}", self.shader_path.display());
+        self.init(device, queue);
     }
 
     // -----------------------------------------------------------------------
