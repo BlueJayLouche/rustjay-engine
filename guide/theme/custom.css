@@ -1,0 +1,9 @@
+/* rustjay-engine guide — minimal style adjustments */
+:root {
+    --sidebar-width: 260px;
+}
+
+.chapter li a { font-size: 0.95em; }
+
+/* Slightly wider code blocks */
+code { font-size: 0.88em; }

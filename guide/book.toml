@@ -1,0 +1,16 @@
+[book]
+title = "rustjay-engine Guide"
+authors = ["BlueJayLouche"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+site-url = "/rustjay-engine/"
+git-repository-url = "https://github.com/BlueJayLouche/rustjay-engine"
+additional-css = ["theme/custom.css"]
+
+[output.html.fold]
+enable = true
+level = 1
