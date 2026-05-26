@@ -241,8 +241,8 @@ impl EguiControlGui {
 
         self.build_top_bar(ctx);
         self.build_left_sidebar(ctx);
-        self.build_central_panel(ctx, app_state);
         self.build_preview_panel(ctx);
+        self.build_central_panel(ctx, app_state);
 
         if self.show_preferences {
             self.build_preferences_window(ctx);
@@ -493,24 +493,30 @@ impl EguiControlGui {
             state.second_input.is_active
         };
 
-        egui::TopBottomPanel::bottom("previews")
-            .default_height(140.0)
+        egui::SidePanel::right("previews")
+            .default_width(280.0)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                let available = ui.available_size();
+                let preview_count = if has_input2 { 3.0 } else { 2.0 };
+                let preview_height = (available.y / preview_count - 8.0).max(20.0);
+                let preview_width = (available.x - 8.0).max(20.0);
+                let preview_size = egui::vec2(preview_width, preview_height);
+
+                ui.vertical(|ui| {
                     if has_input2 {
-                        self.preview_image(ui, "Input 1", self.input_preview_texture_id, |s| {
+                        self.preview_image(ui, "Input 1", self.input_preview_texture_id, preview_size, |s| {
                             (s.input.width, s.input.height)
                         });
-                        self.preview_image(ui, "Input 2", self.second_input_preview_texture_id, |s| {
+                        self.preview_image(ui, "Input 2", self.second_input_preview_texture_id, preview_size, |s| {
                             (s.second_input.width, s.second_input.height)
                         });
                     } else {
-                        self.preview_image(ui, "Input", self.input_preview_texture_id, |s| {
+                        self.preview_image(ui, "Input", self.input_preview_texture_id, preview_size, |s| {
                             (s.input.width, s.input.height)
                         });
                     }
-                    self.preview_image(ui, "Output", self.output_preview_texture_id, |s| {
+                    self.preview_image(ui, "Output", self.output_preview_texture_id, preview_size, |s| {
                         (s.resolution.internal_width, s.resolution.internal_height)
                     });
                 });
@@ -522,14 +528,14 @@ impl EguiControlGui {
         ui: &mut egui::Ui,
         label: &str,
         texture_id: Option<egui::TextureId>,
+        size: egui::Vec2,
         get_size: impl FnOnce(&EngineState) -> (u32, u32),
     ) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(label).size(11.0).color(crate::egui_theme::colors::TEXT_SECONDARY));
-            let available = ui.available_size();
             let size = egui::vec2(
-                (available.x - 8.0).max(10.0),
-                (available.y - 4.0).max(10.0),
+                (size.x - 8.0).max(10.0),
+                (size.y - 4.0).max(10.0),
             );
             if let Some(id) = texture_id {
                 let (iw, ih) = {

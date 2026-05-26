@@ -57,6 +57,7 @@ pub struct WgpuEngine<P: EffectPlugin> {
     fps_last_time: std::time::Instant,
     fps_frame_count: u32,
     fps_current: f32,
+    next_render_time: std::time::Instant,
 
     output_manager: OutputManager,
 }
@@ -176,6 +177,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             fps_last_time: std::time::Instant::now(),
             fps_frame_count: 0,
             fps_current: 0.0,
+            next_render_time: std::time::Instant::now(),
             output_manager: OutputManager::new(),
         })
     }
@@ -257,6 +259,28 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
     /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
+        // Frame-rate cap: skip this render if we haven't reached the target interval.
+        // Uses a small tolerance to avoid missing frames due to timer jitter on
+        // high-refresh displays (e.g. 120 Hz ProMotion) where wake-ups may land
+        // a fraction of a millisecond before the exact target time.
+        let target_fps = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.target_fps
+        };
+        let target_interval = std::time::Duration::from_micros(1_000_000 / target_fps.max(1) as u64);
+        const CAP_TOLERANCE: std::time::Duration = std::time::Duration::from_micros(1_500); // 1.5 ms
+        let now = std::time::Instant::now();
+        if now + CAP_TOLERANCE < self.next_render_time {
+            return;
+        }
+        // If we've fallen behind by more than one full interval, reset to avoid
+        // a burst of catch-up frames.
+        if now > self.next_render_time + target_interval {
+            self.next_render_time = now + target_interval;
+        } else {
+            self.next_render_time += target_interval;
+        }
+
         if self.input_texture.binding_view().is_none() {
             self.input_texture.ensure_size(1920, 1080);
         }
