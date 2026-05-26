@@ -1,7 +1,6 @@
 //! Egui control panel — professional dark-themed GUI with full pipeline coverage.
 
 use std::sync::Arc;
-use egui::{Color32, Stroke};
 use rustjay_core::{EngineState, GuiTab, ParameterDescriptor, ParamCategory, ParamType};
 
 /// Egui-based control GUI.
@@ -173,8 +172,10 @@ impl EguiControlGui {
             .unwrap_or_default()
             .as_secs_f64();
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        if now - state.audio.last_tap_time > 2.0 {
+        let is_first_tap = now - state.audio.last_tap_time > 2.0;
+        if is_first_tap {
             state.audio.tap_times.clear();
+            state.lfo.bank.reset_all();
         }
         state.audio.tap_times.push(now);
         state.audio.last_tap_time = now;
@@ -256,8 +257,9 @@ impl EguiControlGui {
 
     fn build_top_bar(&mut self, ctx: &egui::Context) {
         use crate::egui_theme::colors::*;
+        use crate::egui_widgets::{status_pill, PillState};
 
-        let (app_name, bpm, fps, volume, show_preview) = {
+        let (app_name, bpm, fps, volume, show_preview, audio_enabled) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.web_app_name.clone(),
@@ -265,81 +267,105 @@ impl EguiControlGui {
                 state.performance.fps,
                 state.audio.volume,
                 state.show_preview,
+                state.audio.enabled,
             )
         };
 
         egui::TopBottomPanel::top("top_bar")
-            .exact_height(42.0)
+            .exact_height(56.0)
+            .frame(egui::Frame::NONE.fill(SURFACE_2).stroke(egui::Stroke::new(1.0, HAIR_2)))
             .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("▶  {}", app_name))
-                            .strong()
-                            .size(16.0)
-                            .color(ACCENT_CYAN),
-                    );
-
-                    ui.add_space(20.0);
-                    ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
                     ui.add_space(12.0);
 
-                    // BPM pill
-                    ui.horizontal(|ui| {
-                        ui.add_space(4.0);
-                        ui.colored_label(ACCENT_AMBER, "●");
+                    // App name in the HUD style: BOLD/SLASH form
+                    let upper = app_name.to_uppercase();
+                    let (head, tail) = upper.split_once(' ').unwrap_or((upper.as_str(), ""));
+                    ui.label(
+                        egui::RichText::new(head)
+                            .strong().size(18.0).color(INK)
+                            .monospace(),
+                    );
+                    ui.label(egui::RichText::new("/").color(AMBER).size(18.0).monospace());
+                    if !tail.is_empty() {
+                        ui.label(egui::RichText::new(tail).size(18.0).color(INK).monospace());
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("CONTROL · v1.0")
+                            .size(10.0).color(INK_4).monospace(),
+                    );
+
+                    ui.add_space(24.0);
+
+                    // BPM readout — big tabular numerics
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("BPM").size(9.5).color(INK_4));
                         ui.label(
-                            egui::RichText::new(format!("{:.1} BPM", bpm))
-                                .monospace()
-                                .size(13.0),
+                            egui::RichText::new(format!("{:>5.1}", bpm))
+                                .size(15.0).color(AMBER).strong().monospace(),
                         );
                     });
 
                     ui.add_space(16.0);
 
-                    // FPS
-                    ui.label(
-                        egui::RichText::new(format!("{:.0} FPS", fps))
-                            .monospace()
-                            .size(12.0)
-                            .color(TEXT_SECONDARY),
-                    );
+                    // FPS readout
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("FPS").size(9.5).color(INK_4));
+                        ui.label(
+                            egui::RichText::new(format!("{:>4.0}", fps))
+                                .size(15.0).color(INK).monospace(),
+                        );
+                    });
 
                     ui.add_space(16.0);
 
-                    // Mini volume bar
-                    let vol_w = 60.0;
-                    let vol_h = 10.0;
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(vol_w, vol_h), egui::Sense::hover());
-                    let fill_w = vol_w * volume.clamp(0.0, 1.0);
-                    let painter = ui.painter();
-                    painter.rect_filled(rect, 2.0, BG_WIDGET);
-                    if fill_w > 0.5 {
-                        let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, vol_h));
-                        let vol_color = if volume > 0.8 { ACCENT_RED } else { ACCENT_GREEN };
-                        painter.rect_filled(fill_rect, 2.0, vol_color);
-                    }
+                    // Mini volume meter — flat bar w/ amber fill, square edges
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("VOL").size(9.5).color(INK_4));
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 10.0), egui::Sense::hover());
+                        let p = ui.painter();
+                        p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, HAIR_2), egui::StrokeKind::Inside);
+                        let fill_w = rect.width() * volume.clamp(0.0, 1.0);
+                        if fill_w > 0.5 {
+                            let fr = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
+                            let col = if volume > 0.8 { ALERT } else { SIGNAL };
+                            p.rect_filled(fr, 0.0, col);
+                        }
+                        // Tick marks
+                        for i in 1..10 {
+                            let x = rect.left() + rect.width() * (i as f32 / 10.0);
+                            p.line_segment(
+                                [egui::pos2(x, rect.bottom() - 2.0), egui::pos2(x, rect.bottom())],
+                                egui::Stroke::new(1.0, HAIR_3),
+                            );
+                        }
+                    });
 
-                    ui.add_space(8.0);
-
-                    // Right side: global toggles
+                    // Right side: status pill + global toggles
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let preview = show_preview;
-                        if ui
-                            .selectable_label(preview, "👁 Previews")
-                            .clicked()
-                        {
+                        ui.add_space(12.0);
+                        if ui.button(egui::RichText::new("⚙  PREFS").size(11.0).color(
+                            if self.show_preferences { AMBER } else { INK_2 }
+                        )).clicked() {
+                            self.show_preferences = !self.show_preferences;
+                        }
+                        ui.add_space(6.0);
+                        if ui.button(egui::RichText::new(if show_preview { "● PREVIEW" } else { "○ PREVIEW" }).size(11.0).color(
+                            if show_preview { AMBER } else { INK_2 }
+                        )).clicked() {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.show_preview = !state.show_preview;
                         }
-                        ui.add_space(8.0);
-                        if ui.selectable_label(self.show_preferences, "⚙ Prefs").clicked() {
-                            self.show_preferences = !self.show_preferences;
-                        }
-                        ui.add_space(8.0);
-                        if ui.button("💾 Save").clicked() {
+                        ui.add_space(6.0);
+                        if ui.button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2)).clicked() {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.save_settings_requested = true;
                         }
+                        ui.add_space(12.0);
+                        status_pill(ui, if audio_enabled { "ONLINE" } else { "OFFLINE" },
+                            if audio_enabled { PillState::Online } else { PillState::Offline });
                     });
                 });
             });
@@ -349,6 +375,7 @@ impl EguiControlGui {
 
     fn build_left_sidebar(&mut self, ctx: &egui::Context) {
         use crate::egui_theme::colors::*;
+        use crate::egui_widgets::hud_section_header;
 
         let (hidden_tabs, has_color, has_motion) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -356,7 +383,6 @@ impl EguiControlGui {
             let hm = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
             (state.hidden_tabs.clone(), hc, hm)
         };
-
         let vis = |tab: GuiTab| -> bool {
             if hidden_tabs.contains(&tab) { return false; }
             match tab {
@@ -367,59 +393,30 @@ impl EguiControlGui {
         };
 
         egui::SidePanel::left("sidebar")
-            .exact_width(110.0)
+            .exact_width(150.0)
             .resizable(false)
+            .frame(egui::Frame::NONE.fill(BG).stroke(egui::Stroke::new(1.0, HAIR_2)))
             .show(ctx, |ui| {
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("PIPELINE").size(10.0).color(TEXT_SECONDARY).strong());
-                });
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(10.0);
 
-                // Signal group
-                self.sidebar_button(ui, GuiTab::Input, "📹  Input", vis(GuiTab::Input));
-                self.sidebar_button(ui, GuiTab::Output, "📤  Output", vis(GuiTab::Output));
+                hud_section_header(ui, "SIGNAL",  Some("02 CH"));
+                self.sidebar_button(ui, GuiTab::Input,  "INPUT",   vis(GuiTab::Input));
+                self.sidebar_button(ui, GuiTab::Output, "OUTPUT",  vis(GuiTab::Output));
 
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("PARAMS").size(10.0).color(TEXT_SECONDARY).strong());
-                });
-                ui.add_space(4.0);
+                hud_section_header(ui, "PARAMS",  Some("04 CH"));
+                self.sidebar_button(ui, GuiTab::Color,  "COLOR",   vis(GuiTab::Color));
+                self.sidebar_button(ui, GuiTab::Motion, "MOTION",  vis(GuiTab::Motion));
+                self.sidebar_button(ui, GuiTab::Audio,  "AUDIO",   vis(GuiTab::Audio));
+                self.sidebar_button(ui, GuiTab::Lfo,    "LFO",     vis(GuiTab::Lfo));
 
-                // Parameters group
-                self.sidebar_button(ui, GuiTab::Color, "🎨  Color", vis(GuiTab::Color));
-                self.sidebar_button(ui, GuiTab::Motion, "✦  Motion", vis(GuiTab::Motion));
-                self.sidebar_button(ui, GuiTab::Audio, "🎵  Audio", vis(GuiTab::Audio));
-                self.sidebar_button(ui, GuiTab::Lfo, "～  LFO", vis(GuiTab::Lfo));
+                hud_section_header(ui, "CONTROL", Some("03 CH"));
+                self.sidebar_button(ui, GuiTab::Midi,   "MIDI",    vis(GuiTab::Midi));
+                self.sidebar_button(ui, GuiTab::Osc,    "OSC",     vis(GuiTab::Osc));
+                self.sidebar_button(ui, GuiTab::Web,    "WEB",     vis(GuiTab::Web));
 
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("CONTROL").size(10.0).color(TEXT_SECONDARY).strong());
-                });
-                ui.add_space(4.0);
-
-                // Control group
-                self.sidebar_button(ui, GuiTab::Midi, "🎛  MIDI", vis(GuiTab::Midi));
-                self.sidebar_button(ui, GuiTab::Osc, "📡  OSC", vis(GuiTab::Osc));
-                self.sidebar_button(ui, GuiTab::Web, "🌐  Web", vis(GuiTab::Web));
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("MANAGE").size(10.0).color(TEXT_SECONDARY).strong());
-                });
-                ui.add_space(4.0);
-
-                // Manage group
-                self.sidebar_button(ui, GuiTab::Presets, "💾  Presets", vis(GuiTab::Presets));
-                self.sidebar_button(ui, GuiTab::Settings, "⚙  Settings", true);
+                hud_section_header(ui, "MANAGE",  Some("02 CH"));
+                self.sidebar_button(ui, GuiTab::Presets,  "PRESETS",  vis(GuiTab::Presets));
+                self.sidebar_button(ui, GuiTab::Settings, "SETTINGS", true);
             });
     }
 
@@ -427,22 +424,59 @@ impl EguiControlGui {
         use crate::egui_theme::colors::*;
         if !visible { return; }
         let active = self.active_tab == tab;
-        let btn = if active {
-            egui::Button::new(
-                egui::RichText::new(label).strong().color(ACCENT_CYAN),
-            )
-            .fill(BG_ACTIVE)
-            .stroke(Stroke::new(1.0, ACCENT_CYAN))
-        } else {
-            egui::Button::new(egui::RichText::new(label).color(TEXT_PRIMARY))
-                .fill(BG_WIDGET)
-                .stroke(Stroke::NONE)
-        };
-        if ui.add_sized(egui::vec2(ui.available_width(), 32.0), btn).clicked() {
+
+        let height = 32.0;
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::click(),
+        );
+        let p = ui.painter();
+
+        // Background
+        let bg = if active { SURFACE_2 }
+                 else if resp.hovered() { egui::Color32::from_rgba_premultiplied(8, 12, 16, 24) }
+                 else { egui::Color32::TRANSPARENT };
+        p.rect_filled(rect, 0.0, bg);
+
+        // Left accent bar — amber on active
+        let accent_w = if active { 3.0 } else { 1.0 };
+        let accent_color = if active { AMBER } else { HAIR_2 };
+        p.rect_filled(
+            egui::Rect::from_min_size(rect.left_top(), egui::vec2(accent_w, rect.height())),
+            0.0, accent_color,
+        );
+
+        // Label
+        let label_color = if active { INK } else { INK_2 };
+        let galley = p.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::monospace(12.0),
+            label_color,
+        );
+        p.galley(
+            egui::pos2(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            label_color,
+        );
+
+        // Tab index on the right when active
+        if active {
+            let idx_g = p.layout_no_wrap(
+                format!("▶"),
+                egui::FontId::monospace(11.0),
+                AMBER,
+            );
+            p.galley(
+                egui::pos2(rect.right() - idx_g.size().x - 10.0, rect.center().y - idx_g.size().y / 2.0),
+                idx_g,
+                AMBER,
+            );
+        }
+
+        if resp.clicked() {
             self.active_tab = tab;
             self.custom_tab_active = None;
         }
-        ui.add_space(2.0);
     }
 
     // ── Central panel ────────────────────────────────────────────────────────
@@ -802,10 +836,14 @@ impl EguiControlGui {
 
     fn draw_param_control(&self, ui: &mut egui::Ui, desc: &ParameterDescriptor, state: &mut std::sync::MutexGuard<'_, EngineState>) {
         let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
+        log::trace!("GUI draw {}: {} (base={:?})", desc.id, value, state.get_param_base(&desc.id));
         match desc.param_type {
             ParamType::Float => {
                 let mut v = value;
-                if ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).show_value(true).trailing_fill(true)).changed() {
+                let id_tag = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
+                if crate::egui_widgets::parameter_card_f32(
+                    ui, &desc.name, &id_tag, &mut v, desc.min..=desc.max, ""
+                ) {
                     state.set_param_base(&desc.id, v);
                 }
             }
@@ -813,13 +851,14 @@ impl EguiControlGui {
                 let mut v = value as i32;
                 let min = desc.min as i32;
                 let max = desc.max as i32;
+                log::trace!("Int slider {}: {} (range {}..{})", desc.id, v, min, max);
                 if ui.add(egui::Slider::new(&mut v, min..=max).show_value(true).trailing_fill(true)).changed() {
                     state.set_param_base(&desc.id, v as f32);
                 }
             }
             ParamType::Bool => {
                 let mut v = value > 0.5;
-                if ui.checkbox(&mut v, "").changed() {
+                if crate::egui_widgets::segmented_toggle(ui, &desc.id, &mut v, ("OFF", "ON")) {
                     state.set_param_base(&desc.id, if v { 1.0 } else { 0.0 });
                 }
             }
@@ -846,25 +885,15 @@ impl EguiControlGui {
     // ── Section header helper ────────────────────────────────────────────────
 
     pub(crate) fn section_header(&self, ui: &mut egui::Ui, title: &str) {
-        use crate::egui_theme::colors::*;
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(title).strong().size(14.0).color(ACCENT_CYAN));
-        ui.separator();
-        ui.add_space(4.0);
+        crate::egui_widgets::hud_section_header(ui, title, None);
     }
 
     pub(crate) fn status_badge(&self, ui: &mut egui::Ui, text: &str, active: bool) {
-        use crate::egui_theme::colors::*;
-        let (bg, fg) = if active {
-            (ACCENT_GREEN, Color32::BLACK)
-        } else {
-            (BG_WIDGET, TEXT_SECONDARY)
-        };
-        let galley = ui.painter().layout(text.to_string(), egui::FontId::proportional(11.0), fg, f32::INFINITY);
-        let padding = egui::vec2(8.0, 3.0);
-        let desired_size = galley.size() + padding * 2.0;
-        let (rect, _) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, bg);
-        ui.painter().galley(rect.min + padding, galley, fg);
+        use crate::egui_widgets::{status_pill, PillState};
+        status_pill(
+            ui,
+            text,
+            if active { PillState::Online } else { PillState::Offline },
+        );
     }
 }

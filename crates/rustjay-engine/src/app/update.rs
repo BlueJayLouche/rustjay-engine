@@ -194,7 +194,7 @@ impl<P: EffectPlugin> App<P> {
         let delta_time = self.frame_delta_time;
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         let bpm = state.effective_bpm();
-        let beat_phase = state.effective_beat_phase();
+        let beat_phase = state.stable_beat_phase();
         state.lfo.bank.update(bpm, delta_time, beat_phase);
 
         // Apply LFO modulations to custom params — allocation-free after first frame.
@@ -321,13 +321,28 @@ impl<P: EffectPlugin> App<P> {
 
                     // Effect-declared custom params
                     let descriptors = Arc::clone(&shared.param_descriptors);
+                    if !descriptors.is_empty() {
+                        log::trace!("OSC checking {} custom params", descriptors.len());
+                    }
                     for (i, desc) in descriptors.iter().enumerate() {
                         if let Some(addr) = shared.param_osc_addresses.get(i) {
                             if let Some(v) = osc_state.get_value_if_dirty(addr) {
+                                log::debug!("OSC apply: {} ({}) = {}", desc.id, addr, v);
                                 shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
+                            } else if !osc_state.message_log.is_empty() {
+                                // Debug: log if message exists but param wasn't dirty
+                                let full_addr = format!("/rustjay{}", addr);
+                                if osc_state.parameters.contains_key(&full_addr) {
+                                    log::trace!("OSC param not dirty: {}", addr);
+                                }
                             }
+                        } else {
+                            log::warn!("OSC param_osc_addresses missing index {}", i);
                         }
                     }
+
+                    // Sync recent messages for GUI display
+                    shared.osc_message_log = osc_state.message_log.clone();
                 }
             }
         }

@@ -807,6 +807,8 @@ pub struct EngineState {
     pub osc_host: String,
     /// OSC server listen port.
     pub osc_port: u16,
+    /// Recent OSC messages received (address, normalized value, timestamp).
+    pub osc_message_log: Vec<(String, f32, f64)>,
 
     /// Pending preset command.
     pub preset_command: PresetCommand,
@@ -911,6 +913,7 @@ impl EngineState {
             osc_enabled: false,
             osc_host: "127.0.0.1".to_string(),
             osc_port: 9001,
+            osc_message_log: Vec::new(),
             preset_command: PresetCommand::None,
             preset_names: Vec::new(),
             preset_quick_slot_names: Default::default(),
@@ -959,6 +962,21 @@ impl EngineState {
             SyncSource::AbletonLink if self.link.bpm > 0.0 => self.link.beat_phase,
             SyncSource::ProDj if self.prodj.master_bpm > 0.0 => self.prodj.master_beat_phase,
             _ => self.audio.beat_phase,
+        }
+    }
+
+    /// Beat phase safe for LFO beat-snap.
+    ///
+    /// Returns `0.0` when the active sync source is `Audio`. The audio beat
+    /// detector resets `beat_phase` to 0 on every detected beat, which fires
+    /// the LFO's snap-to-grid at irregular intervals and produces visibly
+    /// irregular output. Link and ProDJ supply a stable clock-derived ramp
+    /// that wraps predictably once per beat, so the snap is safe there.
+    pub fn stable_beat_phase(&self) -> f32 {
+        match self.sync_source {
+            SyncSource::AbletonLink if self.link.bpm > 0.0 => self.link.beat_phase,
+            SyncSource::ProDj if self.prodj.master_bpm > 0.0 => self.prodj.master_beat_phase,
+            _ => 0.0,
         }
     }
 

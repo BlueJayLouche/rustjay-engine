@@ -550,9 +550,11 @@ impl ControlGui {
 
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
 
-        if now - state.audio.last_tap_time > 2.0 {
+        let is_first_tap = now - state.audio.last_tap_time > 2.0;
+        if is_first_tap {
             state.audio.tap_times.clear();
             state.audio.tap_tempo_info = "Reset: new tempo sequence".to_string();
+            state.lfo.bank.reset_all();
         } else {
             state.audio.tap_tempo_info = format!("{} taps recorded", state.audio.tap_times.len() + 1);
         }

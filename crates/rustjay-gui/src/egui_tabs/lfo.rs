@@ -130,7 +130,8 @@ impl EguiControlGui {
                             };
                             if ui.add_sized(egui::vec2(70.0, 24.0), btn).clicked() && !is_selected {
                                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.lfo.bank.lfos[i].waveform = match wf_idx {
+                                let lfo = &mut state.lfo.bank.lfos[i];
+                                lfo.waveform = match wf_idx {
                                     0 => Waveform::Sine,
                                     1 => Waveform::Triangle,
                                     2 => Waveform::Ramp,
@@ -138,6 +139,10 @@ impl EguiControlGui {
                                     4 => Waveform::Square,
                                     _ => Waveform::Sine,
                                 };
+                                // Reset phase so the new waveform starts from the beginning
+                                // of its cycle rather than inheriting an arbitrary mid-cycle
+                                // phase from the previous waveform (avoids discontinuous jumps).
+                                lfo.reset();
                             }
                         }
                     });
