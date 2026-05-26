@@ -493,9 +493,8 @@ impl EguiControlGui {
             state.second_input.is_active
         };
 
-        egui::SidePanel::right("previews")
-            .default_width(280.0)
-            .resizable(true)
+        egui::SidePanel::right("preview_panel_right")
+            .exact_size(280.0)
             .show(ctx, |ui| {
                 let available = ui.available_size();
                 let preview_count = if has_input2 { 3.0 } else { 2.0 };
@@ -533,10 +532,14 @@ impl EguiControlGui {
     ) {
         ui.vertical(|ui| {
             ui.label(egui::RichText::new(label).size(11.0).color(crate::egui_theme::colors::TEXT_SECONDARY));
-            let size = egui::vec2(
+
+            // Allocate space for the image (label already consumed its portion)
+            let image_area = egui::vec2(
                 (size.x - 8.0).max(10.0),
-                (size.y - 4.0).max(10.0),
+                (size.y - 20.0).max(10.0),
             );
+            let (rect, _) = ui.allocate_exact_size(image_area, egui::Sense::hover());
+
             if let Some(id) = texture_id {
                 let (iw, ih) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -547,21 +550,20 @@ impl EguiControlGui {
                 } else {
                     16.0 / 9.0
                 };
-                let container_aspect = size.x / size.y.max(1.0);
-                let (uv0, uv1) = if content_aspect > container_aspect {
-                    let visible = container_aspect / content_aspect;
-                    let pad = (1.0 - visible) / 2.0;
-                    ([pad, 0.0], [1.0 - pad, 1.0])
+
+                // Fit the entire image inside the allocated rect, preserving aspect ratio
+                let container_aspect = rect.width() / rect.height().max(1.0);
+                let display_size = if content_aspect > container_aspect {
+                    egui::vec2(rect.width(), rect.width() / content_aspect)
                 } else {
-                    let visible = content_aspect / container_aspect;
-                    let pad = (1.0 - visible) / 2.0;
-                    ([0.0, pad], [1.0, 1.0 - pad])
+                    egui::vec2(rect.height() * content_aspect, rect.height())
                 };
-                let image = egui::Image::new(egui::load::SizedTexture::new(id, size))
-                    .uv(egui::Rect::from_min_max(egui::pos2(uv0[0], uv0[1]), egui::pos2(uv1[0], uv1[1])));
-                ui.add(image);
+
+                // Center the image in the allocated rect
+                let image_rect = egui::Rect::from_center_size(rect.center(), display_size);
+                let image = egui::Image::new(egui::load::SizedTexture::new(id, display_size));
+                ui.put(image_rect, image);
             } else {
-                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 ui.painter().rect_filled(rect, 4.0, crate::egui_theme::colors::BG_WIDGET);
                 ui.painter().text(
                     rect.center(),
