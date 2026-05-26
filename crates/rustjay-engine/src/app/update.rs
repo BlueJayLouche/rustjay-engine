@@ -364,10 +364,15 @@ impl<P: EffectPlugin> App<P> {
     pub(super) fn poll_device_discovery(&mut self) {
         let done = self.input_manager.as_mut().map_or(false, |m| m.poll_discovery());
         if done {
-            if let (Some(ref manager), Some(ref mut gui)) =
-                (self.input_manager.as_ref(), self.control_gui.as_mut())
-            {
-                gui.update_device_lists(manager);
+            if let Some(ref manager) = self.input_manager.as_ref() {
+                if self.use_egui {
+                    #[cfg(feature = "egui")]
+                    if let Some(ref mut gui) = self.egui_control_gui.as_mut() {
+                        gui.update_device_lists(manager);
+                    }
+                } else if let Some(ref mut gui) = self.control_gui.as_mut() {
+                    gui.update_device_lists(manager);
+                }
             }
             self.shared_state
                 .lock()
@@ -383,7 +388,49 @@ impl<P: EffectPlugin> App<P> {
             .show_preview;
         if !show_preview { return; }
 
-        if let (Some(ref mut renderer), Some(ref gui)) =
+        if self.use_egui {
+            #[cfg(feature = "egui")]
+            if let (Some(ref mut renderer), Some(ref gui)) =
+                (self.egui_renderer.as_mut(), self.egui_control_gui.as_ref())
+            {
+                let mut encoder = renderer.device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor { label: Some("Preview Encoder") },
+                );
+                let mut any_work = false;
+
+                {
+                    let input_src = self.output_engine
+                        .as_ref()
+                        .and_then(|e| e.input_texture.texture.as_ref().map(|t| &t.texture));
+                    if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
+                        renderer.update_preview_texture(preview_id, tex, &mut encoder);
+                        any_work = true;
+                    }
+                }
+
+                {
+                    let second_input_src = self.output_engine
+                        .as_ref()
+                        .and_then(|e| e.second_input_texture.texture.as_ref().map(|t| &t.texture));
+                    if let (Some(tex), Some(preview_id)) = (second_input_src, gui.second_input_preview_texture_id) {
+                        renderer.update_preview_texture(preview_id, tex, &mut encoder);
+                        any_work = true;
+                    }
+                }
+
+                {
+                    let output_src = self.output_engine.as_ref().map(|e| &e.render_target.texture);
+                    if let (Some(tex), Some(preview_id)) = (output_src, gui.output_preview_texture_id) {
+                        renderer.update_preview_texture(preview_id, tex, &mut encoder);
+                        any_work = true;
+                    }
+                }
+
+                if any_work {
+                    renderer.queue().submit(std::iter::once(encoder.finish()));
+                }
+            }
+        } else if let (Some(ref mut renderer), Some(ref gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
             let mut encoder = renderer.device().create_command_encoder(

@@ -14,6 +14,8 @@ members = [
     "examples/waaaves",
     "examples/sputnik",
     "examples/webapp",
+    "examples/isf-example",
+    "examples/delta-egui",
 ]
 resolver = "2"
 
@@ -37,6 +39,9 @@ image       = { version = "0.25", default-features = false, features = ["png", "
 imgui               = "0.12"
 imgui-wgpu          = "0.28"
 imgui-winit-support = "0.13"
+egui                = "0.34"
+egui-wgpu           = "0.34"
+egui-winit          = "0.34"
 
 # Audio
 cpal    = "0.17"
@@ -71,6 +76,7 @@ rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
 rustjay-gui     = { path = "crates/rustjay-gui", version = "0.1.0" }
 rustjay-render  = { path = "crates/rustjay-render", version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
+isf             = { path = "../isf" }
 syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }

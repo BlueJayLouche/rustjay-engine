@@ -22,6 +22,9 @@ bytemuck        = { workspace = true }
 imgui               = { workspace = true }
 imgui-wgpu          = { workspace = true }
 imgui-winit-support = { workspace = true }
+egui                = { workspace = true, optional = true }
+egui-wgpu           = { workspace = true, optional = true }
+egui-winit          = { workspace = true, optional = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 pollster        = { workspace = true }
@@ -29,6 +32,7 @@ pollster        = { workspace = true }
 [features]
 default = ["ndi"]
 ndi     = ["rustjay-core/ndi"]
+egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 link   = ["rustjay-core/link"]
 prodj  = ["rustjay-core/prodj"]

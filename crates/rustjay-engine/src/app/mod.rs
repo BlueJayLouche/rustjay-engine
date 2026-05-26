@@ -8,6 +8,8 @@ use rustjay_control::OscServer;
 use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 use rustjay_core::EngineState;
 use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
+#[cfg(feature = "egui")]
+use rustjay_gui::{AnyEguiTab, EguiControlGui, EguiRenderer};
 use rustjay_io::InputManager;
 use rustjay_presets::{PresetBank, presets_dir_for};
 use rustjay_render::WgpuEngine;
@@ -38,7 +40,32 @@ pub(crate) fn run_app<P: EffectPlugin>(
     #[cfg(target_os = "macos")]
     let proxy = event_loop.create_proxy();
 
-    let mut app = App::new(shared_state, plugin, tabs);
+    let mut app = App::new(shared_state, plugin, false, tabs);
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_proxy(proxy);
+        macos::setup_macos_app_delegate();
+    }
+
+    event_loop.run_app(&mut app)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "egui")]
+pub(crate) fn run_egui_app<P: EffectPlugin>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    tabs: Vec<Box<dyn AnyEguiTab>>,
+) -> Result<()> {
+    let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    #[cfg(target_os = "macos")]
+    let proxy = event_loop.create_proxy();
+
+    let mut app = App::new_with_egui(shared_state, plugin, tabs);
 
     #[cfg(target_os = "macos")]
     {
@@ -65,6 +92,13 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) control_window: Option<Arc<Window>>,
     pub(crate) control_gui: Option<ControlGui>,
     pub(crate) imgui_renderer: Option<ImGuiRenderer>,
+
+    #[cfg(feature = "egui")]
+    pub(crate) egui_control_gui: Option<EguiControlGui>,
+    #[cfg(feature = "egui")]
+    pub(crate) egui_renderer: Option<EguiRenderer>,
+
+    pub(crate) use_egui: bool,
 
     pub(crate) input_manager: Option<InputManager>,
     pub(crate) second_input_manager: Option<InputManager>,
@@ -103,14 +137,17 @@ pub(crate) struct App<P: EffectPlugin> {
     // Plugin state
     pub(crate) plugin: Option<P>,
     pub(crate) app_state: P::State,
-    pub(crate) custom_tabs: Vec<Box<dyn AnyGuiTab>>,
+    pub(crate) custom_tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
+    #[cfg(feature = "egui")]
+    pub(crate) custom_tabs_egui: Vec<Box<dyn AnyEguiTab>>,
 }
 
 impl<P: EffectPlugin> App<P> {
     pub(crate) fn new(
         shared_state: Arc<std::sync::Mutex<EngineState>>,
         plugin: P,
-        tabs: Vec<Box<dyn AnyGuiTab>>,
+        use_egui: bool,
+        tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
     ) -> Self {
         let app_name = plugin.app_name().to_string();
         let initial_state = plugin.default_state();
@@ -232,6 +269,11 @@ impl<P: EffectPlugin> App<P> {
             control_window: None,
             control_gui: None,
             imgui_renderer: None,
+            #[cfg(feature = "egui")]
+            egui_control_gui: None,
+            #[cfg(feature = "egui")]
+            egui_renderer: None,
+            use_egui,
             input_manager: Some(InputManager::new()),
             second_input_manager: Some(InputManager::new()),
             audio_analyzer: Some(analyzer),
@@ -259,8 +301,21 @@ impl<P: EffectPlugin> App<P> {
             cached_audio_pink_noise: false,
             plugin: Some(plugin),
             app_state: initial_state,
-            custom_tabs: tabs,
+            custom_tabs_imgui: tabs_imgui,
+            #[cfg(feature = "egui")]
+            custom_tabs_egui: Vec::new(),
         }
+    }
+
+    #[cfg(feature = "egui")]
+    pub(crate) fn new_with_egui(
+        shared_state: Arc<std::sync::Mutex<EngineState>>,
+        plugin: P,
+        tabs_egui: Vec<Box<dyn AnyEguiTab>>,
+    ) -> Self {
+        let mut app = Self::new(shared_state, plugin, true, Vec::new());
+        app.custom_tabs_egui = tabs_egui;
+        app
     }
 
     pub(crate) fn toggle_fullscreen(&mut self) {
@@ -279,10 +334,15 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(crate) fn trigger_tap_tempo(&mut self) {
-        if let Some(ref mut gui) = self.control_gui {
+        if self.use_egui {
+            #[cfg(feature = "egui")]
+            if let Some(ref mut gui) = self.egui_control_gui {
+                gui.handle_tap_tempo();
+            }
+        } else if let Some(ref mut gui) = self.control_gui {
             gui.handle_tap_tempo();
-            log::info!("Tap tempo triggered via keyboard");
         }
+        log::info!("Tap tempo triggered via keyboard");
     }
 
     pub(crate) fn save_settings(&mut self) {

@@ -1,0 +1,15 @@
+[package]
+name = "delta-egui"
+version = "0.1.0"
+edition = "2021"
+description = "Delta effect with a professional egui interface"
+
+[dependencies]
+rustjay-engine = { workspace = true, features = ["egui"] }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+egui = { workspace = true }

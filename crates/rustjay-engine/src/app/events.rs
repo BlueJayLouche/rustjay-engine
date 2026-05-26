@@ -1,5 +1,7 @@
 use super::{App, WindowAction};
 use rustjay_gui::{ControlGui, ImGuiRenderer};
+#[cfg(feature = "egui")]
+use rustjay_gui::{EguiControlGui, EguiRenderer};
 use rustjay_render::WgpuEngine;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -116,34 +118,67 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 };
 
                 let scale_factor = window.scale_factor();
-                match pollster::block_on(ImGuiRenderer::new(
-                    instance, adapter, device, queue, window, scale_factor,
-                )) {
-                    Ok(mut renderer) => {
-                        match ControlGui::new(Arc::clone(&self.shared_state)) {
-                            Ok(mut gui) => {
-                                let input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                let output_preview_id = renderer.create_preview_texture(1920, 1080);
-                                gui.set_input_preview_texture(input_preview_id);
-                                gui.set_second_input_preview_texture(second_input_preview_id);
-                                gui.set_output_preview_texture(output_preview_id);
-                                log::info!("Created preview textures");
+                if self.use_egui {
+                    #[cfg(feature = "egui")]
+                    match pollster::block_on(EguiRenderer::new(
+                        instance, adapter, device, queue, window, scale_factor,
+                    )) {
+                        Ok(mut renderer) => {
+                            match EguiControlGui::new(Arc::clone(&self.shared_state)) {
+                                Ok(mut gui) => {
+                                    let input_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let output_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    gui.set_input_preview_texture(input_preview_id);
+                                    gui.set_second_input_preview_texture(second_input_preview_id);
+                                    gui.set_output_preview_texture(output_preview_id);
+                                    log::info!("Created egui preview textures");
 
-                                // Move custom tabs into the GUI
-                                gui.custom_tabs = std::mem::take(&mut self.custom_tabs);
+                                    // Move custom tabs into the GUI
+                                    gui.custom_tabs = std::mem::take(&mut self.custom_tabs_egui);
 
-                                self.control_gui = Some(gui);
-                                {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                                    self.egui_control_gui = Some(gui);
+                                    {
+                                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                        state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                                    }
+                                    self.egui_renderer = Some(renderer);
                                 }
-                                self.imgui_renderer = Some(renderer);
+                                Err(err) => log::error!("Failed to create egui control GUI: {}", err),
                             }
-                            Err(err) => log::error!("Failed to create control GUI: {}", err),
                         }
+                        Err(err) => log::error!("Failed to create egui renderer: {}", err),
                     }
-                    Err(err) => log::error!("Failed to create ImGui renderer: {}", err),
+                } else {
+                    match pollster::block_on(ImGuiRenderer::new(
+                        instance, adapter, device, queue, window, scale_factor,
+                    )) {
+                        Ok(mut renderer) => {
+                            match ControlGui::new(Arc::clone(&self.shared_state)) {
+                                Ok(mut gui) => {
+                                    let input_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let output_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    gui.set_input_preview_texture(input_preview_id);
+                                    gui.set_second_input_preview_texture(second_input_preview_id);
+                                    gui.set_output_preview_texture(output_preview_id);
+                                    log::info!("Created preview textures");
+
+                                    // Move custom tabs into the GUI
+                                    gui.custom_tabs = std::mem::take(&mut self.custom_tabs_imgui);
+
+                                    self.control_gui = Some(gui);
+                                    {
+                                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                        state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                                    }
+                                    self.imgui_renderer = Some(renderer);
+                                }
+                                Err(err) => log::error!("Failed to create control GUI: {}", err),
+                            }
+                        }
+                        Err(err) => log::error!("Failed to create ImGui renderer: {}", err),
+                    }
                 }
             }
         }
@@ -255,7 +290,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
 
         if let Some(control_window) = self.control_window.as_ref() {
             if window_id == control_window.id() {
-                if let Some(ref mut renderer) = self.imgui_renderer {
+                if self.use_egui {
+                    #[cfg(feature = "egui")]
+                    if let Some(ref mut renderer) = self.egui_renderer {
+                        let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
+                        renderer.handle_event(&winit_event);
+                    }
+                } else if let Some(ref mut renderer) = self.imgui_renderer {
                     let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
                     renderer.handle_event(&winit_event);
                 }
@@ -290,14 +331,28 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     }
                     WindowEvent::Resized(size) => {
                         if self.control_visible {
-                            if let Some(ref mut renderer) = self.imgui_renderer {
+                            if self.use_egui {
+                                #[cfg(feature = "egui")]
+                                if let Some(ref mut renderer) = self.egui_renderer {
+                                    renderer.resize(size.width, size.height);
+                                }
+                            } else if let Some(ref mut renderer) = self.imgui_renderer {
                                 renderer.resize(size.width, size.height);
                             }
                         }
                     }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                         if self.control_visible {
-                            if let Some(ref mut renderer) = self.imgui_renderer {
+                            if self.use_egui {
+                                #[cfg(feature = "egui")]
+                                if let Some(ref mut renderer) = self.egui_renderer {
+                                    renderer.set_scale_factor(scale_factor);
+                                    let window_size = control_window.inner_size();
+                                    let logical_width = window_size.width as f32 / scale_factor as f32;
+                                    let logical_height = window_size.height as f32 / scale_factor as f32;
+                                    renderer.set_display_size(logical_width, logical_height);
+                                }
+                            } else if let Some(ref mut renderer) = self.imgui_renderer {
                                 renderer.set_scale_factor(scale_factor);
                                 let window_size = control_window.inner_size();
                                 let logical_width = window_size.width as f32 / scale_factor as f32;
@@ -352,7 +407,23 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.update_preview_textures();
         }
         if self.control_visible {
-            if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
+            if self.use_egui {
+                #[cfg(feature = "egui")]
+                if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
+                    (self.control_window.as_ref(), self.egui_renderer.as_mut(), self.egui_control_gui.as_mut())
+                {
+                    let scale_factor = window.scale_factor();
+                    let window_size = window.inner_size();
+                    let logical_width = window_size.width as f32 / scale_factor as f32;
+                    let logical_height = window_size.height as f32 / scale_factor as f32;
+                    renderer.set_display_size(logical_width, logical_height);
+
+                    let app_state = &mut self.app_state as &mut dyn std::any::Any;
+                    if let Err(err) = renderer.render_frame(|ctx| gui.build_ui(ctx, app_state)) {
+                        log::error!("egui render error: {}", err);
+                    }
+                }
+            } else if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
                 (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
             {
                 let scale_factor = window.scale_factor();

@@ -37,6 +37,7 @@ objc = "0.2"
 default = ["ndi", "webcam"]
 ndi     = ["rustjay-io/ndi"]
 webcam  = ["rustjay-io/webcam"]
+egui    = ["rustjay-gui/egui"]
 spout   = []
 v4l2    = []
 link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]

@@ -18,6 +18,8 @@ pub use rustjay_core::{LinkState, LinkCommand};
 #[cfg(feature = "prodj")]
 pub use rustjay_core::{ProDjState, CdjDevice, ProDjCommand};
 pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+#[cfg(feature = "egui")]
+pub use rustjay_gui::AnyEguiTab;
 pub use rustjay_render::PreviousFrameTexture;
 
 use anyhow::Result;
@@ -61,6 +63,29 @@ pub fn run_with_tabs<P: EffectPlugin>(
     app::run_app(shared_state, plugin, tabs)
 }
 
+/// Run the engine with the given plugin and custom egui tabs.
+///
+/// ```ignore
+/// use rustjay_engine::prelude::*;
+///
+/// struct MyEffect;
+/// impl EffectPlugin for MyEffect { /* ... */ }
+/// struct MyTab;
+/// impl AnyEguiTab for MyTab { /* ... */ }
+///
+/// fn main() -> anyhow::Result<()> {
+///     rustjay_engine::run_with_egui_tabs(MyEffect, vec![Box::new(MyTab)])
+/// }
+/// ```
+#[cfg(feature = "egui")]
+pub fn run_with_egui_tabs<P: EffectPlugin>(
+    plugin: P,
+    tabs: Vec<Box<dyn AnyEguiTab>>,
+) -> Result<()> {
+    let shared_state = Arc::new(Mutex::new(EngineState::new()));
+    app::run_egui_app(shared_state, plugin, tabs)
+}
+
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use rustjay_core::{
@@ -73,6 +98,10 @@ pub mod prelude {
         ParameterDescriptor, ParamCategory, ParamType,
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+    #[cfg(feature = "egui")]
+    pub use rustjay_gui::AnyEguiTab;
     pub use rustjay_render::{WgpuEngine, Texture, InputTexture, PreviousFrameTexture};
     pub use crate::{run, run_with_tabs};
+    #[cfg(feature = "egui")]
+    pub use crate::run_with_egui_tabs;
 }
