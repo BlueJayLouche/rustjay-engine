@@ -118,6 +118,10 @@ pub struct MidiState {
     pub learning_param_path: Option<String>,
     /// Parameter name being learned
     pub learning_param_name: Option<String>,
+    /// Minimum output value for the parameter being learned
+    pub learning_param_min: f32,
+    /// Maximum output value for the parameter being learned
+    pub learning_param_max: f32,
 }
 
 impl Default for MidiState {
@@ -131,17 +135,21 @@ impl Default for MidiState {
             enabled: false,
             learning_param_path: None,
             learning_param_name: None,
+            learning_param_min: 0.0,
+            learning_param_max: 1.0,
         }
     }
 }
 
 impl MidiState {
     /// Start learning a parameter
-    pub fn start_learning(&mut self, param_path: &str, param_name: &str) {
+    pub fn start_learning(&mut self, param_path: &str, param_name: &str, min: f32, max: f32) {
         self.learn_state = LearnState::Waiting;
         self.learning_param_path = Some(param_path.to_string());
         self.learning_param_name = Some(param_name.to_string());
-        log::info!("MIDI learn started for: {}", param_name);
+        self.learning_param_min = min;
+        self.learning_param_max = max;
+        log::info!("MIDI learn started for: {} (range {:.3}–{:.3})", param_name, min, max);
     }
 
     /// Cancel learning
@@ -156,9 +164,9 @@ impl MidiState {
     pub fn complete_learning(&mut self, cc: u8, channel: u8) {
         if let (Some(path), Some(name)) = (&self.learning_param_path, &self.learning_param_name) {
             self.mappings.retain(|m| !(m.cc == cc && m.channel == channel));
-            let mapping = MidiMapping::new(cc, channel, name, path, 0.0, 1.0);
+            let mapping = MidiMapping::new(cc, channel, name, path, self.learning_param_min, self.learning_param_max);
             self.mappings.push(mapping);
-            log::info!("MIDI mapped: {} -> CC {} channel {}", name, cc, channel);
+            log::info!("MIDI mapped: {} -> CC {} channel {} (range {:.3}–{:.3})", name, cc, channel, self.learning_param_min, self.learning_param_max);
         }
         self.learn_state = LearnState::Idle;
         self.learning_param_path = None;
@@ -362,9 +370,9 @@ impl MidiManager {
     }
 
     /// Start learning a parameter
-    pub fn start_learn(&mut self, param_path: &str, param_name: &str) {
+    pub fn start_learn(&mut self, param_path: &str, param_name: &str, min: f32, max: f32) {
         if let Ok(mut state) = self.state.lock() {
-            state.start_learning(param_path, param_name);
+            state.start_learning(param_path, param_name, min, max);
         }
     }
 

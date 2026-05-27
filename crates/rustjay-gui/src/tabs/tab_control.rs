@@ -38,28 +38,90 @@ impl ControlGui {
         ui.text("MIDI Control");
         ui.separator();
 
-        if ui.button("Refresh Devices") {
+        // ── Device selection ────────────────────────────────────────────────────
+        let (enabled, selected_device, available_devices) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (state.midi_enabled, state.midi_selected_device.clone(), state.midi_available_devices.clone())
+        };
+
+        let status_color = if enabled { [0.0, 1.0, 0.0, 1.0] } else { [1.0, 0.5, 0.0, 1.0] };
+        let status_text = if let Some(ref name) = selected_device {
+            format!("Connected: {}", name)
+        } else {
+            "Not connected".to_string()
+        };
+        ui.text_colored(status_color, &status_text);
+
+        ui.same_line();
+        if ui.button("Refresh") {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.midi_command = MidiCommand::RefreshDevices;
         }
 
+        if enabled {
+            ui.same_line();
+            if ui.button("Disconnect") {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::Disconnect;
+            }
+        }
+
         ui.separator();
+        ui.text("Available Devices:");
 
-        ui.text_colored([0.0, 1.0, 1.0, 1.0], "MIDI Learn");
-        ui.text("Click a parameter, then move a MIDI controller to map it.");
-
-        if ui.button("Clear All Mappings") {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.midi_command = MidiCommand::ClearMappings;
+        if available_devices.is_empty() {
+            ui.text_disabled("  (none found — click Refresh)");
+        } else {
+            for device in &available_devices {
+                let is_selected = selected_device.as_deref() == Some(device.as_str());
+                let label = if is_selected {
+                    format!("* {}", device)
+                } else {
+                    format!("  {}", device)
+                };
+                ui.text(&label);
+                ui.same_line();
+                let btn_label = format!("Connect##{}", device);
+                if ui.button(&btn_label) && !is_selected {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.midi_command = MidiCommand::SelectDevice(device.clone());
+                }
+            }
         }
 
         ui.separator();
 
-        // Get descriptors grouped by category
-        let descriptors = {
+        let (learn_active, learning_param_name, midi_mappings, descriptors) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.param_descriptors.clone()
+            (
+                state.midi_learn_active,
+                state.midi_learning_param_name.clone(),
+                state.midi_mappings.clone(),
+                state.param_descriptors.clone(),
+            )
         };
+
+        ui.text_colored([0.0, 1.0, 1.0, 1.0], "MIDI Learn");
+        if learn_active {
+            let waiting_label = if let Some(ref name) = learning_param_name {
+                format!("Waiting for CC... (learning: {})", name)
+            } else {
+                "Waiting for CC...".to_string()
+            };
+            ui.text_colored([1.0, 1.0, 0.0, 1.0], &waiting_label);
+            if ui.button("Cancel Learn") {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::CancelLearn;
+            }
+        } else {
+            ui.text("Click a parameter, then move a MIDI controller to map it.");
+            if ui.button("Clear All Mappings") {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::ClearMappings;
+            }
+        }
+
+        ui.separator();
 
         if descriptors.is_empty() {
             ui.text_disabled("No effect-declared parameters.");
@@ -78,16 +140,24 @@ impl ControlGui {
                     ui.indent();
                     for desc in &cat_params {
                         let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                        let label = format!("Learn: {}", desc.name);
+                        let mapping = midi_mappings.iter().find(|(_, p, _, _)| p == &path);
+
+                        let label = format!("Learn: {}##{}", desc.name, desc.id);
                         if ui.button(&label) {
                             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.midi_command = MidiCommand::StartLearn {
                                 param_path: path,
                                 param_name: desc.name.clone(),
+                                min: desc.min,
+                                max: desc.max,
                             };
                         }
                         ui.same_line();
-                        ui.text_disabled("(CC: --)");
+                        if let Some((_, _, cc, ch)) = mapping {
+                            ui.text_colored([0.0, 1.0, 0.5, 1.0], &format!("CC {} ch{}", cc, ch));
+                        } else {
+                            ui.text_disabled("(unlearned)");
+                        }
                     }
                     ui.unindent();
                 }
@@ -96,7 +166,13 @@ impl ControlGui {
 
         ui.separator();
         ui.text("Active Mappings");
-        ui.text_disabled("No mappings configured yet — use MIDI Learn above");
+        if midi_mappings.is_empty() {
+            ui.text_disabled("No mappings configured yet — use MIDI Learn above");
+        } else {
+            for (name, _path, cc, ch) in &midi_mappings {
+                ui.text(&format!("  {} -> CC {} ch{}", name, cc, ch));
+            }
+        }
     }
 
     /// Build the OSC tab with dynamically-generated addresses.

@@ -142,11 +142,17 @@ pub enum MidiCommand {
         param_path: String,
         /// Human-readable parameter name.
         param_name: String,
+        /// Parameter minimum value (used to scale the CC output range).
+        min: f32,
+        /// Parameter maximum value (used to scale the CC output range).
+        max: f32,
     },
     /// Cancel CC-learn mode.
     CancelLearn,
     /// Clear all CC mappings.
     ClearMappings,
+    /// Disconnect the current MIDI device.
+    Disconnect,
 }
 
 impl Default for MidiCommand {
@@ -801,6 +807,18 @@ pub struct EngineState {
 
     /// Pending MIDI command.
     pub midi_command: MidiCommand,
+    /// Available MIDI input devices (populated after RefreshDevices).
+    pub midi_available_devices: Vec<String>,
+    /// Currently connected MIDI device, if any.
+    pub midi_selected_device: Option<String>,
+    /// Whether a MIDI device is currently connected.
+    pub midi_enabled: bool,
+    /// Whether MIDI learn mode is active (waiting for a CC to arrive).
+    pub midi_learn_active: bool,
+    /// Human-readable name of the parameter currently being learned.
+    pub midi_learning_param_name: Option<String>,
+    /// Active CC mappings for display: (param_name, param_path, cc, channel).
+    pub midi_mappings: Vec<(String, String, u8, u8)>,
     /// Pending OSC command.
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.
@@ -917,6 +935,12 @@ impl EngineState {
             ui_scale: 1.0,
             current_tab: GuiTab::Input,
             midi_command: MidiCommand::None,
+            midi_available_devices: Vec::new(),
+            midi_selected_device: None,
+            midi_enabled: false,
+            midi_learn_active: false,
+            midi_learning_param_name: None,
+            midi_mappings: Vec::new(),
             osc_command: OscCommand::None,
             osc_enabled: false,
             osc_host: "127.0.0.1".to_string(),

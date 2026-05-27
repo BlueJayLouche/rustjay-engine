@@ -245,13 +245,17 @@ impl<P: EffectPlugin> App<P> {
                     .unwrap_or_default();
                 log::warn!("[MIDI] Device '{}' no longer available — disconnecting", name);
                 manager.disconnect();
+                if let Ok(mut state) = self.shared_state.lock() {
+                    state.midi_selected_device = None;
+                    state.midi_enabled = false;
+                }
             }
         }
 
         if let Some(ref manager) = self.midi_manager {
-            // Collect dirty MIDI values into the pre-allocated scratch Vec (no HashMap alloc).
+            // Collect dirty MIDI values and snapshot learn/mapping state in one lock.
             self.midi_dirty_scratch.clear();
-            {
+            let (learn_active, learning_name, mapping_snapshot) = {
                 let midi_state_arc = manager.state();
                 let mut midi_state = midi_state_arc.lock().unwrap_or_else(|e| e.into_inner());
                 for mapping in &mut midi_state.mappings {
@@ -259,22 +263,36 @@ impl<P: EffectPlugin> App<P> {
                         self.midi_dirty_scratch.push((mapping.param_path.clone(), mapping.get_scaled_value()));
                     }
                 }
-            }
+                let learn_active = midi_state.learn_state != rustjay_control::LearnState::Idle;
+                let learning_name = midi_state.learning_param_name.clone();
+                let mapping_snapshot: Vec<(String, String, u8, u8)> = midi_state.mappings.iter()
+                    .map(|m| (m.name.clone(), m.param_path.clone(), m.cc, m.channel))
+                    .collect();
+                (learn_active, learning_name, mapping_snapshot)
+            };
 
-            if !self.midi_dirty_scratch.is_empty() {
-                if let Ok(mut shared) = self.shared_state.lock() {
-                    for (path, value) in &self.midi_dirty_scratch {
-                        match path.as_str() {
-                            "color/hue_shift"  => shared.hsb_params.hue_shift  = value.clamp(-180.0, 180.0),
-                            "color/saturation" => shared.hsb_params.saturation  = value.clamp(0.0, 2.0),
-                            "color/brightness" => shared.hsb_params.brightness  = value.clamp(0.0, 2.0),
-                            "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
-                            "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
-                            _ => {
-                                if let Some(id) = path.split('/').last() {
-                                    if shared.param_descriptors.iter().any(|d| d.id == id) {
-                                        shared.set_param_base(id, *value);
-                                    }
+            if let Ok(mut shared) = self.shared_state.lock() {
+                // Sync learn state.
+                shared.midi_learn_active = learn_active;
+                if !learn_active {
+                    shared.midi_learning_param_name = None;
+                } else if learning_name.is_some() {
+                    shared.midi_learning_param_name = learning_name;
+                }
+                shared.midi_mappings = mapping_snapshot;
+
+                // Apply dirty parameter values.
+                for (path, value) in &self.midi_dirty_scratch {
+                    match path.as_str() {
+                        "color/hue_shift"  => shared.hsb_params.hue_shift  = value.clamp(-180.0, 180.0),
+                        "color/saturation" => shared.hsb_params.saturation  = value.clamp(0.0, 2.0),
+                        "color/brightness" => shared.hsb_params.brightness  = value.clamp(0.0, 2.0),
+                        "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
+                        "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
+                        _ => {
+                            if let Some(id) = path.split('/').last() {
+                                if shared.param_descriptors.iter().any(|d| d.id == id) {
+                                    shared.set_param_base(id, *value);
                                 }
                             }
                         }

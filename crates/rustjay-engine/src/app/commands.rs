@@ -338,23 +338,38 @@ impl<P: EffectPlugin> App<P> {
                 if let Some(ref mut manager) = self.midi_manager {
                     let devices = manager.refresh_devices();
                     log::info!("MIDI devices refreshed: {} found", devices.len());
+                    let mut state = lock(&self.shared_state);
+                    state.midi_available_devices = devices;
                 }
             }
             MidiCommand::SelectDevice(device_name) => {
                 if let Some(ref mut manager) = self.midi_manager {
-                    if let Err(e) = manager.connect(&device_name) {
-                        log::error!("Failed to connect to MIDI device '{}': {}", device_name, e);
+                    match manager.connect(&device_name) {
+                        Ok(()) => {
+                            let mut state = lock(&self.shared_state);
+                            state.midi_selected_device = Some(device_name);
+                            state.midi_enabled = true;
+                        }
+                        Err(e) => {
+                            log::error!("Failed to connect to MIDI device '{}': {}", device_name, e);
+                        }
                     }
                 }
             }
-            MidiCommand::StartLearn { param_path, param_name } => {
+            MidiCommand::StartLearn { param_path, param_name, min, max } => {
                 if let Some(ref mut manager) = self.midi_manager {
-                    manager.start_learn(&param_path, &param_name);
+                    manager.start_learn(&param_path, &param_name, min, max);
+                    let mut state = lock(&self.shared_state);
+                    state.midi_learn_active = true;
+                    state.midi_learning_param_name = Some(param_name);
                 }
             }
             MidiCommand::CancelLearn => {
                 if let Some(ref mut manager) = self.midi_manager {
                     manager.cancel_learn();
+                    let mut state = lock(&self.shared_state);
+                    state.midi_learn_active = false;
+                    state.midi_learning_param_name = None;
                 }
             }
             MidiCommand::ClearMappings => {
@@ -362,6 +377,14 @@ impl<P: EffectPlugin> App<P> {
                     if let Ok(mut state) = manager.state().lock() {
                         state.mappings.clear();
                     }
+                }
+            }
+            MidiCommand::Disconnect => {
+                if let Some(ref mut manager) = self.midi_manager {
+                    manager.disconnect();
+                    let mut state = lock(&self.shared_state);
+                    state.midi_selected_device = None;
+                    state.midi_enabled = false;
                 }
             }
             _ => {}

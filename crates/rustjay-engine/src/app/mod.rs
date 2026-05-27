@@ -175,8 +175,12 @@ impl<P: EffectPlugin> App<P> {
             let midi_state = Arc::new(std::sync::Mutex::new(MidiState::default()));
             match MidiManager::new(midi_state) {
                 Ok(mut manager) => {
-                    manager.refresh_devices();
-                    log::info!("MIDI manager initialized");
+                    let devices = manager.refresh_devices();
+                    log::info!("MIDI manager initialized with {} devices", devices.len());
+                    {
+                        let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.midi_available_devices = devices;
+                    }
                     Some(manager)
                 }
                 Err(e) => {

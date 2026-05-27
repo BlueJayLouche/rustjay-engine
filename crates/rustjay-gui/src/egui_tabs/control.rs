@@ -32,30 +32,95 @@ impl EguiControlGui {
         ui.heading("MIDI Control");
         ui.add_space(8.0);
 
-        if ui.button("🔄 Refresh Devices").clicked() {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.midi_command = MidiCommand::RefreshDevices;
+        // ── Device selection ────────────────────────────────────────────────────
+        let (enabled, selected_device, available_devices) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (state.midi_enabled, state.midi_selected_device.clone(), state.midi_available_devices.clone())
+        };
+
+        ui.horizontal(|ui| {
+            ui.label("Status:");
+            if enabled {
+                let name = selected_device.as_deref().unwrap_or("unknown");
+                self.status_badge(ui, &format!("Connected: {}", name), true);
+            } else {
+                self.status_badge(ui, "Not connected", false);
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("🔄 Refresh").clicked() {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::RefreshDevices;
+            }
+            if enabled && ui.button("⏹ Disconnect").clicked() {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::Disconnect;
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Available Devices").strong());
+
+        if available_devices.is_empty() {
+            ui.label(egui::RichText::new("None found — click Refresh").size(11.0).color(TEXT_SECONDARY));
+        } else {
+            for device in &available_devices {
+                let is_selected = selected_device.as_deref() == Some(device.as_str());
+                ui.horizontal(|ui| {
+                    if is_selected {
+                        ui.label(egui::RichText::new("▶").color(ACCENT_CYAN));
+                    } else {
+                        ui.label("  ");
+                    }
+                    ui.label(device);
+                    if !is_selected && ui.small_button("Connect").clicked() {
+                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.midi_command = MidiCommand::SelectDevice(device.clone());
+                    }
+                });
+            }
         }
+
+        let (learn_active, learning_param_name, midi_mappings, descriptors) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.midi_learn_active,
+                state.midi_learning_param_name.clone(),
+                state.midi_mappings.clone(),
+                state.param_descriptors.clone(),
+            )
+        };
 
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
 
         ui.label(egui::RichText::new("MIDI Learn").color(ACCENT_CYAN).strong());
-        ui.label("Click a parameter, then move a MIDI controller to map it.");
-        if ui.button("Clear All Mappings").clicked() {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.midi_command = MidiCommand::ClearMappings;
+
+        if learn_active {
+            let waiting_text = if let Some(ref name) = learning_param_name {
+                format!("⏳ Waiting for CC... ({})", name)
+            } else {
+                "⏳ Waiting for CC...".to_string()
+            };
+            ui.label(egui::RichText::new(&waiting_text).color(egui::Color32::YELLOW).strong());
+            if ui.button("✖ Cancel Learn").clicked() {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::CancelLearn;
+            }
+        } else {
+            ui.label("Click a parameter, then move a MIDI controller to map it.");
+            if ui.button("Clear All Mappings").clicked() {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.midi_command = MidiCommand::ClearMappings;
+            }
         }
 
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
-
-        let descriptors = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.param_descriptors.clone()
-        };
 
         if descriptors.is_empty() {
             ui.label(egui::RichText::new("No effect-declared parameters.").color(TEXT_SECONDARY));
@@ -69,15 +134,23 @@ impl EguiControlGui {
                     .show(ui, |ui| {
                         for desc in &cat_params {
                             let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                            if ui.button(format!("Learn: {}", desc.name)).clicked() {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.midi_command = MidiCommand::StartLearn {
-                                    param_path: path,
-                                    param_name: desc.name.clone(),
-                                };
-                            }
+                            let mapping = midi_mappings.iter().find(|(_, p, _, _)| p == &path);
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("(CC: --)").size(11.0).color(TEXT_SECONDARY));
+                                if ui.button(format!("Learn: {}", desc.name)).clicked() {
+                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    state.midi_command = MidiCommand::StartLearn {
+                                        param_path: path,
+                                        param_name: desc.name.clone(),
+                                        min: desc.min,
+                                        max: desc.max,
+                                    };
+                                }
+                                if let Some((_, _, cc, ch)) = mapping {
+                                    ui.label(egui::RichText::new(format!("CC {} ch{}", cc, ch))
+                                        .size(11.0).color(egui::Color32::from_rgb(0, 220, 130)));
+                                } else {
+                                    ui.label(egui::RichText::new("(unlearned)").size(11.0).color(TEXT_SECONDARY));
+                                }
                             });
                         }
                     });
@@ -88,7 +161,14 @@ impl EguiControlGui {
         ui.separator();
         ui.add_space(8.0);
         ui.label("Active Mappings");
-        ui.label(egui::RichText::new("No mappings configured yet — use MIDI Learn above").color(TEXT_SECONDARY));
+        if midi_mappings.is_empty() {
+            ui.label(egui::RichText::new("No mappings configured yet — use MIDI Learn above").color(TEXT_SECONDARY));
+        } else {
+            for (name, _path, cc, ch) in &midi_mappings {
+                ui.label(egui::RichText::new(format!("  {} → CC {} ch{}", name, cc, ch))
+                    .size(11.0).monospace());
+            }
+        }
     }
 
     pub(crate) fn build_osc_tab(&mut self, ui: &mut egui::Ui) {
