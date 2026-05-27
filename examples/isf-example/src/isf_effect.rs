@@ -41,6 +41,8 @@ pub struct IsfEffect {
     last_mtime: Option<SystemTime>,
     /// Shared with IsfTab: set to Some(path) to trigger loading a new shader.
     pub pending_path: Arc<Mutex<Option<PathBuf>>>,
+    /// Set to true after a successful init() so the engine re-reads parameters().
+    params_dirty: bool,
 
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
@@ -79,6 +81,7 @@ impl IsfEffect {
             shader_path: path.to_path_buf(),
             last_mtime: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
             pending_path: Arc::new(Mutex::new(None)),
+            params_dirty: false,
             start_time: Instant::now(),
             transpile_error: None,
             pipeline: None,
@@ -101,6 +104,9 @@ impl EffectPlugin for IsfEffect {
     type Uniforms = IsfUniforms;
 
     fn app_name(&self) -> &str { "isf-example" }
+
+    fn parameters_dirty(&self) -> bool { self.params_dirty }
+    fn clear_parameters_dirty(&mut self) { self.params_dirty = false; }
 
     fn shader_source(&self) -> &'static str {
         // The engine compiles this stub, but render() returns true so it is never used.
@@ -384,6 +390,7 @@ impl EffectPlugin for IsfEffect {
         self.uniform_buffer     = Some(ub);
         self.uniform_bind_group = Some(ubg);
         self.transpile_error    = None;
+        self.params_dirty       = true;
     }
 
     // -----------------------------------------------------------------------

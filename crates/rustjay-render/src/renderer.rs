@@ -302,6 +302,35 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             &self.queue,
         );
 
+        // If the plugin's parameter list changed (e.g. ISF hot reload), refresh EngineState.
+        if self.plugin_renderer.plugin.parameters_dirty() {
+            let new_descs = self.plugin_renderer.plugin.parameters();
+            self.plugin_renderer.plugin.clear_parameters_dirty();
+
+            // Preserve current values for params whose ID survives the reload.
+            let old_values: std::collections::HashMap<String, f32> = engine_state
+                .param_descriptors
+                .iter()
+                .enumerate()
+                .map(|(i, d)| (d.id.clone(), engine_state.custom_param_bases[i]))
+                .collect();
+
+            let new_bases: Vec<f32> = new_descs
+                .iter()
+                .map(|d| old_values.get(&d.id).copied().unwrap_or(d.default))
+                .collect();
+            let new_osc: Vec<String> = new_descs
+                .iter()
+                .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
+                .collect();
+            let n = new_descs.len();
+
+            engine_state.param_descriptors   = std::sync::Arc::new(new_descs);
+            engine_state.custom_param_bases  = new_bases;
+            engine_state.custom_params       = vec![0.0; n];
+            engine_state.param_osc_addresses = new_osc;
+        }
+
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Pipeline Encoder"),
         });

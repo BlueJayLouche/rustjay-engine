@@ -172,6 +172,15 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// Use this to sync restored plugin state back to the engine.
     fn on_preset_applied(&self, _state: &mut Self::State, _engine: &mut EngineState) {}
 
+    /// Returns true if the plugin's parameter list has changed since the last frame.
+    /// The engine re-queries `parameters()` and refreshes `EngineState` when this is true.
+    /// Default: always false (static parameter lists).
+    fn parameters_dirty(&self) -> bool { false }
+
+    /// Called by the engine immediately after it reads `parameters()` in response to
+    /// `parameters_dirty()` returning true. Reset the dirty flag here.
+    fn clear_parameters_dirty(&mut self) {}
+
     /// Lifecycle hook: called once when the wgpu device/queue are ready.
     /// Use this to create extra textures, bind groups, pipelines, etc.
     fn init(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
