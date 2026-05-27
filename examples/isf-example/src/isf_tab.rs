@@ -7,7 +7,10 @@ use rustjay_engine::prelude::*;
 use crate::isf_effect::IsfState;
 
 pub struct IsfTab {
-    pub shader_name: String,
+    /// Local cache of the shader display name — updated from `shader_name` each frame.
+    pub cached_name: String,
+    /// Shared with IsfEffect — read to get the current shader name after swaps.
+    pub shader_name: Arc<Mutex<String>>,
     /// Shared with IsfEffect — write Some(path) to trigger a shader swap.
     pub pending_path: Arc<Mutex<Option<PathBuf>>>,
     /// Default directory for the file picker.
@@ -15,7 +18,7 @@ pub struct IsfTab {
 }
 
 impl AnyGuiTab for IsfTab {
-    fn name(&self) -> &str { &self.shader_name }
+    fn name(&self) -> &str { &self.cached_name }
 
     fn draw(
         &mut self,
@@ -23,6 +26,13 @@ impl AnyGuiTab for IsfTab {
         app_state: &mut dyn std::any::Any,
         engine: &mut EngineState,
     ) {
+        // Keep the tab label in sync with the current shader name.
+        if let Ok(name) = self.shader_name.lock() {
+            if *name != self.cached_name {
+                self.cached_name = name.clone();
+            }
+        }
+
         let state = app_state
             .downcast_mut::<IsfState>()
             .expect("IsfTab expects IsfState");

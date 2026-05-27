@@ -39,6 +39,8 @@ pub struct IsfEffect {
     shader_path: PathBuf,
     /// Last-seen mtime of the file — used to detect changes.
     last_mtime: Option<SystemTime>,
+    /// Shared with IsfTab: current shader display name (updated on every swap).
+    pub shader_name_shared: Arc<Mutex<String>>,
     /// Shared with IsfTab: set to Some(path) to trigger loading a new shader.
     pub pending_path: Arc<Mutex<Option<PathBuf>>>,
     /// Set to true after a successful init() so the engine re-reads parameters().
@@ -77,6 +79,7 @@ impl IsfEffect {
         Ok(Self {
             isf,
             glsl_src,
+            shader_name_shared: Arc::new(Mutex::new(shader_name.clone())),
             shader_name,
             shader_path: path.to_path_buf(),
             last_mtime: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
@@ -215,6 +218,15 @@ impl EffectPlugin for IsfEffect {
         if let Ok(mut guard) = self.pending_path.lock() {
             if let Some(new_path) = guard.take() {
                 self.shader_path = new_path;
+                // Derive and broadcast the new display name immediately.
+                let name = self.shader_path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("ISF Shader")
+                    .to_string();
+                self.shader_name = name.clone();
+                if let Ok(mut shared) = self.shader_name_shared.lock() {
+                    *shared = name;
+                }
                 self.last_mtime = None; // force reload below
             }
         }

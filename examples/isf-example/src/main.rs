@@ -29,7 +29,8 @@ fn main() -> anyhow::Result<()> {
 
     let effect = IsfEffect::from_path(&path)?;
     let tab = IsfTab {
-        shader_name: effect.shader_name.clone(),
+        cached_name: effect.shader_name.clone(),
+        shader_name: effect.shader_name_shared.clone(),
         pending_path: effect.pending_path.clone(),
         shaders_dir,
     };
