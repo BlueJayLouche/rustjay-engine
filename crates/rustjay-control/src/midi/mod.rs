@@ -1,8 +1,9 @@
 //! # MIDI Integration with Learn System
 //!
-//! MIDI control change (CC) mapping with learn functionality.
+//! CC, Note, and Aftertouch mapping with learn functionality.
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
+use rustjay_core::MidiMsgKind;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "mtc")]
@@ -22,15 +23,17 @@ pub enum MidiCommand {
 /// A mapped MIDI parameter
 #[derive(Debug, Clone)]
 pub struct MidiMapping {
-    /// Controller number (0-127)
-    pub cc: u8,
+    /// Message type (CC, Note, Aftertouch)
+    pub kind: MidiMsgKind,
+    /// Selector byte: CC number for CC, note number for Note, 0 for Aftertouch
+    pub selector: u8,
     /// MIDI channel (0-15)
     pub channel: u8,
     /// Human-readable parameter name
     pub name: String,
     /// Parameter path for OSC/address (e.g., "color/hue_shift")
     pub param_path: String,
-    /// Current value (0.0 - 1.0)
+    /// Current value
     pub value: f32,
     /// Min output range
     pub min_value: f32,
@@ -41,25 +44,34 @@ pub struct MidiMapping {
 }
 
 impl MidiMapping {
-    pub fn new(cc: u8, channel: u8, name: &str, param_path: &str, min: f32, max: f32) -> Self {
+    pub fn new(kind: MidiMsgKind, selector: u8, channel: u8, name: &str, param_path: &str, min: f32, max: f32) -> Self {
         Self {
-            cc,
+            kind,
+            selector,
             channel,
             name: name.to_string(),
             param_path: param_path.to_string(),
-            value: 0.0,
+            value: min,
             min_value: min,
             max_value: max,
             dirty: false,
         }
     }
 
-    /// Update value from MIDI CC value (0-127)
+    /// Map a raw MIDI value (0–127) to the parameter range and mark dirty if changed.
     pub fn update_from_midi(&mut self, midi_value: u8) {
         let normalized = midi_value as f32 / 127.0;
         let new_value = self.min_value + normalized * (self.max_value - self.min_value);
         if (new_value - self.value).abs() > 0.001 {
             self.value = new_value;
+            self.dirty = true;
+        }
+    }
+
+    /// Drive the mapping to its minimum value (used for Note Off).
+    pub fn drive_to_min(&mut self) {
+        if (self.value - self.min_value).abs() > 0.001 {
+            self.value = self.min_value;
             self.dirty = true;
         }
     }
@@ -86,17 +98,19 @@ impl MidiMapping {
 pub enum LearnState {
     /// Not in learn mode
     Idle,
-    /// Waiting for MIDI input
+    /// Waiting for any MIDI input
     Waiting,
-    /// Learned a CC, waiting for parameter selection
-    Learned { cc: u8, channel: u8 },
+    /// A message was captured; kept for potential future two-step UI flows
+    Learned { kind: MidiMsgKind, selector: u8, channel: u8 },
 }
 
-/// MIDI controller input
+/// A single received MIDI event (for debugging / last-input display)
 #[derive(Debug, Clone, Copy)]
 pub struct MidiInputEvent {
+    pub kind: MidiMsgKind,
     pub channel: u8,
-    pub cc: u8,
+    /// CC number, note number, or 0 for channel aftertouch
+    pub selector: u8,
     pub value: u8,
 }
 
@@ -160,17 +174,50 @@ impl MidiState {
         log::info!("MIDI learn cancelled");
     }
 
-    /// Complete learning with received CC
-    pub fn complete_learning(&mut self, cc: u8, channel: u8) {
+    /// Complete learning with the received message
+    pub fn complete_learning(&mut self, kind: MidiMsgKind, selector: u8, channel: u8) {
         if let (Some(path), Some(name)) = (&self.learning_param_path, &self.learning_param_name) {
-            self.mappings.retain(|m| !(m.cc == cc && m.channel == channel));
-            let mapping = MidiMapping::new(cc, channel, name, path, self.learning_param_min, self.learning_param_max);
+            self.mappings.retain(|m| !(m.kind == kind && m.selector == selector && m.channel == channel));
+            let mapping = MidiMapping::new(kind, selector, channel, name, path, self.learning_param_min, self.learning_param_max);
             self.mappings.push(mapping);
-            log::info!("MIDI mapped: {} -> CC {} channel {} (range {:.3}–{:.3})", name, cc, channel, self.learning_param_min, self.learning_param_max);
+            log::info!("MIDI mapped: {} -> {:?} {} ch{} (range {:.3}–{:.3})",
+                name, kind, selector, channel, self.learning_param_min, self.learning_param_max);
         }
         self.learn_state = LearnState::Idle;
         self.learning_param_path = None;
         self.learning_param_name = None;
+    }
+
+    /// Handle any incoming MIDI message, routing to learn or playback.
+    ///
+    /// `selector` is the CC number for CC messages, the note number for Note messages,
+    /// and 0 for channel aftertouch.
+    /// `value` is 0 to signal Note Off (either a real 0x80 or Note On with velocity 0).
+    pub fn handle_message(&mut self, kind: MidiMsgKind, channel: u8, selector: u8, value: u8) {
+        self.last_input = Some(MidiInputEvent { kind, channel, selector, value });
+
+        match self.learn_state {
+            LearnState::Waiting => {
+                // Don't learn on Note Off — wait for a Note On with velocity > 0.
+                if kind == MidiMsgKind::Note && value == 0 {
+                    return;
+                }
+                self.complete_learning(kind, selector, channel);
+            }
+            _ => {
+                for mapping in &mut self.mappings {
+                    if mapping.kind != kind || mapping.selector != selector || mapping.channel != channel {
+                        continue;
+                    }
+                    if kind == MidiMsgKind::Note && value == 0 {
+                        // Note Off: drive to minimum
+                        mapping.drive_to_min();
+                    } else {
+                        mapping.update_from_midi(value);
+                    }
+                }
+            }
+        }
     }
 
     /// Remove a mapping
@@ -186,23 +233,6 @@ impl MidiState {
         if let Some(mapping) = self.mappings.get_mut(index) {
             mapping.min_value = min;
             mapping.max_value = max;
-        }
-    }
-
-    /// Handle incoming MIDI CC message
-    pub fn handle_cc(&mut self, channel: u8, cc: u8, value: u8) {
-        self.last_input = Some(MidiInputEvent { channel, cc, value });
-        match self.learn_state {
-            LearnState::Waiting => {
-                self.complete_learning(cc, channel);
-            }
-            _ => {
-                for mapping in &mut self.mappings {
-                    if mapping.cc == cc && mapping.channel == channel {
-                        mapping.update_from_midi(value);
-                    }
-                }
-            }
         }
     }
 
@@ -327,13 +357,28 @@ impl MidiManager {
             move |_stamp, message, _| {
                 if message.is_empty() { return; }
                 let status = message[0];
-                // CC message: status 0xB0–0xBF
-                if (status & 0xF0) == 0xB0 && message.len() >= 3 {
-                    let channel = status & 0x0F;
-                    let cc      = message[1];
-                    let value   = message[2];
+                let kind_byte = status & 0xF0;
+                let channel   = status & 0x0F;
+
+                let msg = match kind_byte {
+                    // CC
+                    0xB0 if message.len() >= 3 =>
+                        Some((MidiMsgKind::Cc, channel, message[1], message[2])),
+                    // Note On — velocity 0 is treated as Note Off
+                    0x90 if message.len() >= 3 =>
+                        Some((MidiMsgKind::Note, channel, message[1], message[2])),
+                    // Note Off — forward as Note with value 0
+                    0x80 if message.len() >= 3 =>
+                        Some((MidiMsgKind::Note, channel, message[1], 0)),
+                    // Channel (mono) Aftertouch
+                    0xD0 if message.len() >= 2 =>
+                        Some((MidiMsgKind::Aftertouch, channel, 0, message[1])),
+                    _ => None,
+                };
+
+                if let Some((kind, ch, sel, val)) = msg {
                     if let Ok(mut state) = state.lock() {
-                        state.handle_cc(channel, cc, value);
+                        state.handle_message(kind, ch, sel, val);
                     }
                 }
             },

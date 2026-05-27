@@ -265,8 +265,8 @@ impl<P: EffectPlugin> App<P> {
                 }
                 let learn_active = midi_state.learn_state != rustjay_control::LearnState::Idle;
                 let learning_name = midi_state.learning_param_name.clone();
-                let mapping_snapshot: Vec<(String, String, u8, u8)> = midi_state.mappings.iter()
-                    .map(|m| (m.name.clone(), m.param_path.clone(), m.cc, m.channel))
+                let mapping_snapshot: Vec<(String, String, rustjay_core::MidiMsgKind, u8, u8)> = midi_state.mappings.iter()
+                    .map(|m| (m.name.clone(), m.param_path.clone(), m.kind, m.selector, m.channel))
                     .collect();
                 (learn_active, learning_name, mapping_snapshot)
             };

@@ -127,6 +127,17 @@ impl Default for AudioCommand {
     fn default() -> Self { Self::None }
 }
 
+/// The type of MIDI message used in a CC/Note/AT mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidiMsgKind {
+    /// Control Change — continuous knobs, faders, pedals.
+    Cc,
+    /// Note On / Note Off — pads, keys. Note Off drives the parameter to its minimum.
+    Note,
+    /// Channel Aftertouch — mono pressure from a keyboard or pad controller.
+    Aftertouch,
+}
+
 /// Commands sent to the MIDI subsystem.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MidiCommand {
@@ -817,8 +828,8 @@ pub struct EngineState {
     pub midi_learn_active: bool,
     /// Human-readable name of the parameter currently being learned.
     pub midi_learning_param_name: Option<String>,
-    /// Active CC mappings for display: (param_name, param_path, cc, channel).
-    pub midi_mappings: Vec<(String, String, u8, u8)>,
+    /// Active mappings for display: (param_name, param_path, kind, selector, channel).
+    pub midi_mappings: Vec<(String, String, MidiMsgKind, u8, u8)>,
     /// Pending OSC command.
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.

@@ -3,7 +3,7 @@
 //! Dynamically generates parameter controls from effect-declared descriptors.
 
 use crate::control_gui::ControlGui;
-use rustjay_core::{MidiCommand, OscCommand, WebCommand, ParamCategory};
+use rustjay_core::{MidiCommand, MidiMsgKind, OscCommand, WebCommand, ParamCategory};
 
 /// Return a sort order for standard categories (lower = earlier).
 /// Custom categories always sort after standard ones.
@@ -140,7 +140,7 @@ impl ControlGui {
                     ui.indent();
                     for desc in &cat_params {
                         let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                        let mapping = midi_mappings.iter().find(|(_, p, _, _)| p == &path);
+                        let mapping = midi_mappings.iter().find(|(_, p, _, _, _)| p == &path);
 
                         let label = format!("Learn: {}##{}", desc.name, desc.id);
                         if ui.button(&label) {
@@ -153,8 +153,13 @@ impl ControlGui {
                             };
                         }
                         ui.same_line();
-                        if let Some((_, _, cc, ch)) = mapping {
-                            ui.text_colored([0.0, 1.0, 0.5, 1.0], &format!("CC {} ch{}", cc, ch));
+                        if let Some((_, _, kind, sel, ch)) = mapping {
+                            let label = match kind {
+                                MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
+                                MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
+                                MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                            };
+                            ui.text_colored([0.0, 1.0, 0.5, 1.0], &label);
                         } else {
                             ui.text_disabled("(unlearned)");
                         }
@@ -169,8 +174,13 @@ impl ControlGui {
         if midi_mappings.is_empty() {
             ui.text_disabled("No mappings configured yet — use MIDI Learn above");
         } else {
-            for (name, _path, cc, ch) in &midi_mappings {
-                ui.text(&format!("  {} -> CC {} ch{}", name, cc, ch));
+            for (name, _path, kind, sel, ch) in &midi_mappings {
+                let binding = match kind {
+                    MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
+                    MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
+                    MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                };
+                ui.text(&format!("  {} -> {}", name, binding));
             }
         }
     }

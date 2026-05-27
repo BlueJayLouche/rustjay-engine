@@ -2,7 +2,7 @@
 
 use crate::egui_control_gui::EguiControlGui;
 use crate::egui_theme::colors::*;
-use rustjay_core::{MidiCommand, OscCommand, WebCommand, ParamCategory};
+use rustjay_core::{MidiCommand, MidiMsgKind, OscCommand, WebCommand, ParamCategory};
 
 fn category_order(cat: &ParamCategory) -> u8 {
     match cat {
@@ -134,7 +134,7 @@ impl EguiControlGui {
                     .show(ui, |ui| {
                         for desc in &cat_params {
                             let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                            let mapping = midi_mappings.iter().find(|(_, p, _, _)| p == &path);
+                            let mapping = midi_mappings.iter().find(|(_, p, _, _, _)| p == &path);
                             ui.horizontal(|ui| {
                                 if ui.button(format!("Learn: {}", desc.name)).clicked() {
                                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,8 +145,13 @@ impl EguiControlGui {
                                         max: desc.max,
                                     };
                                 }
-                                if let Some((_, _, cc, ch)) = mapping {
-                                    ui.label(egui::RichText::new(format!("CC {} ch{}", cc, ch))
+                                if let Some((_, _, kind, sel, ch)) = mapping {
+                                    let label = match kind {
+                                        MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
+                                        MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
+                                        MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                                    };
+                                    ui.label(egui::RichText::new(label)
                                         .size(11.0).color(egui::Color32::from_rgb(0, 220, 130)));
                                 } else {
                                     ui.label(egui::RichText::new("(unlearned)").size(11.0).color(TEXT_SECONDARY));
@@ -164,8 +169,13 @@ impl EguiControlGui {
         if midi_mappings.is_empty() {
             ui.label(egui::RichText::new("No mappings configured yet — use MIDI Learn above").color(TEXT_SECONDARY));
         } else {
-            for (name, _path, cc, ch) in &midi_mappings {
-                ui.label(egui::RichText::new(format!("  {} → CC {} ch{}", name, cc, ch))
+            for (name, _path, kind, sel, ch) in &midi_mappings {
+                let binding = match kind {
+                    MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
+                    MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
+                    MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                };
+                ui.label(egui::RichText::new(format!("  {} → {}", name, binding))
                     .size(11.0).monospace());
             }
         }
