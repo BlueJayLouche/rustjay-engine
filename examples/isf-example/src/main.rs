@@ -33,7 +33,11 @@ fn main() -> anyhow::Result<()> {
     log::info!("Loading ISF shader: {}", path.display());
 
     let effect = IsfEffect::from_path(&path)?;
-    let tab = IsfTab { shader_name: effect.shader_name.clone() };
+    let tab = IsfTab {
+        shader_name: effect.shader_name.clone(),
+        pending_path: effect.pending_path.clone(),
+        shaders_dir: shaders_dir.clone(),
+    };
 
     rustjay_engine::run_with_tabs(effect, vec![Box::new(tab)])
 }

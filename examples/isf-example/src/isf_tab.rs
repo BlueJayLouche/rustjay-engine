@@ -1,11 +1,17 @@
 //! Auto-generated ImGui tab built from the ISF input declarations.
 
+use std::{path::PathBuf, sync::{Arc, Mutex}};
+
 use rustjay_engine::prelude::*;
 
 use crate::isf_effect::IsfState;
 
 pub struct IsfTab {
     pub shader_name: String,
+    /// Shared with IsfEffect — write Some(path) to trigger a shader swap.
+    pub pending_path: Arc<Mutex<Option<PathBuf>>>,
+    /// Default directory for the file picker.
+    pub shaders_dir: PathBuf,
 }
 
 impl AnyGuiTab for IsfTab {
@@ -30,6 +36,25 @@ impl AnyGuiTab for IsfTab {
             return;
         }
 
+        if ui.button("Load Shader...") {
+            let dir = self.shaders_dir.clone();
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("ISF Shader", &["fs", "frag"])
+                .set_title("Pick an ISF shader (.fs)")
+                .set_directory(&dir)
+                .pick_file()
+            {
+                if let Ok(mut guard) = self.pending_path.lock() {
+                    *guard = Some(path);
+                }
+            }
+        }
+
+        ui.separator();
+        if descriptors.is_empty() {
+            ui.text_disabled("No ISF parameters declared.");
+            return;
+        }
         let _w = ui.push_item_width(220.0);
 
         for desc in descriptors.iter() {

@@ -1,7 +1,7 @@
 //! `IsfEffect` — loads an ISF GLSL shader at runtime, parses its inputs,
 //! transpiles to WGSL, and renders via a custom pipeline.
 
-use std::{collections::HashMap, path::{Path, PathBuf}, time::{Instant, SystemTime}};
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
 
 use isf::{Isf, InputType};
 use rustjay_engine::prelude::*;
@@ -39,6 +39,8 @@ pub struct IsfEffect {
     shader_path: PathBuf,
     /// Last-seen mtime of the file — used to detect changes.
     last_mtime: Option<SystemTime>,
+    /// Shared with IsfTab: set to Some(path) to trigger loading a new shader.
+    pub pending_path: Arc<Mutex<Option<PathBuf>>>,
 
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
@@ -76,6 +78,7 @@ impl IsfEffect {
             shader_name,
             shader_path: path.to_path_buf(),
             last_mtime: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
+            pending_path: Arc::new(Mutex::new(None)),
             start_time: Instant::now(),
             transpile_error: None,
             pipeline: None,
@@ -202,6 +205,14 @@ impl EffectPlugin for IsfEffect {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
+        // Check for a new path requested via the "Load Shader" button.
+        if let Ok(mut guard) = self.pending_path.lock() {
+            if let Some(new_path) = guard.take() {
+                self.shader_path = new_path;
+                self.last_mtime = None; // force reload below
+            }
+        }
+
         let Ok(meta) = std::fs::metadata(&self.shader_path) else { return };
         let Ok(mtime) = meta.modified() else { return };
         if self.last_mtime == Some(mtime) { return; }
