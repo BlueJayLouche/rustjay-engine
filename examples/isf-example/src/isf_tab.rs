@@ -33,19 +33,6 @@ impl AnyGuiTab for IsfTab {
             }
         }
 
-        let state = app_state
-            .downcast_mut::<IsfState>()
-            .expect("IsfTab expects IsfState");
-
-        // engine.param_descriptors contains exactly what IsfEffect::parameters() returned.
-        let descriptors = engine.param_descriptors.clone();
-
-        if descriptors.is_empty() {
-            ui.text("No ISF parameters declared.");
-            ui.text("(Image and Audio inputs are handled automatically.)");
-            return;
-        }
-
         if ui.button("Load Shader...") {
             let dir = self.shaders_dir.clone();
             if let Some(path) = rfd::FileDialog::new()
@@ -61,10 +48,20 @@ impl AnyGuiTab for IsfTab {
         }
 
         ui.separator();
+
+        let state = app_state
+            .downcast_mut::<IsfState>()
+            .expect("IsfTab expects IsfState");
+
+        // engine.param_descriptors contains exactly what IsfEffect::parameters() returned.
+        let descriptors = engine.param_descriptors.clone();
+
         if descriptors.is_empty() {
             ui.text_disabled("No ISF parameters declared.");
+            ui.text_disabled("(Image and Audio inputs are handled automatically.)");
             return;
         }
+
         let _w = ui.push_item_width(220.0);
 
         for desc in descriptors.iter() {
