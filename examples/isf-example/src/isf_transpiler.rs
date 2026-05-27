@@ -2562,7 +2562,8 @@ fn convert_void_main_entry(src: &str, has_image_input: bool, injected_locals: &[
                 out.push_str("fn fs_main(in: VertOut) -> @location(0) vec4<f32> {\n");
                 // Always set _isf_uv / _isf_clip (var<private>) so helper fns can access them.
                 out.push_str("    _isf_uv = in.uv;\n");
-                out.push_str("    _isf_clip = in.clip;\n");
+                // Flip clip.y to match gl_FragCoord convention (y=0 at bottom, not top).
+                out.push_str("    _isf_clip = vec4<f32>(in.clip.x, isf_u.rendersize_y - in.clip.y, in.clip.z, in.clip.w);\n");
                 // Inject module-scope vars that use runtime values
                 for local in injected_locals {
                     out.push_str(local);
@@ -2682,11 +2683,13 @@ fn convert_main_image_entry(src: &str, has_image_input: bool, injected_locals: &
 
             out.push_str("@fragment\n");
             out.push_str("fn fs_main(in: VertOut) -> @location(0) vec4<f32> {\n");
-            out.push_str("    var fragCoord: vec2<f32> = in.uv * vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y);\n");
+            // Flip Y to match GLSL gl_FragCoord convention (y=0 at bottom, not top).
+            out.push_str("    var fragCoord: vec2<f32> = vec2<f32>(in.uv.x * isf_u.rendersize_x, (1.0 - in.uv.y) * isf_u.rendersize_y);\n");
             out.push_str("    var fragColor: vec4<f32>;\n");
             // Always set _isf_uv / _isf_clip (var<private>) so helper fns can access them.
             out.push_str("    _isf_uv = in.uv;\n");
-            out.push_str("    _isf_clip = in.clip;\n");
+            // Flip clip.y to match gl_FragCoord (y=0 at bottom).
+            out.push_str("    _isf_clip = vec4<f32>(in.clip.x, isf_u.rendersize_y - in.clip.y, in.clip.z, in.clip.w);\n");
             // Inject module-scope runtime vars (e.g. iResolution, iTime aliases)
             for local in injected_locals {
                 out.push_str(local);
