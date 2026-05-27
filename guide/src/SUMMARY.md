@@ -51,6 +51,10 @@
 - [ISF Shader Viewer](examples/isf-example.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
+# Deployment
+
+- [Raspberry Pi](deployment/raspberry-pi.md)
+
 ---
 
 [Keyboard Shortcuts & Feature Flags](reference.md)
