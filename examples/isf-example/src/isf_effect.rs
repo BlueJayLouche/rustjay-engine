@@ -391,6 +391,13 @@ impl EffectPlugin for IsfEffect {
         self.uniform_bind_group = Some(ubg);
         self.transpile_error    = None;
         self.params_dirty       = true;
+
+        // Persist the current shader path so the next launch starts from here.
+        let config = crate::last_shader_config_path();
+        if let Some(parent) = config.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&config, self.shader_path.to_string_lossy().as_bytes());
     }
 
     // -----------------------------------------------------------------------

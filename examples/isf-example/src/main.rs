@@ -1,12 +1,14 @@
 //! ISF (Interactive Shader Format) viewer.
 //!
-//! Opens an rfd file picker so you can load any `.fs` ISF shader at runtime.
-//! The shader's JSON header is parsed to auto-generate parameter sliders.
-//! The GLSL body is transpiled to WGSL via a template + macro-expansion engine.
+//! Starts immediately with the last-loaded shader (persisted across runs).
+//! Falls back to the bundled ColorCycle.fs on first launch or if the saved
+//! path no longer exists. Use the "Load Shader..." button in the UI to switch.
 
 mod isf_effect;
 mod isf_tab;
 mod isf_transpiler;
+
+use std::path::{Path, PathBuf};
 
 use isf_effect::IsfEffect;
 use isf_tab::IsfTab;
@@ -20,15 +22,8 @@ fn main() -> anyhow::Result<()> {
         .filter_module("tracing::span",   log::LevelFilter::Warn)
         .init();
 
-    // Default to the bundled shaders directory for easy access to ghost-arcade collection
-    let shaders_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-
-    let path = rfd::FileDialog::new()
-        .add_filter("ISF Shader", &["fs", "frag"])
-        .set_title("Pick an ISF shader (.fs)")
-        .set_directory(&shaders_dir)
-        .pick_file()
-        .ok_or_else(|| anyhow::anyhow!("No file selected — exiting."))?;
+    let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let path = startup_shader_path(&shaders_dir);
 
     log::info!("Loading ISF shader: {}", path.display());
 
@@ -36,8 +31,29 @@ fn main() -> anyhow::Result<()> {
     let tab = IsfTab {
         shader_name: effect.shader_name.clone(),
         pending_path: effect.pending_path.clone(),
-        shaders_dir: shaders_dir.clone(),
+        shaders_dir,
     };
 
     rustjay_engine::run_with_tabs(effect, vec![Box::new(tab)])
+}
+
+/// Returns the path to start with:
+/// 1. Last-used shader (from ~/.config/rustjay/isf-last-shader.txt) if the file still exists.
+/// 2. Bundled ColorCycle.fs as the default.
+fn startup_shader_path(shaders_dir: &Path) -> PathBuf {
+    if let Ok(saved) = std::fs::read_to_string(last_shader_config_path()) {
+        let p = PathBuf::from(saved.trim());
+        if p.exists() {
+            return p;
+        }
+    }
+    shaders_dir.join("ColorCycle.fs")
+}
+
+/// Path to the tiny one-line config file that stores the last-used shader path.
+pub fn last_shader_config_path() -> PathBuf {
+    let base = std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".config").join("rustjay"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    base.join("isf-last-shader.txt")
 }
