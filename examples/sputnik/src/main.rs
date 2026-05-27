@@ -462,5 +462,10 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     log::info!("Starting RustJay Sputnik v{}", env!("CARGO_PKG_VERSION"));
-    rustjay_engine::run_with_tabs(SputnikEffect, vec![Box::new(SputnikTab)])
+    let nogui = std::env::args().any(|a| a == "--nogui");
+    if nogui {
+        rustjay_engine::run_headless_with_tabs(SputnikEffect, vec![Box::new(SputnikTab)])
+    } else {
+        rustjay_engine::run_with_tabs(SputnikEffect, vec![Box::new(SputnikTab)])
+    }
 }

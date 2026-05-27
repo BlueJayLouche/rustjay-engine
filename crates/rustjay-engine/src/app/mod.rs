@@ -33,6 +33,7 @@ pub(crate) fn run_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
+    nogui: bool,
 ) -> Result<()> {
     let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -40,7 +41,7 @@ pub(crate) fn run_app<P: EffectPlugin>(
     #[cfg(target_os = "macos")]
     let proxy = event_loop.create_proxy();
 
-    let mut app = App::new(shared_state, plugin, false, tabs);
+    let mut app = App::new(shared_state, plugin, false, tabs, nogui);
 
     #[cfg(target_os = "macos")]
     {
@@ -65,7 +66,7 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
     #[cfg(target_os = "macos")]
     let proxy = event_loop.create_proxy();
 
-    let mut app = App::new_with_egui(shared_state, plugin, tabs);
+    let mut app = App::new_with_egui(shared_state, plugin, tabs, false);
 
     #[cfg(target_os = "macos")]
     {
@@ -99,6 +100,7 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) egui_renderer: Option<EguiRenderer>,
 
     pub(crate) use_egui: bool,
+    pub(crate) nogui: bool,
 
     pub(crate) input_manager: Option<InputManager>,
     pub(crate) second_input_manager: Option<InputManager>,
@@ -148,6 +150,7 @@ impl<P: EffectPlugin> App<P> {
         plugin: P,
         use_egui: bool,
         tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
+        nogui: bool,
     ) -> Self {
         let app_name = plugin.app_name().to_string();
         let initial_state = plugin.default_state();
@@ -155,6 +158,16 @@ impl<P: EffectPlugin> App<P> {
         if let Ok(mut state) = shared_state.lock() {
             config_manager.settings.apply_to_state(&mut state);
             log::info!("Applied saved settings to state");
+        }
+
+        if nogui {
+            if let Ok(mut state) = shared_state.lock() {
+                state.output_fullscreen = true;
+                if state.target_fps > 30 {
+                    state.target_fps = 30;
+                }
+            }
+            log::info!("Headless mode: fullscreen output, target_fps capped at 30");
         }
 
         let mut analyzer = AudioAnalyzer::new();
@@ -282,6 +295,7 @@ impl<P: EffectPlugin> App<P> {
             #[cfg(feature = "egui")]
             egui_renderer: None,
             use_egui,
+            nogui,
             input_manager: Some(InputManager::new()),
             second_input_manager: Some(InputManager::new()),
             audio_analyzer: Some(analyzer),
@@ -320,8 +334,9 @@ impl<P: EffectPlugin> App<P> {
         shared_state: Arc<std::sync::Mutex<EngineState>>,
         plugin: P,
         tabs_egui: Vec<Box<dyn AnyEguiTab>>,
+        nogui: bool,
     ) -> Self {
-        let mut app = Self::new(shared_state, plugin, true, Vec::new());
+        let mut app = Self::new(shared_state, plugin, true, Vec::new(), nogui);
         app.custom_tabs_egui = tabs_egui;
         app
     }

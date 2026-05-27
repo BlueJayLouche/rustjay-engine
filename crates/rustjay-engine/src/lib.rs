@@ -60,7 +60,28 @@ pub fn run_with_tabs<P: EffectPlugin>(
     tabs: Vec<Box<dyn AnyGuiTab>>,
 ) -> Result<()> {
     let shared_state = Arc::new(Mutex::new(EngineState::new()));
-    app::run_app(shared_state, plugin, tabs)
+    app::run_app(shared_state, plugin, tabs, false)
+}
+
+/// Run the engine in headless mode (no control window).
+///
+/// Opens only the output window, fullscreen. GUI is suppressed; the effect
+/// is still controllable via OSC, MIDI, and the Web UI. Intended for
+/// embedded or single-output deployments such as a Raspberry Pi.
+pub fn run_headless<P: EffectPlugin>(plugin: P) -> Result<()> {
+    run_headless_with_tabs(plugin, vec![])
+}
+
+/// Run the engine in headless mode with custom GUI tabs.
+///
+/// The tabs are registered but not displayed (no control window is created).
+/// Parameters declared by the tabs remain accessible via OSC/MIDI/Web.
+pub fn run_headless_with_tabs<P: EffectPlugin>(
+    plugin: P,
+    tabs: Vec<Box<dyn AnyGuiTab>>,
+) -> Result<()> {
+    let shared_state = Arc::new(Mutex::new(EngineState::new()));
+    app::run_app(shared_state, plugin, tabs, true)
 }
 
 /// Run the engine with the given plugin and custom egui tabs.
@@ -101,7 +122,7 @@ pub mod prelude {
     #[cfg(feature = "egui")]
     pub use rustjay_gui::{AnyEguiTab, param_slider, param_slider_int};
     pub use rustjay_render::{WgpuEngine, Texture, InputTexture, PreviousFrameTexture};
-    pub use crate::{run, run_with_tabs};
+    pub use crate::{run, run_with_tabs, run_headless, run_headless_with_tabs};
     #[cfg(feature = "egui")]
     pub use crate::run_with_egui_tabs;
 }

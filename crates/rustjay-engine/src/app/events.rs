@@ -89,7 +89,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        if self.control_window.is_none() {
+        if !self.nogui && self.control_window.is_none() {
             if let Some(ref engine) = self.output_engine {
                 let device = Arc::clone(&engine.device);
                 let queue = Arc::clone(&engine.queue);
