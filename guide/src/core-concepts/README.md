@@ -17,6 +17,10 @@ pub trait EffectPlugin: Send + Sync + 'static {
     fn parameters(&self)    -> Vec<ParameterDescriptor>        { vec![] }
     fn hidden_tabs(&self)   -> Vec<GuiTab>                     { vec![] }
 
+    // Dynamic parameter lists
+    fn parameters_dirty(&self)        -> bool  { false }
+    fn clear_parameters_dirty(&mut self)       {}
+
     // Lifecycle hooks
     fn init(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {}
     fn prepare(&mut self, state: &mut Self::State, engine: &EngineState,
@@ -114,6 +118,31 @@ fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
 ### `prepare(state, engine, device, queue)`
 
 Called every frame, *before* the render pass. Use this for per-frame GPU resource updates — writing to a texture, updating a compute buffer — that aren't handled by the uniform upload.
+
+### `parameters_dirty()` / `clear_parameters_dirty()`
+
+For effects whose parameter list can change at runtime (e.g. a shader hot-reloader that swaps inputs when a new file loads), implement these two methods together:
+
+```rust
+fn parameters_dirty(&self) -> bool {
+    self.params_changed
+}
+
+fn clear_parameters_dirty(&mut self) {
+    self.params_changed = false;
+}
+```
+
+When `parameters_dirty()` returns `true`, the engine re-calls `parameters()`, swaps out `EngineState::param_descriptors`, and resizes the parameter value arrays — preserving existing values for any param IDs that survive the change. `clear_parameters_dirty()` is called immediately after so the flag is reset before the next frame.
+
+Set the flag inside `init()` (after a successful pipeline rebuild) so the engine picks up the new list on the very next frame:
+
+```rust
+fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
+    // ... compile pipeline ...
+    self.params_changed = true;
+}
+```
 
 ## Declaring parameters
 

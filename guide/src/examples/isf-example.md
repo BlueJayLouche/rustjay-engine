@@ -6,7 +6,7 @@
 cargo run -p isf-example
 ```
 
-A file picker opens immediately. Navigate to any `.fs` or `.frag` ISF shader and pick it. The engine starts, renders the shader in the output window, and shows a named tab in the control window with sliders for every declared input.
+The engine starts immediately with the last-loaded shader. On first launch it defaults to the bundled `ColorCycle.fs`. Use the **Load Shader...** button inside the control window to pick any `.fs` or `.frag` file — the shader swaps within one frame and the control tab updates its name and sliders to match.
 
 ## What is ISF?
 
@@ -57,12 +57,23 @@ The example ships with ~50 shaders in `examples/isf-example/shaders/`. They cove
 
 ### Startup
 
-On launch the viewer reads a file path from an `rfd` file picker, then:
+On launch the viewer:
 
-1. Reads the GLSL source from disk
-2. Parses the ISF JSON header with the `isf` crate
-3. Builds a `Vec<ParameterDescriptor>` from the declared inputs — these drive the auto-generated UI and the engine's LFO / MIDI / OSC systems
-4. Creates an `IsfEffect` that owns the parsed data and starts the engine
+1. Reads `~/.config/rustjay/isf-last-shader.txt` — if it exists and the file is still on disk, that shader is loaded
+2. Falls back to the bundled `ColorCycle.fs` on first launch or if the saved path is gone
+3. Parses the ISF JSON header with the `isf` crate
+4. Builds a `Vec<ParameterDescriptor>` from the declared inputs — these drive the auto-generated UI and the engine's LFO / MIDI / OSC systems
+5. Creates an `IsfEffect` that owns the parsed data and starts the engine
+
+### Switching shaders at runtime
+
+The **Load Shader...** button at the top of the ISF tab opens a native file picker. Picking a new file writes the path into a shared `Arc<Mutex<Option<PathBuf>>>`. On the next `prepare()` call the effect picks up the path, rebuilds the pipeline, and signals the engine to refresh the parameter list via `parameters_dirty()`. The tab label hot-reloads to the new shader's filename within one frame.
+
+The chosen path is saved to `~/.config/rustjay/isf-last-shader.txt` so the next launch picks up where you left off.
+
+### File hot-reload
+
+While the app is running, edit any `.fs` file in your editor and save. `IsfEffect::prepare()` polls the file's mtime each frame and re-transpiles automatically when it changes — no button press needed. Useful for iterating on shader code live.
 
 ### Transpilation
 
