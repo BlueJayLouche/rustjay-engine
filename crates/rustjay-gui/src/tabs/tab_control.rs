@@ -140,7 +140,7 @@ impl ControlGui {
                     ui.indent();
                     for desc in &cat_params {
                         let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                        let mapping = midi_mappings.iter().find(|(_, p, _, _, _)| p == &path);
+                        let mapping = midi_mappings.iter().find(|m| m.param_path == path);
 
                         let label = format!("Learn: {}##{}", desc.name, desc.id);
                         if ui.button(&label) {
@@ -153,11 +153,11 @@ impl ControlGui {
                             };
                         }
                         ui.same_line();
-                        if let Some((_, _, kind, sel, ch)) = mapping {
-                            let label = match kind {
-                                MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
-                                MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
-                                MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                        if let Some(m) = mapping {
+                            let label = match m.kind {
+                                MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
+                                MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                                MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                             };
                             ui.text_colored([0.0, 1.0, 0.5, 1.0], &label);
                         } else {
@@ -174,13 +174,13 @@ impl ControlGui {
         if midi_mappings.is_empty() {
             ui.text_disabled("No mappings configured yet — use MIDI Learn above");
         } else {
-            for (name, _path, kind, sel, ch) in &midi_mappings {
-                let binding = match kind {
-                    MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
-                    MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
-                    MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+            for m in &midi_mappings {
+                let binding = match m.kind {
+                    MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                 };
-                ui.text(&format!("  {} -> {}", name, binding));
+                ui.text(&format!("  {} -> {}", m.name, binding));
             }
         }
     }

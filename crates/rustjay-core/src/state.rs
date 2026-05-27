@@ -128,7 +128,7 @@ impl Default for AudioCommand {
 }
 
 /// The type of MIDI message used in a CC/Note/AT mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MidiMsgKind {
     /// Control Change — continuous knobs, faders, pedals.
     Cc,
@@ -136,6 +136,25 @@ pub enum MidiMsgKind {
     Note,
     /// Channel Aftertouch — mono pressure from a keyboard or pad controller.
     Aftertouch,
+}
+
+/// A serializable snapshot of one MIDI mapping, used in presets and the engine→GUI sync.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MidiMappingSnapshot {
+    /// Human-readable parameter name.
+    pub name: String,
+    /// Parameter path (e.g. `"color/hue_shift"`).
+    pub param_path: String,
+    /// Message type.
+    pub kind: MidiMsgKind,
+    /// CC number, note number, or 0 for channel aftertouch.
+    pub selector: u8,
+    /// MIDI channel (0–15).
+    pub channel: u8,
+    /// Minimum output value.
+    pub min_value: f32,
+    /// Maximum output value.
+    pub max_value: f32,
 }
 
 /// Commands sent to the MIDI subsystem.
@@ -164,6 +183,8 @@ pub enum MidiCommand {
     ClearMappings,
     /// Disconnect the current MIDI device.
     Disconnect,
+    /// Replace all mappings (used when loading a preset).
+    RestoreMappings(Vec<MidiMappingSnapshot>),
 }
 
 impl Default for MidiCommand {
@@ -828,8 +849,8 @@ pub struct EngineState {
     pub midi_learn_active: bool,
     /// Human-readable name of the parameter currently being learned.
     pub midi_learning_param_name: Option<String>,
-    /// Active mappings for display: (param_name, param_path, kind, selector, channel).
-    pub midi_mappings: Vec<(String, String, MidiMsgKind, u8, u8)>,
+    /// Active mappings, synced each frame from MidiState (includes min/max for preset round-trip).
+    pub midi_mappings: Vec<MidiMappingSnapshot>,
     /// Pending OSC command.
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.

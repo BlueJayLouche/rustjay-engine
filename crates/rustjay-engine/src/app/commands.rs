@@ -2,7 +2,7 @@ use super::App;
 use rustjay_core::EffectPlugin;
 use rustjay_audio::list_audio_devices;
 use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand, LinkCommand, ProDjCommand};
-use rustjay_control::OscServer;
+use rustjay_control::{MidiMapping, OscServer};
 use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
 
 fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, EngineState> {
@@ -385,6 +385,21 @@ impl<P: EffectPlugin> App<P> {
                     let mut state = lock(&self.shared_state);
                     state.midi_selected_device = None;
                     state.midi_enabled = false;
+                }
+            }
+            MidiCommand::RestoreMappings(snapshots) => {
+                if let Some(ref mut manager) = self.midi_manager {
+                    if let Ok(mut midi_state) = manager.state().lock() {
+                        midi_state.mappings.clear();
+                        for s in snapshots {
+                            midi_state.mappings.push(MidiMapping::new(
+                                s.kind, s.selector, s.channel,
+                                &s.name, &s.param_path,
+                                s.min_value, s.max_value,
+                            ));
+                        }
+                        log::info!("Restored {} MIDI mappings from preset", midi_state.mappings.len());
+                    }
                 }
             }
             _ => {}

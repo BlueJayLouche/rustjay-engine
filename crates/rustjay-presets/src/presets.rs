@@ -2,7 +2,7 @@
 //!
 //! Save and load parameter snapshots with quick preset selector.
 
-use rustjay_core::{HsbParams, LfoBank, EngineState, RoutingMatrix};
+use rustjay_core::{HsbParams, LfoBank, EngineState, MidiCommand, MidiMappingSnapshot, RoutingMatrix};
 use serde::{Deserialize, Serialize};
 
 fn default_fft_size() -> usize {
@@ -72,6 +72,10 @@ pub struct Preset {
     #[serde(default)]
     pub custom_values: HashMap<String, f32>,
 
+    /// MIDI CC/Note/Aftertouch mappings.
+    #[serde(default)]
+    pub midi_mappings: Vec<MidiMappingSnapshot>,
+
     /// Optional plugin-specific state serialized as JSON.
     #[serde(default)]
     pub plugin_state: Option<String>,
@@ -106,6 +110,7 @@ impl Preset {
             custom_values: state.param_descriptors.iter().enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),
+            midi_mappings: state.midi_mappings.clone(),
             plugin_state: None,
         }
     }
@@ -137,6 +142,10 @@ impl Preset {
             } else {
                 log::warn!("Preset parameter '{}' not found in current descriptors, skipping", id);
             }
+        }
+        // Restore MIDI mappings via command (engine rebuilds MidiState on next frame).
+        if !self.midi_mappings.is_empty() {
+            state.midi_command = MidiCommand::RestoreMappings(self.midi_mappings.clone());
         }
     }
     

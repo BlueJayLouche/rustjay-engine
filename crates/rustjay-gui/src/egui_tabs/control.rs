@@ -134,7 +134,7 @@ impl EguiControlGui {
                     .show(ui, |ui| {
                         for desc in &cat_params {
                             let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
-                            let mapping = midi_mappings.iter().find(|(_, p, _, _, _)| p == &path);
+                            let mapping = midi_mappings.iter().find(|m| m.param_path == path);
                             ui.horizontal(|ui| {
                                 if ui.button(format!("Learn: {}", desc.name)).clicked() {
                                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,11 +145,11 @@ impl EguiControlGui {
                                         max: desc.max,
                                     };
                                 }
-                                if let Some((_, _, kind, sel, ch)) = mapping {
-                                    let label = match kind {
-                                        MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
-                                        MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
-                                        MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+                                if let Some(m) = mapping {
+                                    let label = match m.kind {
+                                        MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
+                                        MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                                        MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                                     };
                                     ui.label(egui::RichText::new(label)
                                         .size(11.0).color(egui::Color32::from_rgb(0, 220, 130)));
@@ -169,13 +169,13 @@ impl EguiControlGui {
         if midi_mappings.is_empty() {
             ui.label(egui::RichText::new("No mappings configured yet — use MIDI Learn above").color(TEXT_SECONDARY));
         } else {
-            for (name, _path, kind, sel, ch) in &midi_mappings {
-                let binding = match kind {
-                    MidiMsgKind::Cc         => format!("CC {} ch{}", sel, ch),
-                    MidiMsgKind::Note       => format!("Note {} ch{}", sel, ch),
-                    MidiMsgKind::Aftertouch => format!("AT ch{}", ch),
+            for m in &midi_mappings {
+                let binding = match m.kind {
+                    MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                 };
-                ui.label(egui::RichText::new(format!("  {} → {}", name, binding))
+                ui.label(egui::RichText::new(format!("  {} → {}", m.name, binding))
                     .size(11.0).monospace());
             }
         }
