@@ -77,7 +77,7 @@ rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
 rustjay-gui     = { path = "crates/rustjay-gui", version = "0.1.0" }
 rustjay-render  = { path = "crates/rustjay-render", version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
-isf             = { path = "../isf" }
+isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
 syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
