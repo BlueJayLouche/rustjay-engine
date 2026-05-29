@@ -13,15 +13,56 @@ use rustjay_core::EffectPlugin;
 impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.wgpu_instance.is_none() {
-            let backends = if cfg!(target_os = "macos") {
-                wgpu::Backends::METAL
-            } else {
-                wgpu::Backends::all()
-            };
-            self.wgpu_instance = Some(wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
+            #[cfg(target_os = "macos")]
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::METAL,
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
-            }));
+            });
+
+            // On Linux, wgpu always passes None as the display handle to wgpu-hal, so the
+            // GLES backend falls back to a surfaceless EGL display that has no EGL_WINDOW_BIT
+            // configs. We bypass this by initialising the GLES HAL instance directly with
+            // the event loop's display handle (Wayland or X11), then wrapping it with
+            // wgpu::Instance::from_hal. Vulkan (Pi 4/5) is unaffected — it doesn't use EGL.
+            #[cfg(target_os = "linux")]
+            let instance = {
+                use raw_window_handle::HasDisplayHandle as _;
+                use wgpu::hal::{api::Gles, Api as _, Instance as HalInstance};
+
+                // wgpu::Instance::new() always passes None as the display handle to
+                // wgpu-hal, causing EGL to use the surfaceless platform (no EGL_WINDOW_BIT
+                // configs). We bypass this by initialising the GLES HAL instance directly
+                // with the event loop's display handle (Wayland or X11).
+                let display_handle = event_loop.display_handle().ok();
+
+                let hal_desc = wgpu::hal::InstanceDescriptor {
+                    name: "rustjay-gles",
+                    flags: wgpu::InstanceFlags::from_build_config(),
+                    memory_budget_thresholds: Default::default(),
+                    backend_options: Default::default(),
+                    telemetry: None,
+                    display: display_handle,
+                };
+
+                match unsafe { <Gles as wgpu::hal::Api>::Instance::init(&hal_desc) } {
+                    Ok(gles) => unsafe { wgpu::Instance::from_hal::<Gles>(gles) },
+                    Err(e) => {
+                        log::warn!("GLES HAL init failed ({e}), falling back to default backends");
+                        wgpu::Instance::new(wgpu::InstanceDescriptor {
+                            backends: wgpu::Backends::all(),
+                            ..wgpu::InstanceDescriptor::new_without_display_handle()
+                        })
+                    }
+                }
+            };
+
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+
+            self.wgpu_instance = Some(instance);
         }
         let Some(instance) = self.wgpu_instance.as_ref() else { return };
 

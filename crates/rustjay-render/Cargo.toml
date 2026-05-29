@@ -10,7 +10,7 @@ categories = ["graphics", "multimedia::video", "rendering::engine"]
 
 [dependencies]
 rustjay-core = { workspace = true }
-rustjay-io   = { workspace = true }
+rustjay-io   = { workspace = true, default-features = false }
 log          = { workspace = true }
 anyhow       = { workspace = true }
 wgpu         = { workspace = true }

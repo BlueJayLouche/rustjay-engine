@@ -19,7 +19,8 @@ rustjay-render  = { workspace = true }
 rustjay-sync    = { path = "../rustjay-sync", version = "0.1.0", optional = true }
 log             = { workspace = true }
 anyhow          = { workspace = true }
-wgpu            = { workspace = true }
+wgpu              = { workspace = true }
+raw-window-handle = { workspace = true }
 winit           = { workspace = true }
 bytemuck        = { workspace = true }
 pollster        = { workspace = true }

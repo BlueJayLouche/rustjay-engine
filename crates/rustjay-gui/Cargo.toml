@@ -11,7 +11,7 @@ categories = ["graphics", "gui"]
 [dependencies]
 rustjay-core    = { workspace = true }
 rustjay-audio   = { workspace = true }
-rustjay-io      = { workspace = true }
+rustjay-io      = { workspace = true, default-features = false }
 rustjay-control = { workspace = true }
 rustjay-presets = { workspace = true }
 log             = { workspace = true }

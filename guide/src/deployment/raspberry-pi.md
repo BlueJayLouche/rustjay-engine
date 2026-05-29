@@ -1,175 +1,230 @@
 # Raspberry Pi
 
-rustjay-engine runs on Raspberry Pi 4 and Pi 5 via the Vulkan backend (Mesa V3DV). Pi 3 is also supported using the OpenGL ES backend (Mesa VC4) — wgpu selects the best available backend automatically.
+rustjay-engine targets four Pi generations with different GPU paths:
 
-> **Pi 3 note** — Pi 3 has no Vulkan driver. wgpu falls back to its OpenGL ES backend via EGL. The sputnik default mesh (320×180, 57 k vertices) is heavy for the VideoCore IV GPU; start with a lower resolution (see [Resource budgeting](#resource-budgeting)).
+| Model | GPU | wgpu backend | Vulkan |
+|---|---|---|---|
+| Pi 5 | VideoCore VII | Vulkan (V3DV) | ✓ |
+| Pi 4 | VideoCore VI | Vulkan (V3DV) | ✓ |
+| Pi 3 | VideoCore IV | OpenGL ES (EGL) | ✗ |
+| Pi 2 | VideoCore IV | OpenGL ES (EGL) | ✗ |
 
-## OS prerequisites
+Pi 4/5 use the Vulkan path. Pi 2/3 use the OpenGL ES backend via EGL — wgpu selects the best available backend automatically, but GLES must be compiled in (see below).
 
-These instructions target **Raspberry Pi OS Bookworm (64-bit)**.
+---
 
-### Pi 4 / Pi 5 — Vulkan
+## Pi 4 / Pi 5 — Raspberry Pi OS Bookworm
+
+### Runtime packages
 
 ```sh
-sudo apt update
-sudo apt install \
+sudo apt update && sudo apt install \
     mesa-vulkan-drivers libvulkan1 vulkan-tools \
     libv4l-dev v4l-utils \
-    libwayland-dev libxkbcommon-dev \
-    build-essential pkg-config
+    libasound2-dev \
+    libwayland-dev libxkbcommon-dev
 ```
 
-Verify Vulkan is working:
+Verify Vulkan:
 
 ```sh
-vulkaninfo --summary
+vulkaninfo --summary   # should show a V3DV device
 ```
 
-You should see a `V3DV` device listed.
-
-### Pi 3 — OpenGL ES
-
-No Vulkan packages are needed. Mesa GL is installed by default. Install only the V4L2 and build headers:
-
-```sh
-sudo apt update
-sudo apt install \
-    libv4l-dev v4l-utils \
-    libwayland-dev libxkbcommon-dev \
-    build-essential pkg-config
-```
-
-## Building for Pi
-
-### On the Pi itself
-
-Install Rust:
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Then build sputnik with NDI disabled (NDI SDK is not available on Pi):
-
-```sh
-cargo build --release --no-default-features --features webcam -p sputnik
-```
-
-The binary lands at `target/release/sputnik`.
-
-### Cross-compiling from macOS or Linux
-
-The workspace ships a `.cargo/config.toml` that sets the `aarch64-unknown-linux-gnu` linker. Install `cross` for a hermetic Docker build:
-
-```sh
-cargo install cross
-rustup target add aarch64-unknown-linux-gnu
-```
-
-Build:
+### Cross-compiling from macOS / Linux
 
 ```sh
 cross build --release --no-default-features --features webcam \
     --target aarch64-unknown-linux-gnu -p sputnik
 ```
 
-Copy the result to the Pi:
+---
+
+## Pi 2 / Pi 3 — Arch Linux ARM (armv7)
+
+This section documents deploying to a **Raspberry Pi 2 Model B** running **Arch Linux ARM** cross-compiled from **macOS Apple Silicon**. Most steps also apply to Pi 3.
+
+### OS (Arch Linux ARM)
+
+Install runtime libraries on the Pi:
 
 ```sh
-scp target/aarch64-unknown-linux-gnu/release/sputnik pi@<pi-ip>:~/sputnik
+sudo pacman -Sy alsa-lib v4l-utils libv4l
 ```
 
-## Running headless
-
-Pass `--nogui` to suppress the control window and open the output fullscreen. This is the normal mode for a Pi with a single HDMI output:
+For a display server, install a minimal X11 stack:
 
 ```sh
-RUST_LOG=info ./sputnik --nogui
+sudo pacman -Sy xorg-server xorg-xinit xf86-video-fbdev \
+    mesa mesa-utils libx11 libxext libxrandr libxinerama \
+    libxcursor libxkbcommon-x11
+```
+
+Allow non-console users to run the X server:
+
+```sh
+sudo bash -c 'echo -e "allowed_users=anybody\nneeds_root_rights=yes" \
+    > /etc/X11/Xwrapper.config'
+```
+
+For Wayland (needed for a reliable wgpu EGL display connection — see [Known issue](#known-issue-wgpu-egl-on-x11)):
+
+```sh
+sudo pacman -Sy weston seatd libdisplay-info
+sudo systemctl enable --now seatd
+sudo usermod -aG seat alarm
+```
+
+### Cross-compiling from Apple Silicon Mac
+
+#### 1. Install cross from git
+
+The published `cross 0.2.5` assumes an x86-64 Linux Docker host and tries to install `stable-x86_64-unknown-linux-gnu` on the macOS ARM host before Docker starts, which fails. Install the latest git HEAD:
+
+```sh
+cargo install --git https://github.com/cross-rs/cross cross --locked
+```
+
+#### 2. Cross.toml — Docker image + system libs
+
+`Cross.toml` (workspace root) must specify the armv7 Docker image **and** install the ALSA/V4L/udev headers inside the container:
+
+```toml
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:edge"
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update && apt-get install -y libasound2-dev:armhf libv4l-dev:armhf libudev-dev:armhf",
+]
+```
+
+#### 3. Workspace feature isolation
+
+Cargo feature resolution is workspace-wide. Without explicit `default-features = false` at the **workspace definition level**, all workspace members (delta, waaaves, etc.) contribute their default features — including `ndi` — to every package's compilation even when building with `-p sputnik --no-default-features`.
+
+The workspace `Cargo.toml` must have:
+
+```toml
+[workspace.dependencies]
+rustjay-engine = { path = "crates/rustjay-engine", version = "0.1.0", default-features = false }
+rustjay-io     = { path = "crates/rustjay-io",     version = "0.1.0", default-features = false }
+```
+
+> **Note:** setting `default-features = false` at the _package_ level (`{ workspace = true, default-features = false }`) does **not** override the workspace definition in Cargo 1.95. It must be set in `[workspace.dependencies]`.
+
+Examples that need NDI/webcam must opt in explicitly via their own feature flags (delta, waaaves, etc.) or in their dep declaration (delta-egui: `features = ["egui", "ndi", "webcam"]`).
+
+#### 4. wgpu GLES feature
+
+The Pi 2 has no Vulkan. wgpu must be compiled with the `gles` feature so it can use Mesa's OpenGL ES via EGL:
+
+```toml
+# workspace Cargo.toml
+wgpu = { version = "29.0", features = ["spirv", "gles"] }
+```
+
+#### 5. Build command
+
+```sh
+cross build --release --no-default-features --features webcam \
+    --target armv7-unknown-linux-gnueabihf -p sputnik
+```
+
+#### 6. Deploy
+
+```sh
+scp target/armv7-unknown-linux-gnueabihf/release/sputnik alarm@<pi-ip>:~/
+```
+
+### Running on Pi 2
+
+Pi 2's VideoCore IV GPU supports a maximum of **OpenGL ES 2.0** (hardware). wgpu requires GLES 3.0+ and the mesh deformation pass needs compute shaders (added in GLES 3.1). Hardware GPU rendering is therefore not viable on Pi 2.
+
+**Use Mesa's software renderer (llvmpipe)** instead. llvmpipe exposes OpenGL 4.6 / GLES 3.2 in software. Performance is CPU-bound (~20% CPU at 30 fps with reduced mesh resolution), but it runs correctly.
+
+Start weston and sputnik:
+
+```sh
+# Ensure seatd is running
+sudo systemctl start seatd
+
+# Start weston DRM compositor
+XDG_RUNTIME_DIR=/run/user/1000 weston --backend=drm --no-config --idle-time=0 &
+sleep 3
+
+# Run sputnik with software rendering
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 \
+    LIBGL_ALWAYS_SOFTWARE=1 RUST_LOG=warn \
+    ./sputnik --nogui
+```
+
+> **Why Wayland and not X11?** wgpu 29.0 initialises EGL before creating a window, and the default EGL fallback (surfaceless) cannot create windowed surfaces. Wayland provides the display handle at startup so EGL uses the correct platform. X11 requires additional engine changes that are not yet merged (see wgpu-hal issue with duplicate `SURFACE_TYPE` attributes on vc4 configs).
+
+> **Why software rendering?** vc4 GLES 2.0 hardware lacks compute shaders (GLES 3.1 feature required for mesh deformation). `MESA_GLES_VERSION_OVERRIDE=3.0` tricks the API version string but does not add compute support. `LIBGL_ALWAYS_SOFTWARE=1` forces Mesa's llvmpipe which fully supports compute.
+
+> **Pi 4 / Pi 5** do not need software rendering — VideoCore VI/VII supports GLES 3.1 / Vulkan natively and the hardware path works without any overrides.
+
+---
+
+## Running headless (`--nogui`)
+
+Pass `--nogui` to suppress the control window and open the output fullscreen:
+
+```sh
+RUST_LOG=warn ./sputnik --nogui
 ```
 
 When `--nogui` is active:
 
 - Only the output window is created — no imgui control panel.
 - The output opens **fullscreen** immediately.
-- `target_fps` is capped at **30** if not already lower (configurable via the Web UI after launch).
-- Audio, MIDI, OSC, and the Web UI all remain fully functional as control paths.
+- `target_fps` is capped at **30** (configurable via the Web UI after launch).
+- Audio, MIDI, OSC, and the Web UI all remain fully functional.
 
-## Controlling the effect without a GUI
-
-With `--nogui`, use any combination of:
+## Controlling without a GUI
 
 | Path | How |
 |---|---|
-| **Web UI** | Open `http://<pi-ip>:3000` in a browser on any device on the same network |
+| **Web UI** | `http://<pi-ip>:8081` in any browser on the same network |
 | **OSC** | Send to `<pi-ip>:7770`, e.g. `/rustjay/sputnik/displacement_scale 0.5` |
-| **MIDI** | Plug in a USB MIDI controller — CCs map via MIDI Learn as normal |
+| **MIDI** | USB MIDI controller — CCs map via MIDI Learn as normal |
 
-Settings (MIDI mappings, last preset, FPS target) are saved to `~/.config/rustjay/sputnik.json` and restored on next launch.
+Settings (MIDI mappings, last preset, FPS target) persist in `~/.config/rustjay/sputnik.json`.
 
-## Resource budgeting
+## Resource budgeting (Pi 2 / Pi 3)
 
-The Pi's GPU is significantly weaker than a desktop. A few knobs to pull:
-
-### Mesh resolution
-
-The default 320×180 mesh (57 k vertices) is designed for desktop GPUs. Dial it back via the Web UI or by saving a preset:
+The VideoCore IV GPU is much weaker than a desktop GPU. Dial back mesh resolution via the Web UI or a preset:
 
 | Resolution | Vertices | Suitable for |
 |---|---|---|
-| 320 × 180 | ~57 k | Pi 5 / Pi 4 (headroom to spare) |
-| 160 × 90 | ~14 k | Pi 4 comfortable, Pi 3 manageable |
-| 80 × 45 | ~3.5 k | Pi 3 safe starting point |
+| 320 × 180 | ~57 k | Pi 5 / Pi 4 |
+| 160 × 90 | ~14 k | Pi 4, Pi 3 manageable |
+| 80 × 45 | ~3.5 k | Pi 2 / Pi 3 safe starting point |
 
-Use the **Web UI → Sputnik tab → Mesh Resolution** fields to change resolution at runtime, then save as a preset.
+Use **Web UI → Sputnik tab → Mesh Resolution** to change at runtime, then save as a preset.
 
-### Frame rate
-
-The engine defaults to 60 fps; `--nogui` caps this to 30. To set a custom target at runtime, use the Web UI **Settings** panel or send an OSC message:
-
-```sh
-# Cap to 25 fps (PAL)
-oscsend <pi-ip> 7770 /rustjay/target_fps i 25
-```
-
-The cap is also saved in `~/.config/rustjay/sputnik.json`.
-
-### Webcam resolution
-
-Request a lower capture resolution from your webcam by setting the input size in the Web UI (**I/O → Input → Resolution**). 640×360 gives the compute shader half the texture samples to fetch per vertex vs. 1280×720, with a modest visual difference for the Rutt-Etra effect.
-
-## Autostart on boot
-
-Create a systemd service to launch sputnik at boot:
+## Autostart on boot (Arch Linux ARM + Wayland)
 
 ```ini
 # /etc/systemd/system/sputnik.service
 [Unit]
 Description=Sputnik VJ effect
-After=graphical.target
+After=weston.service
 
 [Service]
-User=pi
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-0
+User=alarm
+Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=RUST_LOG=warn
-ExecStart=/home/pi/sputnik --nogui
+ExecStart=/home/alarm/sputnik --nogui
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 ```
 
-Enable it:
-
 ```sh
-sudo systemctl enable sputnik
-sudo systemctl start sputnik
-```
-
-Logs:
-
-```sh
+sudo systemctl enable --now sputnik
 journalctl -u sputnik -f
 ```

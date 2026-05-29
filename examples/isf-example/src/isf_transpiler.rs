@@ -974,7 +974,7 @@ fn convert_prefix_increments(src: &str) -> String {
 fn convert_prefix_incr_in_line(line: &str) -> String {
     // Only convert prefix ++ / -- in for-loop update position
     // Pattern: `; ++VAR)` or `; --VAR)`
-    let mut s = line.to_string();
+    let s = line.to_string();
     // Prefix `++VAR` where preceded by `;` or whitespace → `VAR++`
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
@@ -1946,7 +1946,7 @@ fn add_braces_to_braceless_control_flow(src: &str) -> String {
 }
 
 /// Returns the braces-added version of a line, or the line unchanged if no fix needed.
-fn try_add_braces_to_line(line: &str) -> std::borrow::Cow<str> {
+fn try_add_braces_to_line(line: &str) -> std::borrow::Cow<'_, str> {
     let trimmed = line.trim();
     // Skip empty, comment, already-ended-with-brace lines
     if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.ends_with('{') || trimmed.ends_with('}') {
@@ -2029,7 +2029,7 @@ fn fix_inline_braceless_control_flow(src: &str) -> String {
     out
 }
 
-fn fix_inline_braceless_in_line(line: &str) -> std::borrow::Cow<str> {
+fn fix_inline_braceless_in_line(line: &str) -> std::borrow::Cow<'_, str> {
     // Process lines that may contain a braceless `if`/`for`/`while` anywhere — not just at start.
     // This handles cases like `stmt; if (cond) body;` on a single line.
     if !line.contains("if (") && !line.contains("for (") && !line.contains("while (") {
@@ -2541,7 +2541,7 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Convert `void main()` style entry point.
-fn convert_void_main_entry(src: &str, has_image_input: bool, injected_locals: &[String]) -> String {
+fn convert_void_main_entry(src: &str, _has_image_input: bool, injected_locals: &[String]) -> String {
     let mut out = String::with_capacity(src.len());
 
     // Find `void main()` and replace its signature + inject fs_main preamble
@@ -2639,7 +2639,7 @@ fn convert_void_main_entry(src: &str, has_image_input: bool, injected_locals: &[
 }
 
 /// Convert `mainImage(out vec4 fragColor, in vec2 fragCoord)` + bridge pattern.
-fn convert_main_image_entry(src: &str, has_image_input: bool, injected_locals: &[String]) -> String {
+fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: &[String]) -> String {
     let mut out = String::with_capacity(src.len());
     let mut found_main_image = false;
     let mut in_main_image = false;

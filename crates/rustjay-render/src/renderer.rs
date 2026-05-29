@@ -83,7 +83,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
         let mut required_features = wgpu::Features::empty();
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        if adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
             required_features |= wgpu::Features::POLYGON_MODE_LINE;
         }
 

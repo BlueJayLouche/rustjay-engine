@@ -5,7 +5,7 @@ edition = "2021"
 description = "Vertex-shader mesh displacement — proves engine handles indexed mesh geometry"
 
 [dependencies]
-rustjay-engine = { workspace = true }
+rustjay-engine = { workspace = true, default-features = false }
 bytemuck       = { workspace = true }
 serde          = { workspace = true }
 anyhow         = { workspace = true }

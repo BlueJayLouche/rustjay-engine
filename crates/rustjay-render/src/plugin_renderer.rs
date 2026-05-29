@@ -153,9 +153,13 @@ fn wgpu_topology(topology: MeshTopology) -> wgpu::PrimitiveTopology {
     }
 }
 
-fn wgpu_polygon_mode(topology: MeshTopology) -> wgpu::PolygonMode {
+fn wgpu_polygon_mode(topology: MeshTopology, device: &wgpu::Device) -> wgpu::PolygonMode {
     match topology {
-        MeshTopology::Wireframe => wgpu::PolygonMode::Line,
+        MeshTopology::Wireframe
+            if device.features().contains(wgpu::Features::POLYGON_MODE_LINE) =>
+        {
+            wgpu::PolygonMode::Line
+        }
         _ => wgpu::PolygonMode::Fill,
     }
 }
@@ -330,7 +334,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
-                polygon_mode: initial_topology.map(wgpu_polygon_mode).unwrap_or(wgpu::PolygonMode::Fill),
+                polygon_mode: initial_topology.map(|t| wgpu_polygon_mode(t, device)).unwrap_or(wgpu::PolygonMode::Fill),
                 unclipped_depth: false,
                 conservative: false,
             },
@@ -441,7 +445,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
         let polygon_mode = self.cached_mesh
-            .map(|m| wgpu_polygon_mode(m.topology))
+            .map(|m| wgpu_polygon_mode(m.topology, device))
             .unwrap_or(wgpu::PolygonMode::Fill);
 
         self.pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -723,7 +727,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
         let graph_polygon_mode = self.cached_mesh
-            .map(|m| wgpu_polygon_mode(m.topology))
+            .map(|m| wgpu_polygon_mode(m.topology, device))
             .unwrap_or(wgpu::PolygonMode::Fill);
 
         let needs_rebuild = self.graph_pipelines.len() != graph.passes.len()

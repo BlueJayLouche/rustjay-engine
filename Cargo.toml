@@ -28,8 +28,9 @@ anyhow      = "1.0"
 thiserror   = "2.0"
 
 # GPU / windowing
-wgpu        = { version = "29.0", features = ["spirv"] }
+wgpu        = { version = "29.0", features = ["spirv", "gles"] }
 winit       = "0.30"
+raw-window-handle = "0.6"
 pollster    = "0.4"
 bytemuck    = { version = "1.21", features = ["derive"] }
 glam        = { version = "0.32", features = ["bytemuck", "serde"] }
@@ -71,16 +72,19 @@ qrcode  = "0.14"
 # Workspace-internal crates
 rustjay-core    = { path = "crates/rustjay-core", version = "0.1.0" }
 rustjay-audio   = { path = "crates/rustjay-audio", version = "0.1.0" }
-rustjay-io      = { path = "crates/rustjay-io", version = "0.1.0" }
+rustjay-io      = { path = "crates/rustjay-io",      version = "0.1.0", default-features = false }
 rustjay-control = { path = "crates/rustjay-control", version = "0.1.0" }
 rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
-rustjay-gui     = { path = "crates/rustjay-gui", version = "0.1.0" }
-rustjay-render  = { path = "crates/rustjay-render", version = "0.1.0" }
-rustjay-engine  = { path = "crates/rustjay-engine", version = "0.1.0" }
+rustjay-gui     = { path = "crates/rustjay-gui",     version = "0.1.0" }
+rustjay-render  = { path = "crates/rustjay-render",  version = "0.1.0" }
+rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-features = false }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
 syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
 syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
+
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
 
 [profile.release]
 opt-level     = 3
