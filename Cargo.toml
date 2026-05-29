@@ -13,6 +13,7 @@ members = [
     "examples/delta",
     "examples/waaaves",
     "examples/sputnik",
+    "examples/flux",
     "examples/webapp",
     "examples/isf-example",
     "examples/delta-egui",

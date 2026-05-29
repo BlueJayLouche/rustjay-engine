@@ -1,0 +1,23 @@
+[package]
+name        = "flux"
+version     = "0.1.0"
+edition     = "2021"
+description = "Optical-flow warp with motion feedback trails"
+
+[dependencies]
+rustjay-engine = { workspace = true, default-features = false }
+bytemuck       = { workspace = true }
+serde          = { workspace = true }
+anyhow         = { workspace = true }
+log            = { workspace = true }
+wgpu           = { workspace = true }
+imgui          = { workspace = true }
+env_logger     = "0.11"
+
+[features]
+default = ["webcam"]
+ndi     = ["rustjay-engine/ndi"]
+webcam  = ["rustjay-engine/webcam"]
+link    = ["rustjay-engine/link"]
+prodj   = ["rustjay-engine/prodj"]
+mtc     = ["rustjay-engine/mtc"]
