@@ -79,6 +79,25 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
     Ok(())
 }
 
+#[cfg(feature = "gles2")]
+pub(crate) fn run_gles2_app<P: EffectPlugin>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    gles2: Box<dyn crate::gles2::Gles2EffectDyn>,
+    drm_mode: bool,
+) -> Result<()> {
+    let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    let mut app = App::new(shared_state, plugin, false, vec![], true);
+    app.gles2_effect = Some(gles2);
+    #[cfg(feature = "drm-gles2")]
+    { app.drm_gles2 = drm_mode; }
+
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
 pub(crate) struct App<P: EffectPlugin> {
     pub(crate) shared_state: Arc<std::sync::Mutex<EngineState>>,
 
@@ -142,6 +161,15 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) custom_tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
     #[cfg(feature = "egui")]
     pub(crate) custom_tabs_egui: Vec<Box<dyn AnyEguiTab>>,
+
+    // Optional GLES 2.0 render path (replaces WgpuEngine on hardware that lacks GLES 3.0)
+    #[cfg(feature = "gles2")]
+    pub(crate) gles2_effect: Option<Box<dyn crate::gles2::Gles2EffectDyn>>,
+    #[cfg(feature = "gles2")]
+    pub(crate) gles2_state: Option<crate::gles2::Gles2State>,
+    /// When true, use DRM/GBM directly — skip window creation and weston entirely.
+    #[cfg(feature = "drm-gles2")]
+    pub(crate) drm_gles2: bool,
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -326,6 +354,12 @@ impl<P: EffectPlugin> App<P> {
             custom_tabs_imgui: tabs_imgui,
             #[cfg(feature = "egui")]
             custom_tabs_egui: Vec::new(),
+            #[cfg(feature = "gles2")]
+            gles2_effect: None,
+            #[cfg(feature = "gles2")]
+            gles2_state: None,
+            #[cfg(feature = "drm-gles2")]
+            drm_gles2: false,
         }
     }
 

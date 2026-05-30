@@ -126,43 +126,73 @@ wgpu = { version = "29.0", features = ["spirv", "gles"] }
 #### 5. Build command
 
 ```sh
+# sputnik (software rendering on Pi 2 — needs llvmpipe for compute shaders)
 cross build --release --no-default-features --features webcam \
     --target armv7-unknown-linux-gnueabihf -p sputnik
+
+# flux with DRM/KMS hardware path (no compositor required)
+cross build --release --no-default-features --features webcam,drm-gles2 \
+    --target armv7-unknown-linux-gnueabihf -p flux
 ```
+
+The `drm-gles2` feature includes `gles2` and adds DRM/KMS + GBM surface support.
+On Pi 4/5 you can omit these features — the standard wgpu Vulkan path is used instead.
 
 #### 6. Deploy
 
 ```sh
 scp target/armv7-unknown-linux-gnueabihf/release/sputnik alarm@<pi-ip>:~/
+scp target/armv7-unknown-linux-gnueabihf/release/flux    alarm@<pi-ip>:~/
 ```
 
 ### Running on Pi 2
 
-Pi 2's VideoCore IV GPU supports a maximum of **OpenGL ES 2.0** (hardware). wgpu requires GLES 3.0+ and the mesh deformation pass needs compute shaders (added in GLES 3.1). Hardware GPU rendering is therefore not viable on Pi 2.
+Pi 2's VideoCore IV GPU supports **OpenGL ES 2.0** hardware. wgpu requires GLES 3.0 (specifically for Uniform Buffer Objects), so it cannot use the VC4 GPU directly. The two options are:
 
-**Use Mesa's software renderer (llvmpipe)** instead. llvmpipe exposes OpenGL 4.6 / GLES 3.2 in software. Performance is CPU-bound (~20% CPU at 30 fps with reduced mesh resolution), but it runs correctly.
+| Effect | Render path | How to run |
+|---|---|---|
+| **flux** | Native GLES 2.0 (VC4 hardware) | `./flux --nogui --gles2` |
+| **sputnik** | llvmpipe software rendering | `LIBGL_ALWAYS_SOFTWARE=1 ./sputnik --nogui` |
 
-Start weston and sputnik:
+**flux `--gles2 --drm`:** bypasses wgpu AND the Wayland compositor entirely. Opens `/dev/dri/card0` directly via KMS, creates a GBM surface, and renders using GLES 2.0 with GLSL ES 1.00 shaders on VC4 hardware. No weston, no X11, no `LIBGL_ALWAYS_SOFTWARE`.
+
+**sputnik** uses compute shaders (mesh deformation) which VC4 does not support in hardware at any GLES version, so it remains on llvmpipe.
 
 ```sh
-# Ensure seatd is running
-sudo systemctl start seatd
+# Run flux directly on DRM — no compositor at all
+RUST_LOG=warn ./flux --nogui --gles2 --drm
 
-# Start weston DRM compositor
-XDG_RUNTIME_DIR=/run/user/1000 weston --backend=drm --no-config --idle-time=0 &
-sleep 3
+# Half display resolution (preserves aspect ratio, good default for Pi 2)
+RUST_LOG=warn ./flux --nogui --gles2 --drm --render-scale 0.25
 
-# Run sputnik with software rendering
+# Run sputnik — still requires software rendering (compute shaders)
 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 \
     LIBGL_ALWAYS_SOFTWARE=1 RUST_LOG=warn \
     ./sputnik --nogui
 ```
 
-> **Why Wayland and not X11?** wgpu 29.0 initialises EGL before creating a window, and the default EGL fallback (surfaceless) cannot create windowed surfaces. Wayland provides the display handle at startup so EGL uses the correct platform. X11 requires additional engine changes that are not yet merged (see wgpu-hal issue with duplicate `SURFACE_TYPE` attributes on vc4 configs).
+### Render resolution flags
 
-> **Why software rendering?** vc4 GLES 2.0 hardware lacks compute shaders (GLES 3.1 feature required for mesh deformation). `MESA_GLES_VERSION_OVERRIDE=3.0` tricks the API version string but does not add compute support. `LIBGL_ALWAYS_SOFTWARE=1` forces Mesa's llvmpipe which fully supports compute.
+By default flux renders at the full display resolution. On Pi 2 you almost always want to reduce this:
 
-> **Pi 4 / Pi 5** do not need software rendering — VideoCore VI/VII supports GLES 3.1 / Vulkan natively and the hardware path works without any overrides.
+| Flag | Effect |
+|---|---|
+| `--render-scale 0.25` | Render at 25% of display dimensions (preserves aspect ratio) |
+| `--render-scale 0.5` | Render at 50% of display dimensions |
+| `--render-width W --render-height H` | Fixed render resolution (you are responsible for matching the display AR) |
+
+`--render-scale` is preferred because it always matches the display's aspect ratio. Using a fixed `--render-width/--render-height` that differs from the display's aspect ratio will stretch the optical-flow feedback loop and change the visual character of the effect.
+
+Typical values for Pi 2:
+- HDMI output (16:9): `--render-scale 0.25` → 512×288 at 2048×1152
+- Composite NTSC (4:3, 720×480): `--render-scale 0.5` → 360×240
+- Composite PAL (4:3, 720×576): `--render-scale 0.5` → 360×288
+
+> **Why does flux work but sputnik doesn't?** flux uses three plain fragment-shader passes — no UBOs visible to the GLES 2.0 path, no compute, no mesh. sputnik requires compute shaders (GLES 3.1 feature) that VC4 hardware never supports.
+
+> **Pi 4 / Pi 5** support Vulkan natively. Use the standard `./flux --nogui` (no flags needed) and drop `LIBGL_ALWAYS_SOFTWARE=1` from sputnik as well.
+
+> **DRM presentation on vc4:** `drmModePageFlip` returns `EBUSY` on Pi 2's VC4 driver regardless of flags. flux works around this by calling `drmModeSetCrtc` each frame. This is not vblank-locked but `eglSwapInterval(1)` is set so `eglSwapBuffers` gates on vsync, keeping tearing minimal.
 
 ---
 
@@ -180,6 +210,27 @@ When `--nogui` is active:
 - The output opens **fullscreen** immediately.
 - `target_fps` is capped at **30** (configurable via the Web UI after launch).
 - Audio, MIDI, OSC, and the Web UI all remain fully functional.
+- The last-used webcam (stored as `startup_webcam_device` in the app's config JSON) is **attached automatically** before the first frame renders.
+
+## Webcam auto-attach
+
+Any effect that uses a webcam input will re-attach the same webcam on the next `--nogui` launch without any user interaction.
+
+**How it works:** when the engine shuts down it saves the active webcam's device index to `~/.config/rustjay/<app-name>.json` as `startup_webcam_device`. On the next launch the webcam is opened synchronously during engine initialisation, before the first frame is rendered.
+
+**First-time setup:** run the effect once with the GUI, select the webcam from the Input tab, then quit. The index is written automatically. All subsequent `--nogui` launches will use it.
+
+**Manual override:** edit the config JSON directly:
+
+```json
+{
+  "startup_webcam_device": 0
+}
+```
+
+A value of `0` opens `/dev/video0` (the first V4L2 capture device). Set to `null` to disable auto-attach.
+
+> **Why synchronous?** On Pi 2 with software rendering (llvmpipe) a single 1080p frame can take 30+ seconds. The two-step `RefreshDevices → StartWebcam` queue that works on desktop would never dispatch before the first render completes. The engine therefore starts the webcam directly inside the initialisation path, before handing control to the render loop.
 
 ## Controlling without a GUI
 
@@ -193,30 +244,55 @@ Settings (MIDI mappings, last preset, FPS target) persist in `~/.config/rustjay/
 
 ## Resource budgeting (Pi 2 / Pi 3)
 
-The VideoCore IV GPU is much weaker than a desktop GPU. Dial back mesh resolution via the Web UI or a preset:
+All rendering on Pi 2/3 runs through llvmpipe on the CPU. The dominant cost is pixel count × pass count.
 
-| Resolution | Vertices | Suitable for |
+**Flux** — three full-screen fragment passes (flow, warp, blit). With `--gles2 --drm` the passes run on VC4 hardware. Use `--render-scale` to trade pixel count for framerate:
+
+| `--render-scale` | Pixels (at 720×480 composite) | Typical Pi 2 fps |
+|---|---|---|
+| 1.0 (default) | 345 600 | ~15 fps |
+| 0.5 | 86 400 | ~30 fps |
+| 0.25 | 21 600 | ~60 fps |
+
+The optical-flow webcam capture always runs at 640×480 regardless of render scale. `--render-scale` only controls the internal FBO size for the warp and accumulation passes.
+
+**Sputnik** — Dial back mesh resolution via the Web UI or a preset:
+
+| Mesh resolution | Vertices | Suitable for |
 |---|---|---|
 | 320 × 180 | ~57 k | Pi 5 / Pi 4 |
-| 160 × 90 | ~14 k | Pi 4, Pi 3 manageable |
-| 80 × 45 | ~3.5 k | Pi 2 / Pi 3 safe starting point |
+| 160 × 90  | ~14 k | Pi 4, Pi 3 manageable |
+| 80 × 45   | ~3.5 k | Pi 2 / Pi 3 safe starting point |
 
 Use **Web UI → Sputnik tab → Mesh Resolution** to change at runtime, then save as a preset.
 
-## Autostart on boot (Arch Linux ARM + Wayland)
+## Autostart on boot (Arch Linux ARM)
+
+### 1. Add the user to the required groups
+
+```sh
+sudo usermod -aG video,audio alarm
+# reboot for the change to take effect
+```
+
+`video` grants access to `/dev/dri/card0` and `/dev/video0`. `audio` grants ALSA sequencer access for MIDI.
+
+### 2. Create the flux service (Pi 2 — DRM/KMS, no compositor)
+
+`ExecStartPre=/bin/sleep 3` gives the kernel time to enumerate USB devices before flux opens `/dev/video0`.
 
 ```ini
-# /etc/systemd/system/sputnik.service
+# /etc/systemd/system/flux.service
 [Unit]
-Description=Sputnik VJ effect
-After=weston.service
+Description=Flux VJ effect (optical-flow webcam warp — DRM/KMS direct)
+After=multi-user.target
+Wants=dev-video0.device
 
 [Service]
 User=alarm
-Environment=WAYLAND_DISPLAY=wayland-1
-Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=RUST_LOG=warn
-ExecStart=/home/alarm/sputnik --nogui
+ExecStartPre=/bin/sleep 3
+ExecStart=/home/alarm/flux --nogui --gles2 --drm --render-scale 0.25
 Restart=on-failure
 RestartSec=5
 
@@ -224,7 +300,25 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+No weston service is needed. flux opens `/dev/dri/card0` directly.
+
+For `sputnik.service` on Pi 2, weston is still required (llvmpipe path). Use the Wayland-based setup from a previous section and add `Environment=LIBGL_ALWAYS_SOFTWARE=1`.
+
+### 3. Enable
+
 ```sh
-sudo systemctl enable --now sputnik
-journalctl -u sputnik -f
+sudo systemctl daemon-reload
+sudo systemctl enable --now flux
+journalctl -u flux -f
 ```
+
+Verify on the next boot:
+
+```sh
+systemctl is-active flux        # should print "active"
+fuser /dev/dri/card0            # should show the flux PID
+fuser /dev/video0               # same PID — webcam open
+ps aux | grep weston            # should be empty
+```
+
+> **Pi 4/5:** The `--gles2 --drm` flags are not needed — use the standard wgpu Vulkan path (`./flux --nogui`) and a normal Wayland or fullscreen setup.

@@ -12,6 +12,31 @@ use rustjay_core::EffectPlugin;
 
 impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // ── DRM/GBM path: bypass winit window + wgpu entirely ────────────────
+        #[cfg(feature = "drm-gles2")]
+        if self.drm_gles2 && self.gles2_effect.is_some() && self.gles2_state.is_none() {
+            match crate::gles2::try_create_drm_gles2_context("/dev/dri/card0") {
+                Ok((mut gles2_state, w, h)) => {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(effect) = self.gles2_effect.as_mut() {
+                        if let Err(e) = effect.init_gl(&gles2_state.gl.clone(), w, h, &state) {
+                            log::error!("DRM GLES 2.0 effect init failed: {e}");
+                            event_loop.exit();
+                            return;
+                        }
+                    }
+                    drop(state);
+                    self.gles2_state = Some(gles2_state);
+                    log::info!("DRM/GBM GLES 2.0 render path active — no compositor required");
+                }
+                Err(e) => {
+                    log::error!("Failed to create DRM/GBM context: {e}");
+                    event_loop.exit();
+                }
+            }
+            return; // Skip window + wgpu init
+        }
+
         if self.wgpu_instance.is_none() {
             #[cfg(target_os = "macos")]
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -93,6 +118,63 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             window.set_cursor_visible(false);
             self.output_window = Some(Arc::clone(&window));
 
+            // ── GLES 2.0 path (Pi 2 / hardware without GLES 3.0 UBOs) ──────────
+            #[cfg(feature = "gles2")]
+            if self.gles2_effect.is_some() {
+                use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+                use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+                let (wayland_display, wayland_surface) = {
+                    let dh = event_loop.display_handle().ok()
+                        .map(|h| h.as_raw());
+                    let wh = window.window_handle().ok()
+                        .map(|h| h.as_raw());
+                    match (dh, wh) {
+                        (Some(RawDisplayHandle::Wayland(d)), Some(RawWindowHandle::Wayland(w))) => {
+                            (d.display.as_ptr(), w.surface.as_ptr())
+                        }
+                        _ => {
+                            log::error!("GLES 2.0 path requires a Wayland display/surface");
+                            event_loop.exit();
+                            return;
+                        }
+                    }
+                };
+
+                let size = window.inner_size();
+                match crate::gles2::try_create_gles2_context(
+                    wayland_display as *mut _,
+                    wayland_surface as *mut _,
+                    size.width,
+                    size.height,
+                ) {
+                    Ok(mut gles2_state) => {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(effect) = self.gles2_effect.as_mut() {
+                            if let Err(e) = effect.init_gl(
+                                &gles2_state.gl,
+                                gles2_state.width,
+                                gles2_state.height,
+                                &state,
+                            ) {
+                                log::error!("GLES 2.0 effect init failed: {e}");
+                                event_loop.exit();
+                                return;
+                            }
+                        }
+                        drop(state);
+                        self.gles2_state = Some(gles2_state);
+                        log::info!("GLES 2.0 render path active");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create GLES 2.0 context: {e}");
+                        event_loop.exit();
+                    }
+                }
+                return; // skip wgpu engine init
+            }
+
+            // ── wgpu path ────────────────────────────────────────────────────
             let shared_state = Arc::clone(&self.shared_state);
             let plugin = match self.plugin.take() {
                 Some(p) => p,
@@ -114,6 +196,30 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     {
                         manager.initialize(device, queue);
                         log::info!("InputManager initialized with GPU resources");
+
+                        // Start the saved webcam device synchronously here rather than
+                        // deferring to the frame loop.  On slow hardware (Pi 2 llvmpipe)
+                        // the first engine.render() can block for many seconds, so
+                        // queuing a two-step RefreshDevices → StartWebcam sequence would
+                        // never dispatch before the user's process is killed.
+                        let idx = self.shared_state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .startup_webcam_device
+                            .take();
+                        if let Some(idx) = idx {
+                            #[cfg(feature = "webcam")]
+                            match manager.start_webcam(idx, 1280, 720, 30) {
+                                Ok(()) => {
+                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    state.input.is_active = true;
+                                    state.input.input_type = rustjay_core::InputType::Webcam;
+                                    state.input.source_name = format!("Webcam {}", idx);
+                                    state.input.device_index = Some(idx);
+                                }
+                                Err(e) => log::error!("startup_webcam_device: failed to start webcam {}: {:?}", idx, e),
+                            }
+                        }
                     }
                     if let (Some(ref mut manager), Some(ref device), Some(ref queue)) =
                         (self.second_input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
@@ -443,9 +549,32 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.save_settings();
         }
 
-        if let Some(ref mut engine) = self.output_engine {
-            engine.render(self.output_occluded, &mut self.app_state);
-            self.update_preview_textures();
+        #[cfg(feature = "gles2")]
+        let gles2_rendered = if self.gles2_effect.is_some() && self.gles2_state.is_some() {
+            let gl = self.gles2_state.as_ref().unwrap().gl.clone();
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let keep_running = match self.gles2_effect.as_mut().unwrap().render_frame(&gl, &state) {
+                Ok(v)  => v,
+                Err(e) => { log::error!("GLES 2.0 render error: {e}"); true }
+            };
+            drop(state);
+            if keep_running {
+                if let Err(e) = self.gles2_state.as_mut().unwrap().present() {
+                    log::error!("GLES 2.0 present error: {e}");
+                }
+            } else {
+                event_loop.exit();
+            }
+            true
+        } else { false };
+        #[cfg(not(feature = "gles2"))]
+        let gles2_rendered = false;
+
+        if !gles2_rendered {
+            if let Some(ref mut engine) = self.output_engine {
+                engine.render(self.output_occluded, &mut self.app_state);
+                self.update_preview_textures();
+            }
         }
         if self.control_visible {
             if self.use_egui {

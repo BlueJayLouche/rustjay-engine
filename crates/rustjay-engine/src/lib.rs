@@ -10,6 +10,8 @@
 
 pub mod app;
 pub mod config;
+#[cfg(feature = "gles2")]
+pub mod gles2;
 
 // Re-export the most useful types so app authors only need `rustjay_engine::*`
 pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, ParameterDescriptor, ParamCategory, ParamType};
@@ -107,6 +109,25 @@ pub fn run_with_egui_tabs<P: EffectPlugin>(
     app::run_egui_app(shared_state, plugin, tabs)
 }
 
+/// Run using a Wayland-backed GLES 2.0 context (compositor required).
+#[cfg(feature = "gles2")]
+pub fn run_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
+where P: EffectPlugin, G: gles2::Gles2Effect,
+{
+    gles2::run_gles2_headless_with_tabs(plugin, gles2)
+}
+
+/// Run using a DRM/GBM GLES 2.0 context — renders directly to `/dev/dri/card0`.
+///
+/// No compositor (weston, X11) is needed. The process must have access to the
+/// DRM device (user in `video` group, or run under a seat session).
+#[cfg(feature = "drm-gles2")]
+pub fn run_drm_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
+where P: EffectPlugin, G: gles2::Gles2Effect,
+{
+    gles2::run_drm_gles2_headless_with_tabs(plugin, gles2)
+}
+
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use rustjay_core::{
@@ -125,4 +146,8 @@ pub mod prelude {
     pub use crate::{run, run_with_tabs, run_headless, run_headless_with_tabs};
     #[cfg(feature = "egui")]
     pub use crate::run_with_egui_tabs;
+    #[cfg(feature = "gles2")]
+    pub use crate::gles2::{Gles2Effect, run_gles2_headless_with_tabs};
+    #[cfg(feature = "drm-gles2")]
+    pub use crate::run_drm_gles2_headless_with_tabs;
 }

@@ -354,6 +354,8 @@ pub struct InputState {
     pub height: u32,
     /// Capture frame rate (may be approximate).
     pub fps: f32,
+    /// Numeric device index of the active webcam (None if not a webcam or not started).
+    pub device_index: Option<usize>,
 }
 
 /// HSB (Hue / Saturation / Brightness) colour adjustment parameters.
@@ -829,6 +831,9 @@ pub struct EngineState {
     pub performance: PerformanceMetrics,
 
     /// Whether preview windows are shown.
+    /// If set, the engine will start this webcam device on the first frame
+    /// after the InputManager is ready.  Cleared once the command is issued.
+    pub startup_webcam_device: Option<usize>,
     pub show_preview: bool,
     /// Target render frame rate in frames per second.
     pub target_fps: u32,
@@ -962,6 +967,7 @@ impl EngineState {
             v4l2_output: V4l2OutputState { device_path: "/dev/video12".to_string(), enabled: false },
             resolution: ResolutionState::default(),
             performance: PerformanceMetrics::default(),
+            startup_webcam_device: None,
             show_preview: true,
             target_fps: 60,
             ui_scale: 1.0,

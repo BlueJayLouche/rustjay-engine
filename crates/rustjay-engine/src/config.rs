@@ -77,6 +77,9 @@ pub(crate) struct AppSettings {
     /// Effect-declared custom parameter values.
     #[serde(default)]
     pub custom_params: HashMap<String, f32>,
+    /// Webcam device index to start automatically on launch (None = do not autostart).
+    #[serde(default)]
+    pub startup_webcam_device: Option<usize>,
 }
 
 impl Default for AppSettings {
@@ -116,6 +119,7 @@ impl Default for AppSettings {
             show_preview: true,
             target_fps: 60,
             custom_params: HashMap::new(),
+            startup_webcam_device: None,
         }
     }
 }
@@ -242,6 +246,11 @@ impl AppSettings {
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
         state.target_fps = self.target_fps;
+        // Store the desired startup device; the engine issues StartWebcam once
+        // the InputManager is ready (avoids the command being silently dropped
+        // if it fires before the InputManager is initialised).
+        state.startup_webcam_device = self.startup_webcam_device;
+
         // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
@@ -296,6 +305,10 @@ impl AppSettings {
             custom_params: state.param_descriptors.iter().enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),
+            // Persist the active device so next launch auto-restarts it.
+            // Fall back to the desired startup device if the webcam never started this
+            // session (e.g. app was killed before device discovery completed).
+            startup_webcam_device: state.input.device_index.or(state.startup_webcam_device),
         }
     }
 }

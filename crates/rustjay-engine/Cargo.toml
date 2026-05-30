@@ -34,6 +34,14 @@ imgui           = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+glow         = { workspace = true, optional = true }
+khronos-egl  = { workspace = true, optional = true }
+wayland-sys  = { version = "0.31", features = ["egl"], optional = true }
+gbm          = { version = "0.18", features = ["drm-support"], optional = true }
+drm          = { version = "0.14", optional = true }
+libc         = { version = "0.2", optional = true }
+
 [features]
 default = ["ndi", "webcam"]
 ndi     = ["rustjay-io/ndi"]
@@ -44,4 +52,6 @@ v4l2    = []
 link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]
 prodj   = ["rustjay-sync/prodj", "rustjay-core/prodj", "rustjay-gui/prodj"]
 mtc     = ["rustjay-control/mtc", "rustjay-gui/mtc"]
+gles2   = ["dep:glow", "dep:khronos-egl", "dep:wayland-sys", "rustjay-io/webcam"]
+drm-gles2 = ["gles2", "dep:gbm", "dep:drm", "dep:libc"]
 

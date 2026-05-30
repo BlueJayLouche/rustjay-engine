@@ -16,6 +16,9 @@
 use rustjay_engine::prelude::*;
 use wgpu::util::DeviceExt;
 
+#[cfg(feature = "gles2")]
+mod gles2_renderer;
+
 // ---------------------------------------------------------------------------
 // Uniforms — must match both WGSL structs exactly (16-byte aligned vec4s)
 // ---------------------------------------------------------------------------
@@ -287,8 +290,9 @@ impl EffectPlugin for FluxEffect {
     type State    = FluxState;
     type Uniforms = FluxUniforms;
 
-    fn shader_source(&self) -> &'static str { STUB_SHADER }
-    fn default_state(&self) -> FluxState    { FluxState::default() }
+    fn app_name(&self)        -> &str        { "flux" }
+    fn shader_source(&self)  -> &'static str { STUB_SHADER }
+    fn default_state(&self)  -> FluxState    { FluxState::default() }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
@@ -648,5 +652,77 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Starting RustJay Flux v{}", env!("CARGO_PKG_VERSION"));
 
-    rustjay_engine::run_with_tabs(FluxEffect::default(), vec![Box::new(FluxTab)])
+    let args: Vec<String> = std::env::args().collect();
+    let nogui = args.iter().any(|a| a == "--nogui");
+    let gles2 = args.iter().any(|a| a == "--gles2");
+    let drm   = args.iter().any(|a| a == "--drm");
+
+    // --render-width W  --render-height H  (optional; default = display resolution)
+    let render_w = args.windows(2)
+        .find(|w| w[0] == "--render-width")
+        .and_then(|w| w[1].parse::<u32>().ok());
+    let render_h = args.windows(2)
+        .find(|w| w[0] == "--render-height")
+        .and_then(|w| w[1].parse::<u32>().ok());
+    let render_scale = args.windows(2)
+        .find(|w| w[0] == "--render-scale")
+        .and_then(|w| w[1].parse::<f32>().ok());
+
+    if nogui && gles2 && drm {
+        #[cfg(feature = "drm-gles2")]
+        {
+            let renderer = match (render_w, render_h, render_scale) {
+                (Some(rw), Some(rh), _) => {
+                    log::info!("Render resolution: {}×{}", rw, rh);
+                    gles2_renderer::FluxGles2::with_render_size(rw, rh)
+                }
+                (_, _, Some(s)) => {
+                    log::info!("Render scale: {}", s);
+                    gles2_renderer::FluxGles2::with_render_scale(s)
+                }
+                _ => gles2_renderer::FluxGles2::default(),
+            };
+            return rustjay_engine::run_drm_gles2_headless_with_tabs(
+                FluxEffect::default(),
+                renderer,
+            );
+        }
+        #[cfg(not(feature = "drm-gles2"))]
+        {
+            log::error!("--drm requires the `drm-gles2` cargo feature");
+            return Err(anyhow::anyhow!("drm-gles2 feature not enabled"));
+        }
+    }
+
+    if nogui && gles2 {
+        #[cfg(feature = "gles2")]
+        {
+            let renderer = match (render_w, render_h, render_scale) {
+                (Some(rw), Some(rh), _) => {
+                    log::info!("Render resolution: {}×{}", rw, rh);
+                    gles2_renderer::FluxGles2::with_render_size(rw, rh)
+                }
+                (_, _, Some(s)) => {
+                    log::info!("Render scale: {}", s);
+                    gles2_renderer::FluxGles2::with_render_scale(s)
+                }
+                _ => gles2_renderer::FluxGles2::default(),
+            };
+            return rustjay_engine::run_gles2_headless_with_tabs(
+                FluxEffect::default(),
+                renderer,
+            );
+        }
+        #[cfg(not(feature = "gles2"))]
+        {
+            log::error!("--gles2 flag requires the `gles2` cargo feature");
+            return Err(anyhow::anyhow!("gles2 feature not enabled"));
+        }
+    }
+
+    if nogui {
+        rustjay_engine::run_headless_with_tabs(FluxEffect::default(), vec![Box::new(FluxTab)])
+    } else {
+        rustjay_engine::run_with_tabs(FluxEffect::default(), vec![Box::new(FluxTab)])
+    }
 }

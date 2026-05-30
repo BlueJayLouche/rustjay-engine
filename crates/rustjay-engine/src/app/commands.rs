@@ -81,6 +81,7 @@ impl<P: EffectPlugin> App<P> {
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Webcam;
                             input.source_name = format!("Webcam {}", device_index);
+                            input.device_index = Some(device_index);
                         }
                         Err(e) => log::error!("{} failed to start webcam: {:?}", slot_prefix, e),
                     }

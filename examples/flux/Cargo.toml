@@ -14,6 +14,12 @@ wgpu           = { workspace = true }
 imgui          = { workspace = true }
 env_logger     = "0.11"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+glow        = { workspace = true, optional = true }
+khronos-egl = { workspace = true, optional = true }
+rustjay-io  = { workspace = true, optional = true, default-features = false, features = ["webcam"] }
+bytemuck    = { workspace = true }
+
 [features]
 default = ["webcam"]
 ndi     = ["rustjay-engine/ndi"]
@@ -21,3 +27,5 @@ webcam  = ["rustjay-engine/webcam"]
 link    = ["rustjay-engine/link"]
 prodj   = ["rustjay-engine/prodj"]
 mtc     = ["rustjay-engine/mtc"]
+gles2     = ["dep:glow", "dep:khronos-egl", "dep:rustjay-io", "rustjay-engine/gles2"]
+drm-gles2 = ["gles2", "rustjay-engine/drm-gles2"]

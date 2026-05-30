@@ -20,6 +20,8 @@ pub(crate) mod v4l2_devices;
 pub use input::InputManager;
 pub use input::SyphonServerInfo;
 pub use input::SpoutSenderInfo;
+#[cfg(feature = "webcam")]
+pub use input::webcam::{WebcamCapture, WebcamFrame};
 pub use output::OutputManager;
 #[cfg(target_os = "linux")]
 pub use v4l2_devices::V4l2DeviceInfo;
