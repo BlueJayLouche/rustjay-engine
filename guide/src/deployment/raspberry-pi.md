@@ -140,9 +140,16 @@ On Pi 4/5 you can omit these features — the standard wgpu Vulkan path is used 
 
 #### 6. Deploy
 
+Copy the binary to the Pi and restart the service:
+
 ```sh
-scp target/armv7-unknown-linux-gnueabihf/release/sputnik alarm@<pi-ip>:~/
-scp target/armv7-unknown-linux-gnueabihf/release/flux    alarm@<pi-ip>:~/
+scp target/armv7-unknown-linux-gnueabihf/release/flux alarm@<pi-ip>:/home/alarm/flux.new
+ssh alarm@<pi-ip> '
+    sudo systemctl stop flux
+    sleep 1
+    mv /home/alarm/flux.new /home/alarm/flux
+    sudo systemctl start flux
+'
 ```
 
 ### Running on Pi 2
@@ -236,11 +243,27 @@ A value of `0` opens `/dev/video0` (the first V4L2 capture device). Set to `null
 
 | Path | How |
 |---|---|
-| **Web UI** | `http://<pi-ip>:8081` in any browser on the same network |
+| **Web UI** | `http://<pi-ip>:8081/<app-name>` in any browser on the same network (e.g. `/flux`) |
 | **OSC** | Send to `<pi-ip>:7770`, e.g. `/rustjay/sputnik/displacement_scale 0.5` |
 | **MIDI** | USB MIDI controller — CCs map via MIDI Learn as normal |
 
 Settings (MIDI mappings, last preset, FPS target) persist in `~/.config/rustjay/sputnik.json`.
+
+### Web remote on headless Pi 2 / Pi 3
+
+The Web UI starts automatically when the effect launches. On a headless embedded device you typically want **LAN trust mode** enabled so anyone on the same network can open the page without a bearer token.
+
+Enable it in the app's config:
+
+```json
+{
+  "web_host": "0.0.0.0",
+  "web_port": 8081,
+  "web_lan_trust": true
+}
+```
+
+With `web_lan_trust: true`, opening `http://<pi-ip>:8081/flux` from a phone or laptop on the same network requires no password. The controls affect the shader in real time.
 
 ## Resource budgeting (Pi 2 / Pi 3)
 
@@ -322,3 +345,76 @@ ps aux | grep weston            # should be empty
 ```
 
 > **Pi 4/5:** The `--gles2 --drm` flags are not needed — use the standard wgpu Vulkan path (`./flux --nogui`) and a normal Wayland or fullscreen setup.
+
+## SD card protection (read-only root)
+
+Unexpected power cuts can corrupt the SD card. Keep the root filesystem read-only during normal operation and remount read-write only when you need to deploy updates or edit configs.
+
+### 1. Configure journald to use RAM
+
+Stop systemd-journald from writing logs to disk:
+
+```sh
+sudo mkdir -p /etc/systemd/journald.conf.d
+cat << 'EOF' | sudo tee /etc/systemd/journald.conf.d/volatile.conf
+[Journal]
+Storage=volatile
+EOF
+```
+
+### 2. Create ro / rw scripts
+
+`/usr/local/bin/ro` — stop writers, sync, remount read-only:
+
+```sh
+sudo tee /usr/local/bin/ro << 'EOF'
+#!/bin/bash
+set -e
+sudo systemctl stop flux 2>/dev/null || true
+sudo systemctl stop systemd-timesyncd 2>/dev/null || true
+sudo systemctl stop systemd-journald 2>/dev/null || true
+sudo sync
+sudo mount -o remount,ro /
+echo "Root filesystem is now READ-ONLY"
+EOF
+sudo chmod +x /usr/local/bin/ro
+```
+
+`/usr/local/bin/rw` — remount read-write:
+
+```sh
+sudo tee /usr/local/bin/rw << 'EOF'
+#!/bin/bash
+set -e
+sudo mount -o remount,rw /
+echo "Root filesystem is now READ-WRITE"
+EOF
+sudo chmod +x /usr/local/bin/rw
+```
+
+### 3. Passwordless sudo
+
+Allow the `alarm` user to run the scripts without a password:
+
+```sh
+echo "alarm ALL=(ALL) NOPASSWD: /usr/local/bin/ro, /usr/local/bin/rw, /bin/mount" \
+    | sudo tee /etc/sudoers.d/alarm-ro-rw
+sudo chmod 440 /etc/sudoers.d/alarm-ro-rw
+```
+
+### Workflow
+
+```sh
+# Normal state — SD card is protected
+ro
+
+# Deploy a new build — remount rw, copy binary, then go back to ro
+rw
+scp target/armv7-unknown-linux-gnueabihf/release/flux alarm@pi:/home/alarm/flux.new
+sudo systemctl stop flux
+mv /home/alarm/flux.new /home/alarm/flux
+sudo systemctl start flux
+ro
+```
+
+> **Before unplugging the power:** run `ro` to ensure all writes are flushed and the filesystem is clean.

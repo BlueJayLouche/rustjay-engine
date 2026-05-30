@@ -176,10 +176,22 @@ impl FluxGles2 {
         let Some(ref frame) = self.last_frame else { return };
         if frame.data.is_empty() { return; }
 
-        // Swap B↔R in-place: BGRA → RGBA.
+        // Swap B↔R (BGRA → RGBA) and flip horizontally (un-mirror webcam selfie mode).
+        let w = frame.width as usize;
         let mut rgba = frame.data.clone();
-        for px in rgba.chunks_exact_mut(4) {
-            px.swap(0, 2);
+        for row in rgba.chunks_exact_mut(w * 4) {
+            // B↔R swap every pixel
+            for px in row.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            // Reverse pixel order within the row
+            for i in 0..w / 2 {
+                let j = w - 1 - i;
+                row.swap(i * 4,     j * 4);
+                row.swap(i * 4 + 1, j * 4 + 1);
+                row.swap(i * 4 + 2, j * 4 + 2);
+                row.swap(i * 4 + 3, j * 4 + 3);
+            }
         }
 
         gl.bind_texture(glow::TEXTURE_2D, Some(gs.webcam_tex));

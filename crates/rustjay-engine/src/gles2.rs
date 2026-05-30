@@ -386,7 +386,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 ) -> Result<()> {
     use rustjay_audio::AudioAnalyzer;
     use rustjay_control::{MidiManager, MidiState, OscServer};
-    use rustjay_control::{WebServer, WebConfig};
+    use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
     use rustjay_presets::{PresetBank, presets_dir_for};
     use crate::config::{AppSettings, ConfigManager};
 
@@ -456,13 +456,17 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         (s.web_host.clone(), s.web_port, s.web_lan_trust)
     };
     let (mut web_server, _web_tx) = WebServer::new(WebConfig {
-        host: web_host, port: web_port,
+        host: web_host.clone(), port: web_port,
         app_name: app_name.clone(), enabled: false, lan_trust: web_lan,
     });
     web_server.register_default_parameters();
     web_server.register_parameters(&descriptors);
     shared_state.lock().unwrap_or_else(|e| e.into_inner()).web_app_name = app_name.clone();
-    log::info!("Web UI initialized on port {web_port}");
+    if let Err(e) = web_server.start() {
+        log::error!("Web UI failed to start: {e}");
+    } else {
+        log::info!("Web UI running at http://{}:{}", web_host, web_port);
+    }
 
     // Presets
     if let Ok(dir) = presets_dir_for(&app_name) {
@@ -519,7 +523,75 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
+        // Web: apply parameter changes from web clients
+        {
+            while let Ok(cmd) = web_server.command_rx.try_recv() {
+                match cmd {
+                    WebServerCommand::Set { id, value } => {
+                        if let Ok(mut state) = shared_state.lock() {
+                            match id.as_str() {
+                                "color/hue_shift" => {
+                                    state.hsb_params.hue_shift = value.clamp(-180.0, 180.0);
+                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    state.audio_routing.update_base_values(h, s, b);
+                                }
+                                "color/saturation" => {
+                                    state.hsb_params.saturation = value.clamp(0.0, 2.0);
+                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    state.audio_routing.update_base_values(h, s, b);
+                                }
+                                "color/brightness" => {
+                                    state.hsb_params.brightness = value.clamp(0.0, 2.0);
+                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    state.audio_routing.update_base_values(h, s, b);
+                                }
+                                "color/enabled" => state.color_enabled = value > 0.5,
+                                "audio/amplitude" => state.audio.amplitude = value.clamp(0.0, 5.0),
+                                "audio/smoothing" => state.audio.smoothing = value.clamp(0.0, 1.0),
+                                "audio/enabled" => state.audio.enabled = value > 0.5,
+                                "audio/normalize" => state.audio.normalize = value > 0.5,
+                                "audio/pink_noise" => state.audio.pink_noise_shaping = value > 0.5,
+                                "output/fullscreen" => state.output_fullscreen = value > 0.5,
+                                _ => {
+                                    if let Some(desc) = state.param_descriptors.iter().find(|d| {
+                                        format!("{}/{}", d.category.name().to_lowercase(), d.id) == id
+                                    }) {
+                                        let (desc_id, desc_min, desc_max) = (desc.id.clone(), desc.min, desc.max);
+                                        state.set_param_base(&desc_id, value.clamp(desc_min, desc_max));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let target_fps = shared_state.lock().unwrap_or_else(|e| e.into_inner()).target_fps;
+
+        // Web: broadcast current parameter values to connected clients
+        if web_server.is_running() {
+            if let Ok(state) = shared_state.lock() {
+                web_server.update_parameter("color/hue_shift", state.hsb_params.hue_shift);
+                web_server.update_parameter("color/saturation", state.hsb_params.saturation);
+                web_server.update_parameter("color/brightness", state.hsb_params.brightness);
+                web_server.update_parameter("color/enabled", if state.color_enabled { 1.0 } else { 0.0 });
+                web_server.update_parameter("audio/amplitude", state.audio.amplitude);
+                web_server.update_parameter("audio/smoothing", state.audio.smoothing);
+                web_server.update_parameter("audio/enabled", if state.audio.enabled { 1.0 } else { 0.0 });
+                web_server.update_parameter("audio/normalize", if state.audio.normalize { 1.0 } else { 0.0 });
+                web_server.update_parameter("audio/pink_noise", if state.audio.pink_noise_shaping { 1.0 } else { 0.0 });
+                web_server.update_parameter("output/fullscreen", if state.output_fullscreen { 1.0 } else { 0.0 });
+                let descriptors = Arc::clone(&state.param_descriptors);
+                for (i, desc) in descriptors.iter().enumerate() {
+                    if let Some(addr) = state.param_osc_addresses.get(i) {
+                        let id = addr.trim_start_matches('/');
+                        let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
+                        web_server.update_parameter(id, value);
+                    }
+                }
+            }
+        }
 
         // Render frame
         let gl = gles2_state.gl.clone();
