@@ -412,6 +412,43 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     use rustjay_presets::{PresetBank, presets_dir_for};
     use crate::config::{AppSettings, ConfigManager};
 
+    // On Pi with a read-only root filesystem, the default config dir (~/.config)
+    // is unwritable. Detect this before loading config and redirect to the FAT32
+    // boot partition, which remains writable under the RO/RW toggle scripts.
+    // If XDG_CONFIG_HOME is already set (e.g. from the systemd unit), skip the probe.
+    if std::env::var_os("XDG_CONFIG_HOME").is_none() {
+        if let Some(cfg) = dirs::config_dir() {
+            let probe_dir = cfg.join("rustjay");
+            let _ = std::fs::create_dir_all(&probe_dir);
+            let probe = probe_dir.join(".write_probe");
+            match std::fs::write(&probe, b"") {
+                Ok(_) => { let _ = std::fs::remove_file(&probe); }
+                Err(_) => {
+                    let boot = "/boot/rustjay-data";
+                    match std::fs::create_dir_all(boot) {
+                        Ok(_) => {
+                            // Safety: called before any threads are spawned in this loop.
+                            unsafe { std::env::set_var("XDG_CONFIG_HOME", boot); }
+                            log::info!(
+                                "Config dir {:?} is read-only; redirecting saves to {}. \
+                                 Set XDG_CONFIG_HOME={} in the systemd unit to make this permanent.",
+                                cfg, boot, boot
+                            );
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "Config dir {:?} is read-only and {} could not be created ({}). \
+                                 Preset and settings saves will fail this session. \
+                                 Fix: mkdir -p {} && set XDG_CONFIG_HOME={} in flux.service.",
+                                cfg, boot, e, boot, boot
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let app_name = plugin.app_name().to_string();
     let config_manager = ConfigManager::new(&app_name);
 
