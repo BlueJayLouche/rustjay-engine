@@ -776,18 +776,21 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         }
 
         // Poll async device enumeration result from the Tokio thread (WR-2.1)
-        {
+        let devices = {
             if let Ok(mut ws) = web_server.state.lock() {
                 if let Ok(mut pd) = ws.pending_devices.lock() {
-                    if let Some(devices) = pd.take() {
-                        drop(pd);
-                        drop(ws);
-                        if let Ok(mut state) = shared_state.lock() {
-                            state.input.available_devices = devices;
-                            web_server.input_dirty = true;
-                        }
-                    }
+                    pd.take()
+                } else {
+                    None
                 }
+            } else {
+                None
+            }
+        };
+        if let Some(devices) = devices {
+            if let Ok(mut state) = shared_state.lock() {
+                state.input.available_devices = devices;
+                web_server.input_dirty = true;
             }
         }
 

@@ -140,7 +140,21 @@ On Pi 4/5 you can omit these features — the standard wgpu Vulkan path is used 
 
 #### 6. Deploy
 
-Copy the binary to the Pi and restart the service:
+**One-time setup — persistent config on the boot partition:**
+
+The Pi root filesystem is remounted read-only by the `ro` script. Without intervention, config writes (MIDI mappings, presets, OSC port, etc.) silently fail. The `/boot` partition is always mounted writable and has ample free space (~973 MB). Create a config directory there and migrate existing settings:
+
+```sh
+ssh alarm@<pi-ip> '
+    sudo mkdir -p /boot/rustjay-data/rustjay
+    if [ -d /home/alarm/.config/rustjay ]; then
+        sudo cp -r /home/alarm/.config/rustjay/. /boot/rustjay-data/rustjay/
+    fi
+    ls -la /boot/rustjay-data/rustjay/
+'
+```
+
+**Copy the binary and restart the service:**
 
 ```sh
 scp target/armv7-unknown-linux-gnueabihf/release/flux alarm@<pi-ip>:/home/alarm/flux.new
@@ -148,6 +162,7 @@ ssh alarm@<pi-ip> '
     sudo systemctl stop flux
     sleep 1
     mv /home/alarm/flux.new /home/alarm/flux
+    chmod +x /home/alarm/flux
     sudo systemctl start flux
 '
 ```
@@ -265,6 +280,16 @@ Enable it in the app's config:
 
 With `web_lan_trust: true`, opening `http://<pi-ip>:8081/flux` from a phone or laptop on the same network requires no password. The controls affect the shader in real time.
 
+Four control panels open in separate tabs from the toolbar:
+
+| Panel | URL | Purpose |
+|---|---|---|
+| Main | `/flux` | Parameter sliders |
+| Input | `/flux/input` | V4L2 webcam selection |
+| Control | `/flux/control` | OSC + MIDI mapping management |
+| Modulation | `/flux/modulation` | LFO configuration (audio routing display-only for now) |
+| Presets | `/flux/presets` | Save / load / delete presets |
+
 ## Resource budgeting (Pi 2 / Pi 3)
 
 All rendering on Pi 2/3 runs through llvmpipe on the CPU. The dominant cost is pixel count × pass count.
@@ -314,6 +339,7 @@ Wants=dev-video0.device
 [Service]
 User=alarm
 Environment=RUST_LOG=warn
+Environment=XDG_CONFIG_HOME=/boot/rustjay-data
 ExecStartPre=/bin/sleep 3
 ExecStart=/home/alarm/flux --nogui --gles2 --drm --render-scale 0.25
 Restart=on-failure

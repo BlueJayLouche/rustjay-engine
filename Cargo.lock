@@ -1661,6 +1661,7 @@ dependencies = [
  "imgui",
  "khronos-egl",
  "log",
+ "rustjay-control",
  "rustjay-engine",
  "rustjay-io",
  "serde",

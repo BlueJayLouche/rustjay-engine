@@ -964,8 +964,8 @@
 
   function openPanel(name) {
     const tok = window.RUSTJAY_TOKEN || '';
-    const path = '/' + (window.APP_NAME || location.pathname.split('/')[1] || 'rustjay');
-    window.open(path + '/' + name + '?token=' + encodeURIComponent(tok), '_blank');
+    const app = (window.APP_NAME || location.pathname.split('/')[1] || 'rustjay').toLowerCase();
+    window.open('/' + app + '/' + name + '?token=' + encodeURIComponent(tok), '_blank');
   }
 
   // ---------- demo mode (only when not running under WS server) ----------

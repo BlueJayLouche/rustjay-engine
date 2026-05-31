@@ -6,6 +6,7 @@ description = "Optical-flow warp with motion feedback trails"
 
 [dependencies]
 rustjay-engine = { workspace = true, default-features = false }
+rustjay-control = { workspace = true }
 bytemuck       = { workspace = true }
 serde          = { workspace = true }
 anyhow         = { workspace = true }
