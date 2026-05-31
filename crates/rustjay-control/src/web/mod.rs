@@ -4,9 +4,9 @@
 //! URL: http://[computer-ip]:[port]/[app_name]
 
 use axum::{
-    extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query},
+    extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query, Json},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router, middleware::{self, Next},
     http::{Request, StatusCode, HeaderMap},
     body::Body,
@@ -80,6 +80,10 @@ pub struct WebServerState {
     pub bearer_token: String,
     /// When true, clients on the same LAN subnet skip token auth.
     pub lan_trust: bool,
+    /// Preset names for initial broadcast on new WebSocket connect.
+    pub preset_names: Vec<String>,
+    /// Pending device enumeration result from async Tokio task.
+    pub pending_devices: std::sync::Arc<std::sync::Mutex<Option<Vec<rustjay_core::InputDeviceInfo>>>>,
 }
 
 /// Messages sent from server to web clients
@@ -92,6 +96,70 @@ pub enum WebMessage {
     Update { id: String, value: f32 },
     #[serde(rename = "connected")]
     Connected { client_count: usize },
+    #[serde(rename = "input_state")]
+    InputState(InputStateJson),
+    #[serde(rename = "control_state")]
+    ControlState(ControlStateJson),
+    #[serde(rename = "modulation_state")]
+    ModulationState(ModulationStateJson),
+    #[serde(rename = "preset_state")]
+    PresetState(PresetStateJson),
+}
+
+/// Input subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "action")]
+pub enum InputWebCommand {
+    #[serde(rename = "refresh_devices")]
+    RefreshDevices,
+    #[serde(rename = "select_device")]
+    SelectDevice { index: usize, width: u32, height: u32, fps: u32 },
+    #[serde(rename = "stop")]
+    StopInput,
+}
+
+/// MIDI / OSC subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "action")]
+pub enum ControlWebCommand {
+    #[serde(rename = "osc")]
+    Osc { enabled: bool },
+    #[serde(rename = "osc_set_port")]
+    OscSetPort { port: u16 },
+    #[serde(rename = "midi_learn")]
+    MidiLearn { param_id: String },
+    #[serde(rename = "midi_learn_cancel")]
+    MidiLearnCancel,
+    #[serde(rename = "midi_unlearn")]
+    MidiUnlearn { cc: u8, channel: u8 },
+}
+
+/// LFO / audio-routing subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "action")]
+pub enum ModulationWebCommand {
+    #[serde(rename = "lfo_set")]
+    LfoSet { slot: usize, config: rustjay_core::lfo::Lfo },
+    #[serde(rename = "lfo_enable")]
+    LfoEnable { slot: usize, enabled: bool },
+    #[serde(rename = "audio_route")]
+    AudioRoute { param_id: String, band: rustjay_core::FftBand, depth: f32 },
+    #[serde(rename = "audio_unroute")]
+    AudioUnroute { param_id: String },
+}
+
+/// Preset commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "action")]
+pub enum PresetWebCommand {
+    #[serde(rename = "list")]
+    List,
+    #[serde(rename = "save")]
+    Save { name: String },
+    #[serde(rename = "load")]
+    Load { index: usize },
+    #[serde(rename = "delete")]
+    Delete { index: usize },
 }
 
 /// Commands received from web clients
@@ -107,6 +175,54 @@ pub enum WebCommand {
         /// New value.
         value: f32,
     },
+    #[serde(rename = "input")]
+    Input(InputWebCommand),
+    #[serde(rename = "control")]
+    Control(ControlWebCommand),
+    #[serde(rename = "modulation")]
+    Modulation(ModulationWebCommand),
+    #[serde(rename = "preset")]
+    Preset(PresetWebCommand),
+}
+
+/// JSON payload for InputState broadcast.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InputStateJson {
+    pub devices: Vec<rustjay_core::InputDeviceInfo>,
+    pub active_index: Option<usize>,
+    pub active_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f32,
+}
+
+/// JSON payload for ControlState broadcast.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ControlStateJson {
+    pub osc_enabled: bool,
+    pub osc_port: u16,
+    pub midi_mappings: Vec<rustjay_core::MidiMappingSnapshot>,
+}
+
+/// JSON payload for ModulationState broadcast.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModulationStateJson {
+    pub lfos: Vec<rustjay_core::lfo::Lfo>,
+    pub audio_routes: Vec<rustjay_core::routing::AudioRoute>,
+    pub audio_routing_enabled: bool,
+}
+
+/// Single preset info for web clients.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetInfo {
+    pub index: usize,
+    pub name: String,
+}
+
+/// JSON payload for PresetState broadcast.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetStateJson {
+    pub presets: Vec<PresetInfo>,
 }
 
 /// Web server handle.
@@ -120,6 +236,11 @@ pub struct WebServer {
     /// Last value broadcast for each parameter.  Used for diff-tracking so
     /// unchanged parameters skip the mutex entirely.
     last_sent: HashMap<String, f32>,
+    /// Dirty flags for structural state broadcasts.
+    pub input_dirty: bool,
+    pub control_dirty: bool,
+    pub modulation_dirty: bool,
+    pub preset_dirty: bool,
 }
 
 impl WebServer {
@@ -131,6 +252,8 @@ impl WebServer {
         let bearer_token = generate_token();
         let lan_trust = config.lan_trust;
 
+        let pending_devices = std::sync::Arc::new(std::sync::Mutex::new(None));
+
         let state = Arc::new(Mutex::new(WebServerState {
             config,
             parameters: HashMap::new(),
@@ -138,6 +261,8 @@ impl WebServer {
             command_tx: command_tx.clone(),
             bearer_token,
             lan_trust,
+            preset_names: Vec::new(),
+            pending_devices,
         }));
 
         let server = Self {
@@ -146,6 +271,10 @@ impl WebServer {
             handle: None,
             shutdown_tx: None,
             last_sent: HashMap::new(),
+            input_dirty: false,
+            control_dirty: false,
+            modulation_dirty: false,
+            preset_dirty: false,
         };
 
         (server, command_tx)
@@ -409,11 +538,61 @@ impl WebServer {
             state.lan_trust = enabled;
         }
     }
+
+    /// Broadcast input state to all connected clients.
+    pub fn send_input_state(&self, state: &InputStateJson) {
+        let msg = WebMessage::InputState(state.clone());
+        if let Ok(s) = self.state.lock() {
+            let _ = s.broadcast_tx.send(msg);
+        }
+    }
+
+    /// Broadcast control state (OSC + MIDI) to all connected clients.
+    pub fn send_control_state(&self, state: &ControlStateJson) {
+        let msg = WebMessage::ControlState(state.clone());
+        if let Ok(s) = self.state.lock() {
+            let _ = s.broadcast_tx.send(msg);
+        }
+    }
+
+    /// Broadcast modulation state (LFOs + audio routes) to all connected clients.
+    pub fn send_modulation_state(&self, state: &ModulationStateJson) {
+        let msg = WebMessage::ModulationState(state.clone());
+        if let Ok(s) = self.state.lock() {
+            let _ = s.broadcast_tx.send(msg);
+        }
+    }
+
+    /// Broadcast preset state to all connected clients.
+    /// Also updates `WebServerState::preset_names` so new WebSocket connections
+    /// receive the current list immediately on connect.
+    pub fn send_preset_state(&self, state: &PresetStateJson) {
+        let msg = WebMessage::PresetState(state.clone());
+        if let Ok(mut s) = self.state.lock() {
+            let _ = s.broadcast_tx.send(msg);
+            s.preset_names = state.presets.iter().map(|p| p.name.clone()).collect();
+        }
+    }
 }
 
 impl Drop for WebServer {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// POST /cmd handler — parses JSON WebCommand and forwards to the engine.
+async fn cmd_handler(
+    State(state): State<Arc<Mutex<WebServerState>>>,
+    Json(cmd): Json<WebCommand>,
+) -> impl IntoResponse {
+    let tx = {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.command_tx.clone()
+    };
+    match tx.try_send(cmd) {
+        Ok(_) => StatusCode::OK,
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -424,6 +603,7 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
     let page_path_slash = format!("/{}/", app_name);
     let page_path_redirect = page_path.clone();
     let page_path_redirect2 = page_path_redirect.clone();
+    let cmd_path = format!("/{}/cmd", app_name);
 
     let html_with_token = inject_token_into_html(EMBEDDED_HTML, token, app_name);
 
@@ -440,6 +620,7 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
         .route("/", get(move || async move {
             axum::response::Redirect::temporary(&page_path_redirect2)
         }))
+        .route(&cmd_path, post(cmd_handler))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             auth_middleware,
@@ -516,10 +697,12 @@ async fn ws_handler(
 
 /// Handle a WebSocket connection
 async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>) {
-    // Get initial parameters
-    let params = {
+    // Get initial parameters and preset names in one lock acquisition
+    let (params, preset_names) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        state.parameters.values().cloned().collect::<Vec<_>>()
+        let p = state.parameters.values().cloned().collect::<Vec<_>>();
+        let pn = state.preset_names.clone();
+        (p, pn)
     };
 
     // Send initial params list
@@ -527,6 +710,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
     if let Ok(json) = serde_json::to_string(&init_msg) {
         if socket.send(Message::Text(json.into())).await.is_err() {
             return;
+        }
+    }
+
+    // Send initial preset state so a freshly-opened Presets panel populates immediately
+    // without requiring the user to click Refresh (WR-9.6).
+    if !preset_names.is_empty() {
+        let preset_msg = WebMessage::PresetState(PresetStateJson {
+            presets: preset_names.into_iter().enumerate()
+                .map(|(i, name)| PresetInfo { index: i, name })
+                .collect(),
+        });
+        if let Ok(json) = serde_json::to_string(&preset_msg) {
+            if socket.send(Message::Text(json.into())).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -550,33 +748,27 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
             Some(Ok(msg)) = socket.recv() => {
                 if let Message::Text(text) = msg {
                     if let Ok(cmd) = serde_json::from_str::<WebCommand>(&text) {
-                        match &cmd {
-                            WebCommand::Set { id, value } => {
-                                let id = id.clone();
-                                let value = *value;
-
-                                // Update local state and broadcast to other clients
-                                let mut should_broadcast = false;
-                                if let Ok(mut state) = state.lock() {
-                                    if let Some(param) = state.parameters.get_mut(&id) {
-                                        if (param.value - value).abs() > 0.0001 {
-                                            param.value = value;
-                                            should_broadcast = true;
-                                        }
-                                    }
-                                    // Forward command to app
-                                    let _ = state.command_tx.try_send(cmd);
-                                }
-
-                                if should_broadcast {
-                                    if let Ok(state) = state.lock() {
-                                        let _ = state.broadcast_tx.send(WebMessage::Update {
-                                            id,
-                                            value,
-                                        });
+                        // Update local parameter cache for Set commands
+                        if let WebCommand::Set { ref id, value } = cmd {
+                            let id = id.clone();
+                            let mut should_broadcast = false;
+                            if let Ok(mut state) = state.lock() {
+                                if let Some(param) = state.parameters.get_mut(&id) {
+                                    if (param.value - value).abs() > 0.0001 {
+                                        param.value = value;
+                                        should_broadcast = true;
                                     }
                                 }
                             }
+                            if should_broadcast {
+                                if let Ok(state) = state.lock() {
+                                    let _ = state.broadcast_tx.send(WebMessage::Update { id, value });
+                                }
+                            }
+                        }
+                        // Forward all commands to the engine command channel
+                        if let Ok(state) = state.lock() {
+                            let _ = state.command_tx.try_send(cmd);
                         }
                     }
                 }

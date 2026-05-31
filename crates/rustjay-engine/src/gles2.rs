@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use rustjay_core::EngineState;
+use rustjay_control::InputWebCommand;
 use std::sync::{Arc, Mutex};
 
 // ── Public trait ──────────────────────────────────────────────────────────────
@@ -18,6 +19,9 @@ pub trait Gles2Effect: Send + 'static {
     /// Called every frame. Return `false` to exit.
     fn render_frame(&mut self, gl: &glow::Context, state: &EngineState) -> Result<bool>;
     fn on_resize(&mut self, _gl: &glow::Context, _w: u32, _h: u32) {}
+    /// Called from the run loop when an InputWebCommand arrives.
+    /// Default implementation is a no-op so existing effects don't need to change.
+    fn handle_input_command(&mut self, _gl: &glow::Context, _cmd: InputWebCommand) {}
 }
 
 // ── Type-erased wrapper ───────────────────────────────────────────────────────
@@ -26,11 +30,13 @@ pub(crate) trait Gles2EffectDyn: Send + 'static {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()>;
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool>;
     fn on_resize(&mut self, gl: &glow::Context, w: u32, h: u32);
+    fn handle_input_command(&mut self, gl: &glow::Context, cmd: InputWebCommand);
 }
 impl<G: Gles2Effect> Gles2EffectDyn for G {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()> { Gles2Effect::init_gl(self, gl, w, h, s) }
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool> { Gles2Effect::render_frame(self, gl, s) }
     fn on_resize(&mut self, gl: &glow::Context, w: u32, h: u32) { Gles2Effect::on_resize(self, gl, w, h); }
+    fn handle_input_command(&mut self, gl: &glow::Context, cmd: InputWebCommand) { Gles2Effect::handle_input_command(self, gl, cmd); }
 }
 
 // ── Shared EGL helpers ────────────────────────────────────────────────────────
@@ -366,6 +372,17 @@ where P: rustjay_core::EffectPlugin, G: Gles2Effect,
     crate::app::run_gles2_app(shared_state, plugin, Box::new(gles2), false)
 }
 
+/// Convert a parameter id string to a ModulationTarget for audio routing.
+#[cfg(feature = "drm-gles2")]
+fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarget {
+    for t in rustjay_core::ModulationTarget::all() {
+        if t.param_id() == Some(param_id) {
+            return t.clone();
+        }
+    }
+    rustjay_core::ModulationTarget::Custom(param_id.to_string())
+}
+
 /// Run using a DRM/GBM-backed GLES 2.0 context — no compositor required.
 ///
 /// Opens `/dev/dri/card0` directly and renders fullscreen via KMS page flipping.
@@ -432,7 +449,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
     // MIDI
     let midi_state = std::sync::Arc::new(Mutex::new(MidiState::default()));
-    let midi_manager = MidiManager::new(midi_state).ok().map(|mut m| {
+    let mut midi_manager = MidiManager::new(midi_state).ok().map(|mut m| {
         let devs = m.refresh_devices();
         shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_available_devices = devs;
         m
@@ -468,15 +485,16 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         log::info!("Web UI running at http://{}:{}", web_host, web_port);
     }
 
-    // Presets
-    if let Ok(dir) = presets_dir_for(&app_name) {
+    // Presets — keep bank alive for the entire loop (WR-9.3)
+    let mut preset_bank: Option<PresetBank> = presets_dir_for(&app_name).ok().map(|dir| {
         let bank = PresetBank::new(dir);
         let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
         let slots: [Option<String>; 8] = std::array::from_fn(|i| bank.get_slot_name(i + 1).map(|s| s.to_string()));
         let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.preset_names            = names;
         state.preset_quick_slot_names = slots;
-    }
+        bank
+    });
 
     // DRM/GBM/EGL context
     let (mut gles2_state, w, h) = try_create_drm_gles2_context("/dev/dri/card0")?;
@@ -524,6 +542,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         }
 
         // Web: apply parameter changes from web clients
+        let mut preset_dirty = false;
         {
             while let Ok(cmd) = web_server.command_rx.try_recv() {
                 match cmd {
@@ -563,6 +582,157 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                             }
                         }
                     }
+                    WebServerCommand::Input(cmd) => {
+                        // Do NOT hold shared_state lock here — open_webcam can block.
+                        let gl = gles2_state.gl.clone();
+                        gles2.handle_input_command(&gl, cmd);
+                        web_server.input_dirty = true;
+                    }
+                    WebServerCommand::Control(ctrl) => {
+                        match ctrl {
+                            rustjay_control::ControlWebCommand::Osc { enabled: true } => {
+                                if let Err(e) = osc_server.start() {
+                                    log::error!("Failed to start OSC server: {}", e);
+                                } else {
+                                    shared_state.lock().unwrap_or_else(|e| e.into_inner()).osc_enabled = true;
+                                    web_server.control_dirty = true;
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::Osc { enabled: false } => {
+                                osc_server.stop();
+                                shared_state.lock().unwrap_or_else(|e| e.into_inner()).osc_enabled = false;
+                                web_server.control_dirty = true;
+                            }
+                            rustjay_control::ControlWebCommand::OscSetPort { port } => {
+                                osc_server.stop();
+                                let host = shared_state.lock().unwrap_or_else(|e| e.into_inner()).osc_host.clone();
+                                let new_server = OscServer::new(&host, port, "/rustjay");
+                                if let Ok(mut state) = new_server.state().lock() {
+                                    state.register_default_parameters();
+                                }
+                                osc_server = new_server;
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                state.osc_port = port;
+                                state.osc_enabled = false;
+                                web_server.control_dirty = true;
+                            }
+                            rustjay_control::ControlWebCommand::MidiLearn { param_id } => {
+                                let (name, min, max) = {
+                                    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    state.param_descriptors.iter()
+                                        .find(|d| {
+                                            let full = format!("{}/{}", d.category.name().to_lowercase(), d.id);
+                                            full == param_id || d.id == param_id
+                                        })
+                                        .map(|d| (d.name.clone(), d.min, d.max))
+                                        .unwrap_or_default()
+                                };
+                                if !name.is_empty() {
+                                    if let Some(ref mut m) = midi_manager {
+                                        m.start_learn(&param_id, &name, min, max);
+                                        shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_learn_active = true;
+                                        web_server.control_dirty = true;
+                                    }
+                                } else {
+                                    log::warn!("MidiLearn: unknown param_id '{}'", param_id);
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiLearnCancel => {
+                                if let Some(ref mut m) = midi_manager {
+                                    m.cancel_learn();
+                                    shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_learn_active = false;
+                                    web_server.control_dirty = true;
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiUnlearn { cc, channel } => {
+                                if let Some(ref m) = midi_manager {
+                                    if let Ok(mut midi_st) = m.state().lock() {
+                                        midi_st.mappings.retain(|mapping| {
+                                            !(mapping.selector == cc && mapping.channel == channel)
+                                        });
+                                        web_server.control_dirty = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    WebServerCommand::Modulation(mod_cmd) => {
+                        match mod_cmd {
+                            rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                if slot < state.lfo.bank.lfos.len() {
+                                    let existing = state.lfo.bank.lfos[slot].clone();
+                                    let mut new_config = config;
+                                    new_config.phase           = existing.phase;
+                                    new_config.output          = existing.output;
+                                    new_config.last_beat_phase = existing.last_beat_phase;
+                                    state.lfo.bank.lfos[slot]  = new_config;
+                                    web_server.modulation_dirty = true;
+                                }
+                            }
+                            rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                if slot < state.lfo.bank.lfos.len() {
+                                    state.lfo.bank.lfos[slot].enabled = enabled;
+                                    web_server.modulation_dirty = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    WebServerCommand::Preset(preset_cmd) => {
+                        match preset_cmd {
+                            rustjay_control::PresetWebCommand::List => {
+                                preset_dirty = true;
+                            }
+                            rustjay_control::PresetWebCommand::Save { name } => {
+                                let valid = !name.is_empty()
+                                    && name.len() <= 64
+                                    && !name.contains('/')
+                                    && !name.contains('\\')
+                                    && !name.contains("..");
+                                if valid {
+                                    if let Some(ref mut bank) = preset_bank {
+                                        let preset = {
+                                            let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                            rustjay_presets::Preset::from_state(&name, &state)
+                                        };
+                                        match bank.add_preset(preset) {
+                                            Ok(_) => {
+                                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                                state.preset_names = bank.presets.iter().map(|p| p.name.clone()).collect();
+                                                preset_dirty = true;
+                                            }
+                                            Err(e) => log::error!("Preset save failed: {e}"),
+                                        }
+                                    }
+                                } else {
+                                    log::warn!("Web preset save: invalid name '{}'", name);
+                                }
+                            }
+                            rustjay_control::PresetWebCommand::Load { index } => {
+                                if let Some(ref mut bank) = preset_bank {
+                                    let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Err(e) = bank.apply_preset(index, &mut state) {
+                                        log::error!("Preset load failed: {e}");
+                                    } else {
+                                        preset_dirty = true;
+                                    }
+                                }
+                            }
+                            rustjay_control::PresetWebCommand::Delete { index } => {
+                                if let Some(ref mut bank) = preset_bank {
+                                    if let Err(e) = bank.delete_preset(index) {
+                                        log::error!("Preset delete failed: {e}");
+                                    } else {
+                                        let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                        state.preset_names = bank.presets.iter().map(|p| p.name.clone()).collect();
+                                        preset_dirty = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -590,6 +760,48 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                         web_server.update_parameter(id, value);
                     }
                 }
+            }
+        }
+
+        // Drain structural dirty flags — broadcast control/preset state to web panels.
+        // input_dirty is intentionally excluded here: InputStateJson requires webcam state
+        // that is internal to the Gles2Effect and not accessible from this loop.
+        if web_server.is_running() {
+            if web_server.control_dirty {
+                let (osc_enabled, osc_port) = {
+                    let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (s.osc_enabled, s.osc_port)
+                };
+                let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
+                    if let Some(ref m) = midi_manager {
+                        if let Ok(midi_st) = m.state().lock() {
+                            midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
+                                name: m.name.clone(),
+                                param_path: m.param_path.clone(),
+                                kind: m.kind,
+                                selector: m.selector,
+                                channel: m.channel,
+                                min_value: m.min_value,
+                                max_value: m.max_value,
+                            }).collect()
+                        } else { vec![] }
+                    } else { vec![] };
+                web_server.send_control_state(&rustjay_control::ControlStateJson {
+                    osc_enabled,
+                    osc_port,
+                    midi_mappings,
+                });
+                web_server.control_dirty = false;
+            }
+            if preset_dirty {
+                if let Some(ref bank) = preset_bank {
+                    web_server.send_preset_state(&rustjay_control::PresetStateJson {
+                        presets: bank.presets.iter().enumerate()
+                            .map(|(i, p)| rustjay_control::PresetInfo { index: i, name: p.name.clone() })
+                            .collect(),
+                    });
+                }
+                preset_dirty = false;
             }
         }
 

@@ -10,4 +10,8 @@ pub use midi::{MidiManager, MidiMapping, MidiState, LearnState};
 #[cfg(feature = "mtc")]
 pub use midi::mtc::MtcReceiver;
 pub use osc::OscServer;
-pub use web::{WebServer, WebConfig, WebCommand};
+pub use web::{
+    WebServer, WebConfig, WebCommand,
+    InputWebCommand, ControlWebCommand, ModulationWebCommand, PresetWebCommand,
+    InputStateJson, ControlStateJson, ModulationStateJson, PresetStateJson, PresetInfo,
+};

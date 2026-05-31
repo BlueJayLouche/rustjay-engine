@@ -638,6 +638,134 @@ impl<P: EffectPlugin> App<P> {
                             }
                         }
                     }
+                    WebServerCommand::Input(input_cmd) => {
+                        match input_cmd {
+                            rustjay_control::InputWebCommand::SelectDevice { index, width, height, fps } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.input_command = InputCommand::StartWebcam {
+                                        device_index: index, width, height, fps,
+                                    };
+                                }
+                            }
+                            rustjay_control::InputWebCommand::StopInput => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.input_command = InputCommand::StopInput;
+                                }
+                            }
+                            rustjay_control::InputWebCommand::RefreshDevices => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.input_command = InputCommand::RefreshDevices;
+                                }
+                            }
+                        }
+                    }
+                    WebServerCommand::Control(ctrl_cmd) => {
+                        match ctrl_cmd {
+                            rustjay_control::ControlWebCommand::Osc { enabled } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.osc_command = if enabled { OscCommand::Start } else { OscCommand::Stop };
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::OscSetPort { port } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.osc_command = OscCommand::SetPort(port);
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiLearn { param_id } => {
+                                let (name, min, max) = {
+                                    let state = lock(&self.shared_state);
+                                    state.param_descriptors.iter()
+                                        .find(|d| {
+                                            let full = format!("{}/{}", d.category.name().to_lowercase(), d.id);
+                                            full == param_id || d.id == param_id
+                                        })
+                                        .map(|d| (d.name.clone(), d.min, d.max))
+                                        .unwrap_or_default()
+                                };
+                                if !name.is_empty() {
+                                    if let Ok(mut state) = self.shared_state.lock() {
+                                        state.midi_command = MidiCommand::StartLearn {
+                                            param_path: param_id,
+                                            param_name: name,
+                                            min,
+                                            max,
+                                        };
+                                    }
+                                } else {
+                                    log::warn!("Web MidiLearn: unknown param_id '{}'", param_id);
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiLearnCancel => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.midi_command = MidiCommand::CancelLearn;
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiUnlearn { cc, channel } => {
+                                if let Some(ref m) = self.midi_manager {
+                                    if let Ok(mut midi_st) = m.state().lock() {
+                                        midi_st.mappings.retain(|mapping| {
+                                            !(mapping.selector == cc && mapping.channel == channel)
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    WebServerCommand::Modulation(mod_cmd) => {
+                        match mod_cmd {
+                            rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    if slot < state.lfo.bank.lfos.len() {
+                                        let existing = state.lfo.bank.lfos[slot].clone();
+                                        let mut new_config = config;
+                                        new_config.phase           = existing.phase;
+                                        new_config.output          = existing.output;
+                                        new_config.last_beat_phase = existing.last_beat_phase;
+                                        state.lfo.bank.lfos[slot]  = new_config;
+                                    }
+                                }
+                            }
+                            rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    if slot < state.lfo.bank.lfos.len() {
+                                        state.lfo.bank.lfos[slot].enabled = enabled;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    WebServerCommand::Preset(preset_cmd) => {
+                        match preset_cmd {
+                            rustjay_control::PresetWebCommand::List => {
+                                // Caller reads preset list from state; broadcast handled elsewhere.
+                            }
+                            rustjay_control::PresetWebCommand::Save { name } => {
+                                let valid = !name.is_empty()
+                                    && name.len() <= 64
+                                    && !name.contains('/')
+                                    && !name.contains('\\')
+                                    && !name.contains("..");
+                                if valid {
+                                    if let Ok(mut state) = self.shared_state.lock() {
+                                        state.preset_command = PresetCommand::Save { name };
+                                    }
+                                } else {
+                                    log::warn!("Web preset save: invalid name");
+                                }
+                            }
+                            rustjay_control::PresetWebCommand::Load { index } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.preset_command = PresetCommand::Load(index);
+                                }
+                            }
+                            rustjay_control::PresetWebCommand::Delete { index } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.preset_command = PresetCommand::Delete(index);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
