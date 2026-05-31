@@ -84,6 +84,8 @@ pub struct WebServerState {
     pub preset_names: Vec<String>,
     /// Pending device enumeration result from async Tokio task.
     pub pending_devices: std::sync::Arc<std::sync::Mutex<Option<Vec<rustjay_core::InputDeviceInfo>>>>,
+    /// Last time a device refresh was requested (for throttling).
+    pub last_refresh: std::time::Instant,
 }
 
 /// Messages sent from server to web clients
@@ -263,6 +265,7 @@ impl WebServer {
             lan_trust,
             preset_names: Vec::new(),
             pending_devices,
+            last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(10),
         }));
 
         let server = Self {
@@ -586,6 +589,47 @@ async fn cmd_handler(
     State(state): State<Arc<Mutex<WebServerState>>>,
     Json(cmd): Json<WebCommand>,
 ) -> impl IntoResponse {
+    // Intercept RefreshDevices for async enumeration (WR-2.1)
+    if let WebCommand::Input(InputWebCommand::RefreshDevices) = &cmd {
+        let (should_spawn, pending) = {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let now = std::time::Instant::now();
+            if now.duration_since(s.last_refresh) < std::time::Duration::from_secs(5) {
+                (false, None)
+            } else {
+                s.last_refresh = now;
+                (true, Some(Arc::clone(&s.pending_devices)))
+            }
+        };
+        if !should_spawn {
+            return StatusCode::TOO_MANY_REQUESTS;
+        }
+        if let Some(pending) = pending {
+            tokio::spawn(async move {
+                match tokio::task::spawn_blocking(|| {
+                    std::process::Command::new("v4l2-ctl")
+                        .args(["--list-devices"])
+                        .output()
+                }).await {
+                    Ok(Ok(output)) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let devices = parse_v4l2_list_devices(&stdout);
+                        if let Ok(mut guard) = pending.lock() {
+                            *guard = Some(devices);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!("v4l2-ctl --list-devices failed: {}", e);
+                    }
+                    Err(e) => {
+                        log::warn!("v4l2-ctl task panicked or failed: {}", e);
+                    }
+                }
+            });
+        }
+        return StatusCode::OK;
+    }
+
     let tx = {
         let s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.command_tx.clone()
@@ -596,6 +640,39 @@ async fn cmd_handler(
     }
 }
 
+/// Parse `v4l2-ctl --list-devices` stdout into [`InputDeviceInfo`] list.
+fn parse_v4l2_list_devices(output: &str) -> Vec<rustjay_core::InputDeviceInfo> {
+    let mut devices = Vec::new();
+    let mut current_name: Option<String> = None;
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            current_name = None;
+            continue;
+        }
+        if line.starts_with('\t') || line.starts_with("    ") {
+            // Device path line
+            let path = line.trim();
+            if path.starts_with("/dev/video") {
+                if let Some(ref name) = current_name {
+                    // Extract index from /dev/videoN
+                    let index = path.strip_prefix("/dev/video")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(devices.len());
+                    devices.push(rustjay_core::InputDeviceInfo {
+                        name: name.clone(),
+                        path: path.to_string(),
+                        index,
+                    });
+                }
+            }
+        } else if line.ends_with(':') {
+            // Device header line
+            current_name = Some(line.trim_end_matches(':').trim().to_string());
+        }
+    }
+    devices
+}
+
 /// Create the Axum router
 fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str) -> Router {
     let ws_path = format!("/{}/ws", app_name);
@@ -604,8 +681,16 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
     let page_path_redirect = page_path.clone();
     let page_path_redirect2 = page_path_redirect.clone();
     let cmd_path = format!("/{}/cmd", app_name);
+    let input_path = format!("/{}/input", app_name);
+    let control_path = format!("/{}/control", app_name);
+    let modulation_path = format!("/{}/modulation", app_name);
+    let presets_path = format!("/{}/presets", app_name);
 
     let html_with_token = inject_token_into_html(EMBEDDED_HTML, token, app_name);
+    let input_html_with_token = inject_token_into_html(INPUT_HTML, token, app_name);
+    let control_html_with_token = inject_token_into_html(CONTROL_HTML, token, app_name);
+    let modulation_html_with_token = inject_token_into_html(MODULATION_HTML, token, app_name);
+    let presets_html_with_token = inject_token_into_html(PRESETS_HTML, token, app_name);
 
     // Protected routes: auth required for everything except /health.
     // Auth middleware receives the shared state so it can read `lan_trust` live.
@@ -621,6 +706,18 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
             axum::response::Redirect::temporary(&page_path_redirect2)
         }))
         .route(&cmd_path, post(cmd_handler))
+        .route(&input_path, get(move || async move {
+            index_handler(&input_html_with_token).await
+        }))
+        .route(&control_path, get(move || async move {
+            index_handler(&control_html_with_token).await
+        }))
+        .route(&modulation_path, get(move || async move {
+            index_handler(&modulation_html_with_token).await
+        }))
+        .route(&presets_path, get(move || async move {
+            index_handler(&presets_html_with_token).await
+        }))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             auth_middleware,
@@ -634,7 +731,11 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
 
 /// Injects the bearer token and app name into the HTML.
 fn inject_token_into_html(html: &str, token: &str, app_name: &str) -> String {
-    let script = format!(r#"<script>window.RUSTJAY_TOKEN = "{}";</script>"#, token);
+    let script = format!(
+        r#"<script>window.RUSTJAY_TOKEN = "{}"; window.APP_NAME = "{}";</script>"#,
+        token,
+        app_name.to_uppercase()
+    );
     let html = html.replacen("<head>", &format!("<head>{}", script), 1);
     html.replace("__APP__", &app_name.to_uppercase())
 }
@@ -845,3 +946,7 @@ fn generate_token() -> String {
 
 /// Embedded HTML/JS/CSS for the web UI
 const EMBEDDED_HTML: &str = include_str!("ui.html");
+const INPUT_HTML: &str = include_str!("input.html");
+const CONTROL_HTML: &str = include_str!("control.html");
+const MODULATION_HTML: &str = include_str!("modulation.html");
+const PRESETS_HTML: &str = include_str!("presets.html");

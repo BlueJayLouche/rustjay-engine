@@ -9,6 +9,16 @@ fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, Engi
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Convert a parameter id string to a [`ModulationTarget`] for audio routing.
+fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarget {
+    for t in rustjay_core::ModulationTarget::all() {
+        if t.param_id() == Some(param_id) {
+            return t.clone();
+        }
+    }
+    rustjay_core::ModulationTarget::Custom(param_id.to_string())
+}
+
 /// All pending commands popped from shared state in a single lock acquisition.
 struct PendingCommands {
     input:         InputCommand,
@@ -732,7 +742,37 @@ impl<P: EffectPlugin> App<P> {
                                     }
                                 }
                             }
-                            _ => {}
+                            rustjay_control::ModulationWebCommand::AudioRoute { param_id, band, depth } => {
+                                let target = param_id_to_modulation_target(&param_id);
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
+                                        .iter()
+                                        .filter(|r| r.band == band && r.target == target)
+                                        .map(|r| r.id)
+                                        .collect();
+                                    for id in ids_to_remove {
+                                        state.audio_routing.matrix.remove_route(id);
+                                    }
+                                    if let Some(id) = state.audio_routing.matrix.add_route(band, target) {
+                                        if let Some(route) = state.audio_routing.matrix.get_route_mut(id) {
+                                            route.amount = depth;
+                                        }
+                                    }
+                                }
+                            }
+                            rustjay_control::ModulationWebCommand::AudioUnroute { param_id } => {
+                                let target = param_id_to_modulation_target(&param_id);
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
+                                        .iter()
+                                        .filter(|r| r.target == target)
+                                        .map(|r| r.id)
+                                        .collect();
+                                    for id in ids_to_remove {
+                                        state.audio_routing.matrix.remove_route(id);
+                                    }
+                                }
+                            }
                         }
                     }
                     WebServerCommand::Preset(preset_cmd) => {
@@ -764,6 +804,25 @@ impl<P: EffectPlugin> App<P> {
                                     state.preset_command = PresetCommand::Delete(index);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // MIDI mapping change detection (WR-3.3 / WR-6)
+                if let Some(ref m) = self.midi_manager {
+                    if let Ok(midi_st) = m.state().lock() {
+                        let current: Vec<rustjay_core::MidiMappingSnapshot> = midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
+                            name: m.name.clone(),
+                            param_path: m.param_path.clone(),
+                            kind: m.kind,
+                            selector: m.selector,
+                            channel: m.channel,
+                            min_value: m.min_value,
+                            max_value: m.max_value,
+                        }).collect();
+                        if current != self.last_broadcast_mappings {
+                            self.last_broadcast_mappings = current;
+                            server.control_dirty = true;
                         }
                     }
                 }

@@ -22,6 +22,9 @@ pub trait Gles2Effect: Send + 'static {
     /// Called from the run loop when an InputWebCommand arrives.
     /// Default implementation is a no-op so existing effects don't need to change.
     fn handle_input_command(&mut self, _gl: &glow::Context, _cmd: InputWebCommand) {}
+    /// Return the current input state for web broadcast.
+    /// Default implementation returns `None` so existing effects don't need to change.
+    fn get_input_state(&self) -> Option<rustjay_control::InputStateJson> { None }
 }
 
 // ── Type-erased wrapper ───────────────────────────────────────────────────────
@@ -31,12 +34,14 @@ pub(crate) trait Gles2EffectDyn: Send + 'static {
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool>;
     fn on_resize(&mut self, gl: &glow::Context, w: u32, h: u32);
     fn handle_input_command(&mut self, gl: &glow::Context, cmd: InputWebCommand);
+    fn get_input_state(&self) -> Option<rustjay_control::InputStateJson>;
 }
 impl<G: Gles2Effect> Gles2EffectDyn for G {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()> { Gles2Effect::init_gl(self, gl, w, h, s) }
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool> { Gles2Effect::render_frame(self, gl, s) }
     fn on_resize(&mut self, gl: &glow::Context, w: u32, h: u32) { Gles2Effect::on_resize(self, gl, w, h); }
     fn handle_input_command(&mut self, gl: &glow::Context, cmd: InputWebCommand) { Gles2Effect::handle_input_command(self, gl, cmd); }
+    fn get_input_state(&self) -> Option<rustjay_control::InputStateJson> { Gles2Effect::get_input_state(self) }
 }
 
 // ── Shared EGL helpers ────────────────────────────────────────────────────────
@@ -496,6 +501,9 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         bank
     });
 
+    // Track last-broadcast MIDI mapping snapshot for change detection (WR-3.3 / WR-6)
+    let mut last_broadcast_mappings: Vec<rustjay_core::MidiMappingSnapshot> = Vec::new();
+
     // DRM/GBM/EGL context
     let (mut gles2_state, w, h) = try_create_drm_gles2_context("/dev/dri/card0")?;
     {
@@ -677,7 +685,37 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     web_server.modulation_dirty = true;
                                 }
                             }
-                            _ => {}
+                            rustjay_control::ModulationWebCommand::AudioRoute { param_id, band, depth } => {
+                                let target = param_id_to_modulation_target(&param_id);
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
+                                    .iter()
+                                    .filter(|r| r.band == band && r.target == target)
+                                    .map(|r| r.id)
+                                    .collect();
+                                for id in ids_to_remove {
+                                    state.audio_routing.matrix.remove_route(id);
+                                }
+                                if let Some(id) = state.audio_routing.matrix.add_route(band, target) {
+                                    if let Some(route) = state.audio_routing.matrix.get_route_mut(id) {
+                                        route.amount = depth;
+                                    }
+                                }
+                                web_server.modulation_dirty = true;
+                            }
+                            rustjay_control::ModulationWebCommand::AudioUnroute { param_id } => {
+                                let target = param_id_to_modulation_target(&param_id);
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
+                                    .iter()
+                                    .filter(|r| r.target == target)
+                                    .map(|r| r.id)
+                                    .collect();
+                                for id in ids_to_remove {
+                                    state.audio_routing.matrix.remove_route(id);
+                                }
+                                web_server.modulation_dirty = true;
+                            }
                         }
                     }
                     WebServerCommand::Preset(preset_cmd) => {
@@ -737,6 +775,41 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
+        // Poll async device enumeration result from the Tokio thread (WR-2.1)
+        {
+            if let Ok(mut ws) = web_server.state.lock() {
+                if let Ok(mut pd) = ws.pending_devices.lock() {
+                    if let Some(devices) = pd.take() {
+                        drop(pd);
+                        drop(ws);
+                        if let Ok(mut state) = shared_state.lock() {
+                            state.input.available_devices = devices;
+                            web_server.input_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // MIDI mapping change detection (WR-3.3 / WR-6)
+        if let Some(ref m) = midi_manager {
+            if let Ok(midi_st) = m.state().lock() {
+                let current: Vec<rustjay_core::MidiMappingSnapshot> = midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
+                    name: m.name.clone(),
+                    param_path: m.param_path.clone(),
+                    kind: m.kind,
+                    selector: m.selector,
+                    channel: m.channel,
+                    min_value: m.min_value,
+                    max_value: m.max_value,
+                }).collect();
+                if current != last_broadcast_mappings {
+                    last_broadcast_mappings = current;
+                    web_server.control_dirty = true;
+                }
+            }
+        }
+
         let target_fps = shared_state.lock().unwrap_or_else(|e| e.into_inner()).target_fps;
 
         // Web: broadcast current parameter values to connected clients
@@ -763,10 +836,23 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
-        // Drain structural dirty flags — broadcast control/preset state to web panels.
-        // input_dirty is intentionally excluded here: InputStateJson requires webcam state
-        // that is internal to the Gles2Effect and not accessible from this loop.
+        // Drain structural dirty flags — broadcast control/preset/input/modulation state to web panels.
         if web_server.is_running() {
+            if web_server.input_dirty {
+                let mut input_state = gles2.get_input_state().unwrap_or_else(|| rustjay_control::InputStateJson {
+                    devices: vec![],
+                    active_index: None,
+                    active_name: String::new(),
+                    width: 0,
+                    height: 0,
+                    fps: 0.0,
+                });
+                if let Ok(state) = shared_state.lock() {
+                    input_state.devices = state.input.available_devices.clone();
+                }
+                web_server.send_input_state(&input_state);
+                web_server.input_dirty = false;
+            }
             if web_server.control_dirty {
                 let (osc_enabled, osc_port) = {
                     let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -792,6 +878,16 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                     midi_mappings,
                 });
                 web_server.control_dirty = false;
+            }
+            if web_server.modulation_dirty {
+                if let Ok(state) = shared_state.lock() {
+                    web_server.send_modulation_state(&rustjay_control::ModulationStateJson {
+                        lfos: state.lfo.bank.lfos.clone(),
+                        audio_routes: state.audio_routing.matrix.routes().to_vec(),
+                        audio_routing_enabled: state.audio_routing.enabled,
+                    });
+                }
+                web_server.modulation_dirty = false;
             }
             if preset_dirty {
                 if let Some(ref bank) = preset_bank {

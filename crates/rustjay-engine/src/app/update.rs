@@ -399,6 +399,70 @@ impl<P: EffectPlugin> App<P> {
                     }
                 }
             }
+
+            // Drain structural dirty flags for panel broadcasts.
+            if server.input_dirty {
+                if let Ok(state) = self.shared_state.lock() {
+                    server.send_input_state(&rustjay_control::InputStateJson {
+                        devices: state.input.available_devices.clone(),
+                        active_index: state.input.device_index,
+                        active_name: state.input.source_name.clone(),
+                        width: state.input.width,
+                        height: state.input.height,
+                        fps: state.input.fps,
+                    });
+                }
+                server.input_dirty = false;
+            }
+            if server.control_dirty {
+                let (osc_enabled, osc_port) = {
+                    if let Ok(state) = self.shared_state.lock() {
+                        (state.osc_enabled, state.osc_port)
+                    } else {
+                        (false, 9000)
+                    }
+                };
+                let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
+                    if let Some(ref m) = self.midi_manager {
+                        if let Ok(midi_st) = m.state().lock() {
+                            midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
+                                name: m.name.clone(),
+                                param_path: m.param_path.clone(),
+                                kind: m.kind,
+                                selector: m.selector,
+                                channel: m.channel,
+                                min_value: m.min_value,
+                                max_value: m.max_value,
+                            }).collect()
+                        } else { vec![] }
+                    } else { vec![] };
+                server.send_control_state(&rustjay_control::ControlStateJson {
+                    osc_enabled,
+                    osc_port,
+                    midi_mappings,
+                });
+                server.control_dirty = false;
+            }
+            if server.modulation_dirty {
+                if let Ok(state) = self.shared_state.lock() {
+                    server.send_modulation_state(&rustjay_control::ModulationStateJson {
+                        lfos: state.lfo.bank.lfos.clone(),
+                        audio_routes: state.audio_routing.matrix.routes().to_vec(),
+                        audio_routing_enabled: state.audio_routing.enabled,
+                    });
+                }
+                server.modulation_dirty = false;
+            }
+            if server.preset_dirty {
+                if let Some(ref bank) = self.preset_bank {
+                    server.send_preset_state(&rustjay_control::PresetStateJson {
+                        presets: bank.presets.iter().enumerate()
+                            .map(|(i, p)| rustjay_control::PresetInfo { index: i, name: p.name.clone() })
+                            .collect(),
+                    });
+                }
+                server.preset_dirty = false;
+            }
         }
     }
 

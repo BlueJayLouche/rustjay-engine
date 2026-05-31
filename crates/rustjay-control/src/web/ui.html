@@ -495,6 +495,22 @@
     border-color: var(--amber-d);
   }
 
+  /* toolbar buttons */
+  .btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btn:hover { border-color: var(--amber-d); color: var(--ink); }
+
   /* scanline accent — very subtle */
   body::after {
     content: '';
@@ -537,6 +553,14 @@
       </div>
     </div>
   </header>
+
+  <!-- panels open in new tabs; requires popup permission on mobile browsers -->
+  <nav style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
+    <button class="btn" onclick="openPanel('input')">Input</button>
+    <button class="btn" onclick="openPanel('control')">Control</button>
+    <button class="btn" onclick="openPanel('modulation')">Modulation</button>
+    <button class="btn" onclick="openPanel('presets')">Presets</button>
+  </nav>
 
   <main id="controls">
     <div class="empty">
@@ -936,6 +960,12 @@
 
   function cssEscape(s) {
     return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+  }
+
+  function openPanel(name) {
+    const tok = window.RUSTJAY_TOKEN || '';
+    const path = '/' + (window.APP_NAME || location.pathname.split('/')[1] || 'rustjay');
+    window.open(path + '/' + name + '?token=' + encodeURIComponent(tok), '_blank');
   }
 
   // ---------- demo mode (only when not running under WS server) ----------

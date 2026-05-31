@@ -339,6 +339,17 @@ impl InputType {
 
 // ── Sub-states ─────────────────────────────────────────────────────────────
 
+/// Discovered video capture device info.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InputDeviceInfo {
+    /// Human-readable device name.
+    pub name: String,
+    /// Device path (e.g. `/dev/video0`).
+    pub path: String,
+    /// Device index.
+    pub index: usize,
+}
+
 /// Live state of the video input device.
 #[derive(Debug, Clone, Default)]
 pub struct InputState {
@@ -356,6 +367,8 @@ pub struct InputState {
     pub fps: f32,
     /// Numeric device index of the active webcam (None if not a webcam or not started).
     pub device_index: Option<usize>,
+    /// Discovered video capture devices.
+    pub available_devices: Vec<InputDeviceInfo>,
 }
 
 /// HSB (Hue / Saturation / Brightness) colour adjustment parameters.

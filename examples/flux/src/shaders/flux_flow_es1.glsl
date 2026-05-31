@@ -1,5 +1,11 @@
 // Per-pixel Lucas-Kanade optical flow — GLSL ES 1.00 (no UBOs).
+// Use highp on VC4/Mesa where available; mediump is FP16 and catastrophically
+// loses precision for subtractive gradients and small-denominator division.
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 
 varying vec2 v_uv;
 
@@ -29,7 +35,7 @@ void main() {
     float it = luma(texture2D(u_curr, uv)) - luma(texture2D(u_prev, uv));
 
     float lambda = u_flow_lambda + 0.001;
-    float denom  = ix * ix + iy * iy + lambda;
+    float denom  = max(ix * ix + iy * iy + lambda, 0.01);
     float boost  = 1.0 + u_audio_level * 0.5;
     float vx = -it * ix / denom * u_flow_scale * boost;
     float vy = -it * iy / denom * u_flow_scale * boost;

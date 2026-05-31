@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use glow::{Context as Gl, HasContext};
 use rustjay_engine::{EngineState, gles2::Gles2Effect};
 use rustjay_io::{WebcamCapture, WebcamFrame};
+use rustjay_control::InputWebCommand;
 use std::sync::mpsc::Receiver;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -129,12 +130,21 @@ pub struct FluxGles2 {
     render_h:    Option<u32>,
     /// Scale factor applied to the display resolution (preserves aspect ratio).
     render_scale: Option<f32>,
+    /// Active device index (for web state broadcast).
+    active_device_index: Option<usize>,
+    /// Negotiated capture width.
+    active_width: u32,
+    /// Negotiated capture height.
+    active_height: u32,
+    /// Negotiated capture fps.
+    active_fps: f32,
 }
 
 impl Default for FluxGles2 {
     fn default() -> Self {
         Self { gl_state: None, webcam: None, receiver: None, last_frame: None,
-               render_w: None, render_h: None, render_scale: None }
+               render_w: None, render_h: None, render_scale: None,
+               active_device_index: None, active_width: 0, active_height: 0, active_fps: 0.0 }
     }
 }
 
@@ -148,13 +158,24 @@ impl FluxGles2 {
 }
 
 impl FluxGles2 {
-    fn open_webcam(&mut self, device_index: usize) {
-        match WebcamCapture::new(device_index, 640, 480, 30) {
+    fn open_webcam(&mut self, device_index: usize, standard: u32) {
+        // Request the resolution that matches the video standard.
+        // UVC capture devices negotiate PAL/NTSC via the requested format.
+        let (w, h, fps) = match standard {
+            1 => (720, 480, 30), // NTSC
+            _ => (720, 576, 25), // PAL
+        };
+
+        match WebcamCapture::new(device_index, w, h, fps) {
             Ok(mut cap) => match cap.start() {
                 Ok(rx) => {
                     self.receiver = Some(rx);
                     self.webcam   = Some(cap);
-                    log::info!("GLES2 flux: opened webcam {device_index} at 640×480@30");
+                    self.active_device_index = Some(device_index);
+                    self.active_width = w;
+                    self.active_height = h;
+                    self.active_fps = fps as f32;
+                    log::info!("GLES2 flux: opened webcam {device_index} at {w}×{h}@{fps}");
                 }
                 Err(e) => log::error!("GLES2 flux: webcam {device_index} start failed: {e}"),
             },
@@ -206,6 +227,44 @@ impl FluxGles2 {
 }
 
 impl Gles2Effect for FluxGles2 {
+    fn get_input_state(&self) -> Option<rustjay_control::InputStateJson> {
+        Some(rustjay_control::InputStateJson {
+            devices: Vec::new(), // filled in by the loop from shared_state
+            active_index: self.active_device_index,
+            active_name: self.webcam.as_ref().map(|_| "Webcam".to_string()).unwrap_or_default(),
+            width: self.active_width,
+            height: self.active_height,
+            fps: self.active_fps,
+        })
+    }
+
+    fn handle_input_command(&mut self, _gl: &Gl, cmd: InputWebCommand) {
+        match cmd {
+            InputWebCommand::SelectDevice { index, width: _, height: _, fps: _ } => {
+                self.receiver = None;
+                self.webcam = None;
+                self.last_frame = None;
+                self.active_device_index = None;
+                self.active_width = 0;
+                self.active_height = 0;
+                self.active_fps = 0.0;
+                self.open_webcam(index, 0 /* PAL default */);
+            }
+            InputWebCommand::StopInput => {
+                self.receiver = None;
+                self.webcam = None;
+                self.last_frame = None;
+                self.active_device_index = None;
+                self.active_width = 0;
+                self.active_height = 0;
+                self.active_fps = 0.0;
+            }
+            InputWebCommand::RefreshDevices => {
+                // Enumeration is handled by the web server async path; nothing to do here.
+            }
+        }
+    }
+
     fn init_gl(&mut self, gl: &Gl, width: u32, height: u32, state: &EngineState) -> Result<()> {
         let vert = include_str!("shaders/flux_vert_es1.glsl");
 
@@ -261,6 +320,18 @@ impl Gles2Effect for FluxGles2 {
         let (accum_fbo0, accum_tex0) = unsafe { make_fbo(gl, render_w, render_h) };
         let (accum_fbo1, accum_tex1) = unsafe { make_fbo(gl, render_w, render_h) };
 
+        // Initialise flow textures to 0.5 → decoded zero velocity.
+        // Black (0.0) decodes to (-1,-1) which seeds garbage on the first frames.
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(flow_fbo0));
+            gl.clear_color(0.5, 0.5, 0.5, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(flow_fbo1));
+            gl.clear_color(0.5, 0.5, 0.5, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        }
+
         self.gl_state = Some(GlState {
             flow_prog, warp_prog, blit_prog,
             vbo,
@@ -275,13 +346,53 @@ impl Gles2Effect for FluxGles2 {
 
         // Open webcam using the configured device index
         let dev = state.startup_webcam_device.unwrap_or(0);
-        self.open_webcam(dev);
+        let standard = state.get_param("video_standard").unwrap_or(0.0) as u32;
+        self.open_webcam(dev, standard);
 
         Ok(())
     }
 
     fn render_frame(&mut self, gl: &Gl, state: &EngineState) -> Result<bool> {
         self.poll_webcam_frame();
+
+        // If the webcam opened at a different resolution than our textures,
+        // recreate them now so glTexSubImage2D doesn't overflow.
+        if let Some(ref frame) = self.last_frame {
+            let gs = self.gl_state.as_mut().ok_or_else(|| anyhow!("GL not initialised"))?;
+            if frame.width != gs.cam_w || frame.height != gs.cam_h {
+                log::info!("GLES2 flux: webcam resolution changed {}×{} → {}×{}, recreating textures",
+                    gs.cam_w, gs.cam_h, frame.width, frame.height);
+                unsafe {
+                    gl.delete_texture(gs.webcam_tex);
+                    gl.delete_texture(gs.prev_tex);
+                    gl.delete_framebuffer(gs.flow_fbo[0]);
+                    gl.delete_framebuffer(gs.flow_fbo[1]);
+                    gl.delete_texture(gs.flow_tex[0]);
+                    gl.delete_texture(gs.flow_tex[1]);
+
+                    gs.webcam_tex = make_texture(gl, frame.width, frame.height, None);
+                    gs.prev_tex   = make_texture(gl, frame.width, frame.height, None);
+
+                    let (flow_fbo0, flow_tex0) = make_fbo(gl, frame.width, frame.height);
+                    let (flow_fbo1, flow_tex1) = make_fbo(gl, frame.width, frame.height);
+                    gs.flow_fbo = [flow_fbo0, flow_fbo1];
+                    gs.flow_tex = [flow_tex0, flow_tex1];
+
+                    // Re-initialise flow textures to encoded zero
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(flow_fbo0));
+                    gl.clear_color(0.5, 0.5, 0.5, 1.0);
+                    gl.clear(glow::COLOR_BUFFER_BIT);
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(flow_fbo1));
+                    gl.clear_color(0.5, 0.5, 0.5, 1.0);
+                    gl.clear(glow::COLOR_BUFFER_BIT);
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+
+                    gs.cam_w = frame.width;
+                    gs.cam_h = frame.height;
+                    gs.flow_read = 0;
+                }
+            }
+        }
 
         // Upload the latest webcam frame before taking the mutable borrow.
         {

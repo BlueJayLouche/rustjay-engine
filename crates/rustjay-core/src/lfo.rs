@@ -186,7 +186,7 @@ pub struct Lfo {
     pub output: f32,
     /// Previous beat_phase sample — used to detect quantum-boundary crossings
     #[serde(skip)]
-    last_beat_phase: f32,
+    pub last_beat_phase: f32,
 }
 
 impl Lfo {

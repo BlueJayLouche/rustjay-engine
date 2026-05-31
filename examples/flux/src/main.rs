@@ -7,11 +7,11 @@
 //! colour-maps flow direction (hue) and speed (brightness).
 //!
 //! Render sequence each frame:
-//!   1. GPU copy  — current input → prev_frame (ready for next frame's It)
-//!   2. Flow pass — input + prev_frame + prev_flow → flow_tex (encoded)
-//!   3. Warp pass — input + flow_tex + accum[read] → accum[write]
-//!   4. Blit pass — accum[write] → render_target_view
-//!   5. Ping-pong accum indices
+//!   1. Flow pass — input + prev_frame + prev_flow → flow_tex (encoded)
+//!   2. Warp pass — input + flow_tex + accum[read] → accum[write]
+//!   3. Blit pass — accum[write] → render_target_view
+//!   4. GPU copy  — current input → prev_frame (for next frame's It)
+//!   5. Ping-pong flow / accum indices
 
 use rustjay_engine::prelude::*;
 use wgpu::util::DeviceExt;
@@ -74,6 +74,8 @@ struct FluxState {
     flow_viz_scale: f32,
     /// Enable audio modulation of warp + decay
     audio_reactive: bool,
+    /// Video standard: 0=PAL, 1=NTSC
+    video_standard: u32,
 }
 
 impl Default for FluxState {
@@ -89,6 +91,7 @@ impl Default for FluxState {
             flow_viz:       0.0,
             flow_viz_scale: 5.0,
             audio_reactive: true,
+            video_standard: 0, // PAL default
         }
     }
 }
@@ -306,6 +309,7 @@ impl EffectPlugin for FluxEffect {
             ParameterDescriptor::float("flow_viz",       "Flow Viz",       ParamCategory::Color,  0.0, 1.0, 0.0, 0.01),
             ParameterDescriptor::float("flow_viz_scale", "Viz Scale",      ParamCategory::Color,  0.5, 20.0, 5.0, 0.1),
             ParameterDescriptor::bool("audio_reactive",  "Audio Reactive", ParamCategory::Motion, true),
+            ParameterDescriptor::enum_param("video_standard", "Video Standard", ParamCategory::Settings, vec!["PAL".into(), "NTSC".into()], 0),
         ]
     }
 
@@ -437,26 +441,7 @@ impl EffectPlugin for FluxEffect {
         queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
 
         // ------------------------------------------------------------------
-        // 1. GPU copy: current input → prev_frame  (for next frame's It)
-        // ------------------------------------------------------------------
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture:   input_tex,
-                mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture:   &prev_frame.texture,
-                mip_level: 0,
-                origin:    wgpu::Origin3d::ZERO,
-                aspect:    wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-
-        // ------------------------------------------------------------------
-        // 2. Flow pass → flow.write()
+        // 1. Flow pass → flow.write()
         // ------------------------------------------------------------------
         let flow_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Flux Flow BG"),
@@ -517,6 +502,25 @@ impl EffectPlugin for FluxEffect {
             pass.set_bind_group(0, &blit_bg, &[]);
             pass.draw(0..6, 0..1);
         }
+
+        // ------------------------------------------------------------------
+        // 4. GPU copy: current input → prev_frame (for next frame's It)
+        // ------------------------------------------------------------------
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:   input_tex,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture:   &prev_frame.texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
 
         // ------------------------------------------------------------------
         // 5. Advance ping-pong indices for next frame

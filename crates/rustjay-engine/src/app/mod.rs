@@ -155,6 +155,9 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) cached_audio_normalize: bool,
     pub(crate) cached_audio_pink_noise: bool,
 
+    /// Last-broadcast MIDI mapping snapshot for change detection (WR-3.3 / WR-6).
+    pub(crate) last_broadcast_mappings: Vec<rustjay_core::MidiMappingSnapshot>,
+
     // Plugin state
     pub(crate) plugin: Option<P>,
     pub(crate) app_state: P::State,
@@ -349,6 +352,7 @@ impl<P: EffectPlugin> App<P> {
             cached_audio_smoothing: 0.5,
             cached_audio_normalize: true,
             cached_audio_pink_noise: false,
+            last_broadcast_mappings: Vec::new(),
             plugin: Some(plugin),
             app_state: initial_state,
             custom_tabs_imgui: tabs_imgui,
