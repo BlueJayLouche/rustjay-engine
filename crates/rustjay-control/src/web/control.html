@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>__APP__ // Control</title>
+<style>
+  :root {
+    --bg:        #07090b;
+    --surface:   #0c1014;
+    --surface-2: #11161c;
+    --hair:      rgba(255,255,255,0.06);
+    --hair-2:    rgba(255,255,255,0.12);
+    --ink:       #e8ebee;
+    --ink-2:     #aab1b9;
+    --ink-3:     #6a7280;
+    --ink-4:     #3a4048;
+    --amber:     oklch(0.80 0.16 75);
+    --amber-d:   oklch(0.55 0.14 75);
+    --signal:    oklch(0.78 0.18 145);
+    --alert:     oklch(0.70 0.20 25);
+    --mono:      ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: var(--mono);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 14px 14px 40px;
+    touch-action: manipulation;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1, "zero" 1, "cv01" 1;
+  }
+  .frame { max-width: 520px; margin: 0 auto; }
+  .hud {
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    padding: 14px 16px 12px;
+    margin-bottom: 18px;
+  }
+  .hud-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .hud-title h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .hud-title .slash { color: var(--amber); }
+  .hud-title .sub { color: var(--ink-3); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
+
+  .status {
+    margin-top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-4);
+  }
+  .status.connected { color: var(--signal); }
+  .status.connected .dot { background: var(--signal); }
+  .status.disconnected { color: var(--alert); }
+  .status.disconnected .dot { background: var(--alert); }
+
+  .btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btn:hover { border-color: var(--amber-d); color: var(--ink); }
+  .btn.primary {
+    background: var(--amber);
+    color: #0a0a0a;
+    border-color: var(--amber);
+    font-weight: 700;
+  }
+  .btn.primary:hover { background: oklch(0.75 0.16 75); }
+  .btn.danger { border-color: var(--alert); color: var(--alert); }
+  .btn.danger:hover { background: color-mix(in oklab, var(--alert) 14%, transparent); }
+
+  .section { margin-bottom: 18px; }
+  .section-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-2);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-head .rule {
+    flex: 1; height: 1px;
+    background-image: linear-gradient(to right, var(--hair-2) 50%, transparent 50%);
+    background-size: 6px 1px;
+  }
+
+  /* OSC */
+  .osc-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--hair);
+    background: var(--surface);
+    margin-bottom: 8px;
+  }
+  .osc-row label {
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .osc-row .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .osc-row input[type="number"] {
+    width: 70px;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 8px;
+    text-align: right;
+  }
+  .toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--hair-2);
+    background: rgba(255,255,255,0.02);
+  }
+  .toggle button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    padding: 8px 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .toggle button + button { border-left: 1px solid var(--hair-2); }
+  .toggle button[aria-pressed="true"] {
+    background: var(--amber);
+    color: #0a0a0a;
+    font-weight: 700;
+  }
+
+  /* MIDI */
+  .mapping-list {
+    border: 1px solid var(--hair);
+    background: var(--surface);
+  }
+  .mapping-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 12px;
+  }
+  .mapping-item:last-child { border-bottom: none; }
+  .mapping-item .cc {
+    color: var(--ink-4);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .mapping-item .name { color: var(--ink); }
+  .mapping-item .range {
+    color: var(--ink-3);
+    font-size: 10px;
+  }
+  .empty {
+    text-align: center;
+    color: var(--ink-3);
+    padding: 24px 16px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border: 1px dashed var(--hair-2);
+  }
+
+  .learn-hint {
+    margin-top: 10px;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    line-height: 1.5;
+  }
+  .learn-hint .k { color: var(--ink-4); }
+</style>
+</head>
+<body>
+<!-- panels open in new tabs; requires popup permission on mobile browsers -->
+<div class="frame">
+  <header class="hud">
+    <div class="hud-title">
+      <h1>__APP__<span class="slash">/</span>CONTROL</h1>
+      <span class="sub">MIDI + OSC</span>
+    </div>
+    <div class="status disconnected" id="status">
+      <span class="dot"></span>
+      <span id="status-text">OFFLINE</span>
+    </div>
+  </header>
+
+  <div class="section">
+    <div class="section-head">
+      <span>OSC Server</span>
+      <span class="rule"></span>
+    </div>
+    <div class="osc-row">
+      <label>Enabled</label>
+      <div class="toggle">
+        <button type="button" id="osc-off" onclick="setOsc(false)">OFF</button>
+        <button type="button" id="osc-on" onclick="setOsc(true)">ON</button>
+      </div>
+    </div>
+    <div class="osc-row">
+      <label>Listen Port</label>
+      <div class="field">
+        <input type="number" id="osc-port" value="9000" min="1024" max="65535"
+               onchange="setOscPort(this.value)" onkeydown="if(event.key==='Enter')setOscPort(this.value)">
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <span>MIDI Mappings</span>
+      <span class="rule"></span>
+    </div>
+    <div class="mapping-list" id="mapping-list">
+      <div class="empty">No mappings</div>
+    </div>
+    <div class="learn-hint">
+      <span class="k">LEARN</span> — Select a parameter below, then move a MIDI CC to map it.
+    </div>
+  </div>
+
+  <div class="section" id="learn-section" style="display:none;">
+    <div class="section-head">
+      <span>Learn Mode</span>
+      <span class="rule"></span>
+      <button class="btn danger" onclick="cancelLearn()">Cancel</button>
+    </div>
+    <div class="empty" id="learn-target">Waiting for CC…</div>
+  </div>
+</div>
+
+<script>
+  const APP_NAME = "__APP__";
+  const appNameLower = APP_NAME.toLowerCase();
+  const token = window.RUSTJAY_TOKEN || '';
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = wsProtocol + '//' + window.location.host + '/' + appNameLower + '/ws?token=' + encodeURIComponent(token);
+  const ws = new WebSocket(wsUrl);
+
+  let state = { osc_enabled: false, osc_port: 9000, midi_mappings: [] };
+  let learnParam = null;
+
+  function setStatus(stateName, text) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + stateName;
+    document.getElementById('status-text').textContent = text;
+  }
+  ws.onopen = () => setStatus('connected', 'ONLINE');
+  ws.onclose = () => setStatus('disconnected', 'OFFLINE');
+  ws.onerror = () => setStatus('disconnected', 'ERROR');
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'control_state') {
+      state = msg;
+      renderOsc();
+      renderMappings();
+    }
+  };
+
+  function sendCmd(cmd) {
+    fetch('/' + appNameLower + '/cmd?token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmd)
+    });
+  }
+
+  function setOsc(enabled) {
+    sendCmd({ type: 'control', action: 'osc', enabled });
+  }
+  function setOscPort(port) {
+    const p = parseInt(port, 10);
+    if (p >= 1024 && p <= 65535) {
+      sendCmd({ type: 'control', action: 'osc_set_port', port: p });
+    }
+  }
+  function startLearn(paramId, paramName) {
+    learnParam = { id: paramId, name: paramName };
+    sendCmd({ type: 'control', action: 'midi_learn', param_id: paramId });
+    document.getElementById('learn-section').style.display = 'block';
+    document.getElementById('learn-target').textContent = 'Learning: ' + paramName;
+  }
+  function cancelLearn() {
+    learnParam = null;
+    sendCmd({ type: 'control', action: 'midi_learn_cancel' });
+    document.getElementById('learn-section').style.display = 'none';
+  }
+  function unlearn(cc, channel) {
+    sendCmd({ type: 'control', action: 'midi_unlearn', cc, channel });
+  }
+
+  function renderOsc() {
+    document.getElementById('osc-off').setAttribute('aria-pressed', !state.osc_enabled);
+    document.getElementById('osc-on').setAttribute('aria-pressed', state.osc_enabled);
+    document.getElementById('osc-port').value = state.osc_port;
+  }
+
+  function renderMappings() {
+    const list = document.getElementById('mapping-list');
+    if (!state.midi_mappings || state.midi_mappings.length === 0) {
+      list.innerHTML = '<div class="empty">No mappings</div>';
+      return;
+    }
+    list.innerHTML = '';
+    state.midi_mappings.forEach(m => {
+      const item = document.createElement('div');
+      item.className = 'mapping-item';
+      const kindLabel = m.kind === 'Note' ? 'NOTE' : (m.kind === 'Aftertouch' ? 'AFTT' : 'CC');
+      item.innerHTML = `
+        <span class="cc">${kindLabel} ${m.selector} Ch ${m.channel + 1}</span>
+        <span class="name">${escapeHtml(m.name || m.param_path)}</span>
+        <button class="btn danger" onclick="unlearn(${m.selector}, ${m.channel})">✕</button>
+      `;
+      list.appendChild(item);
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+</script>
+</body>
+</html>

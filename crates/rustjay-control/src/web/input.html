@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>__APP__ // Input</title>
+<style>
+  :root {
+    --bg:        #07090b;
+    --surface:   #0c1014;
+    --surface-2: #11161c;
+    --hair:      rgba(255,255,255,0.06);
+    --hair-2:    rgba(255,255,255,0.12);
+    --ink:       #e8ebee;
+    --ink-2:     #aab1b9;
+    --ink-3:     #6a7280;
+    --ink-4:     #3a4048;
+    --amber:     oklch(0.80 0.16 75);
+    --amber-d:   oklch(0.55 0.14 75);
+    --signal:    oklch(0.78 0.18 145);
+    --alert:     oklch(0.70 0.20 25);
+    --mono:      ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: var(--mono);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 14px 14px 40px;
+    touch-action: manipulation;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1, "zero" 1, "cv01" 1;
+  }
+  .frame { max-width: 520px; margin: 0 auto; }
+  .hud {
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    padding: 14px 16px 12px;
+    margin-bottom: 18px;
+  }
+  .hud-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .hud-title h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .hud-title .slash { color: var(--amber); }
+  .hud-title .sub { color: var(--ink-3); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
+
+  .status {
+    margin-top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-4);
+  }
+  .status.connected { color: var(--signal); }
+  .status.connected .dot { background: var(--signal); }
+  .status.disconnected { color: var(--alert); }
+  .status.disconnected .dot { background: var(--alert); }
+
+  /* buttons */
+  .btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btn:hover { border-color: var(--amber-d); color: var(--ink); }
+  .btn.primary {
+    background: var(--amber);
+    color: #0a0a0a;
+    border-color: var(--amber);
+    font-weight: 700;
+  }
+  .btn.primary:hover { background: oklch(0.75 0.16 75); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* device list */
+  .section { margin-bottom: 18px; }
+  .section-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-2);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-head .rule {
+    flex: 1; height: 1px;
+    background-image: linear-gradient(to right, var(--hair-2) 50%, transparent 50%);
+    background-size: 6px 1px;
+  }
+
+  .device-list {
+    border: 1px solid var(--hair);
+    background: var(--surface);
+  }
+  .device-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--hair);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .device-item:last-child { border-bottom: none; }
+  .device-item:hover { background: rgba(255,255,255,0.02); }
+  .device-item.active { background: color-mix(in oklab, var(--amber) 10%, transparent); }
+  .device-item input[type="radio"] {
+    accent-color: var(--amber);
+    width: 14px; height: 14px;
+    flex-shrink: 0;
+  }
+  .device-item .dev-name {
+    font-size: 12.5px;
+    color: var(--ink);
+    flex: 1;
+  }
+  .device-item .dev-meta {
+    font-size: 10px;
+    color: var(--ink-4);
+    text-align: right;
+  }
+  .device-item.active .dev-name { color: var(--amber); }
+
+  .empty {
+    text-align: center;
+    color: var(--ink-3);
+    padding: 24px 16px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border: 1px dashed var(--hair-2);
+  }
+
+  /* controls */
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .ctrl-row label {
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    min-width: 90px;
+  }
+  .select-wrap {
+    flex: 1;
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: rgba(255,255,255,0.02);
+  }
+  .select-wrap::after {
+    content: '▾';
+    position: absolute;
+    right: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--ink-3);
+    font-size: 10px;
+    pointer-events: none;
+  }
+  select {
+    width: 100%;
+    padding: 8px 24px 8px 10px;
+    background: transparent;
+    color: var(--ink);
+    border: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    appearance: none;
+  }
+  select:focus { outline: none; background: rgba(255,255,255,0.03); }
+  select option { background: #0c1014; color: var(--ink); }
+</style>
+</head>
+<body>
+<!-- panels open in new tabs; requires popup permission on mobile browsers -->
+<div class="frame">
+  <header class="hud">
+    <div class="hud-title">
+      <h1>__APP__<span class="slash">/</span>INPUT</h1>
+      <span class="sub">Capture Device</span>
+    </div>
+    <div class="status disconnected" id="status">
+      <span class="dot"></span>
+      <span id="status-text">OFFLINE</span>
+    </div>
+  </header>
+
+  <div class="section">
+    <div class="section-head">
+      <span>Devices</span>
+      <span class="rule"></span>
+      <button class="btn" id="btn-refresh" onclick="refreshDevices()">Refresh</button>
+    </div>
+    <div class="device-list" id="device-list">
+      <div class="empty">Click Refresh to enumerate devices</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <span>Settings</span>
+      <span class="rule"></span>
+    </div>
+    <div class="ctrl-row">
+      <label>Standard</label>
+      <div class="select-wrap">
+        <select id="std-select">
+          <option value="0">PAL (720×576 @ 25)</option>
+          <option value="1">NTSC (720×480 @ 30)</option>
+        </select>
+      </div>
+    </div>
+    <div class="ctrl-row">
+      <button class="btn primary" id="btn-restart" onclick="restartInput()">Restart Input</button>
+      <button class="btn" id="btn-stop" onclick="stopInput()">Stop</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const APP_NAME = "__APP__";
+  const appNameLower = APP_NAME.toLowerCase();
+  const token = window.RUSTJAY_TOKEN || '';
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = wsProtocol + '//' + window.location.host + '/' + appNameLower + '/ws?token=' + encodeURIComponent(token);
+  const ws = new WebSocket(wsUrl);
+
+  let state = { devices: [], active_index: null, active_name: '', width: 0, height: 0, fps: 0 };
+
+  function setStatus(stateName, text) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + stateName;
+    document.getElementById('status-text').textContent = text;
+  }
+  ws.onopen = () => setStatus('connected', 'ONLINE');
+  ws.onclose = () => setStatus('disconnected', 'OFFLINE');
+  ws.onerror = () => setStatus('disconnected', 'ERROR');
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'input_state') {
+      state = msg;
+      renderDevices();
+    }
+  };
+
+  function sendCmd(cmd) {
+    fetch('/' + appNameLower + '/cmd?token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmd)
+    });
+  }
+
+  function refreshDevices() {
+    sendCmd({ type: 'input', action: 'refresh_devices' });
+    const btn = document.getElementById('btn-refresh');
+    btn.disabled = true;
+    setTimeout(() => btn.disabled = false, 5000);
+  }
+
+  function selectDevice(index) {
+    const std = parseInt(document.getElementById('std-select').value, 10);
+    const dims = std === 1 ? [720, 480, 30] : [720, 576, 25];
+    sendCmd({ type: 'input', action: 'select_device', index, width: dims[0], height: dims[1], fps: dims[2] });
+  }
+
+  function stopInput() {
+    sendCmd({ type: 'input', action: 'stop' });
+  }
+
+  function restartInput() {
+    stopInput();
+    setTimeout(() => {
+      if (state.active_index != null) {
+        selectDevice(state.active_index);
+      } else {
+        refreshDevices();
+      }
+    }, 200);
+  }
+
+  function renderDevices() {
+    const list = document.getElementById('device-list');
+    if (!state.devices || state.devices.length === 0) {
+      list.innerHTML = '<div class="empty">No devices found</div>';
+      return;
+    }
+    list.innerHTML = '';
+    state.devices.forEach((dev, idx) => {
+      const item = document.createElement('div');
+      item.className = 'device-item' + (state.active_index === dev.index ? ' active' : '');
+      item.innerHTML = `
+        <input type="radio" name="dev" ${state.active_index === dev.index ? 'checked' : ''}>
+        <span class="dev-name">${escapeHtml(dev.name)}</span>
+        <span class="dev-meta">${escapeHtml(dev.path)}</span>
+      `;
+      item.addEventListener('click', () => selectDevice(dev.index));
+      list.appendChild(item);
+    });
+    // Add "None" option
+    const noneItem = document.createElement('div');
+    noneItem.className = 'device-item' + (state.active_index == null ? ' active' : '');
+    noneItem.innerHTML = `
+      <input type="radio" name="dev" ${state.active_index == null ? 'checked' : ''}>
+      <span class="dev-name">None (offline)</span>
+      <span class="dev-meta"></span>
+    `;
+    noneItem.addEventListener('click', () => stopInput());
+    list.appendChild(noneItem);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+</script>
+</body>
+</html>

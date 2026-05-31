@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>__APP__ // Modulation</title>
+<style>
+  :root {
+    --bg:        #07090b;
+    --surface:   #0c1014;
+    --surface-2: #11161c;
+    --hair:      rgba(255,255,255,0.06);
+    --hair-2:    rgba(255,255,255,0.12);
+    --ink:       #e8ebee;
+    --ink-2:     #aab1b9;
+    --ink-3:     #6a7280;
+    --ink-4:     #3a4048;
+    --amber:     oklch(0.80 0.16 75);
+    --amber-d:   oklch(0.55 0.14 75);
+    --signal:    oklch(0.78 0.18 145);
+    --alert:     oklch(0.70 0.20 25);
+    --mono:      ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body {
+    font-family: var(--mono);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 14px 14px 40px;
+    touch-action: manipulation;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 1, "zero" 1, "cv01" 1;
+  }
+  .frame { max-width: 520px; margin: 0 auto; }
+  .hud {
+    position: relative;
+    border: 1px solid var(--hair-2);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    padding: 14px 16px 12px;
+    margin-bottom: 18px;
+  }
+  .hud-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .hud-title h1 {
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .hud-title .slash { color: var(--amber); }
+  .hud-title .sub { color: var(--ink-3); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; }
+
+  .status {
+    margin-top: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ink-4);
+  }
+  .status.connected { color: var(--signal); }
+  .status.connected .dot { background: var(--signal); }
+  .status.disconnected { color: var(--alert); }
+  .status.disconnected .dot { background: var(--alert); }
+
+  .btn {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .btn:hover { border-color: var(--amber-d); color: var(--ink); }
+  .btn.primary {
+    background: var(--amber);
+    color: #0a0a0a;
+    border-color: var(--amber);
+    font-weight: 700;
+  }
+  .btn.primary:hover { background: oklch(0.75 0.16 75); }
+
+  .section { margin-bottom: 18px; }
+  .section-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-2);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-head .rule {
+    flex: 1; height: 1px;
+    background-image: linear-gradient(to right, var(--hair-2) 50%, transparent 50%);
+    background-size: 6px 1px;
+  }
+
+  /* LFO slot */
+  .lfo-slot {
+    border: 1px solid var(--hair);
+    background: var(--surface);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .lfo-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .lfo-header .num {
+    font-size: 10px;
+    color: var(--ink-4);
+    letter-spacing: 0.1em;
+    min-width: 40px;
+  }
+  .lfo-header .chk {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .lfo-header .chk input { accent-color: var(--amber); }
+  .lfo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .lfo-grid .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .lfo-grid label {
+    font-size: 9.5px;
+    color: var(--ink-4);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+  .lfo-grid select, .lfo-grid input[type="number"] {
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 8px;
+    appearance: none;
+  }
+  .lfo-grid input[type="number"] { width: 100%; }
+  .lfo-grid select:focus, .lfo-grid input:focus { outline: none; border-color: var(--amber-d); }
+
+  /* audio routes */
+  .route-item {
+    display: grid;
+    grid-template-columns: 80px 1fr 80px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--surface);
+    font-size: 11px;
+  }
+  .route-item:first-child { border-top: 1px solid var(--hair); }
+  .route-item .band {
+    color: var(--ink-3);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .route-item select {
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 8px;
+    appearance: none;
+  }
+  .route-item input[type="number"] {
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 8px;
+    width: 100%;
+    text-align: right;
+  }
+
+  .empty {
+    text-align: center;
+    color: var(--ink-3);
+    padding: 24px 16px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    border: 1px dashed var(--hair-2);
+  }
+</style>
+</head>
+<body>
+<!-- panels open in new tabs; requires popup permission on mobile browsers -->
+<div class="frame">
+  <header class="hud">
+    <div class="hud-title">
+      <h1>__APP__<span class="slash">/</span>MODULATION</h1>
+      <span class="sub">LFO + Audio</span>
+    </div>
+    <div class="status disconnected" id="status">
+      <span class="dot"></span>
+      <span id="status-text">OFFLINE</span>
+    </div>
+  </header>
+
+  <div class="section">
+    <div class="section-head">
+      <span>LFOs</span>
+      <span class="rule"></span>
+    </div>
+    <div id="lfo-container"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <span>Audio Reactivity</span>
+      <span class="rule"></span>
+    </div>
+    <div id="audio-container"></div>
+  </div>
+</div>
+
+<script>
+  const APP_NAME = "__APP__";
+  const appNameLower = APP_NAME.toLowerCase();
+  const token = window.RUSTJAY_TOKEN || '';
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = wsProtocol + '//' + window.location.host + '/' + appNameLower + '/ws?token=' + encodeURIComponent(token);
+  const ws = new WebSocket(wsUrl);
+
+  let state = { lfos: [], audio_routes: [], audio_routing_enabled: false };
+
+  const WAVEFORMS = ['Sine', 'Triangle', 'Ramp', 'Saw', 'Square'];
+  const BANDS = ['Sub Bass', 'Bass', 'Low Mid', 'Mid', 'High Mid', 'High', 'Very High', 'Presence'];
+  const BEATS = ['1/16','1/8','1/4','1/2','1','2','4','8'];
+
+  function setStatus(stateName, text) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + stateName;
+    document.getElementById('status-text').textContent = text;
+  }
+  ws.onopen = () => setStatus('connected', 'ONLINE');
+  ws.onclose = () => setStatus('disconnected', 'OFFLINE');
+  ws.onerror = () => setStatus('disconnected', 'ERROR');
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'modulation_state') {
+      state = msg;
+      renderLfos();
+      renderAudio();
+    }
+  };
+
+  function sendCmd(cmd) {
+    fetch('/' + appNameLower + '/cmd?token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmd)
+    });
+  }
+
+  function setLfo(slot, cfg) {
+    sendCmd({ type: 'modulation', action: 'lfo_set', slot, config: cfg });
+  }
+  function setLfoEnabled(slot, enabled) {
+    sendCmd({ type: 'modulation', action: 'lfo_enable', slot, enabled });
+  }
+
+  function renderLfos() {
+    const container = document.getElementById('lfo-container');
+    container.innerHTML = '';
+    if (!state.lfos || state.lfos.length === 0) {
+      container.innerHTML = '<div class="empty">No LFOs</div>';
+      return;
+    }
+    state.lfos.forEach((lfo, slot) => {
+      const div = document.createElement('div');
+      div.className = 'lfo-slot';
+      const targetName = lfo.target ? (lfo.target.Custom || lfo.target.name || String(lfo.target)) : 'None';
+      div.innerHTML = `
+        <div class="lfo-header">
+          <span class="num">LFO ${slot + 1}</span>
+          <label class="chk">
+            <input type="checkbox" ${lfo.enabled ? 'checked' : ''}
+                   onchange="setLfoEnabled(${slot}, this.checked)">
+            Enabled
+          </label>
+        </div>
+        <div class="lfo-grid">
+          <div class="field">
+            <label>Waveform</label>
+            <select onchange="updateLfo(${slot}, 'waveform', this.value)">
+              ${WAVEFORMS.map((w,i) => `<option value="${w}" ${lfo.waveform === w ? 'selected' : ''}>${w}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>Target</label>
+            <select id="lfo-target-${slot}" onchange="updateLfo(${slot}, 'target', this.value)">
+              <option value="">None</option>
+              <option value="HueShift" ${targetName === 'HueShift' ? 'selected' : ''}>Hue Shift</option>
+              <option value="Saturation" ${targetName === 'Saturation' ? 'selected' : ''}>Saturation</option>
+              <option value="Brightness" ${targetName === 'Brightness' ? 'selected' : ''}>Brightness</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Division</label>
+            <select onchange="updateLfo(${slot}, 'division', this.selectedIndex)">
+              ${BEATS.map((b,i) => `<option value="${i}" ${lfo.division === i ? 'selected' : ''}>${b}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>Depth</label>
+            <input type="number" step="0.01" min="-1" max="1" value="${lfo.amplitude || 0}"
+                   onchange="updateLfo(${slot}, 'amplitude', parseFloat(this.value))">
+          </div>
+        </div>
+      `;
+      container.appendChild(div);
+    });
+  }
+
+  function updateLfo(slot, field, value) {
+    const lfo = JSON.parse(JSON.stringify(state.lfos[slot] || {}));
+    if (field === 'waveform') lfo.waveform = value;
+    if (field === 'division') lfo.division = value;
+    if (field === 'amplitude') lfo.amplitude = value;
+    if (field === 'target') {
+      if (!value) lfo.target = 'None';
+      else lfo.target = value; // HueShift, Saturation, Brightness sent as strings
+    }
+    setLfo(slot, lfo);
+  }
+
+  const BAND_NAMES = {
+    SubBass: 'Sub Bass', Bass: 'Bass', LowMid: 'Low Mid', Mid: 'Mid',
+    HighMid: 'High Mid', High: 'High', VeryHigh: 'Very High', Presence: 'Presence'
+  };
+
+  function renderAudio() {
+    const container = document.getElementById('audio-container');
+    container.innerHTML = '';
+    const active = state.audio_routes && state.audio_routes.filter(r => r.enabled);
+    if (!active || active.length === 0) {
+      container.innerHTML = '<div class="empty">No active audio routes</div>';
+      return;
+    }
+    active.forEach(r => {
+      const row = document.createElement('div');
+      row.className = 'route-item';
+      const targetName = r.target && (r.target.Custom || String(r.target)) || '—';
+      row.innerHTML = `
+        <span class="band">${escapeHtml(BAND_NAMES[r.band] || r.band || 'Band')}</span>
+        <span style="color:var(--ink);">${escapeHtml(targetName)}</span>
+        <span style="color:var(--ink-3);text-align:right;">${(r.amount || 0).toFixed(2)}</span>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // Delayed init so state can arrive
+  setTimeout(() => {
+    if (!state.lfos || state.lfos.length === 0) {
+      renderLfos();
+      renderAudio();
+    }
+  }, 300);
+</script>
+</body>
+</html>
