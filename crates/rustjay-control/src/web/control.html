@@ -96,6 +96,7 @@
   .btn.primary:hover { background: oklch(0.75 0.16 75); }
   .btn.danger { border-color: var(--alert); color: var(--alert); }
   .btn.danger:hover { background: color-mix(in oklab, var(--alert) 14%, transparent); }
+  .btn.small { padding: 4px 8px; font-size: 10px; }
 
   .section { margin-bottom: 18px; }
   .section-head {
@@ -170,6 +171,24 @@
   }
 
   /* MIDI */
+  .midi-devices {
+    border: 1px solid var(--hair);
+    background: var(--surface);
+    margin-bottom: 8px;
+  }
+  .midi-device-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 12px;
+  }
+  .midi-device-item:last-child { border-bottom: none; }
+  .midi-device-item .name { color: var(--ink); }
+  .midi-device-item .selected { color: var(--signal); font-size: 10px; }
+
   .mapping-list {
     border: 1px solid var(--hair);
     background: var(--surface);
@@ -205,6 +224,29 @@
     border: 1px dashed var(--hair-2);
   }
 
+  /* Parameters */
+  .param-list {
+    border: 1px solid var(--hair);
+    background: var(--surface);
+  }
+  .param-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 12px;
+  }
+  .param-item:last-child { border-bottom: none; }
+  .param-item .name { color: var(--ink); }
+  .param-item .cat {
+    color: var(--ink-4);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
   .learn-hint {
     margin-top: 10px;
     font-size: 10.5px;
@@ -215,7 +257,6 @@
 </style>
 </head>
 <body>
-<!-- panels open in new tabs; requires popup permission on mobile browsers -->
 <div class="frame">
   <header class="hud">
     <div class="hud-title">
@@ -251,14 +292,36 @@
 
   <div class="section">
     <div class="section-head">
+      <span>MIDI Devices</span>
+      <span class="rule"></span>
+      <button class="btn small" onclick="refreshMidi()">Refresh</button>
+    </div>
+    <div id="midi-devices" class="midi-devices">
+      <div class="empty">No devices</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
       <span>MIDI Mappings</span>
       <span class="rule"></span>
     </div>
     <div class="mapping-list" id="mapping-list">
       <div class="empty">No mappings</div>
     </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
+      <span>Parameters</span>
+      <span class="rule"></span>
+      <span id="learn-badge" style="display:none; font-size:10px; color:var(--amber); text-transform:none; letter-spacing:0.1em;">LEARNING…</span>
+    </div>
+    <div id="param-list" class="param-list">
+      <div class="empty">Waiting for parameters…</div>
+    </div>
     <div class="learn-hint">
-      <span class="k">LEARN</span> — Select a parameter below, then move a MIDI CC to map it.
+      <span class="k">LEARN</span> — Click <b>Learn</b> next to a parameter, then move a MIDI CC to map it.
     </div>
   </div>
 
@@ -280,7 +343,8 @@
   const wsUrl = wsProtocol + '//' + window.location.host + '/' + appNameLower + '/ws?token=' + encodeURIComponent(token);
   const ws = new WebSocket(wsUrl);
 
-  let state = { osc_enabled: false, osc_port: 9000, midi_mappings: [] };
+  let state = { osc_enabled: false, osc_port: 9000, midi_enabled: false, midi_selected_device: null, midi_devices: [], midi_mappings: [], midi_learn_active: false, midi_learning_param_name: null };
+  let params = [];
   let learnParam = null;
 
   function setStatus(stateName, text) {
@@ -297,7 +361,12 @@
     if (msg.type === 'control_state') {
       state = msg;
       renderOsc();
+      renderMidiDevices();
       renderMappings();
+      renderLearnBadge();
+    } else if (msg.type === 'params') {
+      params = msg.params || [];
+      renderParams();
     }
   };
 
@@ -317,6 +386,15 @@
     if (p >= 1024 && p <= 65535) {
       sendCmd({ type: 'control', action: 'osc_set_port', port: p });
     }
+  }
+  function refreshMidi() {
+    sendCmd({ type: 'control', action: 'midi_refresh_devices' });
+  }
+  function selectMidi(device) {
+    sendCmd({ type: 'control', action: 'midi_select_device', device });
+  }
+  function disconnectMidi() {
+    sendCmd({ type: 'control', action: 'midi_disconnect' });
   }
   function startLearn(paramId, paramName) {
     learnParam = { id: paramId, name: paramName };
@@ -339,6 +417,33 @@
     document.getElementById('osc-port').value = state.osc_port;
   }
 
+  function renderMidiDevices() {
+    const container = document.getElementById('midi-devices');
+    const devices = state.midi_devices || [];
+    const selected = state.midi_selected_device;
+    if (devices.length === 0) {
+      container.innerHTML = '<div class="empty">No devices — click Refresh</div>';
+      return;
+    }
+    container.innerHTML = '';
+    devices.forEach(d => {
+      const row = document.createElement('div');
+      row.className = 'midi-device-item';
+      const isSelected = d === selected;
+      const btn = isSelected
+        ? `<button class="btn danger small" onclick="disconnectMidi()">Disconnect</button>`
+        : `<button class="btn small" onclick="selectMidi('${escapeHtml(d)}')">Connect</button>`;
+      row.innerHTML = `
+        <div>
+          <span class="name">${escapeHtml(d)}</span>
+          ${isSelected ? '<span class="selected">● CONNECTED</span>' : ''}
+        </div>
+        ${btn}
+      `;
+      container.appendChild(row);
+    });
+  }
+
   function renderMappings() {
     const list = document.getElementById('mapping-list');
     if (!state.midi_mappings || state.midi_mappings.length === 0) {
@@ -359,9 +464,52 @@
     });
   }
 
+  function renderLearnBadge() {
+    const badge = document.getElementById('learn-badge');
+    if (state.midi_learn_active) {
+      badge.style.display = '';
+      badge.textContent = 'LEARNING: ' + (state.midi_learning_param_name || '…');
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  function renderParams() {
+    const list = document.getElementById('param-list');
+    if (!params || params.length === 0) {
+      list.innerHTML = '<div class="empty">Waiting for parameters…</div>';
+      return;
+    }
+    list.innerHTML = '';
+    params.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'param-item';
+      const pid = p.id || '';
+      const pname = p.name || pid;
+      const cat = p.category || '';
+      row.innerHTML = `
+        <div>
+          <span class="name">${escapeHtml(pname)}</span>
+          <span class="cat">${escapeHtml(cat)}</span>
+        </div>
+        <button class="btn small" onclick="startLearn('${escapeHtml(pid)}','${escapeHtml(pname)}')">Learn</button>
+      `;
+      list.appendChild(row);
+    });
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
+
+  // Delayed init so cached state can arrive
+  setTimeout(() => {
+    renderOsc();
+    renderMidiDevices();
+    renderMappings();
+    renderParams();
+    renderLearnBadge();
+  }, 300);
 </script>
 </body>
 </html>

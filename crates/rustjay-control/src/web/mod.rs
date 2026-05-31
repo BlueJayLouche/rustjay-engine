@@ -86,6 +86,12 @@ pub struct WebServerState {
     pub pending_devices: std::sync::Arc<std::sync::Mutex<Option<Vec<rustjay_core::InputDeviceInfo>>>>,
     /// Last time a device refresh was requested (for throttling).
     pub last_refresh: std::time::Instant,
+    /// Last-sent input state for hydrating new WebSocket clients immediately.
+    pub last_input_state: Option<InputStateJson>,
+    /// Last-sent control state for hydrating new WebSocket clients immediately.
+    pub last_control_state: Option<ControlStateJson>,
+    /// Last-sent modulation state for hydrating new WebSocket clients immediately.
+    pub last_modulation_state: Option<ModulationStateJson>,
 }
 
 /// Messages sent from server to web clients
@@ -134,6 +140,12 @@ pub enum ControlWebCommand {
     MidiLearnCancel,
     #[serde(rename = "midi_unlearn")]
     MidiUnlearn { cc: u8, channel: u8 },
+    #[serde(rename = "midi_refresh_devices")]
+    MidiRefreshDevices,
+    #[serde(rename = "midi_select_device")]
+    MidiSelectDevice { device: String },
+    #[serde(rename = "midi_disconnect")]
+    MidiDisconnect,
 }
 
 /// LFO / audio-routing subsystem commands from web clients.
@@ -148,6 +160,8 @@ pub enum ModulationWebCommand {
     AudioRoute { param_id: String, band: rustjay_core::FftBand, depth: f32 },
     #[serde(rename = "audio_unroute")]
     AudioUnroute { param_id: String },
+    #[serde(rename = "tap_tempo")]
+    TapTempo,
 }
 
 /// Preset commands from web clients.
@@ -203,7 +217,12 @@ pub struct InputStateJson {
 pub struct ControlStateJson {
     pub osc_enabled: bool,
     pub osc_port: u16,
+    pub midi_enabled: bool,
+    pub midi_selected_device: Option<String>,
+    pub midi_devices: Vec<String>,
     pub midi_mappings: Vec<rustjay_core::MidiMappingSnapshot>,
+    pub midi_learn_active: bool,
+    pub midi_learning_param_name: Option<String>,
 }
 
 /// JSON payload for ModulationState broadcast.
@@ -212,6 +231,8 @@ pub struct ModulationStateJson {
     pub lfos: Vec<rustjay_core::lfo::Lfo>,
     pub audio_routes: Vec<rustjay_core::routing::AudioRoute>,
     pub audio_routing_enabled: bool,
+    pub bpm: f32,
+    pub tap_tempo_info: String,
 }
 
 /// Single preset info for web clients.
@@ -266,6 +287,9 @@ impl WebServer {
             preset_names: Vec::new(),
             pending_devices,
             last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            last_input_state: None,
+            last_control_state: None,
+            last_modulation_state: None,
         }));
 
         let server = Self {
@@ -545,24 +569,27 @@ impl WebServer {
     /// Broadcast input state to all connected clients.
     pub fn send_input_state(&self, state: &InputStateJson) {
         let msg = WebMessage::InputState(state.clone());
-        if let Ok(s) = self.state.lock() {
+        if let Ok(mut s) = self.state.lock() {
             let _ = s.broadcast_tx.send(msg);
+            s.last_input_state = Some(state.clone());
         }
     }
 
     /// Broadcast control state (OSC + MIDI) to all connected clients.
     pub fn send_control_state(&self, state: &ControlStateJson) {
         let msg = WebMessage::ControlState(state.clone());
-        if let Ok(s) = self.state.lock() {
+        if let Ok(mut s) = self.state.lock() {
             let _ = s.broadcast_tx.send(msg);
+            s.last_control_state = Some(state.clone());
         }
     }
 
     /// Broadcast modulation state (LFOs + audio routes) to all connected clients.
     pub fn send_modulation_state(&self, state: &ModulationStateJson) {
         let msg = WebMessage::ModulationState(state.clone());
-        if let Ok(s) = self.state.lock() {
+        if let Ok(mut s) = self.state.lock() {
             let _ = s.broadcast_tx.send(msg);
+            s.last_modulation_state = Some(state.clone());
         }
     }
 
@@ -826,6 +853,32 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
             if socket.send(Message::Text(json.into())).await.is_err() {
                 return;
             }
+        }
+    }
+
+    // Send cached structural states so panels populate immediately on connect.
+    let (last_input, last_control, last_modulation) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.last_input_state.clone(), state.last_control_state.clone(), state.last_modulation_state.clone())
+    };
+    log::debug!("WS connect: sending cached states — input={}, control={}, modulation={}",
+        last_input.is_some(), last_control.is_some(), last_modulation.is_some());
+    if let Some(s) = last_input {
+        match serde_json::to_string(&WebMessage::InputState(s)) {
+            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Err(e) => log::warn!("WS input_state serialize failed: {}", e),
+        }
+    }
+    if let Some(s) = last_control {
+        match serde_json::to_string(&WebMessage::ControlState(s)) {
+            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Err(e) => log::warn!("WS control_state serialize failed: {}", e),
+        }
+    }
+    if let Some(s) = last_modulation {
+        match serde_json::to_string(&WebMessage::ModulationState(s)) {
+            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Err(e) => log::warn!("WS modulation_state serialize failed: {}", e),
         }
     }
 

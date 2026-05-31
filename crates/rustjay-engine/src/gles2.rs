@@ -484,10 +484,44 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     web_server.register_default_parameters();
     web_server.register_parameters(&descriptors);
     shared_state.lock().unwrap_or_else(|e| e.into_inner()).web_app_name = app_name.clone();
+
+    // Pre-populate web-server caches before accepting connections so that
+    // every new WebSocket gets structural state immediately on connect.
+    {
+        let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        web_server.send_control_state(&rustjay_control::ControlStateJson {
+            osc_enabled: s.osc_enabled,
+            osc_port: s.osc_port,
+            midi_enabled: s.midi_enabled,
+            midi_selected_device: s.midi_selected_device.clone(),
+            midi_devices: s.midi_available_devices.clone(),
+            midi_mappings: s.midi_mappings.clone(),
+            midi_learn_active: s.midi_learn_active,
+            midi_learning_param_name: s.midi_learning_param_name.clone(),
+        });
+        web_server.send_modulation_state(&rustjay_control::ModulationStateJson {
+            lfos: s.lfo.bank.lfos.clone(),
+            audio_routes: s.audio_routing.matrix.routes().to_vec(),
+            audio_routing_enabled: s.audio_routing.enabled,
+            bpm: s.audio.bpm,
+            tap_tempo_info: s.audio.tap_tempo_info.clone(),
+        });
+        let mut input_state = gles2.get_input_state().unwrap_or_else(|| rustjay_control::InputStateJson {
+            devices: vec![], active_index: None, active_name: String::new(), width: 0, height: 0, fps: 0.0,
+        });
+        input_state.devices = s.input.available_devices.clone();
+        web_server.send_input_state(&input_state);
+        log::info!("Web server state caches pre-populated");
+    }
+
     if let Err(e) = web_server.start() {
         log::error!("Web UI failed to start: {e}");
     } else {
         log::info!("Web UI running at http://{}:{}", web_host, web_port);
+        // Force initial broadcast so panels populate immediately on first connect.
+        web_server.control_dirty = true;
+        web_server.modulation_dirty = true;
+        web_server.input_dirty = true;
     }
 
     // Presets — keep bank alive for the entire loop (WR-9.3)
@@ -513,8 +547,11 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     log::info!("DRM render loop starting at {w}×{h}");
 
     // Main render loop
+    let mut last_frame_start = std::time::Instant::now();
     loop {
         let frame_start = std::time::Instant::now();
+        let delta_time = frame_start.duration_since(last_frame_start).as_secs_f32().min(0.1);
+        last_frame_start = frame_start;
 
         // ── Poll engine services ──────────────────────────────────────────────
         // Audio: push latest FFT + volume into shared state
@@ -533,6 +570,90 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                 state.audio.beat_phase = phase;
                 state.reset_custom_params_to_base();
             }
+        }
+
+        // Apply dirty MIDI mapping values to parameters (desktop parity)
+        if let Some(ref manager) = midi_manager {
+            let dirty: Vec<(String, f32)> = {
+                if let Ok(mut midi_state) = manager.state().lock() {
+                    midi_state.mappings.iter_mut()
+                        .filter(|m| m.is_dirty())
+                        .map(|m| (m.param_path.clone(), m.get_scaled_value()))
+                        .collect()
+                } else { vec![] }
+            };
+            if let Ok(mut state) = shared_state.lock() {
+                for (path, value) in dirty {
+                    match path.as_str() {
+                        "color/hue_shift" => {
+                            state.hsb_params.hue_shift = value.clamp(-180.0, 180.0);
+                            state.hsb_param_bases.hue_shift = state.hsb_params.hue_shift;
+                        }
+                        "color/saturation" => {
+                            state.hsb_params.saturation = value.clamp(0.0, 2.0);
+                            state.hsb_param_bases.saturation = state.hsb_params.saturation;
+                        }
+                        "color/brightness" => {
+                            state.hsb_params.brightness = value.clamp(0.0, 2.0);
+                            state.hsb_param_bases.brightness = state.hsb_params.brightness;
+                        }
+                        "audio/amplitude" => {
+                            state.audio.amplitude = value.clamp(0.0, 5.0);
+                        }
+                        "audio/smoothing" => {
+                            state.audio.smoothing = value.clamp(0.0, 1.0);
+                        }
+                        _ => {
+                            if let Some(id) = path.split('/').last() {
+                                if state.param_descriptors.iter().any(|d| d.id == id) {
+                                    state.set_param_base(id, value);
+                                }
+                            }
+                        }
+                    }
+                }
+                let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                state.audio_routing.update_base_values(h, s, b);
+            }
+        }
+
+        // Update LFO phases and apply modulations to params (post-MIDI so LFO adds on top)
+        {
+            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let bpm = state.effective_bpm().max(1.0);
+            let beat_phase = state.stable_beat_phase();
+            state.lfo.bank.update(bpm, delta_time, beat_phase);
+            state.reset_custom_params_to_base();
+            let mods = state.lfo.bank.get_modulations();
+            let mut any_mod = false;
+            for (param_id, mod_val) in &mods {
+                if mod_val.abs() > 0.001 { any_mod = true; }
+                match param_id.as_str() {
+                    "hue_shift" => {
+                        let base = state.hsb_param_bases.hue_shift;
+                        state.hsb_params.hue_shift = (base + mod_val * 180.0).clamp(-180.0, 180.0);
+                    }
+                    "saturation" => {
+                        let base = state.hsb_param_bases.saturation;
+                        state.hsb_params.saturation = (base + mod_val * 1.0).clamp(0.0, 2.0);
+                    }
+                    "brightness" => {
+                        let base = state.hsb_param_bases.brightness;
+                        state.hsb_params.brightness = (base + mod_val * 1.0).clamp(0.0, 2.0);
+                    }
+                    _ => {
+                        if let Some(i) = state.param_descriptors.iter().position(|d| d.id == *param_id) {
+                            let base = state.custom_param_bases[i];
+                            let desc = &state.param_descriptors[i];
+                            let range = desc.max - desc.min;
+                            state.custom_params[i] = (base + mod_val * range).clamp(desc.min, desc.max);
+                        }
+                    }
+                }
+            }
+            let _ = any_mod; // per-frame; trace only if needed
+            let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+            state.audio_routing.update_base_values(h, s, b);
         }
 
         // OSC: sync dirty parameter values into shared state
@@ -559,16 +680,19 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                             match id.as_str() {
                                 "color/hue_shift" => {
                                     state.hsb_params.hue_shift = value.clamp(-180.0, 180.0);
+                                    state.hsb_param_bases.hue_shift = state.hsb_params.hue_shift;
                                     let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/saturation" => {
                                     state.hsb_params.saturation = value.clamp(0.0, 2.0);
+                                    state.hsb_param_bases.saturation = state.hsb_params.saturation;
                                     let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/brightness" => {
                                     state.hsb_params.brightness = value.clamp(0.0, 2.0);
+                                    state.hsb_param_bases.brightness = state.hsb_params.brightness;
                                     let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
@@ -662,6 +786,31 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     }
                                 }
                             }
+                            rustjay_control::ControlWebCommand::MidiRefreshDevices => {
+                                if let Some(ref mut m) = midi_manager {
+                                    let devs = m.refresh_devices();
+                                    shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_available_devices = devs;
+                                    web_server.control_dirty = true;
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiSelectDevice { device } => {
+                                if let Some(ref mut m) = midi_manager {
+                                    match m.connect(&device) {
+                                        Ok(()) => {
+                                            shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_selected_device = Some(device.clone());
+                                            web_server.control_dirty = true;
+                                        }
+                                        Err(e) => log::error!("MIDI connect failed: {}", e),
+                                    }
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiDisconnect => {
+                                if let Some(ref mut m) = midi_manager {
+                                    m.disconnect();
+                                    shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_selected_device = None;
+                                    web_server.control_dirty = true;
+                                }
+                            }
                         }
                     }
                     WebServerCommand::Modulation(mod_cmd) => {
@@ -715,6 +864,38 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     state.audio_routing.matrix.remove_route(id);
                                 }
                                 web_server.modulation_dirty = true;
+                            }
+                            rustjay_control::ModulationWebCommand::TapTempo => {
+                                use std::time::{SystemTime, UNIX_EPOCH};
+                                let now = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let is_first_tap = now - state.audio.last_tap_time > 2.0;
+                                if is_first_tap {
+                                    state.audio.tap_times.clear();
+                                    state.lfo.bank.reset_all();
+                                }
+                                state.audio.tap_times.push(now);
+                                state.audio.last_tap_time = now;
+                                if state.audio.tap_times.len() > 8 {
+                                    state.audio.tap_times.remove(0);
+                                }
+                                state.audio.beat_phase = 0.0;
+                                if state.audio.tap_times.len() >= 4 {
+                                    let mut intervals = Vec::new();
+                                    for i in 1..state.audio.tap_times.len() {
+                                        intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
+                                    }
+                                    let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
+                                    if avg_interval > 0.1 && avg_interval < 3.0 {
+                                        state.audio.bpm = (60.0 / avg_interval) as f32;
+                                        state.audio.tap_tempo_info = format!("{:.1} BPM", state.audio.bpm);
+                                    }
+                                } else {
+                                    state.audio.tap_tempo_info = format!("{} taps...", state.audio.tap_times.len());
+                                }
                             }
                         }
                     }
@@ -857,9 +1038,9 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                 web_server.input_dirty = false;
             }
             if web_server.control_dirty {
-                let (osc_enabled, osc_port) = {
+                let (osc_enabled, osc_port, midi_enabled, midi_selected_device, midi_devices, midi_learn_active, midi_learning_param_name) = {
                     let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    (s.osc_enabled, s.osc_port)
+                    (s.osc_enabled, s.osc_port, s.midi_enabled, s.midi_selected_device.clone(), s.midi_available_devices.clone(), s.midi_learn_active, s.midi_learning_param_name.clone())
                 };
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
                     if let Some(ref m) = midi_manager {
@@ -878,7 +1059,12 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                 web_server.send_control_state(&rustjay_control::ControlStateJson {
                     osc_enabled,
                     osc_port,
+                    midi_enabled,
+                    midi_selected_device,
+                    midi_devices,
                     midi_mappings,
+                    midi_learn_active,
+                    midi_learning_param_name,
                 });
                 web_server.control_dirty = false;
             }
@@ -888,6 +1074,8 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                         lfos: state.lfo.bank.lfos.clone(),
                         audio_routes: state.audio_routing.matrix.routes().to_vec(),
                         audio_routing_enabled: state.audio_routing.enabled,
+                        bpm: state.audio.bpm,
+                        tap_tempo_info: state.audio.tap_tempo_info.clone(),
                     });
                 }
                 web_server.modulation_dirty = false;

@@ -218,7 +218,6 @@
 </style>
 </head>
 <body>
-<!-- panels open in new tabs; requires popup permission on mobile browsers -->
 <div class="frame">
   <header class="hud">
     <div class="hud-title">
@@ -241,6 +240,18 @@
 
   <div class="section">
     <div class="section-head">
+      <span>Tempo</span>
+      <span class="rule"></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <button id="tap-btn" class="btn" style="min-width:72px;" onclick="tapTempo()">TAP</button>
+      <span id="bpm-display" style="font-family:var(--mono);color:var(--ink2);">-- BPM</span>
+      <span id="tap-info" style="font-size:11px;color:var(--ink3);"></span>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-head">
       <span>Audio Reactivity</span>
       <span class="rule"></span>
     </div>
@@ -257,6 +268,7 @@
   const ws = new WebSocket(wsUrl);
 
   let state = { lfos: [], audio_routes: [], audio_routing_enabled: false };
+  let params = [];
 
   const WAVEFORMS = ['Sine', 'Triangle', 'Ramp', 'Saw', 'Square'];
   const BANDS = ['Sub Bass', 'Bass', 'Low Mid', 'Mid', 'High Mid', 'High', 'Very High', 'Presence'];
@@ -277,6 +289,13 @@
       state = msg;
       renderLfos();
       renderAudio();
+      const bpm = (typeof msg.bpm === 'number') ? msg.bpm.toFixed(1) : '--';
+      document.getElementById('bpm-display').textContent = bpm + ' BPM';
+      const info = msg.tap_tempo_info || '';
+      document.getElementById('tap-info').textContent = info;
+    } else if (msg.type === 'params') {
+      params = msg.params || [];
+      renderLfos();
     }
   };
 
@@ -295,6 +314,39 @@
     sendCmd({ type: 'modulation', action: 'lfo_enable', slot, enabled });
   }
 
+  function tapTempo() {
+    sendCmd({ type: 'modulation', action: 'tap_tempo' });
+    const btn = document.getElementById('tap-btn');
+    btn.style.background = 'var(--ink2)';
+    setTimeout(() => { btn.style.background = ''; }, 120);
+  }
+
+  function getTargetValue(lfo) {
+    if (!lfo.target) return '';
+    if (typeof lfo.target === 'string') return lfo.target;
+    if (lfo.target.Custom) return 'custom:' + lfo.target.Custom;
+    return String(lfo.target);
+  }
+
+  function buildTargetOptions(selectedValue) {
+    const staticTargets = [
+      { value: 'HueShift', label: 'Hue Shift' },
+      { value: 'Saturation', label: 'Saturation' },
+      { value: 'Brightness', label: 'Brightness' },
+    ];
+    let html = `<option value="">None</option>`;
+    staticTargets.forEach(t => {
+      html += `<option value="${t.value}" ${selectedValue === t.value ? 'selected' : ''}>${t.label}</option>`;
+    });
+    // Add effect-declared custom parameters
+    params.forEach(p => {
+      const val = 'custom:' + p.id;
+      const label = p.name || p.id;
+      html += `<option value="${val}" ${selectedValue === val ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    });
+    return html;
+  }
+
   function renderLfos() {
     const container = document.getElementById('lfo-container');
     container.innerHTML = '';
@@ -305,7 +357,7 @@
     state.lfos.forEach((lfo, slot) => {
       const div = document.createElement('div');
       div.className = 'lfo-slot';
-      const targetName = lfo.target ? (lfo.target.Custom || lfo.target.name || String(lfo.target)) : 'None';
+      const targetVal = getTargetValue(lfo);
       div.innerHTML = `
         <div class="lfo-header">
           <span class="num">LFO ${slot + 1}</span>
@@ -319,16 +371,13 @@
           <div class="field">
             <label>Waveform</label>
             <select onchange="updateLfo(${slot}, 'waveform', this.value)">
-              ${WAVEFORMS.map((w,i) => `<option value="${w}" ${lfo.waveform === w ? 'selected' : ''}>${w}</option>`).join('')}
+              ${WAVEFORMS.map(w => `<option value="${w}" ${lfo.waveform === w ? 'selected' : ''}>${w}</option>`).join('')}
             </select>
           </div>
           <div class="field">
             <label>Target</label>
-            <select id="lfo-target-${slot}" onchange="updateLfo(${slot}, 'target', this.value)">
-              <option value="">None</option>
-              <option value="HueShift" ${targetName === 'HueShift' ? 'selected' : ''}>Hue Shift</option>
-              <option value="Saturation" ${targetName === 'Saturation' ? 'selected' : ''}>Saturation</option>
-              <option value="Brightness" ${targetName === 'Brightness' ? 'selected' : ''}>Brightness</option>
+            <select onchange="updateLfo(${slot}, 'target', this.value)">
+              ${buildTargetOptions(targetVal)}
             </select>
           </div>
           <div class="field">
@@ -342,6 +391,18 @@
             <input type="number" step="0.01" min="-1" max="1" value="${lfo.amplitude || 0}"
                    onchange="updateLfo(${slot}, 'amplitude', parseFloat(this.value))">
           </div>
+          <div class="field">
+            <label>Tempo Sync</label>
+            <select onchange="updateLfo(${slot}, 'tempo_sync', this.value === 'true')">
+              <option value="true" ${lfo.tempo_sync !== false ? 'selected' : ''}>On</option>
+              <option value="false" ${lfo.tempo_sync === false ? 'selected' : ''}>Off</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Rate (Hz)</label>
+            <input type="number" step="0.01" min="0.01" max="20" value="${lfo.rate || 1}"
+                   onchange="updateLfo(${slot}, 'rate', parseFloat(this.value))">
+          </div>
         </div>
       `;
       container.appendChild(div);
@@ -353,9 +414,12 @@
     if (field === 'waveform') lfo.waveform = value;
     if (field === 'division') lfo.division = value;
     if (field === 'amplitude') lfo.amplitude = value;
+    if (field === 'tempo_sync') lfo.tempo_sync = value;
+    if (field === 'rate') lfo.rate = value;
     if (field === 'target') {
       if (!value) lfo.target = 'None';
-      else lfo.target = value; // HueShift, Saturation, Brightness sent as strings
+      else if (value.startsWith('custom:')) lfo.target = { Custom: value.slice(7) };
+      else lfo.target = value;
     }
     setLfo(slot, lfo);
   }
@@ -390,12 +454,9 @@
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // Delayed init so state can arrive
   setTimeout(() => {
-    if (!state.lfos || state.lfos.length === 0) {
-      renderLfos();
-      renderAudio();
-    }
+    renderLfos();
+    renderAudio();
   }, 300);
 </script>
 </body>

@@ -807,6 +807,8 @@ pub struct EngineState {
 
     /// HSB colour parameters.
     pub hsb_params: HsbParams,
+    /// Base HSB colour parameters (before LFO modulation).
+    pub hsb_param_bases: HsbParams,
     /// Whether HSB colour adjustment is enabled.
     pub color_enabled: bool,
 
@@ -965,6 +967,7 @@ impl EngineState {
             picked_color: None,
             pixel_pick_armed: false,
             hsb_params: HsbParams::default(),
+            hsb_param_bases: HsbParams::default(),
             color_enabled: true,
             audio: AudioState { enabled: true, amplitude: 1.0, smoothing: 0.5, normalize: true, ..Default::default() },
             audio_command: AudioCommand::None,

@@ -719,6 +719,21 @@ impl<P: EffectPlugin> App<P> {
                                     }
                                 }
                             }
+                            rustjay_control::ControlWebCommand::MidiRefreshDevices => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.midi_command = MidiCommand::RefreshDevices;
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiSelectDevice { device } => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.midi_command = MidiCommand::SelectDevice(device);
+                                }
+                            }
+                            rustjay_control::ControlWebCommand::MidiDisconnect => {
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    state.midi_command = MidiCommand::Disconnect;
+                                }
+                            }
                         }
                     }
                     WebServerCommand::Modulation(mod_cmd) => {
@@ -770,6 +785,39 @@ impl<P: EffectPlugin> App<P> {
                                         .collect();
                                     for id in ids_to_remove {
                                         state.audio_routing.matrix.remove_route(id);
+                                    }
+                                }
+                            }
+                            rustjay_control::ModulationWebCommand::TapTempo => {
+                                use std::time::{SystemTime, UNIX_EPOCH};
+                                let now = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                if let Ok(mut state) = self.shared_state.lock() {
+                                    let is_first_tap = now - state.audio.last_tap_time > 2.0;
+                                    if is_first_tap {
+                                        state.audio.tap_times.clear();
+                                        state.lfo.bank.reset_all();
+                                    }
+                                    state.audio.tap_times.push(now);
+                                    state.audio.last_tap_time = now;
+                                    if state.audio.tap_times.len() > 8 {
+                                        state.audio.tap_times.remove(0);
+                                    }
+                                    state.audio.beat_phase = 0.0;
+                                    if state.audio.tap_times.len() >= 4 {
+                                        let mut intervals = Vec::new();
+                                        for i in 1..state.audio.tap_times.len() {
+                                            intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
+                                        }
+                                        let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
+                                        if avg_interval > 0.1 && avg_interval < 3.0 {
+                                            state.audio.bpm = (60.0 / avg_interval) as f32;
+                                            state.audio.tap_tempo_info = format!("{:.1} BPM", state.audio.bpm);
+                                        }
+                                    } else {
+                                        state.audio.tap_tempo_info = format!("{} taps...", state.audio.tap_times.len());
                                     }
                                 }
                             }

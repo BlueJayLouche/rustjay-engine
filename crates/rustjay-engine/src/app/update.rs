@@ -415,11 +415,11 @@ impl<P: EffectPlugin> App<P> {
                 server.input_dirty = false;
             }
             if server.control_dirty {
-                let (osc_enabled, osc_port) = {
+                let (osc_enabled, osc_port, midi_enabled, midi_selected_device, midi_devices, midi_learn_active, midi_learning_param_name) = {
                     if let Ok(state) = self.shared_state.lock() {
-                        (state.osc_enabled, state.osc_port)
+                        (state.osc_enabled, state.osc_port, state.midi_enabled, state.midi_selected_device.clone(), state.midi_available_devices.clone(), state.midi_learn_active, state.midi_learning_param_name.clone())
                     } else {
-                        (false, 9000)
+                        (false, 9000, false, None, vec![], false, None)
                     }
                 };
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
@@ -439,7 +439,12 @@ impl<P: EffectPlugin> App<P> {
                 server.send_control_state(&rustjay_control::ControlStateJson {
                     osc_enabled,
                     osc_port,
+                    midi_enabled,
+                    midi_selected_device,
+                    midi_devices,
                     midi_mappings,
+                    midi_learn_active,
+                    midi_learning_param_name,
                 });
                 server.control_dirty = false;
             }
@@ -449,6 +454,8 @@ impl<P: EffectPlugin> App<P> {
                         lfos: state.lfo.bank.lfos.clone(),
                         audio_routes: state.audio_routing.matrix.routes().to_vec(),
                         audio_routing_enabled: state.audio_routing.enabled,
+                        bpm: state.audio.bpm,
+                        tap_tempo_info: state.audio.tap_tempo_info.clone(),
                     });
                 }
                 server.modulation_dirty = false;
