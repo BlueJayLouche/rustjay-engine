@@ -6,7 +6,11 @@ rustjay-engine can lock to three external tempo sources. Enabling them is a feat
 
 ### Audio beat detection (always available)
 
-The default. The engine analyses the audio input to estimate BPM and track beat phase. Also responds to tap tempo (`Shift+T` on the output window, or the tap button in the Audio tab).
+The default. The engine analyses the audio input to estimate BPM and track beat phase.
+
+Tap tempo is also available to set BPM manually:
+- **Desktop:** `Shift+T` on the output window, or the tap button in the Audio tab
+- **Headless / web:** **Tap** button in the Modulation panel — two taps give an immediate estimate; up to 8 taps refine the average. The BPM display updates after each tap.
 
 No features needed. Works offline. Quality depends on the audio signal.
 

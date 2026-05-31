@@ -48,51 +48,57 @@ All structural commands (`Input*`, `Control*`, `Modulation*`) are dispatched in 
 
 | Step | Description | Files Modified |
 |---|---|---|
-| WR-1.1 | Extended `rustjay_control::web::WebCommand` with `Input`, `Control`, `Modulation`, `Preset` variants | `crates/rustjay-control/src/web/mod.rs` |
+| WR-1.1 | Extended `rustjay_control::web::WebCommand` with `Input`, `Control`, `Modulation`, `Preset` variants; fixed serde to `#[serde(tag="action")]` on sub-enums | `crates/rustjay-control/src/web/mod.rs` |
 | WR-1.2 | Added `POST /{app}/cmd` route inside protected router | `crates/rustjay-control/src/web/mod.rs` |
-| WR-1.3 | Added `WebMessage` variants and JSON structs (`InputState`, `ControlState`, `ModulationState`, `PresetState`) | `crates/rustjay-control/src/web/mod.rs` |
-| WR-1.4 | Added dirty flags (`input_dirty`, `control_dirty`, `modulation_dirty`, `preset_dirty`) to `WebServer` | `crates/rustjay-control/src/web/mod.rs` |
-| WR-1.5 | Added broadcast methods (`send_input_state`, `send_control_state`, `send_modulation_state`, `send_preset_state`) | `crates/rustjay-control/src/web/mod.rs` |
-| WR-1.6 | Added `preset_names` and `pending_devices` to `WebServerState` | `crates/rustjay-control/src/web/mod.rs` |
-| WR-1.7 | Added `InputDeviceInfo` to `rustjay-core` and `available_devices` to `InputState` | `crates/rustjay-core/src/state.rs` |
-| WR-1.8 | Made `Lfo::last_beat_phase` public for phase-continuity preservation | `crates/rustjay-core/src/lfo.rs` |
-| WR-1.9 | Re-exported new web command enums from `rustjay-control` lib | `crates/rustjay-control/src/lib.rs` |
-| WR-2.1 | Async v4l2-ctl device enumeration with 5-second throttle | `crates/rustjay-control/src/web/mod.rs` |
-| WR-2.2 | Added `Input` command dispatch in GLES2 loop | `crates/rustjay-engine/src/gles2.rs` |
-| WR-2.3 | Input panel HTML (`input.html`) | `crates/rustjay-control/src/web/input.html` |
-| WR-2.4 | `get_input_state()` trait method + `FluxGles2` impl | `crates/rustjay-engine/src/gles2.rs`, `examples/flux/src/gles2_renderer.rs` |
-| WR-3.1 | MIDI learn full flow with parameter translation | `crates/rustjay-engine/src/app/commands.rs`, `crates/rustjay-engine/src/gles2.rs` |
-| WR-3.2 | Control panel HTML (`control.html`) | `crates/rustjay-control/src/web/control.html` |
-| WR-3.3 | MIDI mapping change detection and broadcast in both loops | `crates/rustjay-engine/src/gles2.rs`, `crates/rustjay-engine/src/app/update.rs` |
+| WR-1.3 | Added `WebMessage` variants and JSON structs; extended `ControlStateJson` with full MIDI state; added `bpm`/`tap_tempo_info` to `ModulationStateJson` | `crates/rustjay-control/src/web/mod.rs` |
+| WR-1.4 | Added dirty flags to `WebServer` | `crates/rustjay-control/src/web/mod.rs` |
+| WR-1.5 | Broadcast methods; `send_preset_state` updates `preset_names`; WS connect sends all cached states | `crates/rustjay-control/src/web/mod.rs` |
+| WR-1.6 | `preset_names`, `pending_devices`, `last_refresh`, `last_*_state` caches in `WebServerState` | `crates/rustjay-control/src/web/mod.rs` |
+| WR-1.7 | `InputDeviceInfo` in `rustjay-core`; `available_devices` in `InputState` | `crates/rustjay-core/src/state.rs` |
+| WR-1.8 | `Lfo::last_beat_phase` public | `crates/rustjay-core/src/lfo.rs` |
+| WR-1.9 | Re-exported JSON structs from `rustjay-control` lib | `crates/rustjay-control/src/lib.rs` |
+| WR-2.1 | Async `v4l2-ctl --list-devices` in `cmd_handler` with 5-second throttle; GLES2 loop polls `pending_devices` each frame | `crates/rustjay-control/src/web/mod.rs`, `crates/rustjay-engine/src/gles2.rs` |
+| WR-2.2 | `Input` command dispatch in GLES2 loop (no `shared_state` lock during webcam open) | `crates/rustjay-engine/src/gles2.rs` |
+| WR-2.3 | Input panel HTML (`input.html`) — device list, PAL/NTSC dropdown, stop/restart | `crates/rustjay-control/src/web/input.html` |
+| WR-2.4 | `get_input_state()` on `Gles2Effect`/`Gles2EffectDyn`; `FluxGles2` tracks active device index/resolution | `crates/rustjay-engine/src/gles2.rs`, `examples/flux/src/gles2_renderer.rs` |
+| WR-3.1 | MIDI learn with `param_descriptors` lookup; `MidiRefreshDevices`, `MidiSelectDevice`, `MidiDisconnect` in both loops | `crates/rustjay-engine/src/app/commands.rs`, `crates/rustjay-engine/src/gles2.rs` |
+| WR-3.2 | Control panel HTML (`control.html`) — OSC, MIDI device list, parameter learn buttons, mapping list, learn badge | `crates/rustjay-control/src/web/control.html` |
+| WR-3.3 | MIDI mapping change detection per-frame in GLES2; writes to `state.midi_mappings`; triggers `save_settings_requested` | `crates/rustjay-engine/src/gles2.rs` |
+| WR-3.4 | MIDI device + mappings persist across restarts via `AppSettings`; GLES2 init reconnects saved device | `crates/rustjay-engine/src/config.rs`, `crates/rustjay-engine/src/gles2.rs` |
 | WR-4.1 | `param_id_to_modulation_target` helper | `crates/rustjay-engine/src/gles2.rs` |
-| WR-4.2 | GLES2 loop dispatch for `Control*` variants | `crates/rustjay-engine/src/gles2.rs` |
-| WR-4.3 | GLES2 loop dispatch for `Modulation*` variants | `crates/rustjay-engine/src/gles2.rs` |
-| WR-4.4 | GLES2 loop dispatch for `Preset*` variants | `crates/rustjay-engine/src/gles2.rs` |
-| WR-4 HTML | Modulation panel HTML (`modulation.html`) | `crates/rustjay-control/src/web/modulation.html` |
-| WR-5 | Desktop loop dispatch for all new variants | `crates/rustjay-engine/src/app/commands.rs`, `crates/rustjay-engine/src/app/update.rs` |
-| WR-5.1 | Panel routes (`/input`, `/control`, `/modulation`, `/presets`) | `crates/rustjay-control/src/web/mod.rs` |
-| WR-5.2 | Toolbar buttons with token forwarding via `openPanel()` | `crates/rustjay-control/src/web/ui.html` |
-| WR-6 | Dirty-flag broadcasting for structural channels (both loops) | `crates/rustjay-engine/src/gles2.rs`, `crates/rustjay-engine/src/app/update.rs` |
+| WR-4.2 | GLES2 dispatch for `Control*` (Osc, OscSetPort, MidiLearn, MidiLearnCancel, MidiUnlearn, MidiRefreshDevices, MidiSelectDevice, MidiDisconnect) | `crates/rustjay-engine/src/gles2.rs` |
+| WR-4.3 | GLES2 dispatch for `Modulation*` (LfoSet with phase continuity, LfoEnable, TapTempo) | `crates/rustjay-engine/src/gles2.rs` |
+| WR-4.4 | GLES2 dispatch for `Preset*` (List, Save with name validation, Load, Delete) | `crates/rustjay-engine/src/gles2.rs` |
+| WR-4 HTML | Modulation panel HTML (`modulation.html`) — LFO slots with custom param targets, tempo sync, rate, tap tempo, audio routes display | `crates/rustjay-control/src/web/modulation.html` |
+| WR-5 | Desktop dispatch for all new variants in `commands.rs` + dirty-flag drain in `update.rs` | `crates/rustjay-engine/src/app/commands.rs`, `crates/rustjay-engine/src/app/update.rs` |
+| WR-5.1 | Panel routes (`/input`, `/control`, `/modulation`, `/presets`) inside protected router | `crates/rustjay-control/src/web/mod.rs` |
+| WR-5.2 | Toolbar `[Input][Control][Modulation][Presets]` buttons with token forwarding | `crates/rustjay-control/src/web/ui.html` |
+| WR-6 | Dirty-flag drain in both loops; MIDI mapping changes trigger save immediately | `crates/rustjay-engine/src/gles2.rs`, `crates/rustjay-engine/src/app/update.rs` |
+| WR-8 | Auto-detect read-only root at GLES2 startup; redirect writes to `/boot/rustjay-data` in-process if needed; service file documents permanent fix | `crates/rustjay-engine/src/gles2.rs`, `guide/src/deployment/raspberry-pi.md` |
 | WR-9.1 | Device enumeration async bridge (shared with WR-2.1) | `crates/rustjay-control/src/web/mod.rs` |
-| WR-9.3 | Keep `PresetBank` alive in GLES2/DRM loop | `crates/rustjay-engine/src/gles2.rs` |
-| WR-9.4 | Presets panel HTML (`presets.html`) | `crates/rustjay-control/src/web/presets.html` |
-| WR-9.5 | Panel routes and toolbar buttons (shared with WR-5.1/WR-5.2) | `crates/rustjay-control/src/web/mod.rs`, `crates/rustjay-control/src/web/ui.html` |
+| WR-9.3 | `PresetBank` kept alive for GLES2/DRM loop duration | `crates/rustjay-engine/src/gles2.rs` |
+| WR-9.4 | Presets panel HTML (`presets.html`) — save-as, load, delete with confirm, 2-second write-failure toast | `crates/rustjay-control/src/web/presets.html` |
+| WR-9.5 | Panel routes and toolbar buttons (see WR-5.1/5.2) | |
 | WR-9.6 | Initial `PresetState` broadcast on WebSocket connect | `crates/rustjay-control/src/web/mod.rs` |
 
-### ⏳ Not Started
+### Bug fixes applied during runtime testing
+
+| Fix | Description |
+|---|---|
+| Serde untagged ambiguity | `Load { index }` vs `Delete { index }` under `#[serde(untagged)]` — `Delete` was unreachable. Fixed via `#[serde(tag="action")]` on all four sub-enums. |
+| LFO custom target ID mismatch | `modulation.html` stored the full web path `"category/id"` in `LfoTarget::Custom`; backend matched bare `"id"`. LFO had zero effect on custom parameters. Fixed by stripping category prefix before storage. |
+| Tap tempo 4-tap gate | BPM only computed after ≥ 4 taps; first 3 taps were silent. Reduced to 2 (one interval). |
+| Tap tempo no broadcast | `modulation_dirty` never set after tap; BPM display never updated. Fixed. |
+| Dirty flags never drained | `send_control_state`/`send_preset_state` not called after flags set — panels never received state after initial connect. Fixed. |
+| MIDI/OSC fall-through | `MidiLearn`, `MidiLearnCancel`, `MidiUnlearn` fell through `_ => {}` in GLES2 Control arm. Fixed. |
+| `log::warn!` as trace | Three per-frame/per-connect `log::warn!` lines demoted to `log::debug!`/`info!`/removed. |
+
+### ⏳ Remaining
 
 | Step | Description |
 |---|---|
-| WR-7 | Compile matrix verification and runtime testing |
-| WR-8 | Pi deployment (systemd env var + `mkdir /boot/rustjay-data`) |
-
-### 📝 Notes for Next Agent
-
-1. **Verify `OscSetPort` handler** in `gles2.rs` actually assigns `osc_server = new_server` and works at runtime.
-2. **Audio routing mutation API** (`AudioRoute` / `AudioUnroute`) is implemented in the desktop path but has not been runtime-verified on the GLES2/DRM path. The modulation panel currently displays routes read-only.
-3. **LFO target dropdown** in `modulation.html` only lists the three built-in targets (`HueShift`, `Saturation`, `Brightness`). Effect-declared custom parameters require dynamic population from `param_descriptors` in a future iteration.
-4. **Pi deployment (WR-8)** is the last remaining deployment step: create `/boot/rustjay-data`, migrate existing config, update `flux.service` with `Environment=XDG_CONFIG_HOME=/boot/rustjay-data`.
-5. **Compile matrix (WR-7)** should be run before tagging a release: macOS desktop default, Pi 4/3/2 with `--no-default-features --features webcam,drm-gles2,midi`.
+| WR-7 | Full compile matrix verification and Pi hardware runtime testing |
+| AudioRoute / AudioUnroute | `AudioRoutingState` mutation API unverified; modulation panel shows routes read-only for now |
 
 ---
 

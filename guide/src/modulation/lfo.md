@@ -1,67 +1,83 @@
 # LFOs
 
-rustjay-engine includes three LFO banks (A, B, C). Each bank is an independent oscillator that can be assigned to any declared parameter at runtime from the LFO tab.
+rustjay-engine provides **8 LFO slots**. Each slot is an independent oscillator that can be assigned to any declared parameter at runtime — from the Modulation tab (desktop) or the **Modulation** web panel (headless).
 
-## The LFO tab
+## Configuration
 
-Each bank shows:
-- **Waveform** — Sine, Triangle, Saw, Square, or Noise
-- **Rate** — in Hz or as a beat division (1/4, 1/8, 1/16, etc.)
-- **Depth** — modulation amount; multiplied by the waveform output
-- **Target** — which declared parameter this bank drives
+Each slot exposes:
 
-The user assigns LFO banks to parameters at runtime. Your code doesn't need to know which parameter any given bank is targeting.
+| Field | Description |
+|---|---|
+| **Enabled** | Toggle the slot on/off without losing its settings |
+| **Waveform** | Shape of the oscillator (see table below) |
+| **Target** | Which parameter this slot drives; built-in or any effect-declared parameter |
+| **Depth** | Modulation amplitude — scales the `[-1, 1]` oscillator output |
+| **Tempo Sync** | On: rate is expressed as a beat division; Off: rate in Hz |
+| **Division** | Beat subdivision when tempo sync is on (1/16 through 8 beats) |
+| **Rate (Hz)** | Oscillator frequency when tempo sync is off |
+| **Phase Offset** | Starting phase in degrees (0–360) — useful for quadrature pairs |
 
 ## Waveforms
 
 | Waveform | Shape | Output range |
 |---|---|---|
 | `Sine` | Smooth sinusoidal | `[-1, 1]` |
-| `Triangle` | Linear V shape | `[-1, 1]` |
-| `Saw` | Rising ramp, instant reset | `[-1, 1]` |
+| `Triangle` | Linear V-shape | `[-1, 1]` |
+| `Ramp` | Rising linear ramp, instant reset | `[-1, 1]` |
+| `Saw` | Falling linear ramp, instant reset | `[-1, 1]` |
 | `Square` | Instant high/low | `[-1, 1]` |
-| `Noise` | Random per-sample | `[-1, 1]` |
 
-Depth scales the `[-1, 1]` oscillator output before it's added to the base parameter value. A depth of 0.5 means the LFO swings ±0.5 units from the base.
+Depth scales the `[-1, 1]` oscillator output before it is added to the parameter's base value. A depth of `0.5` means the LFO swings ±0.5 units from whatever the base value is set to.
 
 ## Beat-sync mode
 
-When **Beat Sync** is enabled on a bank, its rate is expressed as a beat division rather than Hz. The engine converts it using the current effective BPM:
+When **Tempo Sync** is on, the division field replaces the rate field. The engine converts it using `effective_bpm()`:
 
 ```
-hz = (bpm / 60.0) * (1.0 / beat_division)
+cycle_duration_seconds = (60 / bpm) * beats_per_cycle
 ```
 
-So at 120 BPM, a `1/4` note rate runs at 2 Hz; a `1/2` note runs at 1 Hz.
+At 120 BPM, a `1/4` division (0.25 beats) runs at 8 Hz; a `1` beat division runs at 2 Hz; a `4` beat division runs at 0.5 Hz.
 
-The LFO phase locks to `engine.effective_beat_phase()`, so it stays in sync even when the tempo source changes. This is the recommended way to drive beat-locked visuals.
+The LFO phase advances freely based on wall-clock delta time — it does **not** directly track `beat_phase`. When using Ableton Link or ProDJ Link, the phase snaps to the quantum boundary on each beat crossing to stay musically in phase. With audio beat detection or tap tempo, the phase resets freely and may drift relative to the actual beat.
+
+## Tap tempo
+
+On headless Pi setups without Ableton Link, use **Tap Tempo** in the Modulation web panel to set the BPM manually. Tap twice for an immediate estimate; subsequent taps refine the average over up to 8 intervals. The BPM display updates after each tap.
+
+Tap tempo writes to `audio.bpm`, which `effective_bpm()` returns when the active sync source is *Audio*.
 
 ## Reading LFO values in code
 
-When you use `engine.get_param(id)`, LFO modulation is already included in the returned value. You rarely need to read raw LFO state directly.
+When you call `engine.get_param(id)`, LFO modulation is already included — you don't need to read the LFO state directly.
 
-If you do need the raw oscillator output (e.g. to drive something that isn't a parameter):
+If you need the raw oscillator output (e.g. to drive something outside the parameter system):
 
 ```rust
 fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
-    // Direct read — no parameter system involved
-    let lfo_a = engine.lfo.banks[0].current_value; // f32 in [-1, 1]
-    let lfo_b = engine.lfo.banks[1].current_value;
+    let lfo_0 = engine.lfo.bank.lfos[0].output; // f32 in [-amplitude, amplitude]
+    let lfo_1 = engine.lfo.bank.lfos[1].output;
     MyUniforms {
-        wobble: lfo_a * s.wobble_depth,
+        wobble: lfo_0,
         // ...
     }
 }
 ```
 
-## Driving multiple parameters
+`output` is in `[-amplitude, amplitude]` — it is the raw waveform value multiplied by depth.
 
-Each bank targets one parameter. To modulate multiple parameters with different shapes, assign each to a different bank:
+## Phase continuity on config update
 
-- Bank A → hue_shift (Sine, 0.25 Hz)
-- Bank B → saturation (Triangle, beat-sync 1/2)
-- Bank C → brightness (Noise, 4 Hz)
+When an LFO's configuration is changed via the web Modulation panel, the engine preserves the current `phase`, `output`, and `last_beat_phase` values from the existing slot before applying the new config. A running LFO does not snap back to phase 0 when you adjust its waveform or depth mid-cycle.
 
-## Phase offset
+## Targeting effect-declared parameters
 
-The Saw and Sine waveforms respect a phase offset that can be set programmatically if you're building a custom LFO UI. A phase of `0.5` starts the waveform halfway through its cycle — useful for creating quadrature pairs.
+LFO targets fall into two groups:
+
+**Built-in targets** — `HueShift`, `Saturation`, `Brightness`. These modulate the HSB colour correction layer common to all effects.
+
+**Custom targets** — any parameter declared by the effect via `ParameterDescriptor`. In the web Modulation panel, all current effect parameters appear in the Target dropdown under their category name (e.g. *Flux / Flow Scale*). Internally, these are stored as `LfoTarget::Custom("flow_scale")` using the bare parameter ID — the category prefix is stripped before storage.
+
+## Multiple LFOs on one parameter
+
+If two or more enabled slots target the same parameter, their outputs are summed before being applied. The summed modulation is still clamped to the parameter's `[min, max]` range.

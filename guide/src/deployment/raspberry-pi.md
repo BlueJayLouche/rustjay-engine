@@ -142,7 +142,11 @@ On Pi 4/5 you can omit these features — the standard wgpu Vulkan path is used 
 
 **One-time setup — persistent config on the boot partition:**
 
-The Pi root filesystem is remounted read-only by the `ro` script. Without intervention, config writes (MIDI mappings, presets, OSC port, etc.) silently fail. The `/boot` partition is always mounted writable and has ample free space (~973 MB). Create a config directory there and migrate existing settings:
+The Pi root filesystem is remounted read-only by the `ro` script. Without intervention, config writes (MIDI mappings, presets, OSC port, etc.) silently fail. The `/boot` partition is always mounted writable and has ample free space (~973 MB).
+
+> **Auto-detection:** flux detects a read-only root at startup and automatically redirects writes to `/boot/rustjay-data` for that session, creating the directory if needed. You will see `Config dir … is read-only; redirecting saves to /boot/rustjay-data` in the journal. The steps below make this permanent so no detection is needed on every boot.
+
+Create the directory and migrate existing settings:
 
 ```sh
 ssh alarm@<pi-ip> '
@@ -262,7 +266,7 @@ A value of `0` opens `/dev/video0` (the first V4L2 capture device). Set to `null
 | **OSC** | Send to `<pi-ip>:7770`, e.g. `/rustjay/sputnik/displacement_scale 0.5` |
 | **MIDI** | USB MIDI controller — CCs map via MIDI Learn as normal |
 
-Settings (MIDI mappings, last preset, FPS target) persist in `~/.config/rustjay/sputnik.json`.
+Settings (MIDI mappings, last preset, FPS target, OSC port) persist automatically — to `/boot/rustjay-data/rustjay/<app>.json` when the root is read-only, or to `~/.config/rustjay/<app>.json` otherwise. MIDI mappings are saved the moment a mapping is learned or removed; presets are saved immediately on write.
 
 ### Web remote on headless Pi 2 / Pi 3
 
