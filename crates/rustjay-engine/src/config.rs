@@ -13,13 +13,28 @@ fn default_target_fps() -> u32 {
     60
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_midi_kind() -> rustjay_core::MidiMsgKind { rustjay_core::MidiMsgKind::Cc }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MidiMappingConfig {
     pub cc: u8,
     pub channel: u8,
     pub param_path: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "default_midi_kind")]
+    pub kind: rustjay_core::MidiMsgKind,
     pub min_value: f32,
     pub max_value: f32,
+}
+
+impl Default for MidiMappingConfig {
+    fn default() -> Self {
+        Self {
+            cc: 0, channel: 0, param_path: String::new(), name: String::new(),
+            kind: default_midi_kind(), min_value: 0.0, max_value: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +266,26 @@ impl AppSettings {
         // if it fires before the InputManager is initialised).
         state.startup_webcam_device = self.startup_webcam_device;
 
+        // Restore MIDI device and mappings into EngineState so the GLES2 init
+        // block can reconnect the manager after it is created.
+        state.midi_enabled = self.midi_enabled;
+        state.midi_selected_device = self.midi_device.clone();
+        state.midi_mappings = self.midi_mappings.iter().map(|m| {
+            rustjay_core::MidiMappingSnapshot {
+                name: if m.name.is_empty() {
+                    m.param_path.split('/').last().unwrap_or(&m.param_path).to_string()
+                } else {
+                    m.name.clone()
+                },
+                param_path: m.param_path.clone(),
+                kind: m.kind,
+                selector: m.cc,
+                channel: m.channel,
+                min_value: m.min_value,
+                max_value: m.max_value,
+            }
+        }).collect();
+
         // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
@@ -287,9 +322,17 @@ impl AppSettings {
             spout_output_name: state.spout_output.sender_name.clone(),
             #[cfg(target_os = "linux")]
             v4l2_device_path: state.v4l2_output.device_path.clone(),
-            midi_enabled: false,
-            midi_device: None,
-            midi_mappings: Vec::new(),
+            midi_enabled: state.midi_enabled,
+            midi_device: state.midi_selected_device.clone(),
+            midi_mappings: state.midi_mappings.iter().map(|m| MidiMappingConfig {
+                cc: m.selector,
+                channel: m.channel,
+                param_path: m.param_path.clone(),
+                name: m.name.clone(),
+                kind: m.kind,
+                min_value: m.min_value,
+                max_value: m.max_value,
+            }).collect(),
             osc: OscConfig {
                 host: state.osc_host.clone(),
                 port: state.osc_port,

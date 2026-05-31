@@ -457,6 +457,31 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     let mut midi_manager = MidiManager::new(midi_state).ok().map(|mut m| {
         let devs = m.refresh_devices();
         shared_state.lock().unwrap_or_else(|e| e.into_inner()).midi_available_devices = devs;
+
+        // Restore saved device and mappings from config (loaded into EngineState
+        // by AppSettings::apply_to_state before this point).
+        let (saved_device, saved_mappings) = {
+            let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (s.midi_selected_device.clone(), s.midi_mappings.clone())
+        };
+        if let Some(ref device) = saved_device {
+            match m.connect(device) {
+                Ok(()) => log::info!("MIDI: restored connection to '{}'", device),
+                Err(e) => log::warn!("MIDI: could not restore connection to '{}': {}", device, e),
+            }
+        }
+        if !saved_mappings.is_empty() {
+            if let Ok(mut midi_st) = m.state().lock() {
+                midi_st.mappings = saved_mappings.iter().map(|s| {
+                    rustjay_control::MidiMapping::new(
+                        s.kind, s.selector, s.channel,
+                        &s.name, &s.param_path,
+                        s.min_value, s.max_value,
+                    )
+                }).collect();
+                log::info!("MIDI: restored {} mapping(s)", midi_st.mappings.len());
+            }
+        }
         m
     });
 
@@ -993,6 +1018,11 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                     max_value: m.max_value,
                 }).collect();
                 if current != last_broadcast_mappings {
+                    // Write back to EngineState so AppSettings::from_state() persists them.
+                    if let Ok(mut state) = shared_state.lock() {
+                        state.midi_mappings = current.clone();
+                        state.save_settings_requested = true;
+                    }
                     last_broadcast_mappings = current;
                     web_server.control_dirty = true;
                 }
