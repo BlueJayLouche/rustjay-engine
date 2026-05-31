@@ -871,31 +871,36 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap_or_default()
                                     .as_secs_f64();
-                                let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                let is_first_tap = now - state.audio.last_tap_time > 2.0;
-                                if is_first_tap {
-                                    state.audio.tap_times.clear();
-                                    state.lfo.bank.reset_all();
-                                }
-                                state.audio.tap_times.push(now);
-                                state.audio.last_tap_time = now;
-                                if state.audio.tap_times.len() > 8 {
-                                    state.audio.tap_times.remove(0);
-                                }
-                                state.audio.beat_phase = 0.0;
-                                if state.audio.tap_times.len() >= 4 {
-                                    let mut intervals = Vec::new();
-                                    for i in 1..state.audio.tap_times.len() {
-                                        intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
+                                {
+                                    let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    let is_first_tap = now - state.audio.last_tap_time > 2.0;
+                                    if is_first_tap {
+                                        state.audio.tap_times.clear();
+                                        state.lfo.bank.reset_all();
                                     }
-                                    let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
-                                    if avg_interval > 0.1 && avg_interval < 3.0 {
-                                        state.audio.bpm = (60.0 / avg_interval) as f32;
-                                        state.audio.tap_tempo_info = format!("{:.1} BPM", state.audio.bpm);
+                                    state.audio.tap_times.push(now);
+                                    state.audio.last_tap_time = now;
+                                    if state.audio.tap_times.len() > 8 {
+                                        state.audio.tap_times.remove(0);
                                     }
-                                } else {
-                                    state.audio.tap_tempo_info = format!("{} taps...", state.audio.tap_times.len());
+                                    state.audio.beat_phase = 0.0;
+                                    // 2 taps gives one interval — enough for an immediate BPM estimate.
+                                    if state.audio.tap_times.len() >= 2 {
+                                        let n = state.audio.tap_times.len();
+                                        let mut intervals = Vec::new();
+                                        for i in 1..n {
+                                            intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
+                                        }
+                                        let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
+                                        if avg_interval > 0.1 && avg_interval < 3.0 {
+                                            state.audio.bpm = (60.0 / avg_interval) as f32;
+                                            state.audio.tap_tempo_info = format!("{:.1} BPM ({} taps)", state.audio.bpm, n);
+                                        }
+                                    } else {
+                                        state.audio.tap_tempo_info = "Tap again…".to_string();
+                                    }
                                 }
+                                web_server.modulation_dirty = true;
                             }
                         }
                     }

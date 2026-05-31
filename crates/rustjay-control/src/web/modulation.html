@@ -338,10 +338,14 @@
     staticTargets.forEach(t => {
       html += `<option value="${t.value}" ${selectedValue === t.value ? 'selected' : ''}>${t.label}</option>`;
     });
-    // Add effect-declared custom parameters
+    // Add effect-declared custom parameters.
+    // p.id is the full web path "category/bare_id" (e.g. "flux/flow_scale").
+    // The backend LFO lookup matches against param_descriptors[i].id which is
+    // the bare id ("flow_scale"), so strip the category prefix before storing.
     params.forEach(p => {
-      const val = 'custom:' + p.id;
-      const label = p.name || p.id;
+      const bareId = p.id.includes('/') ? p.id.slice(p.id.indexOf('/') + 1) : p.id;
+      const val = 'custom:' + bareId;
+      const label = (p.category ? p.category + ' / ' : '') + (p.name || bareId);
       html += `<option value="${val}" ${selectedValue === val ? 'selected' : ''}>${escapeHtml(label)}</option>`;
     });
     return html;
