@@ -823,6 +823,12 @@
     const div = document.createElement('div');
     div.className = 'control';
     div.dataset.id = param.id;
+    div.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      const def = param.default ?? param.min;
+      updateParam(param.id, def);
+      updateControlUI(param.id, def);
+    });
 
     const isSelect = param.options && param.options.length > 0;
     const isToggle = !isSelect && param.step >= 1 && (param.max - param.min) <= 1;

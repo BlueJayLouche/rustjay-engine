@@ -61,6 +61,7 @@ pub struct WebParameter {
     pub min: f32,
     pub max: f32,
     pub value: f32,
+    pub default: f32,
     pub step: f32,
     pub options: Option<Vec<String>>,
 }
@@ -319,6 +320,7 @@ impl WebServer {
                 min,
                 max,
                 value,
+                default: value,
                 step,
                 options: None,
             });
@@ -336,6 +338,7 @@ impl WebServer {
                 min: 0.0,
                 max: (options.len() as f32) - 1.0,
                 value,
+                default: value,
                 step: 1.0,
                 options: Some(options),
             });

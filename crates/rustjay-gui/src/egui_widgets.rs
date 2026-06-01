@@ -288,7 +288,10 @@ pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A full HUD-style parameter row. Use for sliders you want to highlight
-/// (Color, Audio, LFO depth etc.). Returns true when value changed.
+/// (Color, Audio, LFO depth etc.).
+///
+/// Returns `(changed, reset)` — `changed` when the slider moved, `reset` when
+/// the card was double-clicked (caller should restore the parameter to its default).
 ///
 /// Layout:
 ///   NAME                              42.7
@@ -302,7 +305,7 @@ pub fn parameter_card_f32(
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
     unit: &str,
-) -> bool {
+) -> (bool, bool) {
     let (min, max) = (*range.start(), *range.end());
     let mut changed = false;
 
@@ -311,7 +314,7 @@ pub fn parameter_card_f32(
         .stroke(Stroke::new(1.0, HAIR))
         .inner_margin(egui::Margin::symmetric(12, 10));
 
-    frame.show(ui, |ui| {
+    let frame_resp = frame.show(ui, |ui| {
         // Left accent bar — amber when "active" (value != min)
         let accent_color = if *value != min { AMBER } else { INK_4 };
         let panel_rect = ui.max_rect();
@@ -404,7 +407,8 @@ pub fn parameter_card_f32(
         });
     });
 
-    changed
+    let reset = frame_resp.response.double_clicked();
+    (changed, reset)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

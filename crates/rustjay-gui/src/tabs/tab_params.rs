@@ -45,6 +45,13 @@ impl ControlGui {
                             self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.set_param_base(&desc.id, value);
                     }
+                    if ui.is_item_hovered()
+                        && ui.is_mouse_double_clicked(imgui::MouseButton::Left)
+                    {
+                        let mut state =
+                            self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.set_param_base(&desc.id, desc.default);
+                    }
                 }
                 ParamType::Int => {
                     let mut value = {
@@ -58,6 +65,13 @@ impl ControlGui {
                         let mut state =
                             self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.set_param_base(&desc.id, value as f32);
+                    }
+                    if ui.is_item_hovered()
+                        && ui.is_mouse_double_clicked(imgui::MouseButton::Left)
+                    {
+                        let mut state =
+                            self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.set_param_base(&desc.id, desc.default);
                     }
                 }
                 ParamType::Bool => {

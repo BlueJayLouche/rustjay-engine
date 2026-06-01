@@ -845,9 +845,12 @@ impl EguiControlGui {
             ParamType::Float => {
                 let mut v = value;
                 let id_tag = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
-                if crate::egui_widgets::parameter_card_f32(
+                let (changed, reset) = crate::egui_widgets::parameter_card_f32(
                     ui, &desc.name, &id_tag, &mut v, desc.min..=desc.max, ""
-                ) {
+                );
+                if reset {
+                    state.set_param_base(&desc.id, desc.default);
+                } else if changed {
                     state.set_param_base(&desc.id, v);
                 }
             }
