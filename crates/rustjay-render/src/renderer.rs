@@ -386,6 +386,14 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             buffer
         });
 
+        // Extract HSB values before dropping the lock — needed for the blit pass below.
+        let (hsb_hue, hsb_sat, hsb_bri, hsb_enabled) = (
+            engine_state.hsb_params.hue_shift,
+            engine_state.hsb_params.saturation,
+            engine_state.hsb_params.brightness,
+            engine_state.color_enabled,
+        );
+
         // engine_state is no longer needed — drop it now so the FPS tracker
         // below can re-lock shared_state without deadlocking (std::sync::Mutex
         // is not reentrant; holding the guard while calling .lock() again hangs).
@@ -411,6 +419,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         // Append blit to the main encoder before the single submit.
         if let Some(ref st) = surface_texture {
             let surface_view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.blit_pipeline.upload_hsb(&self.queue, hsb_hue, hsb_sat, hsb_bri, hsb_enabled);
             self.blit_pipeline.blit(&mut encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer);
         }
 

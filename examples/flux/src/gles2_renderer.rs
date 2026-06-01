@@ -511,6 +511,13 @@ impl Gles2Effect for FluxGles2 {
 
             bind_texture(gl, gs.blit_prog, "u_src", 0, gs.accum_tex[1 - gs.accum_read]);
 
+            // HSB correction — enabled flag is 0.0 when values are at identity.
+            let hue = state.hsb_params.hue_shift;
+            let sat = state.hsb_params.saturation;
+            let bri = state.hsb_params.brightness;
+            let hsb_on = state.color_enabled && (hue != 0.0 || sat != 1.0 || bri != 1.0);
+            set_uniform4f(gl, gs.blit_prog, "u_hsb", hue, sat, bri, if hsb_on { 1.0 } else { 0.0 });
+
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -545,6 +552,12 @@ unsafe fn set_uniform1f(gl: &Gl, prog: glow::Program, name: &str, v: f32) {
 unsafe fn set_uniform2f(gl: &Gl, prog: glow::Program, name: &str, x: f32, y: f32) {
     if let Some(loc) = gl.get_uniform_location(prog, name) {
         gl.uniform_2_f32(Some(&loc), x, y);
+    }
+}
+
+unsafe fn set_uniform4f(gl: &Gl, prog: glow::Program, name: &str, x: f32, y: f32, z: f32, w: f32) {
+    if let Some(loc) = gl.get_uniform_location(prog, name) {
+        gl.uniform_4_f32(Some(&loc), x, y, z, w);
     }
 }
 

@@ -1,11 +1,25 @@
 //! Screen blit pipeline: copies the render target to the swap-chain surface.
+//! Applies HSB (hue-shift / saturation / brightness) colour correction when
+//! any value departs from identity.  When all three are at identity the
+//! fragment shader returns early (uniform-flow-control branch — zero extra
+//! ALU cost because the whole quad takes the same path).
 
 use rustjay_core::Vertex;
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct HsbUniform {
+    /// (hue_shift_degrees, saturation_mult, brightness_mult, enabled: 0.0|1.0)
+    values: [f32; 4],
+}
 
 pub(crate) struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
 }
 
 impl BlitPipeline {
@@ -19,6 +33,15 @@ impl BlitPipeline {
                     @location(0) texcoord: vec2<f32>,
                 };
 
+                struct HsbUniforms {
+                    // hue_shift_degrees, saturation_mult, brightness_mult, enabled (0|1)
+                    values: vec4<f32>,
+                };
+
+                @group(0) @binding(0) var source_tex:     texture_2d<f32>;
+                @group(0) @binding(1) var source_sampler: sampler;
+                @group(1) @binding(0) var<uniform> hsb:   HsbUniforms;
+
                 @vertex
                 fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> VertexOutput {
                     var out: VertexOutput;
@@ -27,14 +50,32 @@ impl BlitPipeline {
                     return out;
                 }
 
-                @group(0) @binding(0)
-                var source_tex: texture_2d<f32>;
-                @group(0) @binding(1)
-                var source_sampler: sampler;
+                // Branchless RGB→HSV (Iñigo Quílez)
+                fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
+                    let K  = vec4<f32>(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+                    let p  = mix(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), step(c.b, c.g));
+                    let q  = mix(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), step(p.x, c.r));
+                    let d  = q.x - min(q.w, q.y);
+                    let e  = 1.0e-10;
+                    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+                }
+
+                // Branchless HSV→RGB
+                fn hsv_to_rgb(hsv: vec3<f32>) -> vec3<f32> {
+                    let p = abs(fract(vec3<f32>(hsv.x) + vec3<f32>(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - vec3<f32>(3.0));
+                    return hsv.z * mix(vec3<f32>(1.0), clamp(p - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0)), hsv.y);
+                }
 
                 @fragment
                 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-                    return textureSample(source_tex, source_sampler, in.texcoord);
+                    var color = textureSample(source_tex, source_sampler, in.texcoord);
+                    // Uniform-flow-control early return — whole quad takes same branch.
+                    if hsb.values.w < 0.5 { return color; }
+                    var hsv = rgb_to_hsv(color.rgb);
+                    hsv.x = fract(hsv.x + hsb.values.x / 360.0);
+                    hsv.y = clamp(hsv.y * hsb.values.y, 0.0, 1.0);
+                    hsv.z = clamp(hsv.z * hsb.values.z, 0.0, 1.0);
+                    return vec4<f32>(hsv_to_rgb(hsv), color.a);
                 }
                 "#
                 .into(),
@@ -63,15 +104,46 @@ impl BlitPipeline {
             ],
         });
 
+        let uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Blit HSB Uniform BGL"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
+        // Initialise with identity (enabled=0 → passthrough).
+        let identity = HsbUniform { values: [0.0, 1.0, 1.0, 0.0] };
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Blit HSB Uniform"),
+            contents: bytemuck::bytes_of(&identity),
+            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("Blit HSB BG"),
+            layout:  &uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding:  0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Blit Pipeline Layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&uniform_bgl)],
             ..Default::default()
         });
 
@@ -101,7 +173,25 @@ impl BlitPipeline {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout, sampler }
+        Self { pipeline, bind_group_layout, sampler, uniform_buffer, uniform_bind_group }
+    }
+
+    /// Write HSB values to the uniform buffer.  Call once per frame before `blit()`.
+    /// When `enabled` is false (or all values are at identity), the shader takes the
+    /// early-return path and performs no colour math.
+    pub fn upload_hsb(
+        &self,
+        queue: &wgpu::Queue,
+        hue_shift: f32,
+        saturation: f32,
+        brightness: f32,
+        enabled: bool,
+    ) {
+        let active = enabled && (hue_shift != 0.0 || saturation != 1.0 || brightness != 1.0);
+        let u = HsbUniform {
+            values: [hue_shift, saturation, brightness, if active { 1.0 } else { 0.0 }],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&u));
     }
 
     pub fn create_bind_group(&self, device: &wgpu::Device, source_view: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -147,6 +237,7 @@ impl BlitPipeline {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
         render_pass.draw(0..6, 0..1);
     }
 }
