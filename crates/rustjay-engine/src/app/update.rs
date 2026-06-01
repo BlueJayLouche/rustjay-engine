@@ -240,6 +240,32 @@ impl<P: EffectPlugin> App<P> {
             let range = desc.max - desc.min;
             state.custom_params[idx] = (base + mod_val * range).clamp(desc.min, desc.max);
         }
+
+        // Apply HSB-targeting LFOs. fill_modulations only handles Custom targets,
+        // so HueShift/Saturation/Brightness must be applied here.
+        // Snapshot base values and compute final HSB outside the borrow of lfo.bank.
+        let base_hue = state.audio_routing.base_hue;
+        let base_sat = state.audio_routing.base_saturation;
+        let base_bri = state.audio_routing.base_brightness;
+        let (mut new_hue, mut new_sat, mut new_bri) = (base_hue, base_sat, base_bri);
+        for lfo in &state.lfo.bank.lfos {
+            if !lfo.enabled { continue; }
+            match &lfo.target {
+                rustjay_core::LfoTarget::HueShift => {
+                    new_hue = (base_hue + lfo.output * 180.0).clamp(-180.0, 180.0);
+                }
+                rustjay_core::LfoTarget::Saturation => {
+                    new_sat = (base_sat + lfo.output).clamp(0.0, 2.0);
+                }
+                rustjay_core::LfoTarget::Brightness => {
+                    new_bri = (base_bri + lfo.output).clamp(0.0, 2.0);
+                }
+                _ => {}
+            }
+        }
+        state.hsb_params.hue_shift  = new_hue;
+        state.hsb_params.saturation = new_sat;
+        state.hsb_params.brightness = new_bri;
     }
 
     #[cfg(feature = "link")]
