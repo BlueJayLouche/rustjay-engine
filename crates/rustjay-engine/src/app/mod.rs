@@ -171,6 +171,10 @@ pub(crate) struct App<P: EffectPlugin> {
 
     // Plugin state
     pub(crate) plugin: Option<P>,
+    /// Cached `plugin.input_count()`, captured at construction. `plugin` is moved
+    /// into the engine during `resumed()`, so the per-frame input path reads this
+    /// instead of the (then-`None`) `plugin` field.
+    pub(crate) plugin_input_count: u32,
     pub(crate) app_state: P::State,
     pub(crate) custom_tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
     #[cfg(feature = "egui")]
@@ -367,6 +371,7 @@ impl<P: EffectPlugin> App<P> {
             cached_audio_normalize: true,
             cached_audio_pink_noise: false,
             last_broadcast_mappings: Vec::new(),
+            plugin_input_count: plugin.input_count(),
             plugin: Some(plugin),
             app_state: initial_state,
             custom_tabs_imgui: tabs_imgui,

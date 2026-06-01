@@ -23,3 +23,6 @@ profile-*.json.gz
 sputnik_*.json
 sputnik_*.txt
 *.trace
+
+# Claude Code harness artifacts
+.claude/

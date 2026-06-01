@@ -94,6 +94,12 @@ impl EffectPlugin for WaaavesEffect {
         "waaaves"
     }
 
+    /// waaaves blends a second video input (`engine.second_input_view`, see
+    /// `render()`), so the engine must keep uploading slot 2.
+    fn input_count(&self) -> u32 {
+        2
+    }
+
     fn default_state(&self) -> WaaavesState {
         WaaavesState::default()
     }
