@@ -3,6 +3,10 @@ use rustjay_core::EffectPlugin;
 use rustjay_core::InputType;
 use std::sync::Arc;
 
+/// Minimum interval between device-enumeration polls (audio/MIDI/input lists).
+/// Devices change on a human timescale, so polling once per frame wastes CPU.
+const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
         self.update_input_slot(false);
@@ -474,6 +478,15 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn poll_device_discovery(&mut self) {
+        // Device discovery completes on a human timescale, so polling the
+        // background scan every frame wastes CPU (perf: matters on the Pi
+        // target). Throttle to ~750 ms — a slower device-list refresh is fine.
+        let poll_now = std::time::Instant::now();
+        if poll_now.duration_since(self.last_device_poll) < DEVICE_POLL_INTERVAL {
+            return;
+        }
+        self.last_device_poll = poll_now;
+
         let done = self.input_manager.as_mut().map_or(false, |m| m.poll_discovery());
         if done {
             if let Some(ref manager) = self.input_manager.as_ref() {

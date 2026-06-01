@@ -10,6 +10,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowAttributes;
 use rustjay_core::EffectPlugin;
 
+/// Minimum interval between control-window UI rebuilds (~30 Hz). Independent of
+/// the output `target_fps`: the output keeps rendering at full rate, only the
+/// imgui/egui control window is throttled to cut per-frame buffer allocations.
+const UI_RENDER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
 impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // ── DRM/GBM path: bypass winit window + wgpu entirely ────────────────
@@ -576,7 +581,14 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 self.update_preview_textures();
             }
         }
-        if self.control_visible {
+        // Throttle the control-window UI rebuild/render to ~30 Hz (or sooner if a
+        // window event arrived since the last render), independent of the output
+        // `target_fps`. The output `engine.render(...)` above is unaffected.
+        let ui_due = self.ui_needs_redraw
+            || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
+        if self.control_visible && ui_due {
+            self.last_ui_render = now;
+            self.ui_needs_redraw = false;
             if self.use_egui {
                 #[cfg(feature = "egui")]
                 if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
