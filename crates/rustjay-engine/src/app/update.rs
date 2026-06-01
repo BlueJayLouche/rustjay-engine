@@ -9,11 +9,18 @@ const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_mill
 
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
-        self.update_input_slot(false);
-        self.update_input_slot(true);
+        // Slot 1 always uploads. Slot 2 only uploads when the active effect
+        // actually samples a second input — uploading a full-res frame costs a
+        // CPU memmove into wgpu's staging buffer (matters on CPU-bound targets).
+        // Device housekeeping (manager.update / frame drain) still runs for both.
+        // Read the cached count: `self.plugin` is None after resumed() moves the
+        // plugin into the engine, so it can't be queried directly here.
+        let second_needed = self.plugin_input_count >= 2;
+        self.update_input_slot(false, true);
+        self.update_input_slot(true, second_needed);
     }
 
-    fn update_input_slot(&mut self, is_second: bool) {
+    fn update_input_slot(&mut self, is_second: bool, upload_texture: bool) {
         let manager_opt = if is_second {
             self.second_input_manager.as_mut()
         } else {
@@ -37,12 +44,14 @@ impl<P: EffectPlugin> App<P> {
             if manager.has_frame() {
                 let dims = manager.syphon_output_texture().map(|t| (t.width(), t.height()));
                 if let Some((width, height)) = dims {
-                    if let Some(texture) = manager.syphon_output_texture() {
-                        if let Some(ref mut engine) = self.output_engine {
-                            if is_second {
-                                engine.second_input_texture.set_external_texture(texture);
-                            } else {
-                                engine.input_texture.set_external_texture(texture);
+                    if upload_texture {
+                        if let Some(texture) = manager.syphon_output_texture() {
+                            if let Some(ref mut engine) = self.output_engine {
+                                if is_second {
+                                    engine.second_input_texture.set_external_texture(texture);
+                                } else {
+                                    engine.input_texture.set_external_texture(texture);
+                                }
                             }
                         }
                     }
@@ -56,11 +65,13 @@ impl<P: EffectPlugin> App<P> {
         } else {
             if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if let Some(ref mut engine) = self.output_engine {
-                    if is_second {
-                        engine.second_input_texture.update(&frame_data, width, height);
-                    } else {
-                        engine.input_texture.update(&frame_data, width, height);
+                if upload_texture {
+                    if let Some(ref mut engine) = self.output_engine {
+                        if is_second {
+                            engine.second_input_texture.update(&frame_data, width, height);
+                        } else {
+                            engine.input_texture.update(&frame_data, width, height);
+                        }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -76,11 +87,13 @@ impl<P: EffectPlugin> App<P> {
                 if manager.has_frame() {
                     let (width, height) = manager.resolution();
                     if let Some(pixels) = manager.spout_pixels() {
-                        if let Some(ref mut engine) = self.output_engine {
-                            if is_second {
-                                engine.second_input_texture.update(pixels, width, height);
-                            } else {
-                                engine.input_texture.update(pixels, width, height);
+                        if upload_texture {
+                            if let Some(ref mut engine) = self.output_engine {
+                                if is_second {
+                                    engine.second_input_texture.update(pixels, width, height);
+                                } else {
+                                    engine.input_texture.update(pixels, width, height);
+                                }
                             }
                         }
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -92,11 +105,13 @@ impl<P: EffectPlugin> App<P> {
                 }
             } else if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if let Some(ref mut engine) = self.output_engine {
-                    if is_second {
-                        engine.second_input_texture.update(&frame_data, width, height);
-                    } else {
-                        engine.input_texture.update(&frame_data, width, height);
+                if upload_texture {
+                    if let Some(ref mut engine) = self.output_engine {
+                        if is_second {
+                            engine.second_input_texture.update(&frame_data, width, height);
+                        } else {
+                            engine.input_texture.update(&frame_data, width, height);
+                        }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -110,11 +125,13 @@ impl<P: EffectPlugin> App<P> {
         {
             if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if let Some(ref mut engine) = self.output_engine {
-                    if is_second {
-                        engine.second_input_texture.update(&frame_data, width, height);
-                    } else {
-                        engine.input_texture.update(&frame_data, width, height);
+                if upload_texture {
+                    if let Some(ref mut engine) = self.output_engine {
+                        if is_second {
+                            engine.second_input_texture.update(&frame_data, width, height);
+                        } else {
+                            engine.input_texture.update(&frame_data, width, height);
+                        }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());

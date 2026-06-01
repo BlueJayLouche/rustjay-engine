@@ -153,6 +153,18 @@ pub trait EffectPlugin: Send + Sync + 'static {
         "rustjay"
     }
 
+    /// Number of input slots this effect actually samples (1 or 2).
+    ///
+    /// The engine uses this to skip the per-frame GPU upload of input slots the
+    /// effect never reads — uploading a full-resolution frame costs a CPU memmove
+    /// into wgpu's staging buffer, which matters on CPU-bound targets (Pi/llvmpipe).
+    ///
+    /// Default is `1`. Override and return `2` if the effect samples
+    /// `EngineState::second_input_view` (e.g. a two-channel mixer/blend effect).
+    fn input_count(&self) -> u32 {
+        1
+    }
+
     /// Initial app state. Override to set non-Default starting values.
     fn default_state(&self) -> Self::State {
         Self::State::default()
