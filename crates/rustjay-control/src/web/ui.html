@@ -819,15 +819,35 @@
     syncNavPills();
   }
 
+  // Double-tap tracker for touch devices — dblclick is unreliable on mobile.
+  let _tapTracker = { id: null, time: 0 };
+
+  function resetParam(id) {
+    const p = params[id]; if (!p) return;
+    const def = p.default ?? p.min;
+    updateParam(id, def);
+    updateControlUI(id, def);
+  }
+
   function createControl(param) {
     const div = document.createElement('div');
     div.className = 'control';
     div.dataset.id = param.id;
+
     div.addEventListener('dblclick', (e) => {
       e.preventDefault();
-      const def = param.default ?? param.min;
-      updateParam(param.id, def);
-      updateControlUI(param.id, def);
+      resetParam(param.id);
+    });
+
+    div.addEventListener('touchend', (e) => {
+      const now = Date.now();
+      if (_tapTracker.id === param.id && now - _tapTracker.time < 400) {
+        e.preventDefault();
+        _tapTracker = { id: null, time: 0 };
+        resetParam(param.id);
+      } else {
+        _tapTracker = { id: param.id, time: now };
+      }
     });
 
     const isSelect = param.options && param.options.length > 0;
