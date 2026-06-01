@@ -452,6 +452,10 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
                     renderer.handle_event(&winit_event);
                 }
+                // A control-window event arrived — rebuild the UI next frame
+                // immediately rather than waiting out the ~30 Hz throttle, so
+                // slider drags and tab clicks stay responsive.
+                self.ui_needs_redraw = true;
 
                 match event {
                     WindowEvent::CloseRequested => {
