@@ -615,18 +615,24 @@ impl<P: EffectPlugin> App<P> {
                         if let Ok(mut state) = self.shared_state.lock() {
                             match id.as_str() {
                                 "color/hue_shift" => {
-                                    state.hsb_params.hue_shift = value.clamp(-180.0, 180.0);
-                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    let v = value.clamp(-180.0, 180.0);
+                                    state.hsb_params.hue_shift       = v;
+                                    state.hsb_param_bases.hue_shift  = v;
+                                    let (h, s, b) = (v, state.hsb_param_bases.saturation, state.hsb_param_bases.brightness);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/saturation" => {
-                                    state.hsb_params.saturation = value.clamp(0.0, 2.0);
-                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    let v = value.clamp(0.0, 2.0);
+                                    state.hsb_params.saturation       = v;
+                                    state.hsb_param_bases.saturation  = v;
+                                    let (h, s, b) = (state.hsb_param_bases.hue_shift, v, state.hsb_param_bases.brightness);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/brightness" => {
-                                    state.hsb_params.brightness = value.clamp(0.0, 2.0);
-                                    let (h, s, b) = (state.hsb_params.hue_shift, state.hsb_params.saturation, state.hsb_params.brightness);
+                                    let v = value.clamp(0.0, 2.0);
+                                    state.hsb_params.brightness       = v;
+                                    state.hsb_param_bases.brightness  = v;
+                                    let (h, s, b) = (state.hsb_param_bases.hue_shift, state.hsb_param_bases.saturation, v);
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/enabled" => state.color_enabled = value > 0.5,

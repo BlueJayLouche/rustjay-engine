@@ -241,31 +241,24 @@ impl<P: EffectPlugin> App<P> {
             state.custom_params[idx] = (base + mod_val * range).clamp(desc.min, desc.max);
         }
 
-        // Apply HSB-targeting LFOs. fill_modulations only handles Custom targets,
-        // so HueShift/Saturation/Brightness must be applied here.
-        // Snapshot base values and compute final HSB outside the borrow of lfo.bank.
-        let base_hue = state.audio_routing.base_hue;
-        let base_sat = state.audio_routing.base_saturation;
-        let base_bri = state.audio_routing.base_brightness;
-        let (mut new_hue, mut new_sat, mut new_bri) = (base_hue, base_sat, base_bri);
+        // Apply HSB-targeting LFOs (post-fader: base is the fader position, LFO adds on top).
+        // Accumulate deltas from all LFOs so multiple sources sum — same pattern as custom params.
+        let base_hue = state.hsb_param_bases.hue_shift;
+        let base_sat = state.hsb_param_bases.saturation;
+        let base_bri = state.hsb_param_bases.brightness;
+        let (mut d_hue, mut d_sat, mut d_bri) = (0.0f32, 0.0f32, 0.0f32);
         for lfo in &state.lfo.bank.lfos {
             if !lfo.enabled { continue; }
-            match &lfo.target {
-                rustjay_core::LfoTarget::HueShift => {
-                    new_hue = (base_hue + lfo.output * 180.0).clamp(-180.0, 180.0);
-                }
-                rustjay_core::LfoTarget::Saturation => {
-                    new_sat = (base_sat + lfo.output).clamp(0.0, 2.0);
-                }
-                rustjay_core::LfoTarget::Brightness => {
-                    new_bri = (base_bri + lfo.output).clamp(0.0, 2.0);
-                }
+            match lfo.target {
+                rustjay_core::LfoTarget::HueShift  => d_hue += lfo.output * 180.0,
+                rustjay_core::LfoTarget::Saturation => d_sat += lfo.output,
+                rustjay_core::LfoTarget::Brightness => d_bri += lfo.output,
                 _ => {}
             }
         }
-        state.hsb_params.hue_shift  = new_hue;
-        state.hsb_params.saturation = new_sat;
-        state.hsb_params.brightness = new_bri;
+        state.hsb_params.hue_shift  = (base_hue + d_hue).clamp(-180.0, 180.0);
+        state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
+        state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
     }
 
     #[cfg(feature = "link")]

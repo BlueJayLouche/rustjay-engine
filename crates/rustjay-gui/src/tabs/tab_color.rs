@@ -46,7 +46,8 @@ impl ControlGui {
                     .build(&mut hsb.hue_shift)
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.hsb_params.hue_shift = hsb.hue_shift;
+                    state.hsb_params.hue_shift      = hsb.hue_shift;
+                    state.hsb_param_bases.hue_shift = hsb.hue_shift;
                     state.audio_routing.update_base_values(hsb.hue_shift, hsb.saturation, hsb.brightness);
                 }
             }
@@ -62,7 +63,8 @@ impl ControlGui {
                     .build(&mut hsb.saturation)
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.hsb_params.saturation = hsb.saturation;
+                    state.hsb_params.saturation      = hsb.saturation;
+                    state.hsb_param_bases.saturation = hsb.saturation;
                     state.audio_routing.update_base_values(hsb.hue_shift, hsb.saturation, hsb.brightness);
                 }
             }
@@ -78,7 +80,8 @@ impl ControlGui {
                     .build(&mut hsb.brightness)
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.hsb_params.brightness = hsb.brightness;
+                    state.hsb_params.brightness      = hsb.brightness;
+                    state.hsb_param_bases.brightness = hsb.brightness;
                     state.audio_routing.update_base_values(hsb.hue_shift, hsb.saturation, hsb.brightness);
                 }
             }
@@ -93,8 +96,8 @@ impl ControlGui {
             if ui.button("Reset to Default") {
                 hsb.reset();
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.hsb_params = hsb;
-                // Update audio routing base values
+                state.hsb_params       = hsb;
+                state.hsb_param_bases  = hsb;
                 state.audio_routing.update_base_values(hsb.hue_shift, hsb.saturation, hsb.brightness);
             }
 

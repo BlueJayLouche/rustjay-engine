@@ -227,7 +227,13 @@ impl AppSettings {
         state.output_height = self.output_height;
         state.resolution.internal_width = self.internal_width;
         state.resolution.internal_height = self.internal_height;
-        state.hsb_params = self.hsb_params;
+        state.hsb_params      = self.hsb_params;
+        state.hsb_param_bases = self.hsb_params;
+        state.audio_routing.update_base_values(
+            self.hsb_params.hue_shift,
+            self.hsb_params.saturation,
+            self.hsb_params.brightness,
+        );
         state.color_enabled = self.color_enabled;
         state.audio.enabled = self.audio_enabled;
         state.audio.amplitude = self.audio_amplitude;
