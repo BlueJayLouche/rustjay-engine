@@ -510,6 +510,70 @@
     transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
   .btn:hover { border-color: var(--amber-d); color: var(--ink); }
+  .btn.active { background: color-mix(in oklab, var(--amber) 14%, transparent); color: var(--amber); border-color: var(--amber-d); }
+
+  /* ---------- panel drawer ---------- */
+  .drawer-backdrop {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 200;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+  .drawer-backdrop.open { display: block; }
+
+  .drawer {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: min(520px, 100vw);
+    background: var(--bg);
+    border-left: 1px solid var(--hair-2);
+    z-index: 201;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .drawer.open { transform: translateX(0); }
+
+  .drawer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--hair);
+    flex-shrink: 0;
+    background: var(--surface-2);
+  }
+  .drawer-title {
+    font-size: 10.5px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .drawer-title span { color: var(--amber); }
+
+  .drawer-close {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--hair-2);
+    color: var(--ink-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s;
+  }
+  .drawer-close:hover { color: var(--ink); border-color: var(--hair-3); }
+
+  .drawer iframe {
+    flex: 1;
+    border: none;
+    width: 100%;
+    background: var(--bg);
+  }
 
   /* scanline accent — very subtle */
   body::after {
@@ -554,13 +618,21 @@
     </div>
   </header>
 
-  <!-- panels open in new tabs; requires popup permission on mobile browsers -->
   <nav style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
-    <button class="btn" onclick="openPanel('input')">Input</button>
-    <button class="btn" onclick="openPanel('control')">Control</button>
-    <button class="btn" onclick="openPanel('modulation')">Modulation</button>
-    <button class="btn" onclick="openPanel('presets')">Presets</button>
+    <button class="btn" id="nav-input"      onclick="openPanel('input')">Input</button>
+    <button class="btn" id="nav-control"    onclick="openPanel('control')">Control</button>
+    <button class="btn" id="nav-modulation" onclick="openPanel('modulation')">Modulation</button>
+    <button class="btn" id="nav-presets"    onclick="openPanel('presets')">Presets</button>
   </nav>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" onclick="closePanel()"></div>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true">
+    <div class="drawer-bar">
+      <div class="drawer-title"><span id="drawer-label">—</span></div>
+      <button class="drawer-close" onclick="closePanel()">✕ CLOSE</button>
+    </div>
+    <iframe id="drawer-frame" src="" title="Panel"></iframe>
+  </aside>
 
   <main id="controls">
     <div class="empty">
@@ -962,11 +1034,33 @@
     return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
   }
 
+  let _activePanel = null;
+
   function openPanel(name) {
+    if (_activePanel === name) { closePanel(); return; }
     const tok = window.RUSTJAY_TOKEN || '';
     const app = (window.APP_NAME || location.pathname.split('/')[1] || 'rustjay').toLowerCase();
-    window.open('/' + app + '/' + name + '?token=' + encodeURIComponent(tok), '_blank');
+    const url = '/' + app + '/' + name + '?token=' + encodeURIComponent(tok);
+
+    document.getElementById('drawer-frame').src = url;
+    document.getElementById('drawer-label').textContent = name.toUpperCase();
+    document.getElementById('drawer').classList.add('open');
+    document.getElementById('drawer-backdrop').classList.add('open');
+
+    if (_activePanel) document.getElementById('nav-' + _activePanel)?.classList.remove('active');
+    document.getElementById('nav-' + name)?.classList.add('active');
+    _activePanel = name;
   }
+
+  function closePanel() {
+    document.getElementById('drawer').classList.remove('open');
+    document.getElementById('drawer-backdrop').classList.remove('open');
+    if (_activePanel) document.getElementById('nav-' + _activePanel)?.classList.remove('active');
+    _activePanel = null;
+    setTimeout(() => { document.getElementById('drawer-frame').src = ''; }, 250);
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && _activePanel) closePanel(); });
 
   // ---------- demo mode (only when not running under WS server) ----------
   // Lets the page render with sample data when opened directly as a file.

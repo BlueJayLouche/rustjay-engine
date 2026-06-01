@@ -828,7 +828,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
     // Get initial parameters and preset names in one lock acquisition
     let (params, preset_names) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let p = state.parameters.values().cloned().collect::<Vec<_>>();
+        let mut p = state.parameters.values().cloned().collect::<Vec<_>>();
+        p.sort_by(|a, b| a.id.cmp(&b.id));
         let pn = state.preset_names.clone();
         (p, pn)
     };
