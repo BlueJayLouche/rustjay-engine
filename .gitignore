@@ -18,3 +18,8 @@ profile-*.json.gz
 # Spec / scratch directories created by tools
 **/.spec/
 **/.egui_theme_spec/
+
+# Profiling artifacts
+sputnik_*.json
+sputnik_*.txt
+*.trace
