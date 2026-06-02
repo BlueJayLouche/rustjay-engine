@@ -14,6 +14,8 @@
 use std::sync::Arc;
 
 /// Commands for output stream control
+// Superseded by `rustjay_core::OutputCommand`; kept as the io-layer's own descriptor.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputCommand {
     None,

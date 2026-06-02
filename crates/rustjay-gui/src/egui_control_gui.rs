@@ -1,5 +1,8 @@
 //! Egui control panel — professional dark-themed GUI with full pipeline coverage.
 
+// Internal panel fields and per-section build_* helpers; not part of a documented API.
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use rustjay_core::{EngineState, GuiTab, ParameterDescriptor, ParamCategory, ParamType};
 
@@ -275,8 +278,11 @@ impl EguiControlGui {
             )
         };
 
-        egui::TopBottomPanel::top("top_bar")
-            .exact_height(56.0)
+        // egui 0.34 deprecated top-level `Panel::show` in favour of `show_inside` (which needs a
+        // parent Ui); we keep the established top-level layout until that migration is done.
+        #[allow(deprecated)]
+        egui::Panel::top("top_bar")
+            .exact_size(56.0)
             .frame(egui::Frame::NONE.fill(SURFACE_2).stroke(egui::Stroke::new(1.0, HAIR_2)))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
@@ -396,8 +402,10 @@ impl EguiControlGui {
             }
         };
 
-        egui::SidePanel::left("sidebar")
-            .exact_width(150.0)
+        // See note on top panel: top-level `Panel::show` remains the supported layout path.
+        #[allow(deprecated)]
+        egui::Panel::left("sidebar")
+            .exact_size(150.0)
             .resizable(false)
             .frame(egui::Frame::NONE.fill(BG).stroke(egui::Stroke::new(1.0, HAIR_2)))
             .show(ctx, |ui| {
@@ -488,6 +496,7 @@ impl EguiControlGui {
     fn build_central_panel(&mut self, ctx: &egui::Context, app_state: &mut dyn std::any::Any) {
         use rustjay_core::GuiTab;
 
+        #[allow(deprecated)] // top-level CentralPanel::show; see note on the top panel
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // Check if a custom tab replaces the currently active built-in tab
@@ -533,7 +542,9 @@ impl EguiControlGui {
             state.second_input.is_active
         };
 
-        egui::SidePanel::right("preview_panel_right")
+        // See note on top panel: top-level `Panel::show` remains the supported layout path.
+        #[allow(deprecated)]
+        egui::Panel::right("preview_panel_right")
             .exact_size(280.0)
             .show(ctx, |ui| {
                 let available = ui.available_size();

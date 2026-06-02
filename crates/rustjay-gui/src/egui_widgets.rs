@@ -11,6 +11,8 @@
 //! All helpers are pure egui — no extra deps. They opt-in: existing tabs keep working,
 //! refactor them at your own pace to use these.
 
+#![allow(missing_docs)] // widget enum/helpers are self-describing by name
+
 use crate::egui_theme::colors::*;
 use egui::{Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 

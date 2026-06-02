@@ -3,6 +3,7 @@ use rustjay_core::HsbParams;
 
 impl ControlGui {
     /// Build the Color tab
+    #[allow(dead_code)] // legacy imgui tab; retained alongside the egui control GUI
     pub(crate) fn build_color_tab(&mut self, ui: &imgui::Ui) {
         // Read base values from audio_routing (not modulated hsb_params)
         let (mut enabled, hue, sat, bright) = {

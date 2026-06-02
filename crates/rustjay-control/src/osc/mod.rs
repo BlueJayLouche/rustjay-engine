@@ -4,6 +4,8 @@
 //! Address format: /[base]/[tab]/[parameter]
 
 /// Commands for OSC server control
+// Superseded by `rustjay_core::OscCommand`; kept as the control-layer's own descriptor.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OscCommand {
     None,
@@ -415,11 +417,13 @@ impl Drop for OscServer {
 }
 
 /// Helper to generate OSC address from components
+#[allow(dead_code)]
 pub fn make_address(base: &str, tab: &str, param: &str) -> String {
     format!("{}/{}/{}", base.trim_end_matches('/'), tab, param)
 }
 
 /// Helper to format address for display
+#[allow(dead_code)]
 pub fn format_address_for_display(address: &str) -> String {
     address.trim_start_matches('/').replace('/', " → ")
 }

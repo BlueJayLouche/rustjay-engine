@@ -19,7 +19,6 @@ fn main() {
         println!("cargo:rustc-link-search=framework={}", syphon_dir);
         println!("cargo:rustc-link-lib=framework=Syphon");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", syphon_dir);
-        println!("cargo:warning=Syphon framework found at: {}", syphon_dir);
 
         // ===== NDI Library =====
         // NDI rpath: always add if installed (propagates to downstream test binaries)

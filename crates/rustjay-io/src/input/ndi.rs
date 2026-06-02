@@ -2,6 +2,10 @@
 //!
 //! Network Device Interface video input receiver.
 
+// Query helpers and accessors here are part of the NDI backend surface but not all
+// are consumed yet; keep them available without warning.
+#![allow(dead_code)]
+
 use grafton_ndi::{NDI, Finder, FinderOptions, Receiver, ReceiverOptions, ReceiverColorFormat, ReceiverBandwidth};
 use crossbeam::channel::{self, Sender, Receiver as CrossbeamReceiver};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

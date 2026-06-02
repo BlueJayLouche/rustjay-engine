@@ -142,6 +142,7 @@ struct FluxEffect {
     flow_bgl:    Option<wgpu::BindGroupLayout>, // curr + prev + prev_flow + sampler
     warp_bgl:    Option<wgpu::BindGroupLayout>, // input + flow + accum + sampler
     blit_bgl:    Option<wgpu::BindGroupLayout>, // src + sampler
+    #[allow(dead_code)] // retained to keep the layout alive for the lifetime of the pipelines
     uniform_bgl: Option<wgpu::BindGroupLayout>,
 
     // per-frame GPU resources (created/resized on first frame)
@@ -662,12 +663,16 @@ fn main() -> anyhow::Result<()> {
     let drm   = args.iter().any(|a| a == "--drm");
 
     // --render-width W  --render-height H  (optional; default = display resolution)
+    // Only consumed by the gles2 / drm-gles2 render paths.
+    #[cfg_attr(not(any(feature = "gles2", feature = "drm-gles2")), allow(unused_variables))]
     let render_w = args.windows(2)
         .find(|w| w[0] == "--render-width")
         .and_then(|w| w[1].parse::<u32>().ok());
+    #[cfg_attr(not(any(feature = "gles2", feature = "drm-gles2")), allow(unused_variables))]
     let render_h = args.windows(2)
         .find(|w| w[0] == "--render-height")
         .and_then(|w| w[1].parse::<u32>().ok());
+    #[cfg_attr(not(any(feature = "gles2", feature = "drm-gles2")), allow(unused_variables))]
     let render_scale = args.windows(2)
         .find(|w| w[0] == "--render-scale")
         .and_then(|w| w[1].parse::<f32>().ok());

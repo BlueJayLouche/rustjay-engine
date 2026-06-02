@@ -30,6 +30,7 @@ impl SyphonInputReceiver {
     }
 
     /// Check if Syphon is available on this system
+    #[allow(dead_code)] // part of the Syphon input surface; not wired into the engine yet
     pub fn is_available() -> bool {
         syphon_core::is_available()
     }
@@ -46,6 +47,7 @@ impl SyphonInputReceiver {
 
     /// Connect to a Syphon server by name.
     /// Returns an error if `initialize()` has not been called.
+    #[allow(dead_code)] // part of the Syphon input surface; not wired into the engine yet
     pub fn connect(&mut self, server_name: impl Into<String>) -> anyhow::Result<()> {
         let server_name = server_name.into();
 

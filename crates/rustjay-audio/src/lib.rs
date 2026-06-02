@@ -88,14 +88,14 @@ impl AudioAnalyzer {
         let device = match device_name {
             Some(name) => host
                 .input_devices()?
-                .find(|d| d.name().ok().as_deref() == Some(name))
+                .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
                 .ok_or_else(|| anyhow::anyhow!("Audio device '{}' not found", name))?,
             None => host
                 .default_input_device()
                 .ok_or_else(|| anyhow::anyhow!("No default input device"))?,
         };
 
-        let actual_name = device.name()?;
+        let actual_name = device.description()?.name().to_string();
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate() as f32;
         let channels = config.channels() as usize;

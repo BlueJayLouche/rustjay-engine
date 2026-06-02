@@ -2,6 +2,9 @@
 //!
 //! CC, Note, and Aftertouch mapping with learn functionality.
 
+// Protocol/learn-state field docs are self-evident from their names.
+#![allow(missing_docs)]
+
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rustjay_core::MidiMsgKind;
 use std::sync::{Arc, Mutex};
@@ -10,6 +13,8 @@ use std::sync::{Arc, Mutex};
 pub mod mtc;
 
 /// Commands for MIDI device and learn-mode control
+// Superseded by `rustjay_core::MidiCommand`; kept as the control-layer's own descriptor.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiCommand {
     None,
@@ -441,6 +446,7 @@ impl Drop for MidiManager {
 }
 
 /// Get list of available MIDI devices (without creating a manager)
+#[allow(dead_code)]
 pub fn list_midi_devices() -> Vec<String> {
     if let Ok(mut input) = MidiInput::new("RustJay MIDI List") {
         input.ignore(Ignore::None);

@@ -11,10 +11,13 @@ use std::time::Instant;
 
 /// Webcam frame data (converted to BGRA)
 pub struct WebcamFrame {
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
     /// BGRA pixel data
     pub data: Vec<u8>,
+    /// Capture time of this frame.
     pub timestamp: Instant,
 }
 

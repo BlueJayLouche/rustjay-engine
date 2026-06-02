@@ -3,7 +3,7 @@ use rustjay_core::SyncSource;
 
 impl ControlGui {
     /// Build the Sync tab — source selector + per-source details.
-    #[allow(unused_variables, unused_mut)]
+    #[allow(unused_variables, unused_mut, dead_code)] // legacy imgui tab; retained alongside egui GUI
     pub(crate) fn build_sync_tab(&mut self, ui: &imgui::Ui) {
         // ── Source selector ──────────────────────────────────────────────────
         let mut sync_source = {

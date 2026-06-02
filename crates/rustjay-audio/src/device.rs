@@ -13,15 +13,11 @@ use std::sync::Arc;
 pub fn list_audio_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Ok(devices) => devices
+            .filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
+            .collect(),
         Err(_) => Vec::new(),
     }
-}
-
-/// Get default audio input device name
-pub fn default_audio_device() -> Option<String> {
-    let host = cpal::default_host();
-    host.default_input_device().and_then(|d| d.name().ok())
 }
 
 pub fn build_stream_f32(

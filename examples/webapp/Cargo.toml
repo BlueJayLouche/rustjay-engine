@@ -30,7 +30,3 @@ bytemuck = { version = "1.21", features = ["derive"] }
 console_error_panic_hook = "0.1"
 log = "0.4"
 console_log = "1.0"
-
-[profile.release]
-opt-level = 3
-lto = true

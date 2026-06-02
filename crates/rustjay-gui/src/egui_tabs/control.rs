@@ -308,7 +308,7 @@ impl EguiControlGui {
         ui.heading("Web Remote Control");
         ui.add_space(8.0);
 
-        let (enabled, port, app_name, full_url, lan_trust) = {
+        let (enabled, port, _app_name, full_url, lan_trust) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (state.web_enabled, state.web_port, state.web_app_name.clone(),
              state.web_full_url.clone(), state.web_lan_trust)

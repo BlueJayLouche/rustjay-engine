@@ -54,3 +54,6 @@ v4l = "0.14"
 default = ["webcam", "ndi"]
 webcam  = ["nokhwa"]
 ndi     = ["grafton-ndi"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

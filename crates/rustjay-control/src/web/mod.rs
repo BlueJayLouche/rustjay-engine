@@ -3,6 +3,9 @@
 //! WebSocket-based web interface for remote control from phones/tablets.
 //! URL: http://[computer-ip]:[port]/[app_name]
 
+// The wire-protocol command/response structs below are self-describing by field name.
+#![allow(missing_docs)]
+
 use axum::{
     extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query, Json},
     response::IntoResponse,
@@ -17,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
 /// Commands for web server lifecycle control
+#[allow(dead_code)] // superseded by `rustjay_core::WebCommand`; kept as the control-layer descriptor
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebControlCommand {
     None,

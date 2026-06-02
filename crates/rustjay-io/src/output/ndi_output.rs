@@ -2,6 +2,10 @@
 //!
 //! Sends video frames as an NDI stream.
 
+// Accessors and availability checks here are part of the NDI backend surface but not all
+// are consumed yet; keep them available without warning.
+#![allow(dead_code)]
+
 use grafton_ndi::{NDI, Sender, SenderOptions, VideoFrameBuilder, PixelFormat};
 use crossbeam::channel::{self, Sender as ChannelSender, Receiver};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};

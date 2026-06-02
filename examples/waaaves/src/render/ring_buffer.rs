@@ -51,6 +51,7 @@ impl RingBuffer {
     /// Read the texture view `frames_back` slots behind the write head.
     /// Clamped to `[1, capacity - 1]` — minimum 1 because write_head holds an
     /// incomplete frame still being rendered into.
+    #[allow(dead_code)] // convenience accessor; callers currently use read_index + slot_view
     pub fn read_view(&self, frames_back: usize) -> &wgpu::TextureView {
         &self.textures[self.read_index(frames_back)].1
     }
@@ -67,6 +68,7 @@ impl RingBuffer {
     }
 
     /// Texture view for the current write head (render target).
+    #[allow(dead_code)] // convenience accessor; callers currently use slot_view
     pub fn write_view(&self) -> &wgpu::TextureView {
         &self.textures[self.write_head].1
     }

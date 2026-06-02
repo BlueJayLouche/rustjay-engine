@@ -10,6 +10,9 @@
 //! - Hairline borders (1px, low-opacity white) instead of solid grey strokes.
 //! - Amber is the primary signal colour; green = online; red = alert; cool = secondary.
 
+// The palette constants below are self-documenting by name.
+#![allow(missing_docs)]
+
 use egui::{Color32, Context, CornerRadius, FontFamily, FontId, Stroke, Style, TextStyle, Visuals};
 
 /// Apply the HUD theme to the egui context.

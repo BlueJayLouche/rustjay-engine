@@ -9,6 +9,10 @@
 //! - `copy_buffer_to_texture`
 //! - `write_texture`
 //!
+
+// Cross-platform helpers retained for output backends that are not yet wired in.
+#![allow(dead_code)]
+
 /// Align a value to the next multiple of alignment.
 ///
 /// # Examples

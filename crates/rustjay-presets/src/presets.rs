@@ -500,11 +500,3 @@ pub fn presets_dir_for(app_name: &str) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
     Ok(config_dir.join("rustjay").join(app_name).join("presets"))
 }
-
-/// Get default presets directory (shared across all apps — prefer `presets_dir_for`).
-#[deprecated(note = "Use `presets_dir_for(app_name)` to keep presets isolated per app.")]
-pub fn default_presets_dir() -> anyhow::Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
-    Ok(config_dir.join("rustjay").join("presets"))
-}

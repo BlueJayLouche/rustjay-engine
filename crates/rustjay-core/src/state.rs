@@ -845,10 +845,10 @@ pub struct EngineState {
     /// Performance metrics.
     pub performance: PerformanceMetrics,
 
-    /// Whether preview windows are shown.
     /// If set, the engine will start this webcam device on the first frame
     /// after the InputManager is ready.  Cleared once the command is issued.
     pub startup_webcam_device: Option<usize>,
+    /// Whether preview windows are shown.
     pub show_preview: bool,
     /// Target render frame rate in frames per second.
     pub target_fps: u32,

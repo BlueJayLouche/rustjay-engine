@@ -47,6 +47,7 @@ pub fn sf(ui: &imgui::Ui, engine: &mut EngineState, label: &str, id: &str, v: &m
 }
 
 /// Integer slider (state is i32, engine stores f32).
+#[allow(dead_code)] // helper kept for tabs that don't currently use an integer slider
 pub fn si(ui: &imgui::Ui, engine: &mut EngineState, label: &str, id: &str, v: &mut i32, min: i32, max: i32) {
     if ui.slider_config(label, min, max).build(v) {
         engine.set_param_base(id, *v as f32);

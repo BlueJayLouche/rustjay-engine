@@ -185,7 +185,10 @@ pub enum ParamType {
     Bool,
     /// Enumerated value — rendered as a dropdown.
     /// Not modulatable.
-    Enum { variants: Vec<String> },
+    Enum {
+        /// Allowed variant labels, in display order.
+        variants: Vec<String>,
+    },
 }
 
 impl ParamType {

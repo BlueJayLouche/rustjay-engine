@@ -1157,8 +1157,6 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
     // Names that were renamed in the current function scope → must also be renamed in the body.
     // Tuple: (original_name, renamed_name, is_local_var)
     let mut active_renames: Vec<(String, String)> = Vec::new();
-    // Track which local-variable renames were added mid-function (so we can add them on the decl line).
-    let mut new_local_rename: Option<(String, String)> = None;
 
     for line in src.lines() {
         let trimmed = line.trim();
@@ -1214,7 +1212,8 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
         // In function body: detect local variable declarations that shadow ISF inputs.
         // e.g. `vec4 vignette = ...` where `vignette` is an ISF input name.
         // Rename to `_lv_NAME` BEFORE ISF substitution so uses of the local remain correct.
-        new_local_rename = None;
+        // Track which local-variable renames were added mid-function (so we can add them on the decl line).
+        let mut new_local_rename: Option<(String, String)> = None;
         if depth_before > 0 {
             for &ty in GLSL_RETURN_TYPES {
                 let prefix = format!("{} ", ty);
@@ -2808,7 +2807,6 @@ fn resolve_function_overloads(src: &str) -> String {
     let overloaded_vec: Vec<String> = overloaded_names.iter().cloned().collect();
     let mut result = String::with_capacity(src.len() + 64);
     let mut local_var_types: HashMap<String, String> = HashMap::new();
-    let mut brace_depth = 0i32;
 
     for line in src.lines() {
         let trimmed = line.trim();
@@ -2816,7 +2814,6 @@ fn resolve_function_overloads(src: &str) -> String {
         // On a new function definition, reset local var types and seed with params.
         if trimmed.starts_with("fn ") {
             local_var_types.clear();
-            brace_depth = 0;
             // Seed with parameter types (after `inject_param_var_shadows`, params are
             // `_name: TYPE`; strip the leading `_` for lookup).
             if let Some(paren_pos) = trimmed.find('(') {
@@ -2833,11 +2830,6 @@ fn resolve_function_overloads(src: &str) -> String {
                     }
                 }
             }
-        }
-
-        // Track brace depth
-        for c in trimmed.chars() {
-            match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
         }
 
         // Collect `var name: TYPE` declarations into local scope
@@ -2970,18 +2962,6 @@ fn find_fn_name_call_or_def(src: &str, name: &str) -> Option<usize> {
             return Some(pos);
         }
         search = pos + 1;
-    }
-}
-
-fn extract_first_param_type(params_inner: &str) -> String {
-    if params_inner.trim().is_empty() { return "void".to_owned(); }
-    let parts: Vec<&str> = params_inner.splitn(2, ':').collect();
-    if parts.len() >= 2 {
-        let ty_part = parts[1].trim();
-        let ty_end = ty_part.find([',', ')'].as_ref()).unwrap_or(ty_part.len());
-        ty_part[..ty_end].trim().to_owned()
-    } else {
-        "unknown".to_owned()
     }
 }
 
@@ -3245,34 +3225,7 @@ fn is_scalar_literal(s: &str) -> bool {
     s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+' || c == 'f')
 }
 
-/// Returns true if `s` is likely a scalar expression (not a vector).
-/// More permissive than `is_scalar_literal` — accepts expressions like `v.w + 0.001`.
-/// Heuristic: if no multi-component swizzle (2+ xyzwrgba chars) and no vec constructor,
-/// the expression is almost certainly scalar.
-fn is_scalar_expr(s: &str) -> bool {
-    if is_scalar_literal(s) { return true; }
-    // Vec constructors → definitely vector
-    if s.contains("vec2<") || s.contains("vec3<") || s.contains("vec4<")
-    || s.contains("vec2(") || s.contains("vec3(") || s.contains("vec4(") {
-        return false;
-    }
-    // Multi-component swizzle → vector
-    let bytes = s.as_bytes();
-    let n = bytes.len();
-    let mut i = 0;
-    while i < n {
-        if bytes[i] == b'.' && i + 1 < n && is_word_char(if i > 0 { bytes[i - 1] as char } else { ' ' }) {
-            let sw_start = i + 1;
-            let mut sw_end = sw_start;
-            while sw_end < n && b"xyzwrgba".contains(&bytes[sw_end]) { sw_end += 1; }
-            if sw_end - sw_start >= 2 { return false; } // multi-component
-        }
-        i += 1;
-    }
-    true
-}
-
-/// Type-aware version of `is_scalar_expr`. For pure identifiers, looks up the type in `var_types`.
+/// Type-aware scalar-expression check. For pure identifiers, looks up the type in `var_types`.
 fn is_scalar_expr_with_types(s: &str, var_types: &std::collections::HashMap<String, String>) -> bool {
     if is_scalar_literal(s) { return true; }
     if s.contains("vec2<") || s.contains("vec3<") || s.contains("vec4<")

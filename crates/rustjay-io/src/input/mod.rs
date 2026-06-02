@@ -11,6 +11,8 @@ use anyhow::Result;
 use std::sync::mpsc;
 
 /// Commands for changing the active input source
+// Superseded by `rustjay_core::InputCommand`; kept as the io-layer's own descriptor.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputCommand {
     None,
@@ -98,6 +100,7 @@ pub struct SyphonServerInfo {
 use rustjay_core::InputType;
 
 /// Frame data from any input source
+#[allow(dead_code)]
 pub struct InputFrame {
     pub width: u32,
     pub height: u32,

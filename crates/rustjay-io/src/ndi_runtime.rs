@@ -21,6 +21,9 @@
 //! - **macOS**: No-op (NDI runtime is in standard library paths)
 //! - **Linux**: No-op (NDI runtime is in standard library paths)
 
+// Most of this module is only exercised on Windows; keep the helpers on other targets.
+#![allow(dead_code)]
+
 #[cfg(target_os = "windows")]
 use std::path::Path;
 

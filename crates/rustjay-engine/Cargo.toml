@@ -55,3 +55,6 @@ mtc     = ["rustjay-control/mtc", "rustjay-gui/mtc"]
 gles2   = ["dep:glow", "dep:khronos-egl", "dep:wayland-sys", "rustjay-io/webcam"]
 drm-gles2 = ["gles2", "dep:gbm", "dep:drm", "dep:libc"]
 
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
