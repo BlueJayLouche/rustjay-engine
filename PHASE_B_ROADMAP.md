@@ -232,18 +232,20 @@ harden, *then* extract to the crate. Gate behind a `mixer` feature.
 
 ---
 
-### Phase B4 — `rustjay-projection` *(High, parallel with B3 — depends only on B0)*
+### Phase B4 — `rustjay-projection` *(High, deferred to Phase C)*
+
+**Status: ⏸️ Deferred.** Architecture explored (see plan in `.kimi/plans/speed-killer-frost-falcon.md`) but not implemented. Will be tackled after B5.
 
 Output post-processor: consumes the final composited `TextureView`, warps /
 blends / slices it to projector outputs. Architecturally independent of the
 mixer — it operates on *any* `EffectInstance` output.
 
-| Task | Source of truth | Acceptance |
-|---|---|---|
-| B4.1 | `ProjectionStage` trait: `(input_view) → projector outputs`. `varda/src/internal/renderer/{dome,warp,edge_blend,slicer}.rs`. | Identity stage passes frame through unchanged. |
-| B4.2 | Dome + warp + edge-blend pipelines. | Visual parity with varda. |
-| B4.3 | Surface import (DXF/SVG → mesh). `varda/src/internal/surface/{import,detect}.rs`. | A varda stage file imports and renders. |
-| B4.4 | Multi-output window management. `varda/.../renderer/subprocess.rs`, winit. | 2 projector windows, independently warped. |
+| Task | Status | Source of truth | Acceptance |
+|---|---|---|---|
+| B4.1 | ⏸️ deferred | `ProjectionStage` trait: `(input_view) → projector outputs`. `varda/src/internal/renderer/{dome,warp,edge_blend,slicer}.rs`. | Identity stage passes frame through unchanged. |
+| B4.2 | ⏸️ deferred | Dome + warp + edge-blend pipelines. | Visual parity with varda. |
+| B4.3 | ⏸️ deferred | Surface import (DXF/SVG → mesh). `varda/src/internal/surface/{import,detect}.rs`. | A varda stage file imports and renders. |
+| B4.4 | ⏸️ deferred | Multi-output window management. `varda/.../renderer/subprocess.rs`, winit. | 2 projector windows, independently warped. |
 
 **Risk:** high (GPU + multi-window + file formats). **Mitigation:** stage-by-stage;
 each `ProjectionStage` is independently testable with a known input texture and a
@@ -280,15 +282,14 @@ Week 1-2:  B0 (EffectInstance refactor)  ──┐ critical path
            B2 (modulation)       ─ parallel │
                                             │
 Week 3-5:  B3 (mixer, as example first) ────┤ needs B0
-           B4 (projection)       ─ parallel ┤ needs B0 only
                                             │
 Week 6-7:  B5 (API)              ───────────┘ needs B3 surface
            Promote examples/mixer → crate
            examples/varda assembles the full app
 ```
 
-**Critical path:** B0 → B3 → B5. B1, B2, B4 are off the critical path and can
-proceed by separate contributors immediately.
+**Critical path:** B0 → B3 → B5. B1 and B2 are off the critical path and are
+done. B4 is deferred to Phase C.
 
 ---
 
