@@ -68,6 +68,32 @@ impl EffectPlugin for MixerPlugin {
         self.lock().parameters()
     }
 
+    /// Serialize the mixer's mix state (crossfader + per-channel settings) into
+    /// the engine preset (REQ-10.1). Per-effect parameter *values* are captured
+    /// separately by the engine's main preset, since T08 aggregates them as
+    /// engine parameters — see [`crate::preset`].
+    fn serialize_preset_state(&self, _state: &()) -> Option<String> {
+        match self.lock().serialize_state().to_json() {
+            Ok(json) => Some(json),
+            Err(e) => {
+                log::error!("mixer: failed to serialize preset state: {e}");
+                None
+            }
+        }
+    }
+
+    /// Restore mix state from a preset, matched to live channels by UUID with
+    /// bounded validation (REQ-10.3).
+    fn deserialize_preset_state(&self, data: &str, _state: &mut ()) {
+        match crate::MixerState::from_json(data) {
+            Ok(state) => {
+                let matched = self.lock().apply_state(&state);
+                log::info!("mixer: restored {matched} channel(s) from preset");
+            }
+            Err(e) => log::error!("mixer: rejected preset state: {e}"),
+        }
+    }
+
     /// Custom render hook: the engine skips its default pass and lets the mixer
     /// drive all channel rendering, compositing, and the master chain itself.
     #[allow(clippy::too_many_arguments)]

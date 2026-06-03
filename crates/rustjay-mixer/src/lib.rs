@@ -20,12 +20,14 @@ mod blit;
 mod composite;
 pub mod crossfade;
 pub mod plugin;
+pub mod preset;
 pub mod sequencer;
 
 pub use blend::BlendMode;
 pub use blit::BlitPipeline;
 pub use composite::CompositePipeline;
 pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
+pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
 pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
 use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
