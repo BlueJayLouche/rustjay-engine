@@ -38,6 +38,10 @@ use rustjay_core::modulation::ModulationEngine;
 /// Hard cap on channels a preset may declare. Mirrors the runtime limit enforced
 /// by [`Mixer::add_channel`](crate::Mixer::add_channel).
 pub const MAX_CHANNELS: usize = 8;
+/// Hard cap on modulation sources a preset may declare (SEC-1).
+pub const MAX_MOD_SOURCES: usize = 64;
+/// Hard cap on total modulation assignment entries a preset may declare (SEC-1).
+pub const MAX_MOD_ASSIGNMENTS: usize = 256;
 
 /// Current [`MixerState`] schema version. Bump on breaking format changes.
 pub const MIXER_STATE_VERSION: u32 = 1;
@@ -84,6 +88,18 @@ impl MixerState {
             return Err(format!(
                 "mixer preset declares {} channels (max {MAX_CHANNELS})",
                 state.channels.len()
+            ));
+        }
+        if state.modulation.sources.len() > MAX_MOD_SOURCES {
+            return Err(format!(
+                "mixer preset declares {} modulation sources (max {MAX_MOD_SOURCES})",
+                state.modulation.sources.len()
+            ));
+        }
+        let total_assignments: usize = state.modulation.assignments.values().map(|v| v.len()).sum();
+        if total_assignments > MAX_MOD_ASSIGNMENTS {
+            return Err(format!(
+                "mixer preset declares {total_assignments} modulation assignments (max {MAX_MOD_ASSIGNMENTS})"
             ));
         }
         Ok(state)

@@ -110,6 +110,14 @@ pub struct Channel {
     ping: Option<Texture>,
     size: [u32; 2],
     last_output: LastOutput,
+
+    // Cached param keys — avoids per-frame format! allocs (PERF-1).
+    opacity_key: String,
+    blend_key: String,
+    input_select_key: String,
+    /// Last-seen chain length; used to detect parity flips that change
+    /// `output_texture()` and invalidate the composite cache (CORR-2).
+    last_chain_len: usize,
 }
 
 impl Channel {
@@ -117,9 +125,14 @@ impl Channel {
     ///
     /// GPU textures are allocated on first render when the target size is known.
     pub fn new(uuid: impl Into<String>, name: impl Into<String>, effect: Box<dyn EffectInstance>) -> Self {
+        let uuid = uuid.into();
+        let name = name.into();
         Self {
-            uuid: uuid.into(),
-            name: name.into(),
+            opacity_key: format!("ch_{}_opacity", &uuid),
+            blend_key: format!("ch_{}_blend", &uuid),
+            input_select_key: format!("ch_{}_input_select", &uuid),
+            uuid,
+            name,
             effect,
             chain: Vec::new(),
             opacity: 1.0,
@@ -131,6 +144,7 @@ impl Channel {
             ping: None,
             size: [0, 0],
             last_output: LastOutput::Texture,
+            last_chain_len: 0,
         }
     }
 
@@ -303,6 +317,16 @@ impl Mixer {
         // Removing shifts channel indices, invalidating slot-keyed bind groups.
         self.generation = self.generation.wrapping_add(1);
         Ok(self.channels.remove(index))
+    }
+
+    /// Add an effect to the master chain.
+    ///
+    /// Automatically assigns the prefix `master_fx{k}_` where `k` is the
+    /// effect's index in the master chain (ARCH-3).
+    pub fn add_master_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
+        let prefix = format!("master_fx{}_", self.master.len());
+        effect.set_param_prefix(&prefix);
+        self.master.push(effect);
     }
 
     /// Effective per-channel opacity for the current frame (REQ-02.4).
@@ -487,6 +511,17 @@ impl EffectInstance for Mixer {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
+        // CORR-2: detect chain length changes that flip output_texture() parity.
+        // A parity flip changes which texture (main vs ping) the composite samples,
+        // so the generation must bump to invalidate the bind-group cache.
+        for ch in &mut self.channels {
+            let current = ch.chain.len();
+            if ch.last_chain_len != current {
+                ch.last_chain_len = current;
+                self.generation = self.generation.wrapping_add(1);
+            }
+        }
+
         // Tick transitions (auto, beat-sync, sequencer) before reading params.
         let dt = engine.performance.frame_time_ms / 1000.0;
         let bpm = engine.effective_bpm();
@@ -504,16 +539,14 @@ impl EffectInstance for Mixer {
         let crossfader = (base_crossfader + crossfader_mod).clamp(0.0, 1.0);
 
         let eff: Vec<f32> = if self.channels.len() == 2 {
-            let ch0_base = engine
-                .get_param(&format!("ch_{}_opacity", self.channels[0].uuid))
-                .unwrap_or(self.channels[0].opacity);
-            let ch0_mod = self.modulation.get_modulation(&format!("ch_{}_opacity", self.channels[0].uuid));
+            let ch0 = &self.channels[0];
+            let ch0_base = engine.get_param(&ch0.opacity_key).unwrap_or(ch0.opacity);
+            let ch0_mod = self.modulation.get_modulation(&ch0.opacity_key);
             let ch0_opacity = (ch0_base + ch0_mod).clamp(0.0, 1.0);
 
-            let ch1_base = engine
-                .get_param(&format!("ch_{}_opacity", self.channels[1].uuid))
-                .unwrap_or(self.channels[1].opacity);
-            let ch1_mod = self.modulation.get_modulation(&format!("ch_{}_opacity", self.channels[1].uuid));
+            let ch1 = &self.channels[1];
+            let ch1_base = engine.get_param(&ch1.opacity_key).unwrap_or(ch1.opacity);
+            let ch1_mod = self.modulation.get_modulation(&ch1.opacity_key);
             let ch1_opacity = (ch1_base + ch1_mod).clamp(0.0, 1.0);
 
             vec![
@@ -524,10 +557,8 @@ impl EffectInstance for Mixer {
             self.channels
                 .iter()
                 .map(|ch| {
-                    let base = engine
-                        .get_param(&format!("ch_{}_opacity", ch.uuid))
-                        .unwrap_or(ch.opacity);
-                    let m = self.modulation.get_modulation(&format!("ch_{}_opacity", ch.uuid));
+                    let base = engine.get_param(&ch.opacity_key).unwrap_or(ch.opacity);
+                    let m = self.modulation.get_modulation(&ch.opacity_key);
                     (base + m).clamp(0.0, 1.0)
                 })
                 .collect()
@@ -539,7 +570,7 @@ impl EffectInstance for Mixer {
                 continue;
             }
             let input_select = engine
-                .get_param(&format!("ch_{}_input_select", ch.uuid))
+                .get_param(&ch.input_select_key)
                 .map(|v| InputSelect::from_index(v as usize))
                 .unwrap_or(ch.input_select);
             let ch_inputs: &[EffectInput] = match input_select {
@@ -572,7 +603,7 @@ impl EffectInstance for Mixer {
             let Some(src) = ch.output_texture() else { continue };
 
             let blend_mode = engine
-                .get_param(&format!("ch_{}_blend", ch.uuid))
+                .get_param(&ch.blend_key)
                 .and_then(|v| BlendMode::from_index(v as u32))
                 .unwrap_or(ch.blend_mode);
 

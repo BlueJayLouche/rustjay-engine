@@ -506,6 +506,13 @@ pub struct ModulationEngine {
     current_values: Vec<f32>,
     #[serde(skip)]
     prev_time: Option<f32>,
+    /// True if any assignment key starts with `"mod:"` — gates `apply_mod_on_mod`
+    /// and `evaluation_order` caching (PERF-3).
+    #[serde(skip)]
+    has_mod_on_mod: bool,
+    /// Cached evaluation order; invalidated when assignments or sources change.
+    #[serde(skip)]
+    cached_evaluation_order: Option<Vec<usize>>,
 }
 
 impl ModulationEngine {
@@ -519,6 +526,14 @@ impl ModulationEngine {
         for (i, entry) in self.sources.iter().enumerate() {
             self.uuid_to_idx.insert(entry.uuid.clone(), i);
         }
+    }
+
+    fn rebuild_mod_on_mod_flag(&mut self) {
+        self.has_mod_on_mod = self.assignments.keys().any(|k| k.starts_with("mod:"));
+    }
+
+    fn invalidate_evaluation_cache(&mut self) {
+        self.cached_evaluation_order = None;
     }
 
     /// Ensure `uuid_to_idx` is populated (needed after deserialization).
@@ -536,6 +551,7 @@ impl ModulationEngine {
         self.prev_values.push(0.0);
         self.current_values.push(0.0);
         self.uuid_to_idx.insert(uuid.clone(), self.sources.len() - 1);
+        self.invalidate_evaluation_cache();
         uuid
     }
 
@@ -546,6 +562,7 @@ impl ModulationEngine {
         self.prev_values.push(0.0);
         self.current_values.push(0.0);
         self.uuid_to_idx.insert(uuid.clone(), self.sources.len() - 1);
+        self.invalidate_evaluation_cache();
         uuid
     }
 
@@ -567,6 +584,8 @@ impl ModulationEngine {
             let mod_prefix = format!("mod:{}:", uuid);
             self.assignments.retain(|k, _| !k.starts_with(&mod_prefix));
             self.rebuild_uuid_index();
+            self.rebuild_mod_on_mod_flag();
+            self.invalidate_evaluation_cache();
         }
     }
 
@@ -584,6 +603,8 @@ impl ModulationEngine {
                 prefix
             );
         }
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
     }
 
     /// Assign a source to modulate a parameter.
@@ -603,6 +624,8 @@ impl ModulationEngine {
             .entry(param_name.to_string())
             .or_default()
             .push(modulation);
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
     }
 
     /// Assign a source to modulate another source's parameter (mod-on-mod).
@@ -615,11 +638,15 @@ impl ModulationEngine {
     pub fn clear_mod_on_mod(&mut self, target_uuid: &str, param_name: &str) {
         let key = format!("mod:{}:{}", target_uuid, param_name);
         self.assignments.remove(&key);
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
     }
 
     /// Clear all assignments for a parameter.
     pub fn clear_assignments(&mut self, param_name: &str) {
         self.assignments.remove(param_name);
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
     }
 
     /// Trigger ADSR gate on.
@@ -754,9 +781,19 @@ impl ModulationEngine {
             self.current_values.push(0.0);
         }
 
-        let order = self.evaluation_order();
+        let order = self.cached_evaluation_order
+            .clone()
+            .unwrap_or_else(|| {
+                let o = self.evaluation_order();
+                self.cached_evaluation_order = Some(o.clone());
+                o
+            });
         for i in order {
-            let mut effective = self.apply_mod_on_mod(i, &self.sources[i].source);
+            let mut effective = if self.has_mod_on_mod {
+                self.apply_mod_on_mod(i, &self.sources[i].source)
+            } else {
+                self.sources[i].source.clone()
+            };
             let value = effective.calculate(time, dt, audio, self.prev_values[i]);
 
             // Copy back mutable state changes (ADSR stage progression)
@@ -1842,7 +1879,10 @@ mod tests {
         assert!(original_lfo.source.config_eq(&restored_lfo.source));
     }
 
-    // ── O(1) allocation test (REQ-06.2) ──────────────────────────────
+    // ── Vector stability test (REQ-06.2) ────────────────────────────
+    // NOTE: this checks that `current_values` vector length is stable,
+    // not that `update()` is allocation-free. See PERF-3: `evaluation_order`
+    // and `apply_mod_on_mod` still allocate per tick when modulation is active.
 
     #[test]
     fn update_does_not_grow_vectors_after_first_tick() {
@@ -1887,7 +1927,6 @@ mod tests {
         let unique: std::collections::HashSet<&String> = ids.iter().collect();
         assert_eq!(unique.len(), 100, "100 UUIDs should all be unique");
     }
-}
 
     // ── Adapter tests ────────────────────────────────────────────────
 
@@ -1915,3 +1954,4 @@ mod tests {
         assert!(engine.has_modulation("brightness"));
         assert!(engine.has_modulation("saturation"));
     }
+}
