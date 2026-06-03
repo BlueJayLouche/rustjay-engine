@@ -456,7 +456,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         if let Some(ref st) = surface_texture {
             let surface_view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.blit_pipeline.upload_hsb(&self.queue, hsb_hue, hsb_sat, hsb_bri, hsb_enabled);
-            self.blit_pipeline.blit(&mut encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer);
+            self.blit_pipeline.blit(&mut encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer, self.surface_config.format);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -522,6 +522,27 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         }
 
         self.frame_count += 1;
+    }
+
+    /// Blit the render target to `dest_view` applying current HSB settings.
+    /// Intended for preview textures so the GUI shows the same colour
+    /// correction as the main output window.
+    pub fn blit_output_to(&self, encoder: &mut wgpu::CommandEncoder, dest_view: &wgpu::TextureView) {
+        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        self.blit_pipeline.upload_hsb(
+            &self.queue,
+            state.hsb_params.hue_shift,
+            state.hsb_params.saturation,
+            state.hsb_params.brightness,
+            state.color_enabled,
+        );
+        self.blit_pipeline.blit(
+            encoder,
+            &self.blit_bind_group,
+            dest_view,
+            &self.vertex_buffer,
+            wgpu::TextureFormat::Bgra8Unorm,
+        );
     }
 
     /// Update cached view/sampler for the second input texture.

@@ -144,7 +144,7 @@ impl EguiRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
 
@@ -157,6 +157,11 @@ impl EguiRenderer {
         self.preview_texture_ids.push(texture_id);
         self.preview_textures.insert(texture_id, texture);
         texture_id
+    }
+
+    /// Get the underlying wgpu texture for a preview.
+    pub fn get_preview_texture(&self, texture_id: egui::TextureId) -> Option<&wgpu::Texture> {
+        self.preview_textures.get(&texture_id)
     }
 
     /// Update a preview texture with texture data

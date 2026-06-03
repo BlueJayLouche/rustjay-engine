@@ -16,6 +16,7 @@ struct HsbUniform {
 
 pub(crate) struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
+    pipeline_bgra8unorm: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
@@ -173,7 +174,33 @@ impl BlitPipeline {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout, sampler, uniform_buffer, uniform_bind_group }
+        let pipeline_bgra8unorm = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blit Pipeline (Bgra8Unorm)"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self { pipeline, pipeline_bgra8unorm, bind_group_layout, sampler, uniform_buffer, uniform_bind_group }
     }
 
     /// Write HSB values to the uniform buffer.  Call once per frame before `blit()`.
@@ -217,7 +244,13 @@ impl BlitPipeline {
         bind_group: &wgpu::BindGroup,
         dest_view: &wgpu::TextureView,
         vertex_buffer: &wgpu::Buffer,
+        format: wgpu::TextureFormat,
     ) {
+        let pipeline = if format == wgpu::TextureFormat::Bgra8Unorm {
+            &self.pipeline_bgra8unorm
+        } else {
+            &self.pipeline
+        };
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Blit Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -234,7 +267,7 @@ impl BlitPipeline {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);

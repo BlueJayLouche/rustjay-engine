@@ -580,10 +580,14 @@ impl<P: EffectPlugin> App<P> {
                 }
 
                 {
-                    let output_src = self.output_engine.as_ref().map(|e| &e.render_target.texture);
-                    if let (Some(tex), Some(preview_id)) = (output_src, gui.output_preview_texture_id) {
-                        renderer.update_preview_texture(preview_id, tex, &mut encoder);
-                        any_work = true;
+                    if let Some(ref engine) = self.output_engine {
+                        if let Some(preview_id) = gui.output_preview_texture_id {
+                            if let Some(preview_tex) = renderer.get_preview_texture(preview_id) {
+                                let preview_view = preview_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                                engine.blit_output_to(&mut encoder, &preview_view);
+                                any_work = true;
+                            }
+                        }
                     }
                 }
 
@@ -620,10 +624,13 @@ impl<P: EffectPlugin> App<P> {
             }
 
             {
-                let output_src = self.output_engine.as_ref().map(|e| &e.render_target.texture);
-                if let (Some(tex), Some(preview_id)) = (output_src, gui.output_preview_texture_id) {
-                    renderer.update_preview_texture(preview_id, tex, &mut encoder);
-                    any_work = true;
+                if let Some(ref engine) = self.output_engine {
+                    if let Some(preview_id) = gui.output_preview_texture_id {
+                        if let Some(preview_view) = renderer.get_preview_view(preview_id) {
+                            engine.blit_output_to(&mut encoder, preview_view);
+                            any_work = true;
+                        }
+                    }
                 }
             }
 

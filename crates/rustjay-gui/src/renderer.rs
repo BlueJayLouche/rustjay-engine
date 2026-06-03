@@ -161,7 +161,7 @@ impl ImGuiRenderer {
                 depth_or_array_layers: 1,
             },
             format: Some(wgpu::TextureFormat::Bgra8Unorm),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
             ..Default::default()
         };
 
@@ -169,6 +169,11 @@ impl ImGuiRenderer {
         let texture_id = self.renderer.textures.insert(texture);
         self.preview_texture_ids.push(texture_id);
         texture_id
+    }
+
+    /// Get the wgpu texture view for a preview texture.
+    pub fn get_preview_view(&self, texture_id: imgui::TextureId) -> Option<&wgpu::TextureView> {
+        self.renderer.textures.get(texture_id).map(|t| t.view())
     }
 
     /// Update a preview texture with texture data
