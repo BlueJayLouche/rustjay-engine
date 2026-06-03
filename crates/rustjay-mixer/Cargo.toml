@@ -1,0 +1,21 @@
+[package]
+name = "rustjay-mixer"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-channel compositing mixer for rustjay-engine (Phase B3)"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "mixer", "compositing", "wgpu"]
+categories = ["graphics", "multimedia::video"]
+
+[dependencies]
+rustjay-core   = { workspace = true }
+rustjay-render = { workspace = true }
+wgpu           = { workspace = true }
+bytemuck       = { workspace = true }
+log            = { workspace = true }
+serde          = { workspace = true }
+
+[dev-dependencies]
+# WGSL front-end only, for the shader-validation test (no GPU required).
+naga = { version = "29", features = ["wgsl-in"] }
