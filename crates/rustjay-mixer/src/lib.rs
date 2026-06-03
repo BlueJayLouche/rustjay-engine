@@ -194,6 +194,11 @@ pub struct Mixer {
     acc_b: Option<Texture>,
     master_ping: Option<Texture>,
     size: [u32; 2],
+    /// Bumped whenever GPU textures are reallocated (resize) or the channel set
+    /// changes. Drives the composite pipeline's bind-group cache invalidation
+    /// (REQ-11.1) — a cached bind group keyed by `(slot, dest)` is only valid
+    /// within one generation.
+    generation: u64,
 }
 
 impl Mixer {
@@ -215,6 +220,7 @@ impl Mixer {
             acc_b: None,
             master_ping: None,
             size: [0, 0],
+            generation: 0,
         }
     }
 
@@ -228,6 +234,9 @@ impl Mixer {
         self.channels.push(channel);
         // The new channel's textures are allocated lazily at the top of the next
         // `render_to` call (via `ensure_resources`), once the render size is known.
+        // Bump generation: channel-index → texture mapping changed, so the
+        // composite bind-group cache (keyed by slot) must be rebuilt.
+        self.generation = self.generation.wrapping_add(1);
         Ok(self.channels.len() - 1)
     }
 
@@ -241,6 +250,8 @@ impl Mixer {
         if index >= self.channels.len() {
             return Err("channel index out of bounds");
         }
+        // Removing shifts channel indices, invalidating slot-keyed bind groups.
+        self.generation = self.generation.wrapping_add(1);
         Ok(self.channels.remove(index))
     }
 
@@ -269,6 +280,7 @@ impl Mixer {
             self.acc_b = Some(Texture::create_render_target(device, size[0], size[1], "mixer acc_b"));
             self.master_ping = Some(Texture::create_render_target(device, size[0], size[1], "master ping"));
             self.size = size;
+            self.generation = self.generation.wrapping_add(1);
         }
         for ch in &mut self.channels {
             ch.ensure_size(device, size);
@@ -400,6 +412,14 @@ impl EffectInstance for Mixer {
         out
     }
 
+    /// # Single-render-path invariant (REQ-11.4)
+    ///
+    /// Every channel/master/chain effect is an `EffectInstance` driven **only**
+    /// through `render_to` here — never the `PluginRenderer::render` wrapper path.
+    /// This preserves each `EffectNode`'s generation-keyed bind-group cache (see
+    /// the B0.2 invariant note): alternating the two render paths on one renderer
+    /// would thrash its cache. The mixer's own composite cache relies on the same
+    /// discipline — see [`CompositePipeline`] and [`Mixer::generation`].
     fn render_to(
         &mut self,
         ctx: &mut RenderCtx<'_>,
@@ -478,10 +498,15 @@ impl EffectInstance for Mixer {
                 Some(w) if std::ptr::eq(w as *const _, acc_a as *const _) => (acc_a, acc_b),
                 _ => (acc_b, acc_a),
             };
+            let dest_is_a = std::ptr::eq(read_acc as *const _, acc_a as *const _);
 
             composite.blend(
                 ctx.device,
+                ctx.queue,
                 ctx.encoder,
+                self.generation,
+                i,
+                dest_is_a,
                 &src.view,
                 &read_acc.view,
                 &write_acc.view,

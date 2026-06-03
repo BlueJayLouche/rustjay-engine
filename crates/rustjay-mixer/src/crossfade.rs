@@ -125,8 +125,7 @@ impl BeatSyncCrossfade {
         bpm: Option<f32>,
         beat_phase: f32,
     ) -> Option<f32> {
-        if !self.started && beat_phase < 0.05 && bpm.is_some() {
-            let bpm = bpm.unwrap();
+        if let (false, true, Some(bpm)) = (self.started, beat_phase < 0.05, bpm) {
             let duration = self.beats * 60.0 / bpm.max(1.0);
             self.auto = Some(AutoCrossfade::new(
                 current,
