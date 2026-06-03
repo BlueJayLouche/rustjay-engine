@@ -83,7 +83,7 @@ sub-mixes all fall out of the same abstraction.
 
 ```
                        rustjay-core
- (EffectPlugin, EffectInstance/EffectInput/RenderTarget, ModulationGraph, EngineState)
+ (EffectPlugin, EffectInstance/EffectInput/RenderTarget, EngineState)
               │            │             │            │
         ┌─────┘      ┌─────┘       ┌─────┘      ┌─────┘
    rustjay-render  rustjay-isf  rustjay-modulation  rustjay-control
@@ -100,6 +100,14 @@ sub-mixes all fall out of the same abstraction.
 
 **Invariant:** all arrows point toward `rustjay-core`. No cycles.
 `rustjay-api` and `rustjay-projection` are leaf-adjacent and **off by default**.
+
+**ARCH-1 resolution (review finding):** `modulation` is **not** a separate crate — it lives
+inside `rustjay-core` behind a `modulation` feature flag (uses optional `uuid`). This is a
+deliberate exception to the "no new dependency of rustjay-core" rule: modulation is core
+vocabulary (sources, assignments, UUID-stable IDs) that both `rustjay-mixer` and future
+`rustjay-api` need. Gating it behind a feature keeps the dependency graph lean for
+single-plugin apps (`delta`/`flux`/`sputnik`/`waaaves`) while avoiding a separate
+`rustjay-modulation` crate that would circularly depend on `rustjay-core` types.
 
 ---
 
@@ -168,10 +176,10 @@ needs nothing from B0. Already working in `examples/isf-example`.
 
 | Task | Source of truth | Acceptance |
 |---|---|---|
-| B1.1 | Create `crates/rustjay-isf`; move `isf_transpiler.rs` + `isf_effect.rs` from the example. | Crate compiles; `shaderc`/`naga` are optional deps behind an `isf` feature. |
-| B1.2 | Hot-reload via `notify` (port from varda `internal/isf` + `registry`). | Editing a `.fs` file live-reloads without restart. |
-| B1.3 | ISF metadata → `Vec<ParameterDescriptor>` bridge. | ISF `INPUTS` auto-populate engine UI + OSC/MIDI/Web targets. |
-| B1.4 | Reduce `isf-example` to a thin consumer of the crate. | Example LOC drops; the crate owns the logic. |
+| B1.1 | ✅ **done** | Create `crates/rustjay-isf`; move `isf_transpiler.rs` + `isf_effect.rs` from the example. | Crate compiles; `isf_transpiler.rs` + `isf_effect.rs` + `passthrough.wgsl` moved; tests pass (6/6). |
+| B1.2 | ✅ **done** | Hot-reload via mtime polling (existing mechanism preserved; `notify` upgrade is a future enhancement). | Editing a `.fs` file live-reloads without restart. |
+| B1.3 | ✅ **done** | ISF metadata → `Vec<ParameterDescriptor>` bridge extracted as reusable free functions in `params.rs`. | `isf_inputs_to_parameters()` + `isf_inputs_to_default_values()` bridge ISF `INPUTS` to engine UI + OSC/MIDI/Web targets. |
+| B1.4 | ✅ **done** | Reduce `isf-example` to a thin consumer of the crate. | Example reduced to `main.rs` (launcher) + `isf_tab.rs` (UI); all core logic lives in `rustjay-isf`. |
 
 **Risk:** `shaderc` needs a C++ toolchain (known Linux/Pi pain). **Mitigation:**
 strictly feature-gate; document the toolchain; spike `naga`'s native GLSL
@@ -189,7 +197,10 @@ with `HashMap<param, Vec<ParamModulation>>` multi-target assignments.
 |---|---|---|
 | B2.1 | Port `ModulationSourceEntry` (UUID) + assignment model into `rustjay-core` (or a new `rustjay-modulation` re-exported by core). `varda/src/internal/modulation/{engine,sources}.rs`. | Sources survive serialize→deserialize with stable UUIDs (unit test). |
 | B2.2 | Adapter: existing `LfoBank` + `AudioRoutingState` become *sources* in the new model. `rustjay-core/src/{lfo,routing}.rs`. | waaaves' 8 LFOs keep working; no behavior change. |
-| B2.3 | `O(1)` tick path (port the `uuid_to_idx` cache). `varda/.../engine.rs:28`. | No per-frame allocation in `update()` (flamegraph). |
+| B2.3 | `O(1)` tick path (port the `uuid_to_idx` cache). `varda/.../engine.rs:28`. | No per-frame allocation in `update()` (flamegraph). **PERF-3 follow-up (review):** `evaluation_order` is now cached until assignments/sources change, and `apply_mod_on_mod` is skipped when `has_mod_on_mod` is false (the common case). |
+| B2.4 | **Tempo sync for `ModulationSource::LFO`**. The old `Lfo` has `tempo_sync` + beat divisions + quantum-boundary phase snap; varda's `ModulationSource::LFO` does not. | `ModulationEngine::update()` accepts BPM + beat phase; LFOs snap phase and compute frequency from beat divisions exactly like the old `LfoBank`. |
+
+**Status (2026-06-03):** B2.1–B2.3 landed and committed. B2.4 is a known gap — the adapter (B2.2) converts tempo-sync LFOs to a fixed Hz at snapshot time, so they don't re-sync to BPM changes or snap on bar boundaries.
 
 **Risk:** low–medium (touches every modulation consumer). **Mitigation:** ship
 the adapter (B2.2) so old `LfoTarget` code keeps compiling; deprecate, don't delete.
@@ -210,7 +221,9 @@ beat-synced transitions.
 2-channel mixer with crossfader, blend modes, master chain, auto/beat-sync/sequenced
 transitions, modulatable params, and preset save/load. The crate is feature-gated
 (off by default), clippy-clean, and `delta`/`flux`/`sputnik`/`waaaves` compile
-unchanged. **Remaining:** T13 (UUID-modulation) is blocked on Phase B2; T19's GPU
+unchanged. **Review findings addressed:** `CORR-1/2/3`, `PERF-1/3`, `ARCH-1/2/3`,
+`SEC-1`, `HYG-2/3`, `DOC-1` all landed (see `PHASE_B_REVIEW_FINDINGS.md`).
+**Remaining:** T13 (UUID-modulation) is blocked on Phase B2; T19's GPU
 flamegraph verification is a hardware follow-up (allocation-free path verified by
 construction). The crate is ready to promote from `examples/mixer` per §5.
 
@@ -229,18 +242,20 @@ harden, *then* extract to the crate. Gate behind a `mixer` feature.
 
 ---
 
-### Phase B4 — `rustjay-projection` *(High, parallel with B3 — depends only on B0)*
+### Phase B4 — `rustjay-projection` *(High, deferred to Phase C)*
+
+**Status: ⏸️ Deferred.** Architecture explored (see plan in `.kimi/plans/speed-killer-frost-falcon.md`) but not implemented. Will be tackled after B5.
 
 Output post-processor: consumes the final composited `TextureView`, warps /
 blends / slices it to projector outputs. Architecturally independent of the
 mixer — it operates on *any* `EffectInstance` output.
 
-| Task | Source of truth | Acceptance |
-|---|---|---|
-| B4.1 | `ProjectionStage` trait: `(input_view) → projector outputs`. `varda/src/internal/renderer/{dome,warp,edge_blend,slicer}.rs`. | Identity stage passes frame through unchanged. |
-| B4.2 | Dome + warp + edge-blend pipelines. | Visual parity with varda. |
-| B4.3 | Surface import (DXF/SVG → mesh). `varda/src/internal/surface/{import,detect}.rs`. | A varda stage file imports and renders. |
-| B4.4 | Multi-output window management. `varda/.../renderer/subprocess.rs`, winit. | 2 projector windows, independently warped. |
+| Task | Status | Source of truth | Acceptance |
+|---|---|---|---|
+| B4.1 | ⏸️ deferred | `ProjectionStage` trait: `(input_view) → projector outputs`. `varda/src/internal/renderer/{dome,warp,edge_blend,slicer}.rs`. | Identity stage passes frame through unchanged. |
+| B4.2 | ⏸️ deferred | Dome + warp + edge-blend pipelines. | Visual parity with varda. |
+| B4.3 | ⏸️ deferred | Surface import (DXF/SVG → mesh). `varda/src/internal/surface/{import,detect}.rs`. | A varda stage file imports and renders. |
+| B4.4 | ⏸️ deferred | Multi-output window management. `varda/.../renderer/subprocess.rs`, winit. | 2 projector windows, independently warped. |
 
 **Risk:** high (GPU + multi-window + file formats). **Mitigation:** stage-by-stage;
 each `ProjectionStage` is independently testable with a known input texture and a
@@ -277,15 +292,14 @@ Week 1-2:  B0 (EffectInstance refactor)  ──┐ critical path
            B2 (modulation)       ─ parallel │
                                             │
 Week 3-5:  B3 (mixer, as example first) ────┤ needs B0
-           B4 (projection)       ─ parallel ┤ needs B0 only
                                             │
 Week 6-7:  B5 (API)              ───────────┘ needs B3 surface
            Promote examples/mixer → crate
            examples/varda assembles the full app
 ```
 
-**Critical path:** B0 → B3 → B5. B1, B2, B4 are off the critical path and can
-proceed by separate contributors immediately.
+**Critical path:** B0 → B3 → B5. B1 and B2 are off the critical path and are
+done. B4 is deferred to Phase C.
 
 ---
 
@@ -295,7 +309,7 @@ proceed by separate contributors immediately.
 |---|---|---|---|---|
 | R1 | B0 refactor regresses existing examples | Med | High | Visual snapshot oracle *before* refactor; `dyn` wrapping is mechanical. |
 | R2 | `shaderc` C++ toolchain breaks Linux/Pi builds | Med | Med | Feature-gate; spike `naga` native GLSL frontend as fallback. |
-| R3 | Mixer-inside-mixer recursion blows bind-group limits | Low | Med | Cap nesting depth; composite always flattens to one output texture. |
+| R3 | Mixer-inside-mixer recursion blows bind-group limits | Low | Med | Cap nesting depth; composite always flattens to one output texture. `ARCH-3` review fix added `EffectInstance::set_param_prefix` so nested effects are addressable. |
 | R4 | API deployed on an *untrusted* network without opting into hardening | Med | High | LAN-default is fine on an isolated show LAN (Task 1.4-R); document the trust assumption + opt-in `--bind`/`--web-token` in GUIDE; always-on DOM-XSS escaping (1.3). |
 | R5 | Modulation migration breaks waaaves' 8 LFOs | Low | Med | Adapter layer (B2.2); deprecate don't delete; serialize round-trip test. |
 | R6 | Scope creep (HAP, scenes, keymap, sysmon, recording also exist in varda) | High | Med | This roadmap is explicitly the 5 Phase-B items; everything else is Phase C backlog. |
@@ -326,6 +340,19 @@ Varda capabilities **not** in Phase B, captured so they aren't lost:
 - Recording / capture (`varda/src/internal/recording/`)
 - System monitor (`varda/src/internal/sysmon/`)
 - Camera-based auto-mapping (recently added; see varda PR #14)
+
+---
+
+## 9. Deferred Review Findings
+
+Items from `PHASE_B_REVIEW_FINDINGS.md` that were **explicitly deferred** — they are not
+merge blockers and do not gate Phase B completion, but they are tracked so they are not lost.
+
+| ID | Priority | What | Why deferred |
+|---|---|---|---|
+| PERF-2 | Medium | `EngineState::get_param` does `format!("{prefix}{id}")` on every prefixed lookup. Eliminating the alloc requires either a new `build_uniforms` signature (invasive, all plugins) or a pre-resolved index cache. | Tied to B5 API surface — best done when `EffectPlugin` trait is stabilized. The `format!` cost is now bounded to `build_uniforms` only (PERF-1 removed the mixer-level `format!` allocs). |
+| PERF-4 | Low | `Mixer::render_to` allocates small `Vec`s (`eff`, `active`) per frame; `clear_texture` on `acc_a` could be folded into the first composite write. | Micro-optimization; `SmallVec<[_; 8]>` + folded clear are a single focused pass, best done alongside GPU flamegraph verification (T19). |
+| ARCH-3 (remainder) | Medium | `EngineState::param_lookup_prefix` is `RefCell<Option<String>>` → `!Sync`; single-slot (no stack) → nested mixers don't compose; fall-through lets channel effects read mixer-level bare IDs. | The brittleness and nesting issues were partially fixed (auto-assigned prefixes via `EffectInstance::set_param_prefix`). The `RefCell`/stack/fall-through redesign needs the same `build_uniforms` signature change as PERF-2. |
 
 ---
 

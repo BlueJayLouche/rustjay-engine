@@ -33,10 +33,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{BlendMode, Mixer};
+use rustjay_core::modulation::ModulationEngine;
 
 /// Hard cap on channels a preset may declare. Mirrors the runtime limit enforced
 /// by [`Mixer::add_channel`](crate::Mixer::add_channel).
 pub const MAX_CHANNELS: usize = 8;
+/// Hard cap on modulation sources a preset may declare (SEC-1).
+pub const MAX_MOD_SOURCES: usize = 64;
+/// Hard cap on total modulation assignment entries a preset may declare (SEC-1).
+pub const MAX_MOD_ASSIGNMENTS: usize = 256;
 
 /// Current [`MixerState`] schema version. Bump on breaking format changes.
 pub const MIXER_STATE_VERSION: u32 = 1;
@@ -65,6 +70,9 @@ pub struct MixerState {
     pub crossfader: f32,
     /// Per-channel mix settings.
     pub channels: Vec<ChannelState>,
+    /// UUID-stable modulation sources and assignments (T13).
+    #[serde(default)]
+    pub modulation: ModulationEngine,
 }
 
 impl MixerState {
@@ -80,6 +88,18 @@ impl MixerState {
             return Err(format!(
                 "mixer preset declares {} channels (max {MAX_CHANNELS})",
                 state.channels.len()
+            ));
+        }
+        if state.modulation.sources.len() > MAX_MOD_SOURCES {
+            return Err(format!(
+                "mixer preset declares {} modulation sources (max {MAX_MOD_SOURCES})",
+                state.modulation.sources.len()
+            ));
+        }
+        let total_assignments: usize = state.modulation.assignments.values().map(|v| v.len()).sum();
+        if total_assignments > MAX_MOD_ASSIGNMENTS {
+            return Err(format!(
+                "mixer preset declares {total_assignments} modulation assignments (max {MAX_MOD_ASSIGNMENTS})"
             ));
         }
         Ok(state)
@@ -108,6 +128,7 @@ impl Mixer {
                     mute: ch.mute,
                 })
                 .collect(),
+            modulation: self.modulation.clone(),
         }
     }
 
@@ -129,6 +150,11 @@ impl Mixer {
                 matched += 1;
             }
         }
+
+        // Restore modulation state (T13).
+        self.modulation = state.modulation.clone();
+        self.modulation.ensure_index();
+
         matched
     }
 }
@@ -217,5 +243,37 @@ mod tests {
         let state = MixerState::from_json(json).unwrap();
         assert_eq!(m.apply_state(&state), 0);
         assert_eq!(m.channels[0].opacity, before);
+    }
+
+    #[test]
+    fn round_trip_modulation_state() {
+        let mut m = mixer_ab();
+        let lfo = m.modulation.add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
+        m.modulation.assign("crossfader", &lfo, 0.5, None);
+        m.modulation.assign("ch_a_opacity", &lfo, 0.25, None);
+        m.modulation.assign("ch_b_opacity", &lfo, 0.25, None);
+
+        let json = m.serialize_state().to_json().unwrap();
+
+        // Restore onto a fresh mixer.
+        let mut restored = mixer_ab();
+        let state = MixerState::from_json(&json).unwrap();
+        restored.apply_state(&state);
+
+        assert_eq!(restored.modulation.source_count(), 1);
+        assert!(restored.modulation.has_modulation("crossfader"));
+        assert!(restored.modulation.has_modulation("ch_a_opacity"));
+        assert!(restored.modulation.has_modulation("ch_b_opacity"));
+    }
+
+    #[test]
+    fn backward_compat_missing_modulation_field() {
+        // Old presets without the modulation field should deserialize cleanly.
+        let json = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ]}"#;
+        let state = MixerState::from_json(json).unwrap();
+        assert_eq!(state.crossfader, 0.5);
+        assert_eq!(state.modulation.source_count(), 0);
     }
 }

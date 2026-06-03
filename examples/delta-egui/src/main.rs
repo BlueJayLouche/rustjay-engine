@@ -394,16 +394,8 @@ impl EffectPlugin for DeltaEffect {
 
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut RenderHookCtx<'_>,
         app_state: &mut Self::State,
-        engine_state: &EngineState,
-        _vertex_buffer: &wgpu::Buffer,
-        input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         let Some(pipeline) = &self.pipeline else { return false };
         let Some(vb) = &self.vertex_buffer else { return false };
@@ -411,15 +403,15 @@ impl EffectPlugin for DeltaEffect {
         let Some(ubg) = &self.uniform_bind_group else { return false };
         let Some(tex_bgl) = &self.texture_bind_group_layout else { return false };
 
-        let uniforms = self.build_uniforms(app_state, engine_state);
+        let uniforms = self.build_uniforms(app_state, ctx.engine_state);
 
         let Some(history) = &mut self.history else { return false };
 
-        if let Some(src) = input_texture {
-            history.resize(device, src.width(), src.height());
-            history.push_frame(src, encoder);
+        if let Some(src) = ctx.input.and_then(|i| i.texture) {
+            history.resize(ctx.device, src.width(), src.height());
+            history.push_frame(src, ctx.encoder);
         }
-        queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
+        ctx.queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
 
         let rd = uniforms.delays[0] as usize;
         let gd = uniforms.delays[1] as usize;
@@ -438,14 +430,14 @@ impl EffectPlugin for DeltaEffect {
         let rv = red_frame.map(|t| &t.view).or(default_view);
         let gv = green_frame.map(|t| &t.view).or(default_view);
         let bv = blue_frame.map(|t| &t.view).or(default_view);
-        let iv = input_view.or(default_view);
-        let s = input_sampler.or(default_sampler);
+        let iv = ctx.input.map(|i| i.view).or(default_view);
+        let s = ctx.input.map(|i| i.sampler).or(default_sampler);
 
         let (Some(rv), Some(gv), Some(bv), Some(iv), Some(s)) = (rv, gv, bv, iv, s) else {
             return true;
         };
 
-        let texture_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let texture_bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Delta Texture BG"),
             layout: tex_bgl,
             entries: &[
@@ -458,10 +450,10 @@ impl EffectPlugin for DeltaEffect {
         });
 
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Delta Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: render_target_view,
+                    view: ctx.target_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {

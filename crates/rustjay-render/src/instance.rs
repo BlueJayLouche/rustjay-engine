@@ -37,6 +37,7 @@ pub struct EffectNode<P: EffectPlugin> {
     renderer: PluginRenderer<P>,
     state: P::State,
     label: String,
+    param_prefix: String,
 }
 
 impl<P: EffectPlugin> EffectNode<P> {
@@ -55,6 +56,7 @@ impl<P: EffectPlugin> EffectNode<P> {
             renderer,
             state,
             label: label.into(),
+            param_prefix: String::new(),
         }
     }
 
@@ -72,9 +74,23 @@ impl<P: EffectPlugin> EffectNode<P> {
     pub fn plugin(&self) -> &P {
         &self.renderer.plugin
     }
+
+    /// Set the parameter prefix used when this effect looks up engine params.
+    ///
+    /// When non-empty, [`EffectNode::render_to`] temporarily sets this prefix
+    /// on the [`EngineState::param_lookup_prefix`] field so the nested plugin's
+    /// `build_uniforms` can use bare IDs (e.g. `"red"`) while the engine stores
+    /// the value under the fully-qualified name (e.g. `"ch_a_red"`).
+    pub fn set_param_prefix(&mut self, prefix: &str) {
+        self.param_prefix = prefix.to_string();
+    }
 }
 
 impl<P: EffectPlugin> EffectInstance for EffectNode<P> {
+    fn set_param_prefix(&mut self, prefix: &str) {
+        self.param_prefix = prefix.to_string();
+    }
+
     fn label(&self) -> &str {
         &self.label
     }
@@ -96,6 +112,10 @@ impl<P: EffectPlugin> EffectInstance for EffectNode<P> {
         target: RenderTarget<'_>,
         engine: &EngineState,
     ) {
+        let old_prefix = engine.param_lookup_prefix.borrow().clone();
+        if !self.param_prefix.is_empty() {
+            *engine.param_lookup_prefix.borrow_mut() = Some(self.param_prefix.clone());
+        }
         self.renderer.render_to_view(
             ctx.encoder,
             ctx.device,
@@ -107,5 +127,6 @@ impl<P: EffectPlugin> EffectInstance for EffectNode<P> {
             engine,
             ctx.vertex_buffer,
         );
+        *engine.param_lookup_prefix.borrow_mut() = old_prefix;
     }
 }

@@ -10,6 +10,7 @@ members = [
     "crates/rustjay-mixer",
     "crates/rustjay-engine",
     "crates/rustjay-sync",
+    "crates/rustjay-isf",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -73,6 +74,7 @@ instant = "0.1"
 dirs    = "6.0"
 rand    = "0.8"
 qrcode  = "0.14"
+uuid    = { version = "1", features = ["v4"] }
 
 # Workspace-internal crates
 rustjay-core    = { path = "crates/rustjay-core", version = "0.1.0" }
@@ -84,6 +86,7 @@ rustjay-gui     = { path = "crates/rustjay-gui",     version = "0.1.0" }
 rustjay-render  = { path = "crates/rustjay-render",  version = "0.1.0" }
 rustjay-mixer   = { path = "crates/rustjay-mixer",   version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-features = false }
+rustjay-isf     = { path = "crates/rustjay-isf",     version = "0.1.0" }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
 syphon-core     = "0.1.1"
 syphon-metal    = "0.1.1"

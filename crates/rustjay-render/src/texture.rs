@@ -4,6 +4,9 @@
 //! All textures use BGRA8 format for native macOS compatibility.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEXTURE_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// A GPU texture with its view, sampler, and dimensions.
 pub struct Texture {
@@ -17,6 +20,8 @@ pub struct Texture {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
+    /// Monotonic generation bumped on every new allocation.
+    pub generation: u64,
 }
 
 impl Texture {
@@ -37,7 +42,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Create a texture from raw BGRA pixel data.
@@ -87,7 +92,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Create a render-target texture with the given dimensions.
@@ -116,7 +121,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Update the texture contents from raw pixel data.
@@ -163,6 +168,8 @@ pub struct InputTexture {
     ext_view: Option<wgpu::TextureView>,
     ext_sampler: Option<wgpu::Sampler>,
     /// Generation counter bumped when the texture changes.
+    /// Drawn from the global `TEXTURE_GEN` so no two input textures can share
+    /// a generation (prevents stale cache hits on slot switching).
     pub texture_generation: u64,
 }
 
@@ -176,7 +183,7 @@ impl InputTexture {
             has_data: false,
             ext_view: None,
             ext_sampler: None,
-            texture_generation: 0,
+            texture_generation: 0, // 'no data' sentinel; first mutation bumps from global
         }
     }
 
@@ -194,7 +201,7 @@ impl InputTexture {
                     "Input Texture",
                     &vec![0u8; (width * height * 4) as usize],
                 ));
-                self.texture_generation += 1;
+                self.texture_generation = TEXTURE_GEN.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -226,7 +233,7 @@ impl InputTexture {
         let height = source.height();
         self.texture = Some(Texture::from_wgpu_texture(source, &self.device, width, height));
         self.has_data = true;
-        self.texture_generation += 1;
+        self.texture_generation = TEXTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Copy contents from another wgpu texture.
@@ -281,14 +288,14 @@ impl InputTexture {
         // GPU-to-GPU blit so raw_input is non-None for plugins that need the owned texture.
         self.update_from_texture(tex);
         self.has_data = true;
-        self.texture_generation += 1;
+        self.texture_generation = TEXTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Clear the external texture reference.
     pub fn clear_external_texture(&mut self) {
         self.ext_view = None;
         self.ext_sampler = None;
-        self.texture_generation += 1;
+        self.texture_generation = TEXTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Return the texture view to bind in shaders.

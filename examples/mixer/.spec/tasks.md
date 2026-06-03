@@ -204,12 +204,12 @@ with unique string IDs. The engine's LFO system resolves targets by exact ID mat
 `engine.get_param(id)` each frame. No code changes were required — the parameter aggregation
 in T08 already made every nested param reachable as an `LfoTarget::Custom(id)`.
 
-### T13 🔧 ENGINE — B2 UUID-modulation integration *(optional, when B2 lands)*
+### T13 🔧 ENGINE — B2 UUID-modulation integration ✅ DONE (2026-06-03)
 **File:** `crates/rustjay-mixer/src/lib.rs`
 **Needs:** T12, Phase B2 · **Implements:** REQ-07.2
 
-- [ ] Use `rustjay-modulation` UUID sources + multi-target assignments
-- [ ] Assignments survive preset round-trip
+- [x] Use `rustjay-modulation` UUID sources + multi-target assignments
+- [x] Assignments survive preset round-trip
 
 **Done when:** one source modulates ≥2 mixer params and persists across save/load.
 

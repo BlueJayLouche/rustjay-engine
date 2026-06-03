@@ -3,11 +3,11 @@
 
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
 
-use isf::{Isf, InputType};
-use rustjay_engine::prelude::*;
+use isf::Isf;
+use rustjay_core::{EffectPlugin, EngineState, ParameterDescriptor, Vertex};
 use wgpu::util::DeviceExt;
 
-use crate::isf_transpiler::{self, MAX_ISF_UNIFORMS};
+use crate::{transpiler, transpiler::MAX_ISF_UNIFORMS, params::isf_inputs_to_parameters};
 
 // ---------------------------------------------------------------------------
 // State (serialisable parameter values keyed by ISF input name)
@@ -117,64 +117,13 @@ impl EffectPlugin for IsfEffect {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        let mut params = Vec::new();
-        for input in &self.isf.inputs {
-            match &input.ty {
-                InputType::Float(f) => {
-                    let min = f.min.unwrap_or(0.0);
-                    let max = f.max.unwrap_or(1.0);
-                    let default = f.default.unwrap_or(0.0);
-                    let step = ((max - min) / 100.0).max(0.001);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::float(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        min, max, default, step,
-                    ));
-                }
-                InputType::Bool(b) => {
-                    let default = b.default.unwrap_or(false);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::bool(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        default,
-                    ));
-                }
-                InputType::Long(l) => {
-                    let min = l.min.unwrap_or(0);
-                    let max = l.max.unwrap_or(10);
-                    let default = l.default.unwrap_or(0);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::int(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        min, max, default,
-                    ));
-                }
-                _ => {} // image, color, point2D, audio — skipped in Phase 1
-            }
-        }
-        params
+        isf_inputs_to_parameters(&self.isf.inputs)
     }
 
     fn default_state(&self) -> IsfState {
-        let mut values = HashMap::new();
-        for input in &self.isf.inputs {
-            match &input.ty {
-                InputType::Float(f) => {
-                    values.insert(input.name.clone(), f.default.unwrap_or(0.0));
-                }
-                InputType::Bool(b) => {
-                    values.insert(input.name.clone(), if b.default.unwrap_or(false) { 1.0 } else { 0.0 });
-                }
-                InputType::Long(l) => {
-                    values.insert(input.name.clone(), l.default.unwrap_or(0) as f32);
-                }
-                _ => {}
-            }
+        IsfState {
+            values: crate::params::isf_inputs_to_default_values(&self.isf.inputs),
         }
-        IsfState { values }
     }
 
     fn build_uniforms(&self, state: &IsfState, engine: &EngineState) -> IsfUniforms {
@@ -191,7 +140,7 @@ impl EffectPlugin for IsfEffect {
 
         // Built-ins: packed after scalar ISF inputs (16-byte aligned)
         let base = self.uniform_index.len();
-        let pad = if base % 4 != 0 { 4 - base % 4 } else { 0 };
+        let pad = if !base.is_multiple_of(4) { 4 - base % 4 } else { 0 };
         let bi = base + pad;
         if bi + 3 < MAX_ISF_UNIFORMS {
             data[bi]     = engine.resolution.internal_width as f32;
@@ -256,7 +205,7 @@ impl EffectPlugin for IsfEffect {
     // -----------------------------------------------------------------------
 
     fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
-        let transpiled = match isf_transpiler::generate_wgsl(&self.isf, &self.glsl_src) {
+        let transpiled = match transpiler::generate_wgsl(&self.isf, &self.glsl_src) {
             Ok(t) => t,
             Err(e) => {
                 self.transpile_error = Some(format!("Transpile error: {}", e));
@@ -405,7 +354,7 @@ impl EffectPlugin for IsfEffect {
         self.params_dirty       = true;
 
         // Persist the current shader path so the next launch starts from here.
-        let config = crate::last_shader_config_path();
+        let config = super::last_shader_config_path();
         if let Some(parent) = config.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -418,16 +367,8 @@ impl EffectPlugin for IsfEffect {
 
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut rustjay_core::RenderHookCtx<'_>,
         app_state: &mut IsfState,
-        engine_state: &EngineState,
-        _vertex_buffer: &wgpu::Buffer,
-        _input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         let (Some(pipeline), Some(vb), Some(ub), Some(ubg), Some(tex_bgl)) = (
             &self.pipeline,
@@ -440,26 +381,26 @@ impl EffectPlugin for IsfEffect {
         };
 
         // Upload uniforms
-        let uniforms = self.build_uniforms(app_state, engine_state);
-        queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
+        let uniforms = self.build_uniforms(app_state, ctx.engine_state);
+        ctx.queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
 
         // Build texture bind group
         let texture_bg = if self.has_image_input {
             // If no input connected, skip rendering this frame
-            let (Some(iv), Some(s)) = (input_view, input_sampler) else {
+            let Some(input) = &ctx.input else {
                 return true;
             };
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ISF Texture BG"),
                 layout: tex_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(iv) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(s) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input.view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(input.sampler) },
                 ],
             })
         } else {
             // Generator shader — empty bind group
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ISF Empty BG"),
                 layout: tex_bgl,
                 entries: &[],
@@ -467,10 +408,10 @@ impl EffectPlugin for IsfEffect {
         };
 
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ISF Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: render_target_view,
+                    view: ctx.target_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {

@@ -1,7 +1,7 @@
 //! Plugin-aware renderer that compiles app-provided shaders and manages
 //! the per-effect pipeline, uniform buffer, and bind groups.
 
-use rustjay_core::{EffectInput, EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex};
+use rustjay_core::{EffectInput, EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex, RenderHookCtx};
 use crate::texture::Texture;
 use wgpu::util::{DeviceExt, StagingBelt};
 
@@ -645,18 +645,24 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
 
         // Give the plugin a chance to do its own render pass.
-        if self.plugin.render(
+        let mut hook_ctx = RenderHookCtx {
             encoder,
             device,
             queue,
-            frame.input_view,
-            frame.input_sampler,
+            input: match (frame.input_view, frame.input_sampler) {
+                (Some(view), Some(sampler)) => Some(rustjay_core::EffectInput {
+                    view,
+                    sampler,
+                    generation: frame.input_generation,
+                    texture: frame.input_texture,
+                }),
+                _ => None,
+            },
             target_view,
-            app_state,
             engine_state,
             vertex_buffer,
-            frame.input_texture,
-        ) {
+        };
+        if self.plugin.render(&mut hook_ctx, app_state) {
             self.staging_belt.finish();
             return;
         }
@@ -796,6 +802,11 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             self.intermediate_textures.clear();
             for bg in &mut self.cached_pass_bind_groups {
                 *bg = None;
+            }
+            // Invalidate generation keys so bind groups are rebuilt even if
+            // input_generation hasn't changed this frame (CORR-3).
+            for gen in &mut self.cached_pass_texture_gens {
+                *gen = u64::MAX;
             }
             for i in 0..needed_intermediates {
                 self.intermediate_textures.push(Texture::create_render_target(

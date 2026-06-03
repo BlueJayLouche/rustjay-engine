@@ -6,7 +6,7 @@
 
 use rustjay_core::{
     EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, ParamCategory,
-    RenderCtx, RenderTarget,
+    RenderCtx, RenderHookCtx, RenderTarget,
 };
 use rustjay_mixer::{Channel, Mixer};
 use rustjay_render::EffectNode;
@@ -36,19 +36,32 @@ impl EffectPlugin for SolidEffect {
 
     fn shader_source(&self) -> &'static str {
         r#"
+        struct Uniforms {
+            red: f32,
+            green: f32,
+            blue: f32,
+            _pad: f32,
+        }
+        @group(1) @binding(0) var<uniform> u: Uniforms;
+
         @vertex
         fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> @builtin(position) vec4<f32> {
             return vec4<f32>(position, 0.0, 1.0);
         }
         @fragment
         fn fs_main() -> @location(0) vec4<f32> {
-            return vec4<f32>(0.5, 0.2, 0.8, 1.0);
+            return vec4<f32>(u.red, u.green, u.blue, 1.0);
         }
         "#
     }
 
-    fn build_uniforms(&self, _state: &(), _engine: &EngineState) -> SolidUniforms {
-        SolidUniforms { red: 0.5, green: 0.2, blue: 0.8, _pad: 0.0 }
+    fn build_uniforms(&self, _state: &(), engine: &EngineState) -> SolidUniforms {
+        SolidUniforms {
+            red: engine.get_param("red").unwrap_or(0.5),
+            green: engine.get_param("green").unwrap_or(0.2),
+            blue: engine.get_param("blue").unwrap_or(0.8),
+            _pad: 0.0,
+        }
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
@@ -113,8 +126,13 @@ impl EffectPlugin for TintEffect {
         "#
     }
 
-    fn build_uniforms(&self, _state: &(), _engine: &EngineState) -> TintUniforms {
-        TintUniforms { tint_r: 1.0, tint_g: 1.0, tint_b: 1.0, _pad: 0.0 }
+    fn build_uniforms(&self, _state: &(), engine: &EngineState) -> TintUniforms {
+        TintUniforms {
+            tint_r: engine.get_param("tint_r").unwrap_or(1.0),
+            tint_g: engine.get_param("tint_g").unwrap_or(1.0),
+            tint_b: engine.get_param("tint_b").unwrap_or(1.0),
+            _pad: 0.0,
+        }
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
@@ -158,11 +176,18 @@ pub struct MixerRootPlugin {
 }
 
 impl MixerRootPlugin {
+    /// Create a new mixer root plugin.
     pub fn new() -> Self {
         Self {
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
         }
+    }
+}
+
+impl Default for MixerRootPlugin {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -216,67 +241,72 @@ impl EffectPlugin for MixerRootPlugin {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
         let dummy_engine = EngineState::new();
 
-        let solid = EffectNode::new(SolidEffect::default(), "Solid", device, queue, &dummy_engine);
+        let solid = EffectNode::new(SolidEffect, "Solid", device, queue, &dummy_engine);
         mixer.add_channel(Channel::new("a", "Channel A", Box::new(solid))).unwrap();
 
-        let tint = EffectNode::new(TintEffect::default(), "Tint", device, queue, &dummy_engine);
+        let tint = EffectNode::new(TintEffect, "Tint", device, queue, &dummy_engine);
         mixer.add_channel(Channel::new("b", "Channel B", Box::new(tint))).unwrap();
 
         drop(mixer);
         self.params_dirty = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut RenderHookCtx<'_>,
         _app_state: &mut MixerAppState,
-        engine_state: &EngineState,
-        vertex_buffer: &wgpu::Buffer,
-        input_texture: Option<&wgpu::Texture>,
     ) -> bool {
-        let mut ctx = RenderCtx {
-            device,
-            queue,
-            encoder,
-            vertex_buffer,
+        let mut render_ctx = RenderCtx {
+            device: ctx.device,
+            queue: ctx.queue,
+            encoder: ctx.encoder,
+            vertex_buffer: ctx.vertex_buffer,
         };
 
         let size = [
-            engine_state.resolution.internal_width,
-            engine_state.resolution.internal_height,
+            ctx.engine_state.resolution.internal_width,
+            ctx.engine_state.resolution.internal_height,
         ];
 
-        let primary = match (input_view, input_sampler) {
+        let primary = match ctx.input {
+            Some(rustjay_core::EffectInput { view, sampler, generation, texture }) => Some(EffectInput {
+                view,
+                sampler,
+                generation,
+                texture,
+            }),
+            _ => None,
+        };
+        let second = match (ctx.engine_state.second_input_view.as_ref(), ctx.engine_state.second_input_sampler.as_ref()) {
             (Some(view), Some(sampler)) => Some(EffectInput {
                 view,
                 sampler,
-                generation: 0,
-                texture: input_texture,
+                generation: ctx.engine_state.second_input_generation,
+                texture: None,
             }),
             _ => None,
         };
         let one;
-        let inputs: &[EffectInput] = match primary {
-            Some(p) => {
+        let two;
+        let inputs: &[EffectInput] = match (primary, second) {
+            (Some(p), Some(s)) => {
+                two = [p, s];
+                &two
+            }
+            (Some(p), None) => {
                 one = [p];
                 &one
             }
-            None => &[],
+            _ => &[],
         };
 
         let target = RenderTarget {
-            view: render_target_view,
+            view: ctx.target_view,
             size,
         };
 
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        mixer.render_to(&mut ctx, inputs, target, engine_state);
+        mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
         true
     }
 }

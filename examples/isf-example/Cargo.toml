@@ -6,13 +6,9 @@ description = "ISF (Interactive Shader Format) viewer — loads any .fs file via
 
 [dependencies]
 rustjay-engine = { workspace = true }
-isf            = { workspace = true }
-bytemuck       = { workspace = true }
-serde          = { workspace = true }
-serde_json     = { workspace = true }
+rustjay-isf    = { workspace = true }
 anyhow         = { workspace = true }
 log            = { workspace = true }
-wgpu           = { workspace = true }
 imgui          = { workspace = true }
 env_logger     = "0.11"
 rfd            = "0.15"

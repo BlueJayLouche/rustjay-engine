@@ -4,6 +4,7 @@
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::sync::Arc;
 use crate::lfo::LfoState;
 use crate::routing::AudioRoutingState;
@@ -798,6 +799,8 @@ pub struct EngineState {
     pub second_input_view: Option<Arc<wgpu::TextureView>>,
     /// Shared sampler for the second input.
     pub second_input_sampler: Option<Arc<wgpu::Sampler>>,
+    /// Generation counter for the second input texture, bumped on reallocation.
+    pub second_input_generation: u64,
     /// UV coordinate requested for GPU pixel readback (set by GUI on pick-click).
     pub pick_request: Option<[f32; 2]>,
     /// RGB result of the most recent GPU readback (cleared after GUI consumes it).
@@ -948,6 +951,12 @@ pub struct EngineState {
 
     /// Tabs hidden by the active effect (populated at init from `EffectPlugin::hidden_tabs`).
     pub hidden_tabs: Vec<GuiTab>,
+
+    /// Optional prefix applied temporarily by nested effect wrappers (e.g.
+    /// [`EffectNode`](rustjay_render::EffectNode)) so that a reusable effect
+    /// can look up its bare parameter IDs while the engine stores them under
+    /// a fully-qualified name like `ch_a_red`.
+    pub param_lookup_prefix: RefCell<Option<String>>,
 }
 
 impl EngineState {
@@ -963,6 +972,7 @@ impl EngineState {
             second_input_command: InputCommand::None,
             second_input_view: None,
             second_input_sampler: None,
+            second_input_generation: 0,
             pick_request: None,
             picked_color: None,
             pixel_pick_armed: false,
@@ -1025,6 +1035,7 @@ impl EngineState {
             custom_params: Vec::new(),
             param_osc_addresses: Vec::new(),
             hidden_tabs: Vec::new(),
+            param_lookup_prefix: RefCell::new(None),
         }
     }
 
@@ -1080,7 +1091,18 @@ impl EngineState {
     }
 
     /// Get the modulated value of a custom parameter.
+    ///
+    /// If [`param_lookup_prefix`](Self::param_lookup_prefix) is set, the prefix
+    /// is prepended to `id` first. This lets nested effects (e.g. a channel's
+    /// [`EffectNode`](rustjay_render::EffectNode)) look up their parameters
+    /// using bare IDs while the engine stores them under fully-qualified names.
     pub fn get_param(&self, id: &str) -> Option<f32> {
+        if let Some(prefix) = self.param_lookup_prefix.borrow().as_ref() {
+            let prefixed = format!("{prefix}{id}");
+            if let Some(i) = self.param_index(&prefixed) {
+                return self.custom_params.get(i).copied();
+            }
+        }
         self.param_index(id).and_then(|i| self.custom_params.get(i).copied())
     }
 
