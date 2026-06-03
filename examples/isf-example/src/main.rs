@@ -4,13 +4,11 @@
 //! Falls back to the bundled ColorCycle.fs on first launch or if the saved
 //! path no longer exists. Use the "Load Shader..." button in the UI to switch.
 
-mod isf_effect;
 mod isf_tab;
-mod isf_transpiler;
 
 use std::path::{Path, PathBuf};
 
-use isf_effect::IsfEffect;
+use rustjay_isf::{IsfEffect, last_shader_config_path};
 use isf_tab::IsfTab;
 
 fn main() -> anyhow::Result<()> {
@@ -51,10 +49,4 @@ fn startup_shader_path(shaders_dir: &Path) -> PathBuf {
     shaders_dir.join("ColorCycle.fs")
 }
 
-/// Path to the tiny one-line config file that stores the last-used shader path.
-pub fn last_shader_config_path() -> PathBuf {
-    let base = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".config").join("rustjay"))
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("isf-last-shader.txt")
-}
+

@@ -4,6 +4,9 @@
 //! All textures use BGRA8 format for native macOS compatibility.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEXTURE_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// A GPU texture with its view, sampler, and dimensions.
 pub struct Texture {
@@ -17,6 +20,8 @@ pub struct Texture {
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
+    /// Monotonic generation bumped on every new allocation.
+    pub generation: u64,
 }
 
 impl Texture {
@@ -37,7 +42,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Create a texture from raw BGRA pixel data.
@@ -87,7 +92,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Create a render-target texture with the given dimensions.
@@ -116,7 +121,7 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height }
+        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Update the texture contents from raw pixel data.

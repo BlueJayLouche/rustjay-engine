@@ -104,6 +104,7 @@ impl EffectPlugin for MixerPlugin {
         queue: &wgpu::Queue,
         input_view: Option<&wgpu::TextureView>,
         input_sampler: Option<&wgpu::Sampler>,
+        input_generation: u64,
         render_target_view: &wgpu::TextureView,
         _app_state: &mut (),
         engine_state: &EngineState,
@@ -127,7 +128,7 @@ impl EffectPlugin for MixerPlugin {
             (Some(view), Some(sampler)) => Some(EffectInput {
                 view,
                 sampler,
-                generation: 0,
+                generation: input_generation,
                 texture: input_texture,
             }),
             _ => None,

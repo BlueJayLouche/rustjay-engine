@@ -399,6 +399,7 @@ impl EffectPlugin for DeltaEffect {
         queue: &wgpu::Queue,
         input_view: Option<&wgpu::TextureView>,
         input_sampler: Option<&wgpu::Sampler>,
+        _input_generation: u64,
         render_target_view: &wgpu::TextureView,
         app_state: &mut Self::State,
         engine_state: &EngineState,

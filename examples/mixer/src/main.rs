@@ -234,6 +234,7 @@ impl EffectPlugin for MixerRootPlugin {
         queue: &wgpu::Queue,
         input_view: Option<&wgpu::TextureView>,
         input_sampler: Option<&wgpu::Sampler>,
+        input_generation: u64,
         render_target_view: &wgpu::TextureView,
         _app_state: &mut MixerAppState,
         engine_state: &EngineState,
@@ -256,18 +257,32 @@ impl EffectPlugin for MixerRootPlugin {
             (Some(view), Some(sampler)) => Some(EffectInput {
                 view,
                 sampler,
-                generation: 0,
+                generation: input_generation,
                 texture: input_texture,
             }),
             _ => None,
         };
+        let second = match (engine_state.second_input_view.as_ref(), engine_state.second_input_sampler.as_ref()) {
+            (Some(view), Some(sampler)) => Some(EffectInput {
+                view,
+                sampler,
+                generation: engine_state.second_input_generation,
+                texture: None,
+            }),
+            _ => None,
+        };
         let one;
-        let inputs: &[EffectInput] = match primary {
-            Some(p) => {
+        let two;
+        let inputs: &[EffectInput] = match (primary, second) {
+            (Some(p), Some(s)) => {
+                two = [p, s];
+                &two
+            }
+            (Some(p), None) => {
                 one = [p];
                 &one
             }
-            None => &[],
+            _ => &[],
         };
 
         let target = RenderTarget {

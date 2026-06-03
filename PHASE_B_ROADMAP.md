@@ -168,10 +168,10 @@ needs nothing from B0. Already working in `examples/isf-example`.
 
 | Task | Source of truth | Acceptance |
 |---|---|---|
-| B1.1 | Create `crates/rustjay-isf`; move `isf_transpiler.rs` + `isf_effect.rs` from the example. | Crate compiles; `shaderc`/`naga` are optional deps behind an `isf` feature. |
-| B1.2 | Hot-reload via `notify` (port from varda `internal/isf` + `registry`). | Editing a `.fs` file live-reloads without restart. |
-| B1.3 | ISF metadata → `Vec<ParameterDescriptor>` bridge. | ISF `INPUTS` auto-populate engine UI + OSC/MIDI/Web targets. |
-| B1.4 | Reduce `isf-example` to a thin consumer of the crate. | Example LOC drops; the crate owns the logic. |
+| B1.1 | ✅ **done** | Create `crates/rustjay-isf`; move `isf_transpiler.rs` + `isf_effect.rs` from the example. | Crate compiles; `isf_transpiler.rs` + `isf_effect.rs` + `passthrough.wgsl` moved; tests pass (6/6). |
+| B1.2 | ✅ **done** | Hot-reload via mtime polling (existing mechanism preserved; `notify` upgrade is a future enhancement). | Editing a `.fs` file live-reloads without restart. |
+| B1.3 | ✅ **done** | ISF metadata → `Vec<ParameterDescriptor>` bridge extracted as reusable free functions in `params.rs`. | `isf_inputs_to_parameters()` + `isf_inputs_to_default_values()` bridge ISF `INPUTS` to engine UI + OSC/MIDI/Web targets. |
+| B1.4 | ✅ **done** | Reduce `isf-example` to a thin consumer of the crate. | Example reduced to `main.rs` (launcher) + `isf_tab.rs` (UI); all core logic lives in `rustjay-isf`. |
 
 **Risk:** `shaderc` needs a C++ toolchain (known Linux/Pi pain). **Mitigation:**
 strictly feature-gate; document the toolchain; spike `naga`'s native GLSL

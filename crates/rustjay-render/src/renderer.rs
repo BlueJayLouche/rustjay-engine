@@ -293,6 +293,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         };
         engine_state.second_input_view = self.second_input_view.clone();
         engine_state.second_input_sampler = self.second_input_sampler.clone();
+        engine_state.second_input_generation = self.second_input_cached_gen;
 
         // Plugin prepare hook
         self.plugin_renderer.plugin.prepare(

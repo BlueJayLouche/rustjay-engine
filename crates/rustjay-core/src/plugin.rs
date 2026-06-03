@@ -284,6 +284,12 @@ pub trait EffectPlugin: Send + Sync + 'static {
     ///
     /// `input_texture` is the raw wgpu texture backing the video input,
     /// useful for effects that need to copy frames into a history ring buffer.
+    ///
+    /// `input_generation` is a monotonic counter bumped whenever the input
+    /// texture is reallocated (resolution change, new source). Custom render
+    /// paths that build their own bind groups should forward this value into
+    /// [`EffectInput::generation`] so nested effects invalidate cached bind
+    /// groups correctly.
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
@@ -292,6 +298,7 @@ pub trait EffectPlugin: Send + Sync + 'static {
         _queue: &wgpu::Queue,
         _input_view: Option<&wgpu::TextureView>,
         _input_sampler: Option<&wgpu::Sampler>,
+        _input_generation: u64,
         _render_target_view: &wgpu::TextureView,
         _app_state: &mut Self::State,
         _engine_state: &EngineState,

@@ -1,0 +1,16 @@
+[package]
+name = "rustjay-isf"
+version = "0.1.0"
+edition = "2021"
+description = "ISF (Interactive Shader Format) support for rustjay-engine — GLSL→WGSL transpiler and EffectPlugin adapter"
+
+[dependencies]
+rustjay-core = { workspace = true }
+wgpu       = { workspace = true }
+isf        = { workspace = true }
+bytemuck   = { workspace = true }
+serde      = { workspace = true }
+anyhow     = { workspace = true }
+log        = { workspace = true }
+
+[dev-dependencies]

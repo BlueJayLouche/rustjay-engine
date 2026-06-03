@@ -3,11 +3,11 @@
 
 use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
 
-use isf::{Isf, InputType};
-use rustjay_engine::prelude::*;
+use isf::Isf;
+use rustjay_core::{EffectPlugin, EngineState, ParameterDescriptor, Vertex};
 use wgpu::util::DeviceExt;
 
-use crate::isf_transpiler::{self, MAX_ISF_UNIFORMS};
+use crate::{transpiler, transpiler::MAX_ISF_UNIFORMS, params::isf_inputs_to_parameters};
 
 // ---------------------------------------------------------------------------
 // State (serialisable parameter values keyed by ISF input name)
@@ -117,64 +117,13 @@ impl EffectPlugin for IsfEffect {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        let mut params = Vec::new();
-        for input in &self.isf.inputs {
-            match &input.ty {
-                InputType::Float(f) => {
-                    let min = f.min.unwrap_or(0.0);
-                    let max = f.max.unwrap_or(1.0);
-                    let default = f.default.unwrap_or(0.0);
-                    let step = ((max - min) / 100.0).max(0.001);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::float(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        min, max, default, step,
-                    ));
-                }
-                InputType::Bool(b) => {
-                    let default = b.default.unwrap_or(false);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::bool(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        default,
-                    ));
-                }
-                InputType::Long(l) => {
-                    let min = l.min.unwrap_or(0);
-                    let max = l.max.unwrap_or(10);
-                    let default = l.default.unwrap_or(0);
-                    let label = input.label.clone().unwrap_or_else(|| input.name.clone());
-                    params.push(ParameterDescriptor::int(
-                        &input.name, label,
-                        ParamCategory::Custom("ISF".to_string()),
-                        min, max, default,
-                    ));
-                }
-                _ => {} // image, color, point2D, audio — skipped in Phase 1
-            }
-        }
-        params
+        isf_inputs_to_parameters(&self.isf.inputs)
     }
 
     fn default_state(&self) -> IsfState {
-        let mut values = HashMap::new();
-        for input in &self.isf.inputs {
-            match &input.ty {
-                InputType::Float(f) => {
-                    values.insert(input.name.clone(), f.default.unwrap_or(0.0));
-                }
-                InputType::Bool(b) => {
-                    values.insert(input.name.clone(), if b.default.unwrap_or(false) { 1.0 } else { 0.0 });
-                }
-                InputType::Long(l) => {
-                    values.insert(input.name.clone(), l.default.unwrap_or(0) as f32);
-                }
-                _ => {}
-            }
+        IsfState {
+            values: crate::params::isf_inputs_to_default_values(&self.isf.inputs),
         }
-        IsfState { values }
     }
 
     fn build_uniforms(&self, state: &IsfState, engine: &EngineState) -> IsfUniforms {
@@ -256,7 +205,7 @@ impl EffectPlugin for IsfEffect {
     // -----------------------------------------------------------------------
 
     fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
-        let transpiled = match isf_transpiler::generate_wgsl(&self.isf, &self.glsl_src) {
+        let transpiled = match transpiler::generate_wgsl(&self.isf, &self.glsl_src) {
             Ok(t) => t,
             Err(e) => {
                 self.transpile_error = Some(format!("Transpile error: {}", e));
@@ -405,7 +354,7 @@ impl EffectPlugin for IsfEffect {
         self.params_dirty       = true;
 
         // Persist the current shader path so the next launch starts from here.
-        let config = crate::last_shader_config_path();
+        let config = super::last_shader_config_path();
         if let Some(parent) = config.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -423,6 +372,7 @@ impl EffectPlugin for IsfEffect {
         queue: &wgpu::Queue,
         input_view: Option<&wgpu::TextureView>,
         input_sampler: Option<&wgpu::Sampler>,
+        _input_generation: u64,
         render_target_view: &wgpu::TextureView,
         app_state: &mut IsfState,
         engine_state: &EngineState,

@@ -369,6 +369,7 @@ impl EffectPlugin for WaaavesEffect {
         _queue: &wgpu::Queue,
         input_view: Option<&wgpu::TextureView>,
         _input_sampler: Option<&wgpu::Sampler>,
+        _input_generation: u64,
         render_target_view: &wgpu::TextureView,
         state: &mut WaaavesState,
         engine: &EngineState,

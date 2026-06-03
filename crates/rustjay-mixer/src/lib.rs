@@ -139,7 +139,7 @@ impl Channel {
             let input = EffectInput {
                 view: &src_tex.view,
                 sampler: &src_tex.sampler,
-                generation: 0,
+                generation: src_tex.generation,
                 texture: Some(&src_tex.texture),
             };
             fx.render_to(
@@ -600,7 +600,7 @@ fn run_chain<'a>(
         let input = EffectInput {
             view: &src_tex.view,
             sampler: &src_tex.sampler,
-            generation: 0,
+            generation: src_tex.generation,
             texture: Some(&src_tex.texture),
         };
         fx.render_to(

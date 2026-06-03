@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::{Arc, Mutex}};
 
 use rustjay_engine::prelude::*;
 
-use crate::isf_effect::IsfState;
+use rustjay_isf::IsfState;
 
 pub struct IsfTab {
     /// Local cache of the shader display name — updated from `shader_name` each frame.

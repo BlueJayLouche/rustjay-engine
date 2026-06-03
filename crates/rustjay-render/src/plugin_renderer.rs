@@ -651,6 +651,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             queue,
             frame.input_view,
             frame.input_sampler,
+            frame.input_generation,
             target_view,
             app_state,
             engine_state,

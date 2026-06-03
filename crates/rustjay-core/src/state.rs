@@ -798,6 +798,8 @@ pub struct EngineState {
     pub second_input_view: Option<Arc<wgpu::TextureView>>,
     /// Shared sampler for the second input.
     pub second_input_sampler: Option<Arc<wgpu::Sampler>>,
+    /// Generation counter for the second input texture, bumped on reallocation.
+    pub second_input_generation: u64,
     /// UV coordinate requested for GPU pixel readback (set by GUI on pick-click).
     pub pick_request: Option<[f32; 2]>,
     /// RGB result of the most recent GPU readback (cleared after GUI consumes it).
@@ -963,6 +965,7 @@ impl EngineState {
             second_input_command: InputCommand::None,
             second_input_view: None,
             second_input_sampler: None,
+            second_input_generation: 0,
             pick_request: None,
             picked_color: None,
             pixel_pick_armed: false,
