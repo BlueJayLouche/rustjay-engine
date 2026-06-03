@@ -190,6 +190,9 @@ with `HashMap<param, Vec<ParamModulation>>` multi-target assignments.
 | B2.1 | Port `ModulationSourceEntry` (UUID) + assignment model into `rustjay-core` (or a new `rustjay-modulation` re-exported by core). `varda/src/internal/modulation/{engine,sources}.rs`. | Sources survive serialize→deserialize with stable UUIDs (unit test). |
 | B2.2 | Adapter: existing `LfoBank` + `AudioRoutingState` become *sources* in the new model. `rustjay-core/src/{lfo,routing}.rs`. | waaaves' 8 LFOs keep working; no behavior change. |
 | B2.3 | `O(1)` tick path (port the `uuid_to_idx` cache). `varda/.../engine.rs:28`. | No per-frame allocation in `update()` (flamegraph). |
+| B2.4 | **Tempo sync for `ModulationSource::LFO`**. The old `Lfo` has `tempo_sync` + beat divisions + quantum-boundary phase snap; varda's `ModulationSource::LFO` does not. | `ModulationEngine::update()` accepts BPM + beat phase; LFOs snap phase and compute frequency from beat divisions exactly like the old `LfoBank`. |
+
+**Status (2026-06-03):** B2.1–B2.3 landed and committed. B2.4 is a known gap — the adapter (B2.2) converts tempo-sync LFOs to a fixed Hz at snapshot time, so they don't re-sync to BPM changes or snap on bar boundaries.
 
 **Risk:** low–medium (touches every modulation consumer). **Mitigation:** ship
 the adapter (B2.2) so old `LfoTarget` code keeps compiling; deprecate, don't delete.

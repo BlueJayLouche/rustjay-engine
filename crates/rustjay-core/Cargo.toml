@@ -15,6 +15,7 @@ log        = { workspace = true }
 anyhow     = { workspace = true }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
+uuid       = { workspace = true }
 
 [features]
 default = ["ndi"]

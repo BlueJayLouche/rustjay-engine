@@ -456,6 +456,75 @@ impl RoutingMatrix {
             route.reset();
         }
     }
+
+    /// Convert enabled routes into modulation source entries.
+    ///
+    /// Each enabled route becomes an [`crate::modulation::ModulationSource::AudioBand`]
+    /// entry with frequency bounds derived from the route's [`FftBand`].
+    pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
+        use crate::modulation::{ModulationSource, ModulationSourceEntry};
+        self.routes
+            .iter()
+            .filter(|r| r.enabled)
+            .map(|route| {
+                let (freq_low, freq_high) = match route.band {
+                    FftBand::SubBass => (20.0, 60.0),
+                    FftBand::Bass => (60.0, 120.0),
+                    FftBand::LowMid => (120.0, 250.0),
+                    FftBand::Mid => (250.0, 500.0),
+                    FftBand::HighMid => (500.0, 2000.0),
+                    FftBand::High => (2000.0, 4000.0),
+                    FftBand::VeryHigh => (4000.0, 8000.0),
+                    FftBand::Presence => (8000.0, 16000.0),
+                };
+                let source = ModulationSource::AudioBand {
+                    source_id: None,
+                    freq_low,
+                    freq_high,
+                    gain: 1.0,
+                    smoothing: route.release,
+                    mode: crate::modulation::AudioReactMode::Direct,
+                    noise_gate: 0.1,
+                };
+                ModulationSourceEntry::with_uuid(format!("route_{}", route.id), source)
+            })
+            .collect()
+    }
+
+    /// Convert this matrix into a full [`crate::modulation::ModulationEngine`].
+    pub fn to_modulation_engine(&self) -> crate::modulation::ModulationEngine {
+        use crate::modulation::{ModulationEngine, ModulationSource};
+        let mut engine = ModulationEngine::new();
+        for route in &self.routes {
+            if !route.enabled {
+                continue;
+            }
+            let (freq_low, freq_high) = match route.band {
+                FftBand::SubBass => (20.0, 60.0),
+                FftBand::Bass => (60.0, 120.0),
+                FftBand::LowMid => (120.0, 250.0),
+                FftBand::Mid => (250.0, 500.0),
+                FftBand::HighMid => (500.0, 2000.0),
+                FftBand::High => (2000.0, 4000.0),
+                FftBand::VeryHigh => (4000.0, 8000.0),
+                FftBand::Presence => (8000.0, 16000.0),
+            };
+            let source = ModulationSource::AudioBand {
+                source_id: None,
+                freq_low,
+                freq_high,
+                gain: 1.0,
+                smoothing: route.release,
+                mode: crate::modulation::AudioReactMode::Direct,
+                noise_gate: 0.1,
+            };
+            let uuid = engine.add_source_with_uuid(format!("route_{}", route.id), source);
+            if let Some(param_id) = route.target.param_id() {
+                engine.assign(param_id, &uuid, route.amount, None);
+            }
+        }
+        engine
+    }
 }
 
 impl Default for RoutingMatrix {

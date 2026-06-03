@@ -408,6 +408,74 @@ impl LfoBank {
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Lfo> {
         self.lfos.get_mut(index)
     }
+
+    /// Convert this bank into modulation source entries.
+    ///
+    /// Each LFO becomes a [`crate::modulation::ModulationSource::LFO`] entry.
+    /// Waveforms are mapped to the nearest [`crate::modulation::LFOWaveform`];
+    /// `Ramp` and `Saw` both map to `Sawtooth`.
+    pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
+        use crate::modulation::{LFOWaveform, ModulationSource, ModulationSourceEntry};
+        self.lfos
+            .iter()
+            .map(|lfo| {
+                let waveform = match lfo.waveform {
+                    Waveform::Sine => LFOWaveform::Sine,
+                    Waveform::Triangle => LFOWaveform::Triangle,
+                    Waveform::Square => LFOWaveform::Square,
+                    Waveform::Ramp | Waveform::Saw => LFOWaveform::Sawtooth,
+                };
+                let frequency = if lfo.tempo_sync {
+                    beat_division_to_hz(lfo.division, 120.0)
+                } else {
+                    lfo.rate
+                };
+                let phase = lfo.phase_offset / 360.0;
+                let source = ModulationSource::LFO {
+                    waveform,
+                    frequency,
+                    phase,
+                    amplitude: lfo.amplitude,
+                    bipolar: true,
+                };
+                ModulationSourceEntry::with_uuid(format!("lfo_{}", lfo.index), source)
+            })
+            .collect()
+    }
+
+    /// Convert this bank into a full [`crate::modulation::ModulationEngine`].
+    ///
+    /// `bpm` is used to resolve tempo-synced frequencies.
+    pub fn to_modulation_engine(&self, bpm: f32) -> crate::modulation::ModulationEngine {
+        use crate::modulation::{LFOWaveform, ModulationEngine, ModulationSource};
+        let mut engine = ModulationEngine::new();
+        for lfo in &self.lfos {
+            let waveform = match lfo.waveform {
+                Waveform::Sine => LFOWaveform::Sine,
+                Waveform::Triangle => LFOWaveform::Triangle,
+                Waveform::Square => LFOWaveform::Square,
+                Waveform::Ramp | Waveform::Saw => LFOWaveform::Sawtooth,
+            };
+            let frequency = if lfo.tempo_sync {
+                beat_division_to_hz(lfo.division, bpm)
+            } else {
+                lfo.rate
+            };
+            let phase = lfo.phase_offset / 360.0;
+            let source = ModulationSource::LFO {
+                waveform,
+                frequency,
+                phase,
+                amplitude: lfo.amplitude,
+                bipolar: true,
+            };
+            let uuid = engine.add_source_with_uuid(format!("lfo_{}", lfo.index), source);
+            if let Some(param_id) = lfo.target.param_id() {
+                engine.assign(param_id, &uuid, 1.0, None);
+            }
+        }
+        engine
+    }
 }
 
 impl Default for LfoBank {
