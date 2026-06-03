@@ -273,7 +273,7 @@ impl<P: EffectPlugin> App<P> {
                 lock(&self.shared_state).v4l2_output.enabled = false;
             }
             OutputCommand::ResizeOutput => {
-                if let (Some(ref output_window), Some(ref mut engine)) =
+                if let (Some(output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())
                 {
                     let (output_width, output_height, internal_width, internal_height) = {

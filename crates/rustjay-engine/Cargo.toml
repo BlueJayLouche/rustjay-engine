@@ -44,8 +44,10 @@ drm          = { version = "0.14", optional = true }
 libc         = { version = "0.2", optional = true }
 
 [features]
-default = ["ndi", "webcam"]
-ndi     = ["rustjay-io/ndi"]
+# NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
+# Webcam stays on by default. The Pi/GLES2 builds select features explicitly.
+default = ["webcam"]
+ndi     = ["rustjay-io/ndi", "rustjay-gui/ndi", "rustjay-core/ndi"]
 webcam  = ["rustjay-io/webcam"]
 egui    = ["rustjay-gui/egui"]
 mixer   = ["dep:rustjay-mixer"]

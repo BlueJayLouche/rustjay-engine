@@ -190,8 +190,7 @@ mod tests {
 
     #[test]
     fn effect_instance_is_object_safe() {
-        let mut effects: Vec<Box<dyn EffectInstance>> = Vec::new();
-        effects.push(Box::new(NoopEffect));
+        let effects: Vec<Box<dyn EffectInstance>> = vec![Box::new(NoopEffect)];
         assert_eq!(effects[0].label(), "noop");
         assert!(effects[0].parameters().is_empty());
     }

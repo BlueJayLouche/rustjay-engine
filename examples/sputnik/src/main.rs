@@ -427,14 +427,14 @@ impl AnyGuiTab for SputnikTab {
             ui.text(label);
             ui.same_line();
             for (i, &name) in SHAPE_LABELS.iter().enumerate() {
-                if ui.radio_button_bool(&format!("{name}##{label}shape{i}"), *shape == i as u32) {
+                if ui.radio_button_bool(format!("{name}##{label}shape{i}"), *shape == i as u32) {
                     *shape = i as u32;
                 }
                 if i < 3 { ui.same_line(); }
             }
-            ui.checkbox(&format!("Phase mod##{label}"), phasemod);
+            ui.checkbox(format!("Phase mod##{label}"), phasemod);
             ui.same_line();
-            ui.checkbox(&format!("Ring mod##{label}"),  ringmod);
+            ui.checkbox(format!("Ring mod##{label}"),  ringmod);
         }
 
         ui.separator();

@@ -1,5 +1,8 @@
 //! Waaaves GUI tabs — Block 1, Block 2, Block 3.
 
+// Tab builders take many UI/state params by design.
+#![allow(clippy::too_many_arguments)]
+
 use crate::lfo_ui::{draw_lfo_dots, lfo_context_menu};
 use crate::state::{KeyTarget, PickState, WaaavesState};
 use rustjay_engine::prelude::*;
@@ -84,7 +87,7 @@ pub fn delay_control(
     if *sync {
         let mut div = *division as usize;
         let div_names = ["1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"];
-        if ui.combo_simple_string(&format!("Beat Division##{label}"), &mut div, &div_names) {
+        if ui.combo_simple_string(format!("Beat Division##{label}"), &mut div, &div_names) {
             *division = div as i32;
         }
     } else {
@@ -177,11 +180,11 @@ pub fn key_color(
         lfo_context_menu(ui, id, label, engine);
 
         ui.same_line();
-        ui.color_button(&format!("Preview##{prefix}_preview"), [val, val, val, 1.0]);
+        ui.color_button(format!("Preview##{prefix}_preview"), [val, val, val, 1.0]);
     } else {
         // Chromakey – full color picker + individual sliders for LFO
         let mut color = [*r, *g, *b];
-        if ui.color_edit3(&format!("##{prefix}_ce"), &mut color) {
+        if ui.color_edit3(format!("##{prefix}_ce"), &mut color) {
             *r = color[0];
             *g = color[1];
             *b = color[2];

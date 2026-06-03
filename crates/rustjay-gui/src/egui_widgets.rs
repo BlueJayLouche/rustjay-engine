@@ -223,10 +223,10 @@ pub fn segmented_select(
 // id-source hash helper — egui's `make_persistent_id` is enough but we want
 // a stable seed for the interact() ids across frames.
 fn _id_source_hash<H: std::hash::Hash>(h: &H) -> u64 {
-    use std::hash::{Hasher, BuildHasher};
-    let mut s = std::collections::hash_map::RandomState::new().build_hasher();
-    h.hash(&mut s);
-    s.finish()
+    use std::hash::BuildHasher;
+    
+    
+    std::collections::hash_map::RandomState::new().hash_one(h)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

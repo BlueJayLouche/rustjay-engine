@@ -5,6 +5,8 @@
 
 // The wire-protocol command/response structs below are self-describing by field name.
 #![allow(missing_docs)]
+// Router/handler builders thread many params by design.
+#![allow(clippy::too_many_arguments)]
 
 use axum::{
     extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query, Json},

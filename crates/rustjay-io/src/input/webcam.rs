@@ -193,7 +193,7 @@ fn ensure_camera_authorized() -> bool {
 
         // AVMediaTypeVideo = NSString "vide"
         let ns_string_cls = Class::get("NSString").unwrap();
-        let media_type: *mut Object = objc::msg_send![ns_string_cls, stringWithUTF8String: b"vide\0".as_ptr() as *const std::os::raw::c_char];
+        let media_type: *mut Object = objc::msg_send![ns_string_cls, stringWithUTF8String: c"vide".as_ptr()];
 
         // authorizationStatusForMediaType: returns i64 (0=NotDetermined, 1=Restricted, 2=Denied, 3=Authorized)
         let status: i64 = objc::msg_send![cls, authorizationStatusForMediaType: media_type];

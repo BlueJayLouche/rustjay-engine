@@ -1,5 +1,8 @@
 //! Audio device enumeration and stream construction.
 
+// Stream-construction helpers thread many real-time params through one call.
+#![allow(clippy::too_many_arguments)]
+
 use crate::fft::{AudioConfig, AudioOutput, process_audio_frame};
 
 use cpal::traits::{DeviceTrait, HostTrait};

@@ -106,7 +106,7 @@ impl ParameterDescriptor {
         variants: Vec<String>,
         default_index: usize,
     ) -> Self {
-        let max = (variants.len().saturating_sub(1)).max(0) as f32;
+        let max = (variants.len().saturating_sub(1)) as f32;
         Self {
             id: id.into(),
             name: name.into(),

@@ -228,7 +228,7 @@ impl AudioRoute {
     pub fn process(&mut self, fft_bands: &[f32; 8], delta_time: f32) {
         if !self.enabled {
             self.current_value = 0.0;
-            self.smoothed_fft = self.smoothed_fft * 0.9; // Decay to 0
+            self.smoothed_fft *= 0.9; // Decay to 0
             return;
         }
         

@@ -361,7 +361,7 @@ impl EguiControlGui {
             };
 
             // Rebuild the matrix only when the URL changes.
-            let need_rebuild = self.qr_cache.as_ref().map_or(true, |(u, _)| u != &qr_url);
+            let need_rebuild = self.qr_cache.as_ref().is_none_or(|(u, _)| u != &qr_url);
             if need_rebuild {
                 if let Ok(code) = qrcode::QrCode::new(qr_url.as_bytes()) {
                     let width = code.width();

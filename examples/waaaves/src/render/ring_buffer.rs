@@ -110,7 +110,7 @@ mod tests {
         let write_head = 2;
 
         // frames_back=0 -> clamped to 1 (write_head holds incomplete frame)
-        let idx = 0usize.max(1).min(capacity.saturating_sub(1));
+        let idx = 1.min(capacity.saturating_sub(1));
         let read_index = (write_head + capacity - idx) % capacity;
         assert_eq!(read_index, 1);
 

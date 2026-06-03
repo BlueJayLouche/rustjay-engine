@@ -5,7 +5,7 @@ edition = "2021"
 description = "Delta effect with a professional egui interface"
 
 [dependencies]
-rustjay-engine = { workspace = true, features = ["egui", "ndi", "webcam"] }
+rustjay-engine = { workspace = true, features = ["egui", "webcam"] }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 serde = { workspace = true }

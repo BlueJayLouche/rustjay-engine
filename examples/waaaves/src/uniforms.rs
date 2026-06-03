@@ -308,6 +308,7 @@ pub struct BlockCUniforms {
 // ---------------------------------------------------------------------------
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Default)]
 pub struct WaaavesUniforms {
     pub block_a: BlockAUniforms,
     pub block_b: BlockBUniforms,
@@ -1089,15 +1090,6 @@ impl Default for BlockCUniforms {
     }
 }
 
-impl Default for WaaavesUniforms {
-    fn default() -> Self {
-        Self {
-            block_a: BlockAUniforms::default(),
-            block_b: BlockBUniforms::default(),
-            block_c: BlockCUniforms::default(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

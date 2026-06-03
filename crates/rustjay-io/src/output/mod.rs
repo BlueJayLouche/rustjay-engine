@@ -280,6 +280,7 @@ impl OutputManager {
         Ok(())
     }
 
+    /// Start NDI output (errors; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn start_ndi(
         &mut self,
@@ -299,6 +300,7 @@ impl OutputManager {
         }
     }
 
+    /// Stop NDI output (no-op; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn stop_ndi(&mut self) {}
 
@@ -418,10 +420,10 @@ impl OutputManager {
             device.poll(wgpu::PollType::Poll).ok();
 
             // Harvest the previous frame's data (never blocks).
-            if let Some((data, width, height)) = self.readback_pool.harvest_previous() {
+            if let Some((_data, _width, _height)) = self.readback_pool.harvest_previous() {
                 #[cfg(feature = "ndi")]
                 if let Some(ref sender) = self.ndi_output {
-                    sender.submit_frame(&data, width, height);
+                    sender.submit_frame(&_data, _width, _height);
                 }
 
                 #[cfg(target_os = "windows")]
@@ -461,6 +463,7 @@ impl OutputManager {
         self.ndi_output.is_some()
     }
 
+    /// Whether NDI output is active (always false; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn is_ndi_active(&self) -> bool {
         false

@@ -222,7 +222,7 @@ fn build_compute_resources(
     });
 
     // 1D dispatch: workgroup size 256.
-    let workgroups = ((vertex_count + 255) / 256).max(1);
+    let workgroups = vertex_count.div_ceil(256).max(1);
 
     (compute_pipeline, storage_bind_group, (workgroups, 1, 1))
 }
@@ -393,7 +393,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                     wgpu::BufferUsages::VERTEX
                 };
                 let (vb, ib, count) = create_mesh_buffers(device, &vertices, &indices, vertex_usage);
-                let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                 (Some(vb), ib, count, vertex_count)
             } else {
                 (None, None, 0, 0)
@@ -403,7 +403,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let (compute_pipeline, compute_bind_group, compute_workgroups) =
             if let (Some(cs), Some(desc)) = (plugin.compute_shader(), initial_mesh) {
                 if let Some(ref vb) = mesh_vertex_buffer {
-                    let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                    let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                     let (cp, cb, wg) = build_compute_resources(
                         device, cs, &uniform_bind_group_layout, vb, vertex_count,
                     );
@@ -517,7 +517,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             self.mesh_vertex_buffer = Some(vb);
             self.mesh_index_buffer = ib;
             self.mesh_index_count = count;
-            self.mesh_vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+            self.mesh_vertex_count = (desc.cols + 1) * (desc.rows + 1);
 
             // Rebuild compute resources if the plugin uses a compute shader.
             if let Some(cs) = self.plugin.compute_shader() {
@@ -528,7 +528,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                         return;
                     }
                 };
-                let vertex_count = ((desc.cols + 1) * (desc.rows + 1)) as u32;
+                let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                 let (cp, cb, wg) = build_compute_resources(
                     device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
                 );
@@ -670,7 +670,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         // Multi-pass graph path.
         // Take ownership to release the field borrow before calling the &mut self
         // method, then restore. Moves the Vec fat-pointer (no heap alloc).
-        if self.cached_graph.as_ref().map_or(false, |g| !g.passes.is_empty()) {
+        if self.cached_graph.as_ref().is_some_and(|g| !g.passes.is_empty()) {
             let graph = self.cached_graph.take().expect("checked above");
             self.run_graph(
                 encoder, device, target_view, target_size,

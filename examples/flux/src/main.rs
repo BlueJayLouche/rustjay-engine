@@ -273,7 +273,7 @@ impl FluxEffect {
 
     /// Ensure all GPU textures match the current input size.
     fn resize_if_needed(&mut self, device: &wgpu::Device, w: u32, h: u32) {
-        let needs = self.prev_frame.as_ref().map_or(true, |t| t.width != w || t.height != h);
+        let needs = self.prev_frame.as_ref().is_none_or(|t| t.width != w || t.height != h);
         if needs {
             self.prev_frame = Some(Texture::create_render_target(device, w, h, "Flux Prev Frame"));
         }

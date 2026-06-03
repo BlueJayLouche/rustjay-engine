@@ -31,7 +31,7 @@ pollster        = { workspace = true }
 qrcode          = { workspace = true }
 
 [features]
-default = ["ndi"]
+default = []
 ndi     = ["rustjay-core/ndi"]
 egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 

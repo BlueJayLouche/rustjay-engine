@@ -51,7 +51,8 @@ windows = { version = "0.62", features = [
 v4l = "0.14"
 
 [features]
-default = ["webcam", "ndi"]
+# NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
+default = ["webcam"]
 webcam  = ["nokhwa"]
 ndi     = ["grafton-ndi"]
 

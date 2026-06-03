@@ -18,7 +18,9 @@ bytemuck   = { workspace = true }
 uuid       = { workspace = true, optional = true }
 
 [features]
-default = ["ndi"]
+# `ndi` is a flag feature gating NDI output command variants; opt-in via the
+# engine's `ndi` feature (which needs a proprietary SDK to build).
+default = []
 ndi     = []
 modulation = ["dep:uuid"]
 

@@ -17,7 +17,7 @@ rfd            = "0.15"
 objc = "0.2"
 
 [features]
-default = ["ndi", "webcam"]
+default = ["webcam"]
 ndi     = ["rustjay-engine/ndi"]
 webcam  = ["rustjay-engine/webcam"]
 link    = ["rustjay-engine/link"]

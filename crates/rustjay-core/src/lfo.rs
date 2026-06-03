@@ -37,8 +37,10 @@ pub fn beat_division_to_hz(division: usize, bpm: f32) -> f32 {
 
 /// LFO Waveforms
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Waveform {
     /// Sinusoidal wave.
+    #[default]
     Sine = 0,
     /// Triangle wave.
     Triangle = 1,
@@ -74,11 +76,6 @@ impl Waveform {
     }
 }
 
-impl Default for Waveform {
-    fn default() -> Self {
-        Waveform::Sine
-    }
-}
 
 /// Target parameter for LFO modulation.
 ///
@@ -86,8 +83,10 @@ impl Default for Waveform {
 /// the `Custom(String)` variant.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(i8)]
+#[derive(Default)]
 pub enum LfoTarget {
     /// No modulation target.
+    #[default]
     None = -1,
     /// Modulate hue shift.
     HueShift = 0,
@@ -151,11 +150,6 @@ impl LfoTarget {
     }
 }
 
-impl Default for LfoTarget {
-    fn default() -> Self {
-        LfoTarget::None
-    }
-}
 
 /// Single LFO configuration and state
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,11 +273,10 @@ impl Lfo {
         // Snap to beat on quantum boundary crossing (beat_phase wrapped ≈ 1→0).
         // Only snap for divisions ≤ 1 beat; longer cycles accumulate freely
         // so they don't get disrupted on every bar.
-        if self.tempo_sync && beat_phase < self.last_beat_phase - 0.5 {
-            if BEAT_DIVISIONS[division] <= 1.0 {
+        if self.tempo_sync && beat_phase < self.last_beat_phase - 0.5
+            && BEAT_DIVISIONS[division] <= 1.0 {
                 self.phase = 0.0;
             }
-        }
         self.last_beat_phase = beat_phase;
 
         // Accumulate phase at the correct rate

@@ -3,6 +3,8 @@
 //! Main ImGui interface for controlling the application.
 
 #![allow(deprecated)]
+// GUI builder fns take many UI/state params by design.
+#![allow(clippy::too_many_arguments)]
 
 use rustjay_core::{AudioCommand, GuiTab, InputCommand, EngineState, ParamCategory};
 use rustjay_io::InputManager;
@@ -88,6 +90,8 @@ pub struct ControlGui {
 impl ControlGui {
     /// Create a new control GUI
     pub fn new(shared_state: Arc<Mutex<EngineState>>) -> anyhow::Result<Self> {
+        // `ndi_name` is only read by the `ndi`-gated UI below.
+        #[cfg_attr(not(feature = "ndi"), allow(unused_variables))]
         let (ndi_name, syphon_name) = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             #[cfg(target_os = "macos")]
@@ -402,7 +406,7 @@ impl ControlGui {
 
         let group_any = |tabs: &[GuiTab]| -> bool {
             tabs.iter().any(|&t| vis(t))
-            || custom_info.iter().any(|(_, _, r)| r.map_or(false, |r| tabs.contains(&r)))
+            || custom_info.iter().any(|(_, _, r)| r.is_some_and(|r| tabs.contains(&r)))
         };
 
         if let Some(_groups) = ui.tab_bar("##groups") {

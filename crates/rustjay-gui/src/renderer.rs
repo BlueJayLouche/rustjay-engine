@@ -218,8 +218,8 @@ impl ImGuiRenderer {
         self.platform.prepare_frame(io, &self.window)?;
 
         // Build UI
-        let mut ui = self.context.frame();
-        build_ui(&mut ui);
+        let ui = self.context.frame();
+        build_ui(ui);
         // ui borrows context mutably; NLL ends that borrow here so render()
         // can be called below.  We call render() before acquiring the surface
         // so that if surface acquisition fails the frame is still ended and
