@@ -15,11 +15,12 @@ log        = { workspace = true }
 anyhow     = { workspace = true }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
-uuid       = { workspace = true }
+uuid       = { workspace = true, optional = true }
 
 [features]
 default = ["ndi"]
 ndi     = []
+modulation = ["dep:uuid"]
 
 link   = []
 prodj  = []

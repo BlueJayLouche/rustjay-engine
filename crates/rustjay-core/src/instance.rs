@@ -137,6 +137,16 @@ pub trait EffectInstance: Send + 'static {
     ) {
     }
 
+    /// Set the parameter prefix used when this effect looks up engine params.
+    ///
+    /// When non-empty, the effect's `render_to` temporarily sets this prefix
+    /// on the engine state so nested plugins can use bare IDs (e.g. `"red"`)
+    /// while the engine stores them under fully-qualified names (e.g. `"ch_a_red"`).
+    ///
+    /// Default: no-op. Implementors that wrap `EffectPlugin`s (e.g. `EffectNode`)
+    /// should forward this to their inner renderer.
+    fn set_param_prefix(&mut self, _prefix: &str) {}
+
     /// Render this effect into `target`, sampling from `inputs`.
     ///
     /// `inputs` is ordered: `inputs[0]` is the primary video input; additional

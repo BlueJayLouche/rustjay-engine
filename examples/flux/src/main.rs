@@ -404,26 +404,18 @@ impl EffectPlugin for FluxEffect {
     // -----------------------------------------------------------------------
     fn render(
         &mut self,
-        encoder:           &mut wgpu::CommandEncoder,
-        device:            &wgpu::Device,
-        queue:             &wgpu::Queue,
-        input_view:         Option<&wgpu::TextureView>,
-        input_sampler:      Option<&wgpu::Sampler>,
-        _input_generation:  u64,
-        render_target_view: &wgpu::TextureView,
-        app_state:         &mut Self::State,
-        engine_state:      &EngineState,
-        _vertex_buffer:    &wgpu::Buffer,
-        input_texture:      Option<&wgpu::Texture>,
+        ctx: &mut RenderHookCtx<'_>,
+        app_state: &mut Self::State,
     ) -> bool {
-        let Some(input_tex) = input_texture  else { return false };
-        let Some(input_view) = input_view    else { return false };
-        let Some(input_samp) = input_sampler else { return false };
+        let Some(input) = &ctx.input else { return false };
+        let Some(input_tex) = input.texture else { return false };
+        let input_view = input.view;
+        let input_samp = input.sampler;
 
         // Resize textures before borrowing pipelines/buffers from self
         let w = input_tex.width();
         let h = input_tex.height();
-        self.resize_if_needed(device, w, h);
+        self.resize_if_needed(ctx.device, w, h);
 
         let Some(vb)      = &self.vertex_buffer  else { return false };
         let Some(ub)      = &self.uniform_buffer else { return false };
@@ -439,13 +431,13 @@ impl EffectPlugin for FluxEffect {
         let accum      = self.accum.as_ref().unwrap();
 
         // Upload uniforms (build before holding any further borrows on self)
-        let uniforms = FluxEffect::build_uniforms_static(app_state, engine_state);
-        queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
+        let uniforms = FluxEffect::build_uniforms_static(app_state, ctx.engine_state);
+        ctx.queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
 
         // ------------------------------------------------------------------
         // 1. Flow pass → flow.write()
         // ------------------------------------------------------------------
-        let flow_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let flow_bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Flux Flow BG"),
             layout:  flow_bgl,
             entries: &[
@@ -456,7 +448,7 @@ impl EffectPlugin for FluxEffect {
             ],
         });
         {
-            let mut pass = Self::fullscreen_pass(encoder, &flow.write().view, "Flux Flow Pass");
+            let mut pass = Self::fullscreen_pass(ctx.encoder, &flow.write().view, "Flux Flow Pass");
             pass.set_pipeline(flow_pl);
             pass.set_vertex_buffer(0, vb.slice(..));
             pass.set_bind_group(0, &flow_bg, &[]);
@@ -467,7 +459,7 @@ impl EffectPlugin for FluxEffect {
         // ------------------------------------------------------------------
         // 3. Warp pass → accum.write()
         // ------------------------------------------------------------------
-        let warp_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let warp_bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Flux Warp BG"),
             layout:  warp_bgl,
             entries: &[
@@ -478,7 +470,7 @@ impl EffectPlugin for FluxEffect {
             ],
         });
         {
-            let mut pass = Self::fullscreen_pass(encoder, &accum.write().view, "Flux Warp Pass");
+            let mut pass = Self::fullscreen_pass(ctx.encoder, &accum.write().view, "Flux Warp Pass");
             pass.set_pipeline(warp_pl);
             pass.set_vertex_buffer(0, vb.slice(..));
             pass.set_bind_group(0, &warp_bg, &[]);
@@ -489,7 +481,7 @@ impl EffectPlugin for FluxEffect {
         // ------------------------------------------------------------------
         // 4. Blit pass → render_target_view (screen)
         // ------------------------------------------------------------------
-        let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let blit_bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("Flux Blit BG"),
             layout:  blit_bgl,
             entries: &[
@@ -498,7 +490,7 @@ impl EffectPlugin for FluxEffect {
             ],
         });
         {
-            let mut pass = Self::fullscreen_pass(encoder, render_target_view, "Flux Blit Pass");
+            let mut pass = Self::fullscreen_pass(ctx.encoder, ctx.target_view, "Flux Blit Pass");
             pass.set_pipeline(blit_pl);
             pass.set_vertex_buffer(0, vb.slice(..));
             pass.set_bind_group(0, &blit_bg, &[]);
@@ -508,7 +500,7 @@ impl EffectPlugin for FluxEffect {
         // ------------------------------------------------------------------
         // 4. GPU copy: current input → prev_frame (for next frame's It)
         // ------------------------------------------------------------------
-        encoder.copy_texture_to_texture(
+        ctx.encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture:   input_tex,
                 mip_level: 0,

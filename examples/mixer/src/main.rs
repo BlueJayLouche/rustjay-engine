@@ -6,7 +6,7 @@
 
 use rustjay_core::{
     EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, ParamCategory,
-    RenderCtx, RenderTarget,
+    RenderCtx, RenderHookCtx, RenderTarget,
 };
 use rustjay_mixer::{Channel, Mixer};
 use rustjay_render::EffectNode;
@@ -241,59 +241,47 @@ impl EffectPlugin for MixerRootPlugin {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
         let dummy_engine = EngineState::new();
 
-        let mut solid = EffectNode::new(SolidEffect, "Solid", device, queue, &dummy_engine);
-        solid.set_param_prefix("ch_a_");
+        let solid = EffectNode::new(SolidEffect, "Solid", device, queue, &dummy_engine);
         mixer.add_channel(Channel::new("a", "Channel A", Box::new(solid))).unwrap();
 
-        let mut tint = EffectNode::new(TintEffect, "Tint", device, queue, &dummy_engine);
-        tint.set_param_prefix("ch_b_");
+        let tint = EffectNode::new(TintEffect, "Tint", device, queue, &dummy_engine);
         mixer.add_channel(Channel::new("b", "Channel B", Box::new(tint))).unwrap();
 
         drop(mixer);
         self.params_dirty = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        input_generation: u64,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut RenderHookCtx<'_>,
         _app_state: &mut MixerAppState,
-        engine_state: &EngineState,
-        vertex_buffer: &wgpu::Buffer,
-        input_texture: Option<&wgpu::Texture>,
     ) -> bool {
-        let mut ctx = RenderCtx {
-            device,
-            queue,
-            encoder,
-            vertex_buffer,
+        let mut render_ctx = RenderCtx {
+            device: ctx.device,
+            queue: ctx.queue,
+            encoder: ctx.encoder,
+            vertex_buffer: ctx.vertex_buffer,
         };
 
         let size = [
-            engine_state.resolution.internal_width,
-            engine_state.resolution.internal_height,
+            ctx.engine_state.resolution.internal_width,
+            ctx.engine_state.resolution.internal_height,
         ];
 
-        let primary = match (input_view, input_sampler) {
-            (Some(view), Some(sampler)) => Some(EffectInput {
+        let primary = match ctx.input {
+            Some(rustjay_core::EffectInput { view, sampler, generation, texture }) => Some(EffectInput {
                 view,
                 sampler,
-                generation: input_generation,
-                texture: input_texture,
+                generation,
+                texture,
             }),
             _ => None,
         };
-        let second = match (engine_state.second_input_view.as_ref(), engine_state.second_input_sampler.as_ref()) {
+        let second = match (ctx.engine_state.second_input_view.as_ref(), ctx.engine_state.second_input_sampler.as_ref()) {
             (Some(view), Some(sampler)) => Some(EffectInput {
                 view,
                 sampler,
-                generation: engine_state.second_input_generation,
+                generation: ctx.engine_state.second_input_generation,
                 texture: None,
             }),
             _ => None,
@@ -313,12 +301,12 @@ impl EffectPlugin for MixerRootPlugin {
         };
 
         let target = RenderTarget {
-            view: render_target_view,
+            view: ctx.target_view,
             size,
         };
 
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        mixer.render_to(&mut ctx, inputs, target, engine_state);
+        mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
         true
     }
 }

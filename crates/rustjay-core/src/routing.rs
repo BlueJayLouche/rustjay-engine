@@ -461,6 +461,7 @@ impl RoutingMatrix {
     ///
     /// Each enabled route becomes an [`crate::modulation::ModulationSource::AudioBand`]
     /// entry with frequency bounds derived from the route's [`FftBand`].
+    #[cfg(feature = "modulation")]
     pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
         use crate::modulation::{ModulationSource, ModulationSourceEntry};
         self.routes
@@ -492,6 +493,7 @@ impl RoutingMatrix {
     }
 
     /// Convert this matrix into a full [`crate::modulation::ModulationEngine`].
+    #[cfg(feature = "modulation")]
     pub fn to_modulation_engine(&self) -> crate::modulation::ModulationEngine {
         use crate::modulation::{ModulationEngine, ModulationSource};
         let mut engine = ModulationEngine::new();

@@ -414,6 +414,7 @@ impl LfoBank {
     /// Each LFO becomes a [`crate::modulation::ModulationSource::LFO`] entry.
     /// Waveforms are mapped to the nearest [`crate::modulation::LFOWaveform`];
     /// `Ramp` and `Saw` both map to `Sawtooth`.
+    #[cfg(feature = "modulation")]
     pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
         use crate::modulation::{LFOWaveform, ModulationSource, ModulationSourceEntry};
         self.lfos
@@ -446,6 +447,7 @@ impl LfoBank {
     /// Convert this bank into a full [`crate::modulation::ModulationEngine`].
     ///
     /// `bpm` is used to resolve tempo-synced frequencies.
+    #[cfg(feature = "modulation")]
     pub fn to_modulation_engine(&self, bpm: f32) -> crate::modulation::ModulationEngine {
         use crate::modulation::{LFOWaveform, ModulationEngine, ModulationSource};
         let mut engine = ModulationEngine::new();

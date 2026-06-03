@@ -87,6 +87,10 @@ impl<P: EffectPlugin> EffectNode<P> {
 }
 
 impl<P: EffectPlugin> EffectInstance for EffectNode<P> {
+    fn set_param_prefix(&mut self, prefix: &str) {
+        self.param_prefix = prefix.to_string();
+    }
+
     fn label(&self) -> &str {
         &self.label
     }

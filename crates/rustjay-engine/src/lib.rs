@@ -14,7 +14,7 @@ pub mod config;
 pub mod gles2;
 
 // Re-export the most useful types so app authors only need `rustjay_engine::*`
-pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, ParameterDescriptor, ParamCategory, ParamType};
+pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, ParameterDescriptor, ParamCategory, ParamType, RenderHookCtx};
 #[cfg(feature = "link")]
 pub use rustjay_core::{LinkState, LinkCommand};
 #[cfg(feature = "prodj")]
@@ -137,7 +137,7 @@ pub mod prelude {
         LinkCommand, ProDjCommand,
         GuiTab, InputType,
         RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology,
-        ParameterDescriptor, ParamCategory, ParamType,
+        ParameterDescriptor, ParamCategory, ParamType, RenderHookCtx,
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
     #[cfg(feature = "egui")]

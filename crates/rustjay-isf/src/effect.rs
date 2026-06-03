@@ -140,7 +140,7 @@ impl EffectPlugin for IsfEffect {
 
         // Built-ins: packed after scalar ISF inputs (16-byte aligned)
         let base = self.uniform_index.len();
-        let pad = if base % 4 != 0 { 4 - base % 4 } else { 0 };
+        let pad = if !base.is_multiple_of(4) { 4 - base % 4 } else { 0 };
         let bi = base + pad;
         if bi + 3 < MAX_ISF_UNIFORMS {
             data[bi]     = engine.resolution.internal_width as f32;
@@ -367,17 +367,8 @@ impl EffectPlugin for IsfEffect {
 
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        _input_generation: u64,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut rustjay_core::RenderHookCtx<'_>,
         app_state: &mut IsfState,
-        engine_state: &EngineState,
-        _vertex_buffer: &wgpu::Buffer,
-        _input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         let (Some(pipeline), Some(vb), Some(ub), Some(ubg), Some(tex_bgl)) = (
             &self.pipeline,
@@ -390,26 +381,26 @@ impl EffectPlugin for IsfEffect {
         };
 
         // Upload uniforms
-        let uniforms = self.build_uniforms(app_state, engine_state);
-        queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
+        let uniforms = self.build_uniforms(app_state, ctx.engine_state);
+        ctx.queue.write_buffer(ub, 0, bytemuck::bytes_of(&uniforms));
 
         // Build texture bind group
         let texture_bg = if self.has_image_input {
             // If no input connected, skip rendering this frame
-            let (Some(iv), Some(s)) = (input_view, input_sampler) else {
+            let Some(input) = &ctx.input else {
                 return true;
             };
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ISF Texture BG"),
                 layout: tex_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(iv) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(s) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input.view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(input.sampler) },
                 ],
             })
         } else {
             // Generator shader — empty bind group
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("ISF Empty BG"),
                 layout: tex_bgl,
                 entries: &[],
@@ -417,10 +408,10 @@ impl EffectPlugin for IsfEffect {
         };
 
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ISF Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: render_target_view,
+                    view: ctx.target_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {

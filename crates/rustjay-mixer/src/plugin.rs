@@ -6,7 +6,7 @@
 //! drives the mixer's [`EffectInstance::render_to`] path. This needs **no**
 //! engine changes — it works through the existing custom-render-hook API.
 
-use rustjay_core::{EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, RenderCtx, RenderTarget};
+use rustjay_core::{EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, RenderCtx, RenderHookCtx, RenderTarget};
 use crate::Mixer;
 
 /// An [`EffectPlugin`] adapter that turns a [`Mixer`] into the engine root.
@@ -96,43 +96,30 @@ impl EffectPlugin for MixerPlugin {
 
     /// Custom render hook: the engine skips its default pass and lets the mixer
     /// drive all channel rendering, compositing, and the master chain itself.
-    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        input_sampler: Option<&wgpu::Sampler>,
-        input_generation: u64,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut RenderHookCtx<'_>,
         _app_state: &mut (),
-        engine_state: &EngineState,
-        vertex_buffer: &wgpu::Buffer,
-        input_texture: Option<&wgpu::Texture>,
     ) -> bool {
-        let mut ctx = RenderCtx {
-            device,
-            queue,
-            encoder,
-            vertex_buffer,
+        let mut render_ctx = RenderCtx {
+            device: ctx.device,
+            queue: ctx.queue,
+            encoder: ctx.encoder,
+            vertex_buffer: ctx.vertex_buffer,
         };
 
         let size = [
-            engine_state.resolution.internal_width,
-            engine_state.resolution.internal_height,
+            ctx.engine_state.resolution.internal_width,
+            ctx.engine_state.resolution.internal_height,
         ];
 
         // Build the input slice the same way the engine does for single effects.
-        let primary = match (input_view, input_sampler) {
-            (Some(view), Some(sampler)) => Some(EffectInput {
-                view,
-                sampler,
-                generation: input_generation,
-                texture: input_texture,
-            }),
-            _ => None,
-        };
+        let primary = ctx.input.map(|i| EffectInput {
+            view: i.view,
+            sampler: i.sampler,
+            generation: i.generation,
+            texture: i.texture,
+        });
         let one;
         let inputs: &[EffectInput] = match primary {
             Some(p) => {
@@ -143,12 +130,12 @@ impl EffectPlugin for MixerPlugin {
         };
 
         let target = RenderTarget {
-            view: render_target_view,
+            view: ctx.target_view,
             size,
         };
 
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        mixer.render_to(&mut ctx, inputs, target, engine_state);
+        mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
         true
     }
 }

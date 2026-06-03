@@ -364,17 +364,8 @@ impl EffectPlugin for WaaavesEffect {
 
     fn render(
         &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        input_view: Option<&wgpu::TextureView>,
-        _input_sampler: Option<&wgpu::Sampler>,
-        _input_generation: u64,
-        render_target_view: &wgpu::TextureView,
+        ctx: &mut RenderHookCtx<'_>,
         state: &mut WaaavesState,
-        engine: &EngineState,
-        vertex_buffer: &wgpu::Buffer,
-        _input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         let dummy_view = &self.dummy.as_ref().unwrap().1;
         let sampler = self.sampler.as_ref().unwrap();
@@ -383,11 +374,11 @@ impl EffectPlugin for WaaavesEffect {
         let uniform_bg_c = self.uniform_bg_c.as_ref().unwrap();
 
         // ch1 = engine primary input; ch2 = engine second input or dummy
-        let ch1_view = input_view.unwrap_or(dummy_view);
-        let ch2_view = engine.second_input_view.as_deref().unwrap_or(dummy_view);
+        let ch1_view = ctx.input.map(|i| i.view).unwrap_or(dummy_view);
+        let ch2_view = ctx.engine_state.second_input_view.as_deref().unwrap_or(dummy_view);
 
         // bg0_a is still created per-frame — engine input views may change every frame.
-        let bg0_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg0_a = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("waaaves_a_g0"),
             layout: self.bgl_a.as_ref().unwrap(),
             entries: &[
@@ -418,7 +409,7 @@ impl EffectPlugin for WaaavesEffect {
         let bg0_b_dynamic;
         let bg0_b: &wgpu::BindGroup = match state.block2.block2_input_select {
             1 => {
-                bg0_b_dynamic = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                bg0_b_dynamic = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("waaaves_b_g0_input1"),
                     layout: self.bgl_c.as_ref().unwrap(),
                     entries: &[
@@ -429,7 +420,7 @@ impl EffectPlugin for WaaavesEffect {
                 &bg0_b_dynamic
             }
             2 => {
-                bg0_b_dynamic = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                bg0_b_dynamic = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("waaaves_b_g0_input2"),
                     layout: self.bgl_c.as_ref().unwrap(),
                     entries: &[
@@ -446,7 +437,7 @@ impl EffectPlugin for WaaavesEffect {
 
         // ── Pass 0 — Block A ────────────────────────────────────────────────
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_a"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.intermediate_a.as_ref().unwrap().1,
@@ -463,13 +454,13 @@ impl EffectPlugin for WaaavesEffect {
             rpass.set_bind_group(0, &bg0_a, &[]);
             rpass.set_bind_group(1, uniform_bg_a, &[]);
             rpass.set_bind_group(2, bg2_a, &[]);
-            rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            rpass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Pass 1 — Block B ────────────────────────────────────────────────
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_b"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.intermediate_b.as_ref().unwrap().1,
@@ -486,16 +477,16 @@ impl EffectPlugin for WaaavesEffect {
             rpass.set_bind_group(0, bg0_b, &[]);
             rpass.set_bind_group(1, uniform_bg_b, &[]);
             rpass.set_bind_group(2, bg2_b, &[]);
-            rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            rpass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Pass 2 — Block C ────────────────────────────────────────────────
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waaaves_pass_c"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: render_target_view,
+                    view: ctx.target_view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -508,20 +499,20 @@ impl EffectPlugin for WaaavesEffect {
             rpass.set_pipeline(self.pipeline_c.as_ref().unwrap());
             rpass.set_bind_group(0, bg0_c, &[]);
             rpass.set_bind_group(1, uniform_bg_c, &[]);
-            rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            rpass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
             rpass.draw(0..6, 0..1);
         }
 
         // ── Copy outputs to ring buffers and advance ────────────────────────
-        let w = engine.resolution.internal_width;
-        let h = engine.resolution.internal_height;
+        let w = ctx.engine_state.resolution.internal_width;
+        let h = ctx.engine_state.resolution.internal_height;
         let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
-        encoder.copy_texture_to_texture(
+        ctx.encoder.copy_texture_to_texture(
             self.intermediate_a.as_ref().unwrap().0.as_image_copy(),
             self.fb1.as_ref().unwrap().write_texture().as_image_copy(),
             extent,
         );
-        encoder.copy_texture_to_texture(
+        ctx.encoder.copy_texture_to_texture(
             self.intermediate_b.as_ref().unwrap().0.as_image_copy(),
             self.fb2.as_ref().unwrap().write_texture().as_image_copy(),
             extent,

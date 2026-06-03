@@ -3,7 +3,28 @@
 //! Core abstraction that lets app authors plug their own shader, uniforms,
 //! and GPU resources into the engine.
 
-use crate::{EngineState, params::ParameterDescriptor, state::GuiTab};
+use crate::{EngineState, EffectInput, params::ParameterDescriptor, state::GuiTab};
+
+/// Context for [`EffectPlugin::render`] custom render hooks.
+///
+/// Groups the wgpu handles, input texture, and engine state that every
+/// custom render path needs, replacing the previous 11 positional parameters.
+pub struct RenderHookCtx<'a> {
+    /// Command encoder for the current frame.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// GPU device.
+    pub device: &'a wgpu::Device,
+    /// GPU queue.
+    pub queue: &'a wgpu::Queue,
+    /// Primary input texture (carries view, sampler, generation, and raw texture).
+    pub input: Option<EffectInput<'a>>,
+    /// View to render into.
+    pub target_view: &'a wgpu::TextureView,
+    /// Engine state (params, time, audio, etc.).
+    pub engine_state: &'a EngineState,
+    /// Full-screen quad vertex buffer.
+    pub vertex_buffer: &'a wgpu::Buffer,
+}
 
 /// Describes a mesh grid for vertex-shader effects.
 ///
@@ -282,28 +303,18 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// Use this when the effect needs extra bind groups, multiple passes,
     /// or compute shaders that the default single-pass pipeline can't express.
     ///
-    /// `input_texture` is the raw wgpu texture backing the video input,
+    /// `ctx.input` carries the raw wgpu texture backing the video input,
     /// useful for effects that need to copy frames into a history ring buffer.
     ///
-    /// `input_generation` is a monotonic counter bumped whenever the input
+    /// `ctx.input.generation` is a monotonic counter bumped whenever the input
     /// texture is reallocated (resolution change, new source). Custom render
     /// paths that build their own bind groups should forward this value into
     /// [`EffectInput::generation`] so nested effects invalidate cached bind
     /// groups correctly.
-    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
-        _encoder: &mut wgpu::CommandEncoder,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _input_view: Option<&wgpu::TextureView>,
-        _input_sampler: Option<&wgpu::Sampler>,
-        _input_generation: u64,
-        _render_target_view: &wgpu::TextureView,
+        _ctx: &mut RenderHookCtx<'_>,
         _app_state: &mut Self::State,
-        _engine_state: &EngineState,
-        _vertex_buffer: &wgpu::Buffer,
-        _input_texture: Option<&wgpu::Texture>,
     ) -> bool {
         false
     }
