@@ -36,19 +36,32 @@ impl EffectPlugin for SolidEffect {
 
     fn shader_source(&self) -> &'static str {
         r#"
+        struct Uniforms {
+            red: f32,
+            green: f32,
+            blue: f32,
+            _pad: f32,
+        }
+        @group(1) @binding(0) var<uniform> u: Uniforms;
+
         @vertex
         fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> @builtin(position) vec4<f32> {
             return vec4<f32>(position, 0.0, 1.0);
         }
         @fragment
         fn fs_main() -> @location(0) vec4<f32> {
-            return vec4<f32>(0.5, 0.2, 0.8, 1.0);
+            return vec4<f32>(u.red, u.green, u.blue, 1.0);
         }
         "#
     }
 
-    fn build_uniforms(&self, _state: &(), _engine: &EngineState) -> SolidUniforms {
-        SolidUniforms { red: 0.5, green: 0.2, blue: 0.8, _pad: 0.0 }
+    fn build_uniforms(&self, _state: &(), engine: &EngineState) -> SolidUniforms {
+        SolidUniforms {
+            red: engine.get_param("red").unwrap_or(0.5),
+            green: engine.get_param("green").unwrap_or(0.2),
+            blue: engine.get_param("blue").unwrap_or(0.8),
+            _pad: 0.0,
+        }
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
@@ -113,8 +126,13 @@ impl EffectPlugin for TintEffect {
         "#
     }
 
-    fn build_uniforms(&self, _state: &(), _engine: &EngineState) -> TintUniforms {
-        TintUniforms { tint_r: 1.0, tint_g: 1.0, tint_b: 1.0, _pad: 0.0 }
+    fn build_uniforms(&self, _state: &(), engine: &EngineState) -> TintUniforms {
+        TintUniforms {
+            tint_r: engine.get_param("tint_r").unwrap_or(1.0),
+            tint_g: engine.get_param("tint_g").unwrap_or(1.0),
+            tint_b: engine.get_param("tint_b").unwrap_or(1.0),
+            _pad: 0.0,
+        }
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
@@ -158,11 +176,18 @@ pub struct MixerRootPlugin {
 }
 
 impl MixerRootPlugin {
+    /// Create a new mixer root plugin.
     pub fn new() -> Self {
         Self {
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
         }
+    }
+}
+
+impl Default for MixerRootPlugin {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -216,10 +241,12 @@ impl EffectPlugin for MixerRootPlugin {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
         let dummy_engine = EngineState::new();
 
-        let solid = EffectNode::new(SolidEffect::default(), "Solid", device, queue, &dummy_engine);
+        let mut solid = EffectNode::new(SolidEffect, "Solid", device, queue, &dummy_engine);
+        solid.set_param_prefix("ch_a_");
         mixer.add_channel(Channel::new("a", "Channel A", Box::new(solid))).unwrap();
 
-        let tint = EffectNode::new(TintEffect::default(), "Tint", device, queue, &dummy_engine);
+        let mut tint = EffectNode::new(TintEffect, "Tint", device, queue, &dummy_engine);
+        tint.set_param_prefix("ch_b_");
         mixer.add_channel(Channel::new("b", "Channel B", Box::new(tint))).unwrap();
 
         drop(mixer);
