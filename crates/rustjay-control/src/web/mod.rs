@@ -198,12 +198,78 @@ pub enum WebCommand {
     },
     #[serde(rename = "input")]
     Input(InputWebCommand),
+    #[serde(rename = "output")]
+    Output(OutputWebCommand),
+    #[serde(rename = "audio")]
+    Audio(AudioWebCommand),
     #[serde(rename = "control")]
     Control(ControlWebCommand),
     #[serde(rename = "modulation")]
     Modulation(ModulationWebCommand),
     #[serde(rename = "preset")]
     Preset(PresetWebCommand),
+    #[serde(rename = "link")]
+    Link(LinkWebCommand),
+    #[serde(rename = "prodj")]
+    ProDj(ProDjWebCommand),
+}
+
+/// Output subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum OutputWebCommand {
+    #[serde(rename = "start_ndi")]
+    StartNdi,
+    #[serde(rename = "stop_ndi")]
+    StopNdi,
+    #[serde(rename = "start_syphon")]
+    StartSyphon,
+    #[serde(rename = "stop_syphon")]
+    StopSyphon,
+    #[serde(rename = "start_spout")]
+    StartSpout { sender_name: String },
+    #[serde(rename = "stop_spout")]
+    StopSpout,
+    #[serde(rename = "start_v4l2")]
+    StartV4l2 { device_path: String },
+    #[serde(rename = "stop_v4l2")]
+    StopV4l2,
+    #[serde(rename = "resize_output")]
+    ResizeOutput,
+}
+
+/// Audio subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum AudioWebCommand {
+    #[serde(rename = "start")]
+    Start,
+    #[serde(rename = "stop")]
+    Stop,
+    #[serde(rename = "refresh_devices")]
+    RefreshDevices,
+    #[serde(rename = "select_device")]
+    SelectDevice { device: String },
+    #[serde(rename = "set_fft_size")]
+    SetFftSize { size: usize },
+}
+
+/// Ableton Link commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum LinkWebCommand {
+    #[serde(rename = "enable")]
+    Enable,
+    #[serde(rename = "disable")]
+    Disable,
+    #[serde(rename = "set_quantum")]
+    SetQuantum { quantum: f64 },
+}
+
+/// ProDJ Link commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum ProDjWebCommand {
+    #[serde(rename = "start")]
+    Start,
+    #[serde(rename = "stop")]
+    Stop,
 }
 
 /// JSON payload for InputState broadcast.

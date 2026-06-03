@@ -511,6 +511,13 @@ impl<P: EffectPlugin> App<P> {
                 server.preset_dirty = false;
             }
         }
+
+        #[cfg(feature = "api")]
+        if let Some(ref api_state) = self.api_state {
+            if let Ok(state) = self.shared_state.lock() {
+                api_state.publish(&state);
+            }
+        }
     }
 
     pub(super) fn poll_device_discovery(&mut self) {
