@@ -97,6 +97,30 @@ impl BlendMode {
             ColorDodge, ColorBurn, Difference, Exclusion, Darken, Lighten, LinearBurn,
         ]
     }
+
+    /// Reverse lookup from shader uniform index.
+    ///
+    /// Returns `None` for out-of-range indices.
+    pub fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(BlendMode::Normal),
+            1 => Some(BlendMode::Add),
+            2 => Some(BlendMode::Subtract),
+            3 => Some(BlendMode::Multiply),
+            4 => Some(BlendMode::Screen),
+            5 => Some(BlendMode::Overlay),
+            6 => Some(BlendMode::SoftLight),
+            7 => Some(BlendMode::HardLight),
+            8 => Some(BlendMode::ColorDodge),
+            9 => Some(BlendMode::ColorBurn),
+            10 => Some(BlendMode::Difference),
+            11 => Some(BlendMode::Exclusion),
+            12 => Some(BlendMode::Darken),
+            13 => Some(BlendMode::Lighten),
+            14 => Some(BlendMode::LinearBurn),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +145,14 @@ mod tests {
     fn default_is_normal() {
         assert_eq!(BlendMode::default(), BlendMode::Normal);
         assert_eq!(BlendMode::default().to_index(), 0);
+    }
+
+    #[test]
+    fn from_index_roundtrips() {
+        for &mode in BlendMode::all() {
+            let idx = mode.to_index();
+            assert_eq!(BlendMode::from_index(idx), Some(mode));
+        }
+        assert_eq!(BlendMode::from_index(99), None);
     }
 }
