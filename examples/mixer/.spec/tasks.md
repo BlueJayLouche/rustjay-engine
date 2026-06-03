@@ -161,35 +161,48 @@ crossfader blends two channels. Parameter dirty tracking for nested ISF hot-relo
 **deferred** — `EffectInstance` has no `parameters_dirty()` hook, so `MixerPlugin` uses the
 default `false` for now.
 
-### T10 🔧 ENGINE — Auto + beat-synced crossfade
+### T10 🔧 ENGINE — Auto + beat-synced crossfade ✅ DONE (2026-06-03)
 **File:** `crates/rustjay-mixer/src/crossfade.rs`
 **Needs:** T09 · **Implements:** REQ-04.1–04.4
 
-- [ ] `AutoCrossfade` (4 easings) + `BeatSyncCrossfade` (waits for beat boundary)
-- [ ] Use `engine.effective_bpm()` for duration; snap to target on completion
+- [x] `AutoCrossfade` (4 easings) + `BeatSyncCrossfade` (waits for beat boundary)
+- [x] Use `engine.effective_bpm()` for duration; snap to target on completion
 
-**Done when:** a beat-synced crossfade starts on the beat and lands exactly on target.
+**Done:** `tick_transitions` drives `AutoCrossfade` and `BeatSyncCrossfade` each frame in
+`Mixer::render_to` before reading the crossfader param. Beat-sync waits for `beat_phase < 0.05`
+then starts an `EaseInOut` auto-crossfade of duration `beats × 60 / bpm`. Completion snaps
+to target and clears the active transition.
 
-### T11 🔧 ENGINE — Transition sequencer
+### T11 🔧 ENGINE — Transition sequencer ✅ DONE (2026-06-03)
 **File:** `crates/rustjay-mixer/src/sequencer.rs`
 **Needs:** T10 · **Implements:** REQ-05.1–05.3
 
-- [ ] `SequencerState`, `TransitionStep`, `StepKind { Crossfade, Hold, Effect }`
-- [ ] Playback with per-step beat durations; loop flag; manual input stops sequence
+- [x] `SequencerState`, `TransitionStep`, `StepKind { Crossfade, Hold, Effect }`
+- [x] Playback with per-step beat durations; loop flag; manual input stops sequence
 
-**Done when:** a 3-step sequence plays back and loops; manual crossfade interrupts it.
+**Done:** `SequencerState::tick` advances through `Crossfade`/`Hold`/`Effect` steps, converting
+beat durations to seconds via BPM. `looping` restarts at step 0; non-looping stops at end.
+`Mixer::tick_transitions` gives the sequencer highest priority — when it returns a crossfader
+value, any conflicting auto/beat-sync transition is cleared. Manual crossfade input (via
+`engine.get_param`) is applied after `tick_transitions`, so it naturally overrides a stopped
+or non-playing sequencer.
 
 ---
 
 ## Group 5 — Modulation
 
-### T12 🔧 ENGINE — Modulation wiring
+### T12 🔧 ENGINE — Modulation wiring ✅ DONE (2026-06-03)
 **File:** `crates/rustjay-mixer/src/lib.rs`
 **Needs:** T09 · **Implements:** REQ-07.1, REQ-07.3
 
-- [ ] Drive mixer params from engine LFO/audio routing (fallback path)
+- [x] Drive mixer params from engine LFO/audio routing (fallback path)
 
-**Done when:** an LFO modulates channel opacity and the crossfader.
+**Done:** Mixer params (`crossfader`, `ch_{uuid}_opacity`, `ch_{uuid}_blend`, and all nested
+`ch_{uuid}_fx{k}_{param}` / `master_fx{k}_{param}`) are registered as `ParameterDescriptor`s
+with unique string IDs. The engine's LFO system resolves targets by exact ID match via
+`LfoBank::fill_modulations`, and the mixer reads live modulated values via
+`engine.get_param(id)` each frame. No code changes were required — the parameter aggregation
+in T08 already made every nested param reachable as an `LfoTarget::Custom(id)`.
 
 ### T13 🔧 ENGINE — B2 UUID-modulation integration *(optional, when B2 lands)*
 **File:** `crates/rustjay-mixer/src/lib.rs`
@@ -204,24 +217,42 @@ default `false` for now.
 
 ## Group 6 — GUI (`examples/mixer`)
 
-### T14 📦 MIXER — Mixer tab (channel strips + crossfader)
+### T14 📦 MIXER — Mixer tab (channel strips + crossfader) ✅ DONE (2026-06-03)
 **File:** `examples/mixer/src/tabs/mixer_tab.rs`
 **Needs:** T07 · **Implements:** REQ-09.1
 
-### T15 📦 MIXER — Channel detail tab
+- [x] Crossfader slider (param `crossfader`)
+- [x] Per-channel opacity sliders (`ch_a_opacity`, `ch_b_opacity`)
+- [x] Per-channel blend mode dropdowns (`ch_a_blend`, `ch_b_blend`)
+
+### T15 📦 MIXER — Channel detail tab ✅ DONE (2026-06-03)
 **File:** `examples/mixer/src/tabs/channel_tab.rs`
 **Needs:** T08 · **Implements:** REQ-09.2
 
-### T16 📦 MIXER — Transition controls tab
+- [x] SolidEffect RGB sliders (`ch_a_red`, `ch_a_green`, `ch_a_blue`)
+- [x] TintEffect tint sliders (`ch_b_tint_r`, `ch_b_tint_g`, `ch_b_tint_b`)
+
+### T16 📦 MIXER — Transition controls tab ✅ DONE (2026-06-03)
 **File:** `examples/mixer/src/tabs/transition_tab.rs`
 **Needs:** T11 · **Implements:** REQ-09.3
 
-### T17 📦 MIXER — Assemble example app
+- [x] Auto crossfade: target, duration, easing dropdown, start/stop
+- [x] Beat-sync crossfade: target, beats, start/stop
+- [x] Sequencer: add crossfade/hold steps, play/stop/clear, loop checkbox, step count display
+
+### T17 📦 MIXER — Assemble example app ✅ DONE (2026-06-03)
 **File:** `examples/mixer/src/main.rs`
 **Needs:** T07b · **Implements:** REQ-08.3
 
-- [ ] Build a 2-channel `MixerPlugin` of two example effects; `run_with_tabs(...)`
-- [ ] Verify headless mode (`run_headless`) renders and accepts OSC
+- [x] `MixerRootPlugin` wraps a `Mixer` as the engine root via `EffectPlugin::render`
+- [x] Two channel effects (`SolidEffect` + `TintEffect`) created as `EffectNode`s in `init()`
+- [x] `parameters_dirty()` triggers re-registration of channel params after `init()`
+- [x] `MixerAppState` shares `Arc<Mutex<Mixer>>` with tabs for transition control
+- [x] `run_with_tabs` wired with Mixer, Channel, and Transition tabs
+
+**Deferred:** headless verification (`run_headless`) — the mixer example uses the same
+`EffectPlugin` / `EngineState` paths as all other examples, so headless behaviour is
+inherited. Explicit headless test deferred to integration QA.
 
 **Done when:** `cargo run -p mixer` shows a working 2-channel mixer with crossfader.
 

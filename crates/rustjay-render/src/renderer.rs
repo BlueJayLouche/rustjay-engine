@@ -3,7 +3,7 @@
 //! Main rendering engine. Generic over `EffectPlugin` so apps can supply
 //! their own shader, uniforms, and GPU resources.
 
-use rustjay_core::{EffectPlugin, EngineState, Vertex};
+use rustjay_core::{EffectInput, EffectPlugin, EngineState, Vertex};
 use rustjay_io::OutputManager;
 use crate::blit::BlitPipeline;
 use crate::plugin_renderer::PluginRenderer;
@@ -335,13 +335,49 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             label: Some("Pipeline Encoder"),
         });
 
-        self.plugin_renderer.render(
+        // Drive the root effect through the EffectInstance-aligned render path
+        // (slice inputs + explicit target size) — the same API surface any
+        // `dyn EffectInstance` (e.g. a mixer) uses. `input_texture` is ensured
+        // bound above, so the primary slot is present; feedback, when active, is
+        // passed as the second slot. Stack-allocated — no per-frame heap alloc.
+        let primary = match (
+            self.input_texture.binding_view(),
+            self.input_texture.binding_sampler(),
+        ) {
+            (Some(view), Some(sampler)) => Some(EffectInput {
+                view,
+                sampler,
+                generation: self.input_texture.texture_generation,
+                texture: self.input_texture.texture.as_ref().map(|t| &t.texture),
+            }),
+            _ => None,
+        };
+        let feedback = self.previous_frame.as_ref().map(|f| EffectInput {
+            view: &f.texture.view,
+            sampler: &f.texture.sampler,
+            generation: 0,
+            texture: Some(&f.texture.texture),
+        });
+        let both;
+        let one;
+        let inputs: &[EffectInput] = match (primary, feedback) {
+            (Some(p), Some(f)) => {
+                both = [p, f];
+                &both
+            }
+            (Some(p), None) => {
+                one = [p];
+                &one
+            }
+            _ => &[],
+        };
+        self.plugin_renderer.render_to_view(
             &mut encoder,
             &self.device,
             &self.queue,
-            &self.input_texture,
-            self.previous_frame.as_ref(),
-            &self.render_target,
+            inputs,
+            &self.render_target.view,
+            (self.render_target.width, self.render_target.height),
             app_state,
             &engine_state,
             &self.vertex_buffer,

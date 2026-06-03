@@ -7,22 +7,26 @@
 //! `EffectInstance`, so it composes, nests, previews, and projects like any
 //! single effect.
 //!
-//! **Status: T04–T07b implemented.** Channel rendering, effect chains, dynamic
-//! channel management, and `EffectInstance` / `EffectPlugin` wrappers are wired.
-//! Crossfader transitions (T09+), parameter aggregation (T08), GUI (T14+), and
-//! persistence (T18) land in later tasks.
+//! **Status: T04–T11 implemented.** Channel rendering, effect chains, dynamic
+//! channel management, `EffectInstance` / `EffectPlugin` wrappers, parameter
+//! aggregation, modulatable crossfader, and transition state machines (auto,
+//! beat-sync, sequencer) are wired. GUI (T14+) and persistence (T18) land in
+//! later tasks.
 
 #![warn(missing_docs)]
 
 mod blend;
 mod blit;
 mod composite;
-
+pub mod crossfade;
 pub mod plugin;
+pub mod sequencer;
 
 pub use blend::BlendMode;
 pub use blit::BlitPipeline;
 pub use composite::CompositePipeline;
+pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
+pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
 use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
 use rustjay_core::params::{ParameterDescriptor, ParamCategory};
@@ -174,6 +178,12 @@ pub struct Mixer {
     pub crossfader: f32,
     /// Master effect chain applied after compositing (REQ-06).
     pub master: Vec<Box<dyn EffectInstance>>,
+    /// Active auto-crossfade state machine (REQ-04.1).
+    pub auto: Option<AutoCrossfade>,
+    /// Active beat-synced crossfade (REQ-04.3).
+    pub beat_sync: Option<BeatSyncCrossfade>,
+    /// Transition sequencer (REQ-05).
+    pub sequencer: SequencerState,
 
     // GPU resources — allocated lazily, reallocated only on resize or channel-count change.
     composite: Option<CompositePipeline>,
@@ -194,6 +204,9 @@ impl Mixer {
             channels: Vec::new(),
             crossfader: 0.5,
             master: Vec::new(),
+            auto: None,
+            beat_sync: None,
+            sequencer: SequencerState::new(),
             composite: None,
             blit: None,
             acc_a: None,
@@ -258,6 +271,59 @@ impl Mixer {
         for ch in &mut self.channels {
             ch.ensure_size(device, size);
         }
+    }
+
+    /// Tick active transitions (auto, beat-sync, sequencer) and return the
+    /// crossfader value they produce, if any.
+    ///
+    /// This should be called once per frame before reading the crossfader for
+    /// compositing.  Engine param modulation takes precedence when no transition
+    /// is active.
+    pub fn tick_transitions(&mut self, dt: f32, bpm: Option<f32>, beat_phase: f32) -> Option<f32> {
+        // Sequencer has highest priority.
+        if self.sequencer.playing {
+            if let Some(v) = self.sequencer.tick(self.crossfader, dt, bpm) {
+                self.crossfader = v.clamp(0.0, 1.0);
+                // Stop any conflicting one-shot transitions.
+                self.auto = None;
+                self.beat_sync = None;
+                return Some(self.crossfader);
+            }
+            return None;
+        }
+
+        // Beat-sync crossfade.
+        if let Some(ref mut bs) = self.beat_sync {
+            match bs.tick(self.crossfader, dt, bpm, beat_phase) {
+                Some(v) => {
+                    self.crossfader = v.clamp(0.0, 1.0);
+                    return Some(self.crossfader);
+                }
+                None if bs.is_done() => {
+                    self.crossfader = bs.target;
+                    self.beat_sync = None;
+                    return Some(self.crossfader);
+                }
+                None => return None,
+            }
+        }
+
+        // Plain auto crossfade.
+        if let Some(ref mut auto) = self.auto {
+            match auto.tick(dt) {
+                Some(v) => {
+                    self.crossfader = v.clamp(0.0, 1.0);
+                    return Some(self.crossfader);
+                }
+                None => {
+                    self.crossfader = auto.target().clamp(0.0, 1.0);
+                    self.auto = None;
+                    return Some(self.crossfader);
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -340,6 +406,12 @@ impl EffectInstance for Mixer {
         engine: &EngineState,
     ) {
         self.ensure_resources(ctx.device, target.size);
+
+        // Tick transitions (auto, beat-sync, sequencer) before reading params.
+        let dt = engine.performance.frame_time_ms / 1000.0;
+        let bpm = engine.effective_bpm();
+        let beat_phase = engine.effective_beat_phase();
+        self.tick_transitions(dt, Some(bpm).filter(|&b| b > 0.0), beat_phase);
 
         // Read mixer-level params from the engine (modulated values).
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);

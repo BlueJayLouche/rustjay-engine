@@ -1,8 +1,8 @@
 //! Plugin-aware renderer that compiles app-provided shaders and manages
 //! the per-effect pipeline, uniform buffer, and bind groups.
 
-use rustjay_core::{EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex};
-use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
+use rustjay_core::{EffectInput, EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex};
+use crate::texture::Texture;
 use wgpu::util::{DeviceExt, StagingBelt};
 
 pub(crate) struct PluginRenderer<P: EffectPlugin> {
@@ -225,6 +225,21 @@ fn build_compute_resources(
     let workgroups = ((vertex_count + 255) / 256).max(1);
 
     (compute_pipeline, storage_bind_group, (workgroups, 1, 1))
+}
+
+/// Raw per-frame GPU handles, sourced either from the engine's wrapper types
+/// (`render`) or from `EffectInput` slices (`render_to_view`). Funnelling both
+/// entry points through this struct lets `render_core` / `run_single_pass` /
+/// `run_graph` carry one implementation instead of two.
+struct FrameInputs<'a> {
+    input_view: Option<&'a wgpu::TextureView>,
+    input_sampler: Option<&'a wgpu::Sampler>,
+    /// Raw input texture for the custom render hook (ring buffers, history copies).
+    input_texture: Option<&'a wgpu::Texture>,
+    /// Monotonic generation of the primary input, for bind-group cache keys.
+    input_generation: u64,
+    feedback_view: Option<&'a wgpu::TextureView>,
+    feedback_sampler: Option<&'a wgpu::Sampler>,
 }
 
 impl<P: EffectPlugin> PluginRenderer<P> {
@@ -546,14 +561,69 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
     }
 
-    pub fn render(
+    /// Render into a raw [`wgpu::TextureView`], sampling from raw input slots.
+    ///
+    /// This is the [`EffectInstance`](rustjay_core::EffectInstance)-facing entry
+    /// point (Phase B0.2). It speaks in raw wgpu handles instead of the
+    /// `InputTexture` / `Texture` wrappers, so an effect can be driven as a
+    /// `dyn EffectInstance` (e.g. one channel of a mixer). `inputs[0]` is the
+    /// primary video input; `inputs[1]` (when present) is treated as feedback.
+    ///
+    /// Shares all rendering logic with [`render`](Self::render) via
+    /// [`render_core`](Self::render_core) — single-pass, multi-pass graph, and
+    /// the custom `EffectPlugin::render` hook are all covered.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_to_view(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        input_texture: &InputTexture,
-        feedback_texture: Option<&PreviousFrameTexture>,
-        render_target: &Texture,
+        inputs: &[EffectInput<'_>],
+        target_view: &wgpu::TextureView,
+        target_size: (u32, u32),
+        app_state: &mut P::State,
+        engine_state: &EngineState,
+        vertex_buffer: &wgpu::Buffer,
+    ) {
+        let primary = inputs.first();
+        let feedback = inputs.get(1);
+        let frame = FrameInputs {
+            input_view: primary.map(|i| i.view),
+            input_sampler: primary.map(|i| i.sampler),
+            input_texture: primary.and_then(|i| i.texture),
+            input_generation: primary.map_or(0, |i| i.generation),
+            feedback_view: feedback.map(|i| i.view),
+            feedback_sampler: feedback.map(|i| i.sampler),
+        };
+        self.render_core(
+            encoder,
+            device,
+            queue,
+            target_view,
+            target_size,
+            &frame,
+            app_state,
+            engine_state,
+            vertex_buffer,
+        );
+    }
+
+    /// Shared render body for both [`render`](Self::render) (wrapper-sourced)
+    /// and [`render_to_view`](Self::render_to_view) (slice-sourced).
+    ///
+    /// Runs the compute pass, gives the plugin its custom render hook, then
+    /// dispatches to the multi-pass graph or the single-pass path. The only
+    /// difference between the two entry points is how `frame` / `target_*` are
+    /// sourced; everything below is identical.
+    #[allow(clippy::too_many_arguments)]
+    fn render_core(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_view: &wgpu::TextureView,
+        target_size: (u32, u32),
+        frame: &FrameInputs<'_>,
         app_state: &mut P::State,
         engine_state: &EngineState,
         vertex_buffer: &wgpu::Buffer,
@@ -574,40 +644,58 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             compute_pass.dispatch_workgroups(wx, wy, wz);
         }
 
-        // Give the plugin a chance to do its own render pass
-        let raw_input = input_texture.texture.as_ref().map(|t| &t.texture);
+        // Give the plugin a chance to do its own render pass.
         if self.plugin.render(
             encoder,
             device,
             queue,
-            input_texture.binding_view(),
-            input_texture.binding_sampler(),
-            &render_target.view,
+            frame.input_view,
+            frame.input_sampler,
+            target_view,
             app_state,
             engine_state,
             vertex_buffer,
-            raw_input,
+            frame.input_texture,
         ) {
             self.staging_belt.finish();
             return;
         }
 
         // Multi-pass graph path.
-        // Take ownership to release the field borrow before calling &mut self method,
-        // then restore. This moves the Vec fat-pointer (no heap alloc) instead of cloning.
+        // Take ownership to release the field borrow before calling the &mut self
+        // method, then restore. Moves the Vec fat-pointer (no heap alloc).
         if self.cached_graph.as_ref().map_or(false, |g| !g.passes.is_empty()) {
             let graph = self.cached_graph.take().expect("checked above");
-            self.render_graph(
-                encoder, device,
-                input_texture, feedback_texture, render_target,
-                app_state, engine_state, vertex_buffer, &graph,
+            self.run_graph(
+                encoder, device, target_view, target_size,
+                frame, app_state, engine_state, vertex_buffer, &graph,
             );
             self.cached_graph = Some(graph);
             self.staging_belt.finish();
             return;
         }
 
-        // Single-pass path
+        // Single-pass path.
+        self.run_single_pass(
+            encoder, device, target_view, frame, app_state, engine_state, vertex_buffer,
+        );
+        self.staging_belt.finish();
+    }
+
+    /// Single-pass render: one shader, one uniform block, optional input image.
+    /// Feedback bindings (2/3) always use the dummy — single-pass effects never
+    /// read feedback (that is a graph-only feature).
+    #[allow(clippy::too_many_arguments)]
+    fn run_single_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
+        target_view: &wgpu::TextureView,
+        frame: &FrameInputs<'_>,
+        app_state: &mut P::State,
+        engine_state: &EngineState,
+        vertex_buffer: &wgpu::Buffer,
+    ) {
         let uniforms = self.plugin.build_uniforms(app_state, engine_state);
         {
             let size = wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
@@ -615,12 +703,10 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             view.copy_from_slice(bytemuck::bytes_of(&uniforms));
         }
 
-        let current_gen = input_texture.texture_generation;
-        if self.cached_texture_gen != current_gen {
-            if let (Some(input_view), Some(input_sampler)) = (
-                input_texture.binding_view(),
-                input_texture.binding_sampler(),
-            ) {
+        if self.cached_texture_gen != frame.input_generation {
+            if let (Some(input_view), Some(input_sampler)) =
+                (frame.input_view, frame.input_sampler)
+            {
                 self.cached_texture_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Texture Bind Group"),
                     layout: &self.texture_bind_group_layout,
@@ -643,19 +729,18 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                         },
                     ],
                 }));
-                self.cached_texture_gen = current_gen;
+                self.cached_texture_gen = frame.input_generation;
             }
         }
 
         let Some(ref texture_bind_group) = self.cached_texture_bind_group else {
-            self.staging_belt.finish();
             return;
         };
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Main Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &render_target.view,
+                view: target_view,
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
@@ -685,23 +770,22 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             render_pass.draw(0..6, 0..1);
         }
         drop(render_pass);
-        self.staging_belt.finish();
     }
 
-    fn render_graph(
+    #[allow(clippy::too_many_arguments)]
+    fn run_graph(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
-        input_texture: &InputTexture,
-        feedback_texture: Option<&PreviousFrameTexture>,
-        render_target: &Texture,
+        target_view: &wgpu::TextureView,
+        target_size: (u32, u32),
+        frame: &FrameInputs<'_>,
         app_state: &mut P::State,
         engine_state: &EngineState,
         vertex_buffer: &wgpu::Buffer,
         graph: &rustjay_core::RenderGraph,
     ) {
-        let target_width = render_target.width;
-        let target_height = render_target.height;
+        let (target_width, target_height) = target_size;
 
         // Ensure intermediate textures (one per non-final pass, at the current target size).
         let needed_intermediates = graph.passes.len().saturating_sub(1);
@@ -825,7 +909,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         for (i, pass) in graph.passes.iter().enumerate() {
             let is_last = i == graph.passes.len() - 1;
             let output_view: &wgpu::TextureView = if is_last {
-                &render_target.view
+                target_view
             } else {
                 &intermediate[i].view
             };
@@ -833,10 +917,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             // Resolve the input source for this pass.
             let (input_view, input_sampler): (Option<&wgpu::TextureView>, Option<&wgpu::Sampler>) =
                 match pass.input {
-                    PassInput::EngineInput => (
-                        input_texture.binding_view(),
-                        input_texture.binding_sampler(),
-                    ),
+                    PassInput::EngineInput => (frame.input_view, frame.input_sampler),
                     PassInput::PreviousPass if i > 0 => (
                         Some(&intermediate[i - 1].view),
                         Some(&intermediate[i - 1].sampler),
@@ -845,10 +926,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                         // Warned at rebuild time; silently fall back to dummy.
                         (None, None)
                     }
-                    PassInput::Feedback => (
-                        feedback_texture.map(|f| &f.texture.view),
-                        feedback_texture.map(|f| &f.texture.sampler),
-                    ),
+                    PassInput::Feedback => (frame.feedback_view, frame.feedback_sampler),
                 };
 
             // Write per-pass uniforms into this pass's dedicated buffer.
@@ -867,15 +945,15 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             };
 
             let (fbv, fbs) = if graph.feedback {
-                match feedback_texture {
-                    Some(f) => (&f.texture.view, &f.texture.sampler),
-                    None => (&dummy.view, &dummy.sampler),
+                match (frame.feedback_view, frame.feedback_sampler) {
+                    (Some(v), Some(s)) => (v, s),
+                    _ => (&dummy.view, &dummy.sampler),
                 }
             } else {
                 (&dummy.view, &dummy.sampler)
             };
 
-            let current_gen = input_texture.texture_generation;
+            let current_gen = frame.input_generation;
             if self.cached_pass_texture_gens[i] != current_gen {
                 self.cached_pass_bind_groups[i] = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some(&format!("Pass {} Bind Group", i)),

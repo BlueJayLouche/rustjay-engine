@@ -2855,6 +2855,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mixer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "env_logger",
+ "imgui",
+ "log",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-mixer",
+ "rustjay-render",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4228,6 +4245,7 @@ dependencies = [
  "rustjay-core",
  "rustjay-gui",
  "rustjay-io",
+ "rustjay-mixer",
  "rustjay-presets",
  "rustjay-render",
  "rustjay-sync",
@@ -4290,6 +4308,19 @@ dependencies = [
  "v4l",
  "wgpu",
  "windows",
+]
+
+[[package]]
+name = "rustjay-mixer"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "rustjay-core",
+ "rustjay-render",
+ "serde",
+ "wgpu",
 ]
 
 [[package]]
@@ -4740,8 +4771,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-core"
-version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a8bc2f3c53053f0a22d0cf3041127f7db7f5bb82dce5a4aecd151f55d368962"
 dependencies = [
  "block",
  "cocoa 0.26.1",
@@ -4758,8 +4790,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-metal"
-version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40d9a19f718b0798ca038e20eb4a260012032a55542147ad2ec8c3e8766bf47"
 dependencies = [
  "cocoa 0.26.1",
  "core-foundation 0.10.1",
@@ -4776,8 +4809,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-wgpu"
-version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/syphon-rs?branch=main#b6222bd0278c217d64847d5c0c460c40bada3412"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd95e68a8ff7db50b20708144c40d8a06dac289822e48ecdc25cbae68a3917ab"
 dependencies = [
  "bytemuck",
  "cocoa 0.26.1",
