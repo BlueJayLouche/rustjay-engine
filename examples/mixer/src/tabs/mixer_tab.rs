@@ -2,7 +2,7 @@
 
 use rustjay_core::EngineState;
 use rustjay_engine::prelude::AnyGuiTab;
-use rustjay_mixer::BlendMode;
+use rustjay_mixer::{BlendMode, InputSelect};
 
 pub struct MixerTab;
 
@@ -41,6 +41,13 @@ impl AnyGuiTab for MixerTab {
             if ui.combo_simple_string("Blend A##bla", &mut idx, &blend_names) {
                 engine.set_param_base("ch_a_blend", idx as f32);
             }
+
+            let input_sel = engine.get_param("ch_a_input_select").unwrap_or(0.0) as i32;
+            let input_names: Vec<&str> = InputSelect::labels().to_vec();
+            let mut idx = input_sel as usize;
+            if ui.combo_simple_string("Input A##ina", &mut idx, &input_names) {
+                engine.set_param_base("ch_a_input_select", idx as f32);
+            }
         }
 
         ui.separator();
@@ -58,6 +65,13 @@ impl AnyGuiTab for MixerTab {
             let mut idx = blend as usize;
             if ui.combo_simple_string("Blend B##blb", &mut idx, &blend_names) {
                 engine.set_param_base("ch_b_blend", idx as f32);
+            }
+
+            let input_sel = engine.get_param("ch_b_input_select").unwrap_or(0.0) as i32;
+            let input_names: Vec<&str> = InputSelect::labels().to_vec();
+            let mut idx = input_sel as usize;
+            if ui.combo_simple_string("Input B##inb", &mut idx, &input_names) {
+                engine.set_param_base("ch_b_input_select", idx as f32);
             }
         }
     }

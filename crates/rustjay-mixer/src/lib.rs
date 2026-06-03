@@ -38,6 +38,43 @@ use rustjay_core::modulation::{ModulationEngine, AudioValues, AudioSourceValues}
 use rustjay_core::params::{ParameterDescriptor, ParamCategory};
 use rustjay_render::Texture;
 
+/// Which engine input slot a channel samples from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InputSelect {
+    /// Sample from the engine's primary input (slot 1).
+    #[default]
+    Slot1,
+    /// Sample from the engine's second input (slot 2).
+    Slot2,
+    /// Pass both inputs through to the effect (inputs[0]=slot1, inputs[1]=slot2).
+    Both,
+}
+
+impl InputSelect {
+    /// Convert to a UI index.
+    pub fn to_index(self) -> usize {
+        match self {
+            InputSelect::Slot1 => 0,
+            InputSelect::Slot2 => 1,
+            InputSelect::Both => 2,
+        }
+    }
+
+    /// Convert from a UI index.
+    pub fn from_index(v: usize) -> Self {
+        match v {
+            0 => InputSelect::Slot1,
+            1 => InputSelect::Slot2,
+            _ => InputSelect::Both,
+        }
+    }
+
+    /// Human-readable labels for combo boxes.
+    pub fn labels() -> &'static [&'static str] {
+        &["Slot 1", "Slot 2", "Both"]
+    }
+}
+
 /// Tracks which of a channel's two textures holds the most recent render result.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum LastOutput {
@@ -61,6 +98,8 @@ pub struct Channel {
     pub opacity: f32,
     /// How this channel blends onto the composite.
     pub blend_mode: BlendMode,
+    /// Which engine input this channel samples from.
+    pub input_select: InputSelect,
     /// Solo flag (UI/mix helper).
     pub solo: bool,
     /// Mute flag (UI/mix helper).
@@ -85,6 +124,7 @@ impl Channel {
             chain: Vec::new(),
             opacity: 1.0,
             blend_mode: BlendMode::default(),
+            input_select: InputSelect::default(),
             solo: false,
             mute: false,
             texture: None,
@@ -397,6 +437,14 @@ impl EffectInstance for Mixer {
                 ch.blend_mode.to_index() as usize,
             ));
 
+            out.push(ParameterDescriptor::enum_param(
+                format!("{prefix}input_select"),
+                format!("{} Input", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                InputSelect::labels().iter().map(|s| s.to_string()).collect(),
+                ch.input_select.to_index(),
+            ));
+
             // Channel effect params
             for p in ch.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
@@ -490,7 +538,16 @@ impl EffectInstance for Mixer {
             if eff.get(i).copied().unwrap_or(0.0) < 0.001 {
                 continue;
             }
-            ch.render(ctx, inputs, engine);
+            let input_select = engine
+                .get_param(&format!("ch_{}_input_select", ch.uuid))
+                .map(|v| InputSelect::from_index(v as usize))
+                .unwrap_or(ch.input_select);
+            let ch_inputs: &[EffectInput] = match input_select {
+                InputSelect::Slot1 => &inputs[0..inputs.len().min(1)],
+                InputSelect::Slot2 => &inputs[inputs.len().min(1)..inputs.len().min(2)],
+                InputSelect::Both => inputs,
+            };
+            ch.render(ctx, ch_inputs, engine);
         }
 
         // 2. Composite channels onto the running accumulation (REQ-02.3).
