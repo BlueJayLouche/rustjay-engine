@@ -4,9 +4,13 @@
 //! to a third target via `BlendState::REPLACE`. The mixer ping-pongs two
 //! accumulation textures because a shader cannot sample its own render target.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::num::NonZeroU64;
+
 use crate::blend::BlendMode;
+use crate::preset::MAX_CHANNELS;
 use rustjay_core::Vertex;
-use wgpu::util::DeviceExt;
 
 /// GPU uniform for one composite invocation. 32 bytes; mirrors `CompositeParams`
 /// in `composite.wgsl`.
@@ -21,10 +25,26 @@ struct CompositeParams {
 }
 
 /// Shader-based compositor supporting every [`BlendMode`] via a uniform index.
+///
+/// **Allocation model (T19 / REQ-11.1):** the pipeline owns a single
+/// dynamic-offset uniform buffer (one [`CompositeParams`] slot per channel) and a
+/// bind-group cache keyed by `(slot, dest_is_acc_a)`. In steady state
+/// [`blend`](Self::blend) allocates nothing — it writes the slot's params with
+/// `queue.write_buffer` (no GPU alloc) and reuses the cached bind group. The
+/// cache is invalidated wholesale when the caller's `generation` changes (resize
+/// or channel add/remove), so stale texture views are never sampled.
 pub struct CompositePipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Dynamic-offset uniform buffer: `MAX_CHANNELS` slots of `slot_stride` bytes.
+    uniform_buffer: wgpu::Buffer,
+    /// Per-slot stride, aligned to `min_uniform_buffer_offset_alignment`.
+    slot_stride: u32,
+    /// Bind groups keyed by `(slot, dest_is_acc_a)`; valid for `cache_generation`.
+    cache: RefCell<HashMap<(usize, bool), wgpu::BindGroup>>,
+    /// The generation the cached bind groups were built for.
+    cache_generation: Cell<u64>,
 }
 
 impl CompositePipeline {
@@ -70,8 +90,10 @@ impl CompositePipeline {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(
+                            std::mem::size_of::<CompositeParams>() as u64,
+                        ),
                     },
                     count: None,
                 },
@@ -116,7 +138,27 @@ impl CompositePipeline {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout, sampler }
+        // Dynamic-offset uniform buffer: one slot per channel, each aligned to
+        // the device's minimum offset alignment (REQ-11.1).
+        let align = device.limits().min_uniform_buffer_offset_alignment;
+        let slot_size = std::mem::size_of::<CompositeParams>() as u32;
+        let slot_stride = slot_size.div_ceil(align) * align;
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mixer Composite Params (dynamic)"),
+            size: (slot_stride as u64) * (MAX_CHANNELS as u64),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+            uniform_buffer,
+            slot_stride,
+            cache: RefCell::new(HashMap::new()),
+            cache_generation: Cell::new(u64::MAX),
+        }
     }
 
     /// Blend `source` over `dest`, writing the result into `out`.
@@ -124,15 +166,24 @@ impl CompositePipeline {
     /// `out` must be a different texture than `dest` (and than `source`). The
     /// mixer alternates two accumulation textures so this holds.
     ///
-    /// TODO(B3/T19): this creates a uniform buffer + bind group per call. That
-    /// is correct (per-channel params can't alias a shared buffer within one
-    /// submission) but allocates per frame. Replace with a generation-keyed
-    /// pool / dynamic-offset uniform buffer during the performance pass.
+    /// `slot` is the channel index (0..[`MAX_CHANNELS`]); it selects this
+    /// channel's uniform slot *and* keys the bind-group cache together with
+    /// `dest_is_a` (whether `dest` is the `acc_a` accumulation texture). The
+    /// caller passes a `generation` that bumps whenever any input texture is
+    /// reallocated (resize) or the channel set changes; on a new generation the
+    /// whole cache is dropped so no stale view is ever sampled (REQ-11.1).
+    ///
+    /// Steady-state cost: one `queue.write_buffer` (no GPU allocation) plus a
+    /// cached bind-group lookup. Nothing is allocated per frame (REQ-11.2).
     #[allow(clippy::too_many_arguments)]
     pub fn blend(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        generation: u64,
+        slot: usize,
+        dest_is_a: bool,
         source: &wgpu::TextureView,
         dest: &wgpu::TextureView,
         out: &wgpu::TextureView,
@@ -140,6 +191,18 @@ impl CompositePipeline {
         blend_mode: BlendMode,
         vertex_buffer: &wgpu::Buffer,
     ) {
+        debug_assert!(slot < MAX_CHANNELS, "composite slot {slot} exceeds MAX_CHANNELS");
+
+        // Drop cached bind groups built for a previous generation (resize /
+        // channel add-remove changed the texture views they reference).
+        if self.cache_generation.get() != generation {
+            self.cache.borrow_mut().clear();
+            self.cache_generation.set(generation);
+        }
+
+        // Write this channel's params into its dynamic-offset slot. write_buffer
+        // does not allocate GPU memory after the buffer's initial sizing.
+        let offset = (slot as u64) * (self.slot_stride as u64);
         let params = CompositeParams {
             opacity,
             blend_mode: blend_mode.to_index(),
@@ -147,22 +210,33 @@ impl CompositePipeline {
             uv_offset: [0.0, 0.0],
             _pad: [0.0, 0.0],
         };
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mixer Composite Params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        queue.write_buffer(&self.uniform_buffer, offset, bytemuck::bytes_of(&params));
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Mixer Composite Bind Group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dest) },
-                wgpu::BindGroupEntry { binding: 3, resource: uniform.as_entire_binding() },
-            ],
-        });
+        // The bind group depends only on (source, dest) views, which are stable
+        // for a fixed (slot, dest_is_a) within one generation — so cache it.
+        let key = (slot, dest_is_a);
+        if !self.cache.borrow().contains_key(&key) {
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Mixer Composite Bind Group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dest) },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.uniform_buffer,
+                            offset: 0,
+                            size: NonZeroU64::new(std::mem::size_of::<CompositeParams>() as u64),
+                        }),
+                    },
+                ],
+            });
+            self.cache.borrow_mut().insert(key, bind_group);
+        }
+        let cache = self.cache.borrow();
+        let bind_group = cache.get(&key).expect("bind group just inserted");
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Mixer Composite Pass"),
@@ -182,7 +256,7 @@ impl CompositePipeline {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[offset as u32]);
         pass.draw(0..6, 0..1);
     }
 }

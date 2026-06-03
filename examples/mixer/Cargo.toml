@@ -1,0 +1,23 @@
+[package]
+name = "mixer"
+version = "0.1.0"
+edition = "2021"
+description = "2-channel mixer example demonstrating rustjay-mixer"
+
+[dependencies]
+rustjay-engine = { workspace = true, features = ["mixer"] }
+rustjay-mixer  = { workspace = true }
+rustjay-render = { workspace = true }
+rustjay-core   = { workspace = true }
+wgpu           = { workspace = true }
+bytemuck       = { workspace = true }
+anyhow         = { workspace = true }
+serde          = { workspace = true }
+log            = { workspace = true }
+env_logger     = "0.11"
+imgui          = { workspace = true }
+
+[features]
+default = ["ndi", "webcam"]
+ndi     = ["rustjay-engine/ndi"]
+webcam  = ["rustjay-engine/webcam"]

@@ -7,6 +7,7 @@ members = [
     "crates/rustjay-presets",
     "crates/rustjay-gui",
     "crates/rustjay-render",
+    "crates/rustjay-mixer",
     "crates/rustjay-engine",
     "crates/rustjay-sync",
     "examples/template",
@@ -17,6 +18,7 @@ members = [
     "examples/webapp",
     "examples/isf-example",
     "examples/delta-egui",
+    "examples/mixer",
 ]
 resolver = "2"
 
@@ -80,11 +82,12 @@ rustjay-control = { path = "crates/rustjay-control", version = "0.1.0" }
 rustjay-presets = { path = "crates/rustjay-presets", version = "0.1.0" }
 rustjay-gui     = { path = "crates/rustjay-gui",     version = "0.1.0" }
 rustjay-render  = { path = "crates/rustjay-render",  version = "0.1.0" }
+rustjay-mixer   = { path = "crates/rustjay-mixer",   version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-features = false }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
-syphon-core     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
-syphon-metal    = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
-syphon-wgpu     = { git = "https://github.com/BlueJayLouche/syphon-rs", branch = "main" }
+syphon-core     = "0.1.1"
+syphon-metal    = "0.1.1"
+syphon-wgpu     = "0.1.1"
 
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }

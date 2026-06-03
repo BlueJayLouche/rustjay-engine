@@ -7,22 +7,31 @@
 //! `EffectInstance`, so it composes, nests, previews, and projects like any
 //! single effect.
 //!
-//! **Status: T04–T07b implemented.** Channel rendering, effect chains, dynamic
-//! channel management, and `EffectInstance` / `EffectPlugin` wrappers are wired.
-//! Crossfader transitions (T09+), parameter aggregation (T08), GUI (T14+), and
-//! persistence (T18) land in later tasks.
+//! **Status: B3 complete (T01–T19).** Channel rendering, effect chains, dynamic
+//! channel management, `EffectInstance` / `EffectPlugin` wrappers, parameter
+//! aggregation, modulatable crossfader, transition state machines (auto,
+//! beat-sync, sequencer), preset save/load ([`preset`]), and the performance
+//! pass (dynamic-offset uniforms + generation-keyed composite bind-group cache)
+//! are wired. The GUI lives in `examples/mixer`. T13 (UUID-modulation) stays
+//! blocked on Phase B2; GPU flamegraph verification of T19 is a hardware
+//! follow-up.
 
 #![warn(missing_docs)]
 
 mod blend;
 mod blit;
 mod composite;
-
+pub mod crossfade;
 pub mod plugin;
+pub mod preset;
+pub mod sequencer;
 
 pub use blend::BlendMode;
 pub use blit::BlitPipeline;
 pub use composite::CompositePipeline;
+pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
+pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
+pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
 use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
 use rustjay_core::params::{ParameterDescriptor, ParamCategory};
@@ -174,6 +183,12 @@ pub struct Mixer {
     pub crossfader: f32,
     /// Master effect chain applied after compositing (REQ-06).
     pub master: Vec<Box<dyn EffectInstance>>,
+    /// Active auto-crossfade state machine (REQ-04.1).
+    pub auto: Option<AutoCrossfade>,
+    /// Active beat-synced crossfade (REQ-04.3).
+    pub beat_sync: Option<BeatSyncCrossfade>,
+    /// Transition sequencer (REQ-05).
+    pub sequencer: SequencerState,
 
     // GPU resources — allocated lazily, reallocated only on resize or channel-count change.
     composite: Option<CompositePipeline>,
@@ -182,6 +197,11 @@ pub struct Mixer {
     acc_b: Option<Texture>,
     master_ping: Option<Texture>,
     size: [u32; 2],
+    /// Bumped whenever GPU textures are reallocated (resize) or the channel set
+    /// changes. Drives the composite pipeline's bind-group cache invalidation
+    /// (REQ-11.1) — a cached bind group keyed by `(slot, dest)` is only valid
+    /// within one generation.
+    generation: u64,
 }
 
 impl Mixer {
@@ -194,12 +214,16 @@ impl Mixer {
             channels: Vec::new(),
             crossfader: 0.5,
             master: Vec::new(),
+            auto: None,
+            beat_sync: None,
+            sequencer: SequencerState::new(),
             composite: None,
             blit: None,
             acc_a: None,
             acc_b: None,
             master_ping: None,
             size: [0, 0],
+            generation: 0,
         }
     }
 
@@ -213,6 +237,9 @@ impl Mixer {
         self.channels.push(channel);
         // The new channel's textures are allocated lazily at the top of the next
         // `render_to` call (via `ensure_resources`), once the render size is known.
+        // Bump generation: channel-index → texture mapping changed, so the
+        // composite bind-group cache (keyed by slot) must be rebuilt.
+        self.generation = self.generation.wrapping_add(1);
         Ok(self.channels.len() - 1)
     }
 
@@ -226,6 +253,8 @@ impl Mixer {
         if index >= self.channels.len() {
             return Err("channel index out of bounds");
         }
+        // Removing shifts channel indices, invalidating slot-keyed bind groups.
+        self.generation = self.generation.wrapping_add(1);
         Ok(self.channels.remove(index))
     }
 
@@ -254,10 +283,64 @@ impl Mixer {
             self.acc_b = Some(Texture::create_render_target(device, size[0], size[1], "mixer acc_b"));
             self.master_ping = Some(Texture::create_render_target(device, size[0], size[1], "master ping"));
             self.size = size;
+            self.generation = self.generation.wrapping_add(1);
         }
         for ch in &mut self.channels {
             ch.ensure_size(device, size);
         }
+    }
+
+    /// Tick active transitions (auto, beat-sync, sequencer) and return the
+    /// crossfader value they produce, if any.
+    ///
+    /// This should be called once per frame before reading the crossfader for
+    /// compositing.  Engine param modulation takes precedence when no transition
+    /// is active.
+    pub fn tick_transitions(&mut self, dt: f32, bpm: Option<f32>, beat_phase: f32) -> Option<f32> {
+        // Sequencer has highest priority.
+        if self.sequencer.playing {
+            if let Some(v) = self.sequencer.tick(self.crossfader, dt, bpm) {
+                self.crossfader = v.clamp(0.0, 1.0);
+                // Stop any conflicting one-shot transitions.
+                self.auto = None;
+                self.beat_sync = None;
+                return Some(self.crossfader);
+            }
+            return None;
+        }
+
+        // Beat-sync crossfade.
+        if let Some(ref mut bs) = self.beat_sync {
+            match bs.tick(self.crossfader, dt, bpm, beat_phase) {
+                Some(v) => {
+                    self.crossfader = v.clamp(0.0, 1.0);
+                    return Some(self.crossfader);
+                }
+                None if bs.is_done() => {
+                    self.crossfader = bs.target;
+                    self.beat_sync = None;
+                    return Some(self.crossfader);
+                }
+                None => return None,
+            }
+        }
+
+        // Plain auto crossfade.
+        if let Some(ref mut auto) = self.auto {
+            match auto.tick(dt) {
+                Some(v) => {
+                    self.crossfader = v.clamp(0.0, 1.0);
+                    return Some(self.crossfader);
+                }
+                None => {
+                    self.crossfader = auto.target().clamp(0.0, 1.0);
+                    self.auto = None;
+                    return Some(self.crossfader);
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -332,6 +415,14 @@ impl EffectInstance for Mixer {
         out
     }
 
+    /// # Single-render-path invariant (REQ-11.4)
+    ///
+    /// Every channel/master/chain effect is an `EffectInstance` driven **only**
+    /// through `render_to` here — never the `PluginRenderer::render` wrapper path.
+    /// This preserves each `EffectNode`'s generation-keyed bind-group cache (see
+    /// the B0.2 invariant note): alternating the two render paths on one renderer
+    /// would thrash its cache. The mixer's own composite cache relies on the same
+    /// discipline — see [`CompositePipeline`] and [`Mixer::generation`].
     fn render_to(
         &mut self,
         ctx: &mut RenderCtx<'_>,
@@ -340,6 +431,12 @@ impl EffectInstance for Mixer {
         engine: &EngineState,
     ) {
         self.ensure_resources(ctx.device, target.size);
+
+        // Tick transitions (auto, beat-sync, sequencer) before reading params.
+        let dt = engine.performance.frame_time_ms / 1000.0;
+        let bpm = engine.effective_bpm();
+        let beat_phase = engine.effective_beat_phase();
+        self.tick_transitions(dt, Some(bpm).filter(|&b| b > 0.0), beat_phase);
 
         // Read mixer-level params from the engine (modulated values).
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
@@ -404,10 +501,15 @@ impl EffectInstance for Mixer {
                 Some(w) if std::ptr::eq(w as *const _, acc_a as *const _) => (acc_a, acc_b),
                 _ => (acc_b, acc_a),
             };
+            let dest_is_a = std::ptr::eq(read_acc as *const _, acc_a as *const _);
 
             composite.blend(
                 ctx.device,
+                ctx.queue,
                 ctx.encoder,
+                self.generation,
+                i,
+                dest_is_a,
                 &src.view,
                 &read_acc.view,
                 &write_acc.view,

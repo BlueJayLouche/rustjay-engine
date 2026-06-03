@@ -7,6 +7,8 @@
 
 /// Screen blit pipeline.
 pub mod blit;
+/// `EffectInstance` adapter (`EffectNode`) wrapping an `EffectPlugin`.
+pub mod instance;
 /// Plugin-aware renderer.
 pub mod plugin_renderer;
 /// Main wgpu renderer.
@@ -14,6 +16,8 @@ pub mod renderer;
 /// Texture utilities.
 pub mod texture;
 
+/// Re-export of the `EffectInstance` adapter wrapping any `EffectPlugin`.
+pub use instance::EffectNode;
 /// Re-export of the main wgpu rendering engine.
 pub use renderer::WgpuEngine;
 /// Re-export of the generic texture type.
