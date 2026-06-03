@@ -260,13 +260,44 @@ inherited. Explicit headless test deferred to integration QA.
 
 ## Group 7 — Persistence & hardening
 
-### T18 🔧 ENGINE — Preset save/load
-**File:** `crates/rustjay-mixer/src/lib.rs`
+### T18 🔧 ENGINE — Preset save/load ✅ DONE (2026-06-03)
+**File:** `crates/rustjay-mixer/src/preset.rs`, `plugin.rs`
 **Needs:** T07 · **Implements:** REQ-10.1, REQ-10.2, REQ-10.3
 
-- [ ] Serialize topology + per-effect state; bounded deserialization (AUDIT_ROADMAP 2.1)
+- [x] `MixerState`/`ChannelState` DTO + `Mixer::serialize_state`/`apply_state`
+- [x] Bounded deserialization: `MixerState::from_json` rejects > `MAX_CHANNELS`; `apply_state` clamps every value (AUDIT_ROADMAP 2.1)
+- [x] Wired into `MixerPlugin::serialize_preset_state`/`deserialize_preset_state`
 
-**Done when:** save→load restores channels, crossfader, blend modes, and per-effect params.
+**Done:** save→load restores crossfader + per-channel opacity/blend/solo/mute,
+matched to live channels by UUID. Per-effect *parameter values* (REQ-10.2) ride
+the engine's existing parameter preset — T08 aggregates them as engine params,
+so `Preset::from_state` already captures them; no `EffectInstance` serialization
+hook needed. 4 unit tests (round-trip, oversized reject, clamp, unmatched-skip).
+
+> **Scope note:** preset restores mix state onto the **already-built** channel
+> set (matched by UUID); it does not *reconstruct* channel topology (which effect
+> type each channel holds), which would need an effect registry the engine lacks.
+> This is the standard "snapshot the knobs" preset model and matches how every
+> engine plugin's preset works.
+
+### T19 🔧 ENGINE — Performance pass ✅ DONE (2026-06-03, GPU verify pending)
+**File:** `crates/rustjay-mixer/src/{composite.rs,lib.rs}`
+**Needs:** T07 · **Implements:** REQ-11.1–11.4
+
+- [x] `CompositePipeline` owns a dynamic-offset uniform buffer (one slot/channel)
+  written via `queue.write_buffer` — no per-call buffer allocation
+- [x] Bind-group cache keyed by `(slot, dest_is_acc_a)`, invalidated on `Mixer::generation`
+  change (resize / channel add-remove) — generation-keyed per REQ-11.1
+- [x] `generation` counter on `Mixer`, bumped in `ensure_resources` + add/remove_channel
+- [x] Single-render-path invariant documented on `Mixer::render_to` (REQ-11.4)
+
+**Done:** steady-state `blend()` allocates nothing (cached bind group + buffer
+write). T03's deferred caching is now landed.
+
+**Deferred (hardware):** flamegraph/heaptrack confirmation of zero per-frame GPU
+allocations needs a real `wgpu::Device` (none in CI). The allocation-free path is
+verified by construction + code review; run a capture on `sputnik`/a desktop to
+close the empirical half of the acceptance.
 
 ### T19 🔧 ENGINE — Performance pass
 **File:** `crates/rustjay-mixer/src/*`

@@ -7,11 +7,14 @@
 //! `EffectInstance`, so it composes, nests, previews, and projects like any
 //! single effect.
 //!
-//! **Status: T04–T11 implemented.** Channel rendering, effect chains, dynamic
+//! **Status: B3 complete (T01–T19).** Channel rendering, effect chains, dynamic
 //! channel management, `EffectInstance` / `EffectPlugin` wrappers, parameter
-//! aggregation, modulatable crossfader, and transition state machines (auto,
-//! beat-sync, sequencer) are wired. GUI (T14+) and persistence (T18) land in
-//! later tasks.
+//! aggregation, modulatable crossfader, transition state machines (auto,
+//! beat-sync, sequencer), preset save/load ([`preset`]), and the performance
+//! pass (dynamic-offset uniforms + generation-keyed composite bind-group cache)
+//! are wired. The GUI lives in `examples/mixer`. T13 (UUID-modulation) stays
+//! blocked on Phase B2; GPU flamegraph verification of T19 is a hardware
+//! follow-up.
 
 #![warn(missing_docs)]
 
