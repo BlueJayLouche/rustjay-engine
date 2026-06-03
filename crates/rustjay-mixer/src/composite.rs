@@ -28,11 +28,12 @@ struct CompositeParams {
 ///
 /// **Allocation model (T19 / REQ-11.1):** the pipeline owns a single
 /// dynamic-offset uniform buffer (one [`CompositeParams`] slot per channel) and a
-/// bind-group cache keyed by `(slot, dest_is_acc_a)`. In steady state
-/// [`blend`](Self::blend) allocates nothing — it writes the slot's params with
-/// `queue.write_buffer` (no GPU alloc) and reuses the cached bind group. The
-/// cache is invalidated wholesale when the caller's `generation` changes (resize
-/// or channel add/remove), so stale texture views are never sampled.
+/// bind-group cache keyed by `(slot, dest_is_acc_a)`. [`blend`](Self::blend)
+/// itself allocates no GPU memory in steady state — it writes the slot's params
+/// with `queue.write_buffer` (no GPU alloc) and reuses the cached bind group.
+/// (The enclosing `Mixer::render_to` still allocates small per-frame `Vec`s;
+/// see PERF-4.) The cache is invalidated wholesale when the caller's `generation`
+/// changes (resize or channel add/remove), so stale texture views are never sampled.
 pub struct CompositePipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,

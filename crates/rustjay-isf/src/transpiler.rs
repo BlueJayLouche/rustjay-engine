@@ -117,7 +117,7 @@ fn generate_preamble(_isf: &Isf, uniform_index: &UniformIndex, has_image_input: 
     }
     // Pad to reach the built-in block (must be 4-float aligned)
     let scalar_count = uniform_index.len();
-    let pad_needed = if scalar_count % 4 != 0 { 4 - (scalar_count % 4) } else { 0 };
+    let pad_needed = if !scalar_count.is_multiple_of(4) { 4 - (scalar_count % 4) } else { 0 };
     for i in 0..pad_needed {
         out.push_str(&format!("    _pad{}: f32,\n", i));
     }
@@ -280,7 +280,7 @@ fn preprocess_glsl(
     let mut compound_sorted: Vec<&isf::Input> = isf.inputs.iter()
         .filter(|i| matches!(i.ty, InputType::Point2d(_) | InputType::Color(_)))
         .collect();
-    compound_sorted.sort_by(|a, b| b.name.len().cmp(&a.name.len()));
+    compound_sorted.sort_by_key(|a| std::cmp::Reverse(a.name.len()));
     for input in &compound_sorted {
         let safe = sanitize_ident(&input.name);
         let replacement = match &input.ty {
@@ -320,7 +320,7 @@ fn preprocess_glsl(
     let mut sorted_uniforms: Vec<&(String, usize)> = uniform_index.iter()
         .filter(|(name, _)| !compound_component_names.contains(name))
         .collect();
-    sorted_uniforms.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    sorted_uniforms.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     for (name, _idx) in &sorted_uniforms {
         let safe = sanitize_ident(name);
         let replacement = if bool_inputs.contains(name.as_str()) {
@@ -1181,7 +1181,7 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                 }
                 // Must have `(` with no `=` before it — excludes global variable declarations
                 // like `float nQuick = clamp(...)` which are not function declarations.
-                trimmed.find('(').map_or(false, |p| !trimmed[..p].contains('='))
+                trimmed.find('(').is_some_and(|p| !trimmed[..p].contains('='))
             });
 
             if is_func_decl {
@@ -1383,8 +1383,8 @@ fn replace_img_macros(src: &str) -> String {
     // IMG_PIXEL(name, pixelCoord) → textureLoad(t_input, vec2<i32>(pixelCoord), 0)
     let src = replace_img_pixel(&src);
     // IMG_SIZE(name) → render size as vec2 (best approximation for single-image shaders)
-    let src = replace_img_size(&src);
-    src
+    
+    replace_img_size(&src)
 }
 
 fn replace_img_size(src: &str) -> String {
@@ -1634,7 +1634,7 @@ fn convert_types_and_syntax(src: &str) -> String {
     // GLSL derivative functions
     s = s.replace("dFdx(", "dpdx(");
     s = s.replace("dFdy(", "dpdy(");
-    s = s.replace("fwidth(", "fwidth("); // same name
+    // fwidth is the same name in WGSL — no replacement needed.
 
     // If the GLSL defines a user function named `texture`, rename it before the ISF
     // texture-call conversion so that the user's function doesn't get clobbered.
@@ -1666,7 +1666,7 @@ fn convert_stpq_swizzles(src: &str) -> String {
             let mut k = j;
             while k < bytes.len() && "stpq".contains(bytes[k] as char) { k += 1; }
             let swizzle_len = k - j;
-            if swizzle_len >= 2 && swizzle_len <= 4 {
+            if (2..=4).contains(&swizzle_len) {
                 // Ensure what follows is not a word char (e.g. `.step` should not match `.st`)
                 let after_ok = k >= bytes.len() || !is_word_char(bytes[k] as char);
                 if after_ok {
@@ -2354,7 +2354,7 @@ fn convert_var_declarations(src: &str) -> String {
             if struct_brace_depth <= 0 {
                 in_struct = false;
                 // Keep the closing `}` or `};` — strip trailing `;` for WGSL
-                let clean = line.trim_end_matches(';').trim_end_matches(|c: char| c == ';');
+                let clean = line.trim_end_matches(';').trim_end_matches(';');
                 out.push_str(clean);
                 out.push('\n');
                 continue;
@@ -2479,8 +2479,7 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
         // Handle ISF-input name conflict: `float isf_u.strength = ...`
         // The identifier is `isf_u` and `after` starts with `.NAME = ...`.
         // Rename the local to `_NAME_local` to avoid the compound identifier.
-        if after.starts_with('.') {
-            let dot_rest = &after[1..];
+        if let Some(dot_rest) = after.strip_prefix('.') {
             let field_end = dot_rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(dot_rest.len());
             let field_name = &dot_rest[..field_end];
             let after2 = dot_rest[field_end..].trim_start();
@@ -2649,8 +2648,8 @@ fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: 
     // (contains only `mainImage(gl_FragColor, gl_FragCoord.xy);`)
     // We'll skip it and emit fs_main wrapping mainImage body instead.
 
-    let mut lines = src.lines().peekable();
-    while let Some(line) = lines.next() {
+    let lines = src.lines().peekable();
+    for line in lines {
         let trimmed = line.trim();
 
         // Skip `void main()` bridge (various forms: void main(), void main(void), etc.)
@@ -2854,7 +2853,7 @@ fn resolve_function_overloads(src: &str) -> String {
             let mut earliest: Option<(usize, &str)> = None;
             for name in &overloaded_vec {
                 if let Some(pos) = find_fn_name_call_or_def(rest_line, name) {
-                    if earliest.map_or(true, |(ep, _)| pos < ep) {
+                    if earliest.is_none_or(|(ep, _)| pos < ep) {
                         earliest = Some((pos, name.as_str()));
                     }
                 }
@@ -2917,7 +2916,7 @@ fn resolve_function_overloads(src: &str) -> String {
                         let first_ty = inferred_tys.first().and_then(|t| t.clone()).unwrap_or_default();
                         // Find a def whose first param type matches
                         fn_defs.iter()
-                            .find(|d| &d.name == found_name
+                            .find(|d| d.name == found_name
                                 && overloaded_names.contains(&d.name)
                                 && d.all_param_tys.first().map(|t| t.as_str()) == Some(first_ty.as_str()))
                             .map(|d| format!("{}{}", d.name, d.suffix))
@@ -2925,7 +2924,7 @@ fn resolve_function_overloads(src: &str) -> String {
                     let new_name = new_name.unwrap_or_else(|| {
                         // Fall back to first defined overload
                         fn_defs.iter()
-                            .find(|d| &d.name == found_name && overloaded_names.contains(&d.name))
+                            .find(|d| d.name == found_name && overloaded_names.contains(&d.name))
                             .map(|d| format!("{}{}", d.name, d.suffix))
                             .unwrap_or_else(|| found_name.to_owned())
                     });
@@ -3046,8 +3045,7 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
         "dpdx(", "dpdy(", "fwidth(",
     ];
     for &prefix in PASSTHROUGH_FUNS {
-        if arg.starts_with(prefix) {
-            let rest = &arg[prefix.len()..];
+        if let Some(rest) = arg.strip_prefix(prefix) {
             let (args_str, _) = extract_balanced(rest, ')');
             let parts = split_top_level_commas(args_str);
             if !parts.is_empty() {
@@ -3266,7 +3264,7 @@ fn is_scalar_expr_with_types(s: &str, var_types: &std::collections::HashMap<Stri
         {
             let after_paren = &s_trimmed[paren_pos + 1..];
             let (args_inner, _) = extract_balanced(after_paren, ')');
-            let args = split_top_level_commas(&args_inner);
+            let args = split_top_level_commas(args_inner);
             // If the first argument is a vector, assume the call returns a vector.
             if let Some(first_arg) = args.first() {
                 if !is_scalar_expr_with_types(first_arg.trim(), var_types) {
@@ -3425,7 +3423,7 @@ fn fix_builtin_call(
         let new_args: Vec<String> = args.iter().map(|arg| {
             let a = arg.trim();
             let already_vec = infer_call_arg_type(a, var_types)
-                .map_or(false, |ty| ty.starts_with("vec"));
+                .is_some_and(|ty| ty.starts_with("vec"));
             if !already_vec && (is_scalar_literal(a) || a.starts_with("isf_u.")) {
                 format!("{}({})", vty, a)
             } else {
@@ -3857,7 +3855,7 @@ fn infer_component_count(expr: &str, var_types: &std::collections::HashMap<Strin
     if let Some(dot_pos) = expr.rfind('.') {
         let swizzle = &expr[dot_pos + 1..];
         if !swizzle.is_empty() && swizzle.chars().all(|c| "xyzwrgba".contains(c)) {
-            return swizzle.len().min(4).max(1);
+            return swizzle.len().clamp(1, 4);
         }
     }
     if let Some(ty) = infer_call_arg_type(expr, var_types) {
@@ -4326,7 +4324,7 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
             '(' | '[' => depth += 1,
             ')' | ']' => depth -= 1,
             '<' => angle += 1,
-            '>' => { if angle > 0 { angle -= 1; } }
+            '>' if angle > 0 => { angle -= 1; }
             ',' if depth == 0 && angle == 0 => {
                 parts.push(&s[start..i]);
                 start = i + 1;
@@ -4389,7 +4387,7 @@ fn find_top_level_assign(s: &str) -> Option<usize> {
     for i in 0..bytes.len() {
         match bytes[i] as char {
             '(' | '[' | '<' => depth += 1,
-            ')' | ']' | '>' => { if depth > 0 { depth -= 1; } }
+            ')' | ']' | '>' if depth > 0 => { depth -= 1; }
             '=' if depth == 0 => {
                 // Not `==`
                 let next = if i + 1 < bytes.len() { bytes[i + 1] as char } else { ' ' };
