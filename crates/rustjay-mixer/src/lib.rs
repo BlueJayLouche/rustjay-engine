@@ -25,6 +25,7 @@ pub use blit::BlitPipeline;
 pub use composite::CompositePipeline;
 
 use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
+use rustjay_core::params::{ParameterDescriptor, ParamCategory};
 use rustjay_render::Texture;
 
 /// Tracks which of a channel's two textures holds the most recent render result.
@@ -271,6 +272,66 @@ impl EffectInstance for Mixer {
         "mixer"
     }
 
+    fn parameters(&self) -> Vec<ParameterDescriptor> {
+        let mut out = Vec::new();
+
+        // Mixer-level params
+        out.push(ParameterDescriptor::float(
+            "crossfader",
+            "Crossfader",
+            ParamCategory::Custom("Mixer".to_string()),
+            0.0,
+            1.0,
+            self.crossfader,
+            0.01,
+        ));
+
+        for ch in &self.channels {
+            let prefix = format!("ch_{}_", ch.uuid);
+
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}opacity"),
+                format!("{} Opacity", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0,
+                1.0,
+                ch.opacity,
+                0.01,
+            ));
+
+            out.push(ParameterDescriptor::enum_param(
+                format!("{prefix}blend"),
+                format!("{} Blend", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                BlendMode::all().iter().map(|m| m.short_name().to_string()).collect(),
+                ch.blend_mode.to_index() as usize,
+            ));
+
+            // Channel effect params
+            for p in ch.effect.parameters() {
+                out.push(prefix_descriptor(&prefix, &p));
+            }
+
+            // Channel chain effect params
+            for (k, fx) in ch.chain.iter().enumerate() {
+                let chain_prefix = format!("{prefix}fx{k}_");
+                for p in fx.parameters() {
+                    out.push(prefix_descriptor(&chain_prefix, &p));
+                }
+            }
+        }
+
+        // Master chain params
+        for (k, fx) in self.master.iter().enumerate() {
+            let prefix = format!("master_fx{k}_");
+            for p in fx.parameters() {
+                out.push(prefix_descriptor(&prefix, &p));
+            }
+        }
+
+        out
+    }
+
     fn render_to(
         &mut self,
         ctx: &mut RenderCtx<'_>,
@@ -280,7 +341,29 @@ impl EffectInstance for Mixer {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
-        let eff = self.effective_opacities();
+        // Read mixer-level params from the engine (modulated values).
+        let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
+        let eff: Vec<f32> = if self.channels.len() == 2 {
+            let ch0_opacity = engine
+                .get_param(&format!("ch_{}_opacity", self.channels[0].uuid))
+                .unwrap_or(self.channels[0].opacity);
+            let ch1_opacity = engine
+                .get_param(&format!("ch_{}_opacity", self.channels[1].uuid))
+                .unwrap_or(self.channels[1].opacity);
+            vec![
+                (1.0 - crossfader) * ch0_opacity,
+                crossfader * ch1_opacity,
+            ]
+        } else {
+            self.channels
+                .iter()
+                .map(|ch| {
+                    engine
+                        .get_param(&format!("ch_{}_opacity", ch.uuid))
+                        .unwrap_or(ch.opacity)
+                })
+                .collect()
+        };
 
         // 1. Render each active channel into its own texture (REQ-01.4, REQ-11.3).
         for (i, ch) in self.channels.iter_mut().enumerate() {
@@ -311,6 +394,11 @@ impl EffectInstance for Mixer {
             let ch = &self.channels[i];
             let Some(src) = ch.output_texture() else { continue };
 
+            let blend_mode = engine
+                .get_param(&format!("ch_{}_blend", ch.uuid))
+                .and_then(|v| BlendMode::from_index(v as u32))
+                .unwrap_or(ch.blend_mode);
+
             let (read_acc, write_acc) = match written_acc {
                 None => (acc_a, acc_b),
                 Some(w) if std::ptr::eq(w as *const _, acc_a as *const _) => (acc_a, acc_b),
@@ -324,7 +412,7 @@ impl EffectInstance for Mixer {
                 &read_acc.view,
                 &write_acc.view,
                 eff[i],
-                ch.blend_mode,
+                blend_mode,
                 ctx.vertex_buffer,
             );
             written_acc = Some(write_acc);
@@ -339,6 +427,21 @@ impl EffectInstance for Mixer {
         // 4. Blit the final result to the given target (REQ-08.2).
         let blit = self.blit.as_ref().unwrap();
         blit.blit(ctx.device, ctx.encoder, &final_tex.view, target.view, ctx.vertex_buffer);
+    }
+}
+
+/// Prefix every field of a `ParameterDescriptor` so nested effect params are
+/// namespaced by channel UUID / master chain position.
+fn prefix_descriptor(prefix: &str, desc: &ParameterDescriptor) -> ParameterDescriptor {
+    ParameterDescriptor {
+        id: format!("{prefix}{}", desc.id),
+        name: format!("{} [{}]", desc.name, prefix.trim_end_matches('_')),
+        category: desc.category.clone(),
+        param_type: desc.param_type.clone(),
+        min: desc.min,
+        max: desc.max,
+        default: desc.default,
+        step: desc.step,
     }
 }
 
