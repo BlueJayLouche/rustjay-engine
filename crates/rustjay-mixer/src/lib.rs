@@ -10,11 +10,11 @@
 //! **Status: B3 complete (T01–T19).** Channel rendering, effect chains, dynamic
 //! channel management, `EffectInstance` / `EffectPlugin` wrappers, parameter
 //! aggregation, modulatable crossfader, transition state machines (auto,
-//! beat-sync, sequencer), preset save/load ([`preset`]), and the performance
-//! pass (dynamic-offset uniforms + generation-keyed composite bind-group cache)
-//! are wired. The GUI lives in `examples/mixer`. T13 (UUID-modulation) stays
-//! blocked on Phase B2; GPU flamegraph verification of T19 is a hardware
-//! follow-up.
+//! beat-sync, sequencer), preset save/load ([`preset`]), UUID-stable
+//! modulation engine integration (T13), and the performance pass
+//! (dynamic-offset uniforms + generation-keyed composite bind-group cache)
+//! are wired. The GUI lives in `examples/mixer`. GPU flamegraph verification
+//! of T19 is a hardware follow-up.
 
 #![warn(missing_docs)]
 
@@ -34,6 +34,7 @@ pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
 pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
 use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
+use rustjay_core::modulation::{ModulationEngine, AudioValues, AudioSourceValues};
 use rustjay_core::params::{ParameterDescriptor, ParamCategory};
 use rustjay_render::Texture;
 
@@ -189,6 +190,10 @@ pub struct Mixer {
     pub beat_sync: Option<BeatSyncCrossfade>,
     /// Transition sequencer (REQ-05).
     pub sequencer: SequencerState,
+    /// UUID-stable modulation engine (T13 / B2).
+    pub modulation: ModulationEngine,
+    /// Monotonic elapsed time for modulation tick.
+    elapsed_time: f32,
 
     // GPU resources — allocated lazily, reallocated only on resize or channel-count change.
     composite: Option<CompositePipeline>,
@@ -217,6 +222,8 @@ impl Mixer {
             auto: None,
             beat_sync: None,
             sequencer: SequencerState::new(),
+            modulation: ModulationEngine::new(),
+            elapsed_time: 0.0,
             composite: None,
             blit: None,
             acc_a: None,
@@ -438,15 +445,29 @@ impl EffectInstance for Mixer {
         let beat_phase = engine.effective_beat_phase();
         self.tick_transitions(dt, Some(bpm).filter(|&b| b > 0.0), beat_phase);
 
-        // Read mixer-level params from the engine (modulated values).
-        let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
+        // Tick UUID-stable modulation engine (T13).
+        self.elapsed_time += dt;
+        let audio = build_audio_values(&engine.audio);
+        self.modulation.update(self.elapsed_time, &audio);
+
+        // Read mixer-level params from the engine, then apply mixer modulation.
+        let base_crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
+        let crossfader_mod = self.modulation.get_modulation("crossfader");
+        let crossfader = (base_crossfader + crossfader_mod).clamp(0.0, 1.0);
+
         let eff: Vec<f32> = if self.channels.len() == 2 {
-            let ch0_opacity = engine
+            let ch0_base = engine
                 .get_param(&format!("ch_{}_opacity", self.channels[0].uuid))
                 .unwrap_or(self.channels[0].opacity);
-            let ch1_opacity = engine
+            let ch0_mod = self.modulation.get_modulation(&format!("ch_{}_opacity", self.channels[0].uuid));
+            let ch0_opacity = (ch0_base + ch0_mod).clamp(0.0, 1.0);
+
+            let ch1_base = engine
                 .get_param(&format!("ch_{}_opacity", self.channels[1].uuid))
                 .unwrap_or(self.channels[1].opacity);
+            let ch1_mod = self.modulation.get_modulation(&format!("ch_{}_opacity", self.channels[1].uuid));
+            let ch1_opacity = (ch1_base + ch1_mod).clamp(0.0, 1.0);
+
             vec![
                 (1.0 - crossfader) * ch0_opacity,
                 crossfader * ch1_opacity,
@@ -455,9 +476,11 @@ impl EffectInstance for Mixer {
             self.channels
                 .iter()
                 .map(|ch| {
-                    engine
+                    let base = engine
                         .get_param(&format!("ch_{}_opacity", ch.uuid))
-                        .unwrap_or(ch.opacity)
+                        .unwrap_or(ch.opacity);
+                    let m = self.modulation.get_modulation(&format!("ch_{}_opacity", ch.uuid));
+                    (base + m).clamp(0.0, 1.0)
                 })
                 .collect()
         };
@@ -596,6 +619,29 @@ fn run_chain<'a>(
     }
 }
 
+/// Build [`AudioValues`] from the engine's 8-band FFT snapshot.
+///
+/// The engine provides coarse 8-band magnitudes; we expand them into a
+/// `Vec<f32>` so `AudioSourceValues::energy_in_range` can operate. This is an
+/// approximation — full-spectrum FFT would give finer-grained band energy.
+fn build_audio_values(audio: &rustjay_core::AudioState) -> AudioValues {
+    let mut values = AudioValues::default();
+    if audio.enabled {
+        // Treat the 8-band magnitudes as a minimal spectrum.
+        // sample_rate inferred from fft_size: 2048 → 48 kHz is typical.
+        let sample_rate = 48000.0;
+        values.sources.insert(
+            0,
+            AudioSourceValues {
+                fft: audio.fft.to_vec(),
+                level: audio.volume,
+                sample_rate,
+            },
+        );
+    }
+    values
+}
+
 /// Clear a texture to transparent black.
 fn clear_texture(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
     let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -667,5 +713,17 @@ mod tests {
         // run_chain with no effects should return the initial input texture reference.
         // We can't create a real Texture without a GPU device, so this test verifies
         // the logic path at the type level by checking the function signature compiles.
+    }
+
+    #[test]
+    fn mixer_owns_modulation_engine() {
+        let mut mixer = Mixer::new();
+        let lfo = mixer.modulation.add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
+        mixer.modulation.assign("crossfader", &lfo, 1.0, None);
+        mixer.modulation.assign("ch_a_opacity", &lfo, 0.5, None);
+
+        assert_eq!(mixer.modulation.source_count(), 1);
+        assert!(mixer.modulation.has_modulation("crossfader"));
+        assert!(mixer.modulation.has_modulation("ch_a_opacity"));
     }
 }
