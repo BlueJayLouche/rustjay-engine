@@ -36,6 +36,7 @@ use utoipa::OpenApi;
         crate::routes::system::midi_disconnect,
         crate::routes::system::midi_learn,
         crate::routes::system::midi_learn_cancel,
+        crate::routes::system::midi_unlearn,
         // OSC
         crate::routes::system::osc_start,
         crate::routes::system::osc_stop,
@@ -54,6 +55,12 @@ use utoipa::OpenApi;
         // Mixer
         crate::routes::system::mixer_crossfader,
         crate::routes::system::mixer_master_opacity,
+        // Modulation
+        crate::routes::system::modulation_lfo_set,
+        crate::routes::system::modulation_lfo_enable,
+        crate::routes::system::modulation_audio_route,
+        crate::routes::system::modulation_audio_unroute,
+        crate::routes::system::modulation_tap_tempo,
     ),
     tags(
         (name = "System", description = "Health, state, parameters"),
@@ -66,6 +73,7 @@ use utoipa::OpenApi;
         (name = "Link", description = "Ableton Link sync control"),
         (name = "ProDJ", description = "ProDJ Link sync control"),
         (name = "Mixer", description = "Mixer crossfader and opacity"),
+        (name = "Modulation", description = "LFO and audio-routing modulation control"),
     )
 )]
 /// OpenAPI documentation container.

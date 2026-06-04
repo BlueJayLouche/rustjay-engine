@@ -625,6 +625,35 @@ pub async fn midi_learn_cancel(State(state): State<SharedState>) -> impl IntoRes
     }
 }
 
+/// Remove a learned MIDI mapping by CC and channel.
+#[derive(Deserialize, ToSchema)]
+pub struct MidiUnlearnBody {
+    /// MIDI continuous-controller number.
+    pub cc: u8,
+    /// MIDI channel (0–15).
+    pub channel: u8,
+}
+
+/// `POST /api/midi/unlearn`
+#[utoipa::path(
+    post,
+    path = "/api/midi/unlearn",
+    request_body = MidiUnlearnBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "MIDI"
+)]
+pub async fn midi_unlearn(
+    State(state): State<SharedState>,
+    Json(body): Json<MidiUnlearnBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Control(
+        rustjay_control::ControlWebCommand::MidiUnlearn { cc: body.cc, channel: body.channel },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
 // ── OSC ────────────────────────────────────────────────────────────
 
 /// `POST /api/osc/start`
@@ -917,6 +946,146 @@ pub async fn mixer_master_opacity(
         id: "mixer/master_opacity".to_string(),
         value: body.opacity.clamp(0.0, 1.0),
     }) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+// ── Modulation (writes) ────────────────────────────────────────────
+
+/// Configure an LFO slot.
+#[derive(Deserialize, ToSchema)]
+pub struct LfoSetBody {
+    /// LFO slot index.
+    pub slot: usize,
+    /// Full LFO configuration (waveform, rate, depth, target, etc.).
+    #[schema(value_type = Object)]
+    pub config: rustjay_core::lfo::Lfo,
+}
+
+/// `POST /api/modulation/lfo`
+#[utoipa::path(
+    post,
+    path = "/api/modulation/lfo",
+    request_body = LfoSetBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "Modulation"
+)]
+pub async fn modulation_lfo_set(
+    State(state): State<SharedState>,
+    Json(body): Json<LfoSetBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Modulation(
+        rustjay_control::ModulationWebCommand::LfoSet { slot: body.slot, config: body.config },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// Enable or disable an LFO slot.
+#[derive(Deserialize, ToSchema)]
+pub struct LfoEnableBody {
+    /// LFO slot index.
+    pub slot: usize,
+    /// Whether the slot is active.
+    pub enabled: bool,
+}
+
+/// `POST /api/modulation/lfo-enable`
+#[utoipa::path(
+    post,
+    path = "/api/modulation/lfo-enable",
+    request_body = LfoEnableBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "Modulation"
+)]
+pub async fn modulation_lfo_enable(
+    State(state): State<SharedState>,
+    Json(body): Json<LfoEnableBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Modulation(
+        rustjay_control::ModulationWebCommand::LfoEnable { slot: body.slot, enabled: body.enabled },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// Route an FFT band to a parameter.
+#[derive(Deserialize, ToSchema)]
+pub struct AudioRouteBody {
+    /// Target parameter identifier.
+    pub param_id: String,
+    /// Source FFT band (e.g. `"Bass"`, `"HighMid"`).
+    #[schema(value_type = String)]
+    pub band: rustjay_core::FftBand,
+    /// Modulation depth.
+    pub depth: f32,
+}
+
+/// `POST /api/modulation/audio-route`
+#[utoipa::path(
+    post,
+    path = "/api/modulation/audio-route",
+    request_body = AudioRouteBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "Modulation"
+)]
+pub async fn modulation_audio_route(
+    State(state): State<SharedState>,
+    Json(body): Json<AudioRouteBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Modulation(
+        rustjay_control::ModulationWebCommand::AudioRoute {
+            param_id: body.param_id,
+            band: body.band,
+            depth: body.depth,
+        },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// Remove an audio route from a parameter.
+#[derive(Deserialize, ToSchema)]
+pub struct AudioUnrouteBody {
+    /// Target parameter identifier.
+    pub param_id: String,
+}
+
+/// `POST /api/modulation/audio-unroute`
+#[utoipa::path(
+    post,
+    path = "/api/modulation/audio-unroute",
+    request_body = AudioUnrouteBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "Modulation"
+)]
+pub async fn modulation_audio_unroute(
+    State(state): State<SharedState>,
+    Json(body): Json<AudioUnrouteBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Modulation(
+        rustjay_control::ModulationWebCommand::AudioUnroute { param_id: body.param_id },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// `POST /api/modulation/tap-tempo`
+#[utoipa::path(
+    post,
+    path = "/api/modulation/tap-tempo",
+    responses((status = 200, body = CommandOk)),
+    tag = "Modulation"
+)]
+pub async fn modulation_tap_tempo(State(state): State<SharedState>) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Modulation(
+        rustjay_control::ModulationWebCommand::TapTempo,
+    )) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }

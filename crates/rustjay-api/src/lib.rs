@@ -78,6 +78,7 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/midi/disconnect", post(routes::system::midi_disconnect))
         .route("/api/midi/learn", post(routes::system::midi_learn))
         .route("/api/midi/learn-cancel", post(routes::system::midi_learn_cancel))
+        .route("/api/midi/unlearn", post(routes::system::midi_unlearn))
         // ── OSC ─────────────────────────────────────────────────
         .route("/api/osc/start", post(routes::system::osc_start))
         .route("/api/osc/stop", post(routes::system::osc_stop))
@@ -96,6 +97,12 @@ pub fn build_router() -> Router<SharedState> {
         // ── Mixer ───────────────────────────────────────────────
         .route("/api/mixer/crossfader", put(routes::system::mixer_crossfader))
         .route("/api/mixer/master-opacity", put(routes::system::mixer_master_opacity))
+        // ── Modulation (writes) ─────────────────────────────────
+        .route("/api/modulation/lfo", post(routes::system::modulation_lfo_set))
+        .route("/api/modulation/lfo-enable", post(routes::system::modulation_lfo_enable))
+        .route("/api/modulation/audio-route", post(routes::system::modulation_audio_route))
+        .route("/api/modulation/audio-unroute", post(routes::system::modulation_audio_unroute))
+        .route("/api/modulation/tap-tempo", post(routes::system::modulation_tap_tempo))
         // ── OpenAPI / Swagger ───────────────────────────────────
         .merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()))
         // ── Middleware ───────────────────────────────────────────
