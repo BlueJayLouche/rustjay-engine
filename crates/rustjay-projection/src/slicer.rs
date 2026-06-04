@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn quad_projectors_evenly_spaced() {
+    fn quad_meshes() {
         let setup = DomePreset::Quad.to_setup();
         let azimuths: Vec<f32> = setup.projectors.iter().map(|p| p.azimuth_degrees).collect();
         assert!((azimuths[0] - 0.0).abs() < 1e-6);
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn zenith_ray_maps_to_center() {
+    fn zenith_ray_center() {
         let uv = ray_to_domemaster_uv(
             [0.0, 1.0, 0.0],
             std::f32::consts::FRAC_PI_2,

@@ -72,14 +72,10 @@ const FACE_TOP: usize = 4;
 
 /// Dome projection stage: captures input into cubemap faces and projects to fisheye.
 pub struct DomeStage {
-    #[allow(dead_code)]
     face_textures: Vec<wgpu::Texture>,
     face_views: Vec<wgpu::TextureView>,
-    #[allow(dead_code)]
-    output_texture: wgpu::Texture,
-    output_view: wgpu::TextureView,
     projection_pipeline: wgpu::RenderPipeline,
-    projection_bind_group_layout: wgpu::BindGroupLayout,
+    projection_bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
     params_buffer: wgpu::Buffer,
     /// Current domemaster configuration.
@@ -130,8 +126,6 @@ impl DomeStage {
             face_textures.push(tex);
             face_views.push(view);
         }
-
-        let (output_texture, output_view) = create_texture("Domemaster Output", output_size);
 
         let tex_entry = |binding: u32| -> wgpu::BindGroupLayoutEntry {
             wgpu::BindGroupLayoutEntry {
@@ -246,13 +240,46 @@ impl DomeStage {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Domemaster Projection Bind Group"),
+            layout: &projection_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&face_views[FACE_FRONT]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&face_views[FACE_RIGHT]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&face_views[FACE_BACK]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&face_views[FACE_LEFT]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&face_views[FACE_TOP]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         Self {
             face_textures,
             face_views,
-            output_texture,
-            output_view,
             projection_pipeline,
-            projection_bind_group_layout,
+            projection_bind_group,
             sampler,
             params_buffer,
             config,
@@ -284,11 +311,6 @@ impl DomeStage {
         self.content_rotation = [az, el, roll];
     }
 
-    /// Get the output domemaster texture view for downstream sampling.
-    pub fn output_view(&self) -> &wgpu::TextureView {
-        &self.output_view
-    }
-
     /// Current output resolution in pixels (square).
     pub fn output_size(&self) -> u32 {
         self.config.resolution.pixels()
@@ -310,13 +332,9 @@ impl ProjectionStage for DomeStage {
     ) {
         self.update_params(ctx.queue);
 
-        let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Dome Face Capture"),
-        });
-
         // Step 1: clear all faces to black, then copy source into front face.
         for view in &self.face_views {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Dome Face Clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
@@ -335,7 +353,7 @@ impl ProjectionStage for DomeStage {
         }
 
         if let Some(src_tex) = input_texture {
-            encoder.copy_texture_to_texture(
+            ctx.encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: src_tex,
                     mip_level: 0,
@@ -357,43 +375,8 @@ impl ProjectionStage for DomeStage {
         }
 
         // Step 2: projection pass
-        let projection_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Domemaster Projection Bind Group"),
-            layout: &self.projection_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.face_views[FACE_FRONT]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.face_views[FACE_RIGHT]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.face_views[FACE_BACK]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.face_views[FACE_LEFT]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&self.face_views[FACE_TOP]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: self.params_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Domemaster Projection Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
@@ -410,11 +393,14 @@ impl ProjectionStage for DomeStage {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.projection_pipeline);
-            pass.set_bind_group(0, &projection_bind_group, &[]);
+            pass.set_bind_group(0, &self.projection_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
 
-        ctx.queue.submit(std::iter::once(encoder.finish()));
+    fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {
+        // Face views are fixed; projection bind group is built once at init.
+        // No invalidation needed.
     }
 }
 
@@ -439,5 +425,41 @@ mod tests {
     #[test]
     fn params_alignment() {
         assert_eq!(std::mem::size_of::<DomemasterParams>(), 32);
+    }
+
+    #[test]
+    fn dome_snapshot() {
+        let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
+
+        // Create a white input texture (512×512 to match R1K face size).
+        let face_size = DomemasterResolution::R1K.pixels() / 2;
+        let (_input_tex, input_view) = crate::test_harness::create_solid_texture(
+            &device, &queue, face_size, face_size, [255, 255, 255, 255],
+        );
+
+        let config = DomemasterConfig {
+            resolution: DomemasterResolution::R1K,
+            fov_degrees: 180.0,
+            tilt_degrees: 0.0,
+        };
+        let output_size = config.resolution.pixels();
+        let mut stage = DomeStage::new(&device, wgpu::TextureFormat::Rgba8Unorm, config);
+        let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, output_size, output_size);
+
+        crate::test_harness::run_stage(
+            &device, &queue, &mut stage,
+            &input_view, Some(&_input_tex), &output_view, [output_size, output_size],
+        );
+
+        let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, output_size, output_size);
+
+        // Center pixel should sample the front-face center → white.
+        let center_idx = ((output_size / 2) * output_size + (output_size / 2)) * 4;
+        let center = &pixels[center_idx as usize..center_idx as usize + 4];
+        assert!(center[0] > 200, "dome center should be bright, got {:?}", center);
+
+        // Edge pixel (top-left corner) is outside the fisheye circle → black.
+        let edge = &pixels[0..4];
+        assert!(edge[0] < 50, "dome edge should be black, got {:?}", edge);
     }
 }

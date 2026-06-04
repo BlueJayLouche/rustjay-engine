@@ -40,3 +40,12 @@ pub use slicer::{
 pub mod surface_import;
 #[cfg(feature = "surface-import")]
 pub use surface_import::{from_raster, from_svg, from_dxf};
+
+/// Auto edge-blend computer (CPU-side overlap detection).
+#[cfg(feature = "auto-edge-blend")]
+pub mod auto_blend;
+#[cfg(feature = "auto-edge-blend")]
+pub use auto_blend::{AutoBlendResult, AutoBlendComputer, compute_auto_edge_blend};
+
+#[cfg(test)]
+pub(crate) mod test_harness;

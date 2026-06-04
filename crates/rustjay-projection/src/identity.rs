@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_snapshot_nearest_bit_exact() {
+    fn identity_snapshot() {
         let (device, queue) = pollster::block_on(init_wgpu());
 
         let (_input_tex, input_view) = create_checkerboard_texture(&device, &queue);

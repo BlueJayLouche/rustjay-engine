@@ -99,6 +99,8 @@ pub struct EdgeBlendStage {
     params_buffer: wgpu::Buffer,
     /// Current edge-blend configuration.
     pub config: EdgeBlendConfig,
+    cached_bind_group: Option<wgpu::BindGroup>,
+    cached_input_ptr: Option<usize>,
 }
 
 impl EdgeBlendStage {
@@ -197,6 +199,8 @@ impl EdgeBlendStage {
             sampler,
             params_buffer,
             config: EdgeBlendConfig::default(),
+            cached_bind_group: None,
+            cached_input_ptr: None,
         }
     }
 }
@@ -220,24 +224,32 @@ impl ProjectionStage for EdgeBlendStage {
             bytemuck::cast_slice(&[EdgeBlendParams::from(&self.config)]),
         );
 
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Edge Blend BG"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(input),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let input_ptr = input as *const _ as usize;
+        let bind_group = if self.cached_input_ptr == Some(input_ptr) {
+            self.cached_bind_group.as_ref().unwrap()
+        } else {
+            let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Edge Blend BG"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(input),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            self.cached_bind_group = Some(bg);
+            self.cached_input_ptr = Some(input_ptr);
+            self.cached_bind_group.as_ref().unwrap()
+        };
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Edge Blend Pass"),
@@ -256,8 +268,13 @@ impl ProjectionStage for EdgeBlendStage {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {
+        self.cached_bind_group = None;
+        self.cached_input_ptr = None;
     }
 }
 
@@ -313,5 +330,38 @@ mod tests {
         assert_eq!(p.left_enabled, 1.0);
         assert_eq!(p.right_enabled, 0.0);
         assert!((p.left_width - 0.15).abs() < 1e-6);
+    }
+
+    #[test]
+    fn edge_blend_left_ramp() {
+        let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
+        let (_input_tex, input_view) = crate::test_harness::create_solid_texture(
+            &device, &queue, 2, 2, [255, 255, 255, 255],
+        );
+        let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, 2, 2);
+
+        let mut stage = EdgeBlendStage::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        stage.config.left = EdgeBlendEdge {
+            enabled: true,
+            width: 0.5,
+            gamma: 1.0,
+        };
+
+        crate::test_harness::run_stage(
+            &device, &queue, &mut stage,
+            &input_view, Some(&_input_tex), &output_view, [2, 2],
+        );
+
+        let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, 2, 2);
+
+        // Row-major 2×2 output:
+        // Pixel (0,0): uv.x = 0.25 → t = 0.25/0.5 = 0.5 → smoothstep = 0.5 → 128
+        // Pixel (1,0): uv.x = 0.75 → t = 0.75/0.5 = 1.5 → clamped = 1.0 → 255
+        // Pixel (0,1): uv.x = 0.25 → 128
+        // Pixel (1,1): uv.x = 0.75 → 255
+        assert!((pixels[0] as i32 - 128).abs() <= 2, "left column should be ~128, got {}", pixels[0]);
+        assert!((pixels[4] as i32 - 255).abs() <= 2, "right column should be ~255, got {}", pixels[4]);
+        assert!((pixels[8] as i32 - 128).abs() <= 2, "left column should be ~128, got {}", pixels[8]);
+        assert!((pixels[12] as i32 - 255).abs() <= 2, "right column should be ~255, got {}", pixels[12]);
     }
 }

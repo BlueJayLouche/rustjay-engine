@@ -47,12 +47,17 @@ impl ProjectorOutput {
             .or_else(|| caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available for projector"))?;
 
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -316,6 +321,7 @@ impl ProjectionSubsystem {
         event: &winit::event::WindowEvent,
         device: &wgpu::Device,
     ) -> bool {
+        let mut remove_id: Option<winit::window::WindowId> = None;
         for proj in &mut self.projectors {
             if proj.owns_window(window_id) {
                 match event {
@@ -323,14 +329,18 @@ impl ProjectionSubsystem {
                         proj.resize(size.width, size.height, device);
                     }
                     winit::event::WindowEvent::CloseRequested => {
-                        proj.window.set_visible(false);
+                        remove_id = Some(proj.window_id);
                     }
                     _ => {}
                 }
-                return true;
+                break;
             }
         }
-        false
+        if let Some(id) = remove_id {
+            self.projectors.retain(|p| p.window_id != id);
+            return true;
+        }
+        remove_id.is_some()
     }
 
     /// Render all projector outputs from the given source texture.
@@ -345,5 +355,10 @@ impl ProjectionSubsystem {
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
         }
+    }
+
+    /// Remove a projector output by its window ID, dropping the surface and window.
+    pub fn remove_output(&mut self, window_id: winit::window::WindowId) {
+        self.projectors.retain(|p| p.window_id != window_id);
     }
 }
