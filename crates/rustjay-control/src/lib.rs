@@ -11,7 +11,9 @@ pub use midi::{MidiManager, MidiMapping, MidiState, LearnState};
 pub use midi::mtc::MtcReceiver;
 pub use osc::OscServer;
 pub use web::{
-    WebServer, WebConfig, WebCommand,
-    InputWebCommand, ControlWebCommand, ModulationWebCommand, PresetWebCommand,
+    WebServer, WebServerState, WebConfig, WebCommand,
+    InputWebCommand, OutputWebCommand, AudioWebCommand,
+    ControlWebCommand, ModulationWebCommand, PresetWebCommand,
+    LinkWebCommand, ProDjWebCommand,
     InputStateJson, ControlStateJson, ModulationStateJson, PresetStateJson, PresetInfo,
 };

@@ -862,6 +862,101 @@ impl<P: EffectPlugin> App<P> {
                             }
                         }
                     }
+                    WebServerCommand::Output(output_cmd) => {
+                        let core_cmd = match output_cmd {
+                            #[cfg(feature = "ndi")]
+                            rustjay_control::OutputWebCommand::StartNdi => OutputCommand::StartNdi,
+                            #[cfg(not(feature = "ndi"))]
+                            rustjay_control::OutputWebCommand::StartNdi => {
+                                log::warn!("NDI output not compiled in");
+                                OutputCommand::None
+                            }
+                            #[cfg(feature = "ndi")]
+                            rustjay_control::OutputWebCommand::StopNdi => OutputCommand::StopNdi,
+                            #[cfg(not(feature = "ndi"))]
+                            rustjay_control::OutputWebCommand::StopNdi => {
+                                log::warn!("NDI output not compiled in");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "macos")]
+                            rustjay_control::OutputWebCommand::StartSyphon => OutputCommand::StartSyphon,
+                            #[cfg(not(target_os = "macos"))]
+                            rustjay_control::OutputWebCommand::StartSyphon => {
+                                log::warn!("Syphon output is only available on macOS");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "macos")]
+                            rustjay_control::OutputWebCommand::StopSyphon => OutputCommand::StopSyphon,
+                            #[cfg(not(target_os = "macos"))]
+                            rustjay_control::OutputWebCommand::StopSyphon => {
+                                log::warn!("Syphon output is only available on macOS");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "windows")]
+                            rustjay_control::OutputWebCommand::StartSpout { sender_name } => OutputCommand::StartSpout { sender_name },
+                            #[cfg(not(target_os = "windows"))]
+                            rustjay_control::OutputWebCommand::StartSpout { .. } => {
+                                log::warn!("Spout output is only available on Windows");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "windows")]
+                            rustjay_control::OutputWebCommand::StopSpout => OutputCommand::StopSpout,
+                            #[cfg(not(target_os = "windows"))]
+                            rustjay_control::OutputWebCommand::StopSpout => {
+                                log::warn!("Spout output is only available on Windows");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "linux")]
+                            rustjay_control::OutputWebCommand::StartV4l2 { device_path } => OutputCommand::StartV4l2 { device_path },
+                            #[cfg(not(target_os = "linux"))]
+                            rustjay_control::OutputWebCommand::StartV4l2 { .. } => {
+                                log::warn!("V4L2 output is only available on Linux");
+                                OutputCommand::None
+                            }
+                            #[cfg(target_os = "linux")]
+                            rustjay_control::OutputWebCommand::StopV4l2 => OutputCommand::StopV4l2,
+                            #[cfg(not(target_os = "linux"))]
+                            rustjay_control::OutputWebCommand::StopV4l2 => {
+                                log::warn!("V4L2 output is only available on Linux");
+                                OutputCommand::None
+                            }
+                            rustjay_control::OutputWebCommand::ResizeOutput => OutputCommand::ResizeOutput,
+                        };
+                        if let Ok(mut state) = self.shared_state.lock() {
+                            state.output_command = core_cmd;
+                        }
+                    }
+                    WebServerCommand::Audio(audio_cmd) => {
+                        let core_cmd = match audio_cmd {
+                            rustjay_control::AudioWebCommand::Start => AudioCommand::Start,
+                            rustjay_control::AudioWebCommand::Stop => AudioCommand::Stop,
+                            rustjay_control::AudioWebCommand::RefreshDevices => AudioCommand::RefreshDevices,
+                            rustjay_control::AudioWebCommand::SelectDevice { device } => AudioCommand::SelectDevice(device),
+                            rustjay_control::AudioWebCommand::SetFftSize { size } => AudioCommand::SetFftSize(size),
+                        };
+                        if let Ok(mut state) = self.shared_state.lock() {
+                            state.audio_command = core_cmd;
+                        }
+                    }
+                    WebServerCommand::Link(link_cmd) => {
+                        let core_cmd = match link_cmd {
+                            rustjay_control::LinkWebCommand::Enable => LinkCommand::Enable,
+                            rustjay_control::LinkWebCommand::Disable => LinkCommand::Disable,
+                            rustjay_control::LinkWebCommand::SetQuantum { quantum } => LinkCommand::SetQuantum(quantum),
+                        };
+                        if let Ok(mut state) = self.shared_state.lock() {
+                            state.link_command = core_cmd;
+                        }
+                    }
+                    WebServerCommand::ProDj(prodj_cmd) => {
+                        let core_cmd = match prodj_cmd {
+                            rustjay_control::ProDjWebCommand::Start => ProDjCommand::Start,
+                            rustjay_control::ProDjWebCommand::Stop => ProDjCommand::Stop,
+                        };
+                        if let Ok(mut state) = self.shared_state.lock() {
+                            state.prodj_command = core_cmd;
+                        }
+                    }
                 }
 
                 // MIDI mapping change detection (WR-3.3 / WR-6)
