@@ -1,7 +1,6 @@
 //! # rustjay-api — Optional REST/OpenAPI layer for rustjay-engine
 //!
-//! Provides typed REST endpoints, OpenAPI/Swagger documentation, and a
-//! WebSocket that pushes JSON-Patch deltas of engine state.
+//! Provides typed REST endpoints and OpenAPI/Swagger documentation.
 //!
 //! This crate is a leaf dependency of `rustjay-engine` and is **off by
 //! default**. When enabled, its router is merged into the existing
@@ -10,28 +9,33 @@
 #![warn(missing_docs)]
 
 pub mod routes;
-pub mod ws;
 pub mod openapi;
-pub mod server;
 
 #[cfg(test)]
 mod tests;
 
-pub use server::{ApiConfig, ApiServerHandle, start as start_server};
-
 use axum::Router;
-use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
-/// Build the axum router with all API routes and middleware.
-pub fn build_router(shared: SharedState) -> Router {
+/// Re-export the control-layer state type so route handlers can use it
+/// directly.  The API is mounted under the same auth layer as the control
+/// server, so it shares `Arc<Mutex<WebServerState>>` as its router state.
+pub type SharedState = Arc<Mutex<rustjay_control::WebServerState>>;
+
+/// Build the axum router with all API routes.
+///
+/// The returned router is *stateless* in the type sense: it is a
+/// `Router<SharedState>` whose handlers expect `State<SharedState>` but for
+/// which no state has been provided yet. `rustjay-control` merges it into its
+/// protected router and supplies the single shared state via `.with_state(...)`
+/// for the whole tree, so there is exactly one `WebServerState` instance.
+///
+/// To serve this router standalone (e.g. in tests), call `.with_state(shared)`
+/// on the result.
+pub fn build_router() -> Router<SharedState> {
     use axum::routing::{get, post, put};
-    use tower_http::cors::{Any, CorsLayer};
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    use utoipa::OpenApi;
+    use utoipa_swagger_ui::SwaggerUi;
 
     Router::new()
         // ── System ──────────────────────────────────────────────
@@ -86,37 +90,15 @@ pub fn build_router(shared: SharedState) -> Router {
         // ── Mixer ───────────────────────────────────────────────
         .route("/api/mixer/crossfader", put(routes::system::mixer_crossfader))
         .route("/api/mixer/master-opacity", put(routes::system::mixer_master_opacity))
-        // ── WebSocket ───────────────────────────────────────────
-        .route("/api/ws", get(ws::ws_upgrade))
+        // ── OpenAPI / Swagger ───────────────────────────────────
+        .merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()))
         // ── Middleware ───────────────────────────────────────────
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .layer(cors)
-        .with_state(shared)
-}
-
-/// Shared state passed to all route handlers via axum's `State` extractor.
-///
-/// Handlers never hold the engine directly — they write via the command
-/// channel and read from the read-only snapshot.
-#[derive(Clone)]
-pub struct SharedState {
-    /// Send commands to the engine. The engine processes them once per frame.
-    pub command_tx: mpsc::Sender<rustjay_control::WebCommand>,
-    /// Read the latest engine state snapshot (updated each frame by the engine).
-    pub engine_snapshot: Arc<RwLock<Option<EngineSnapshot>>>,
-}
-
-impl SharedState {
-    /// Send a command to the engine. Fire-and-forget; the engine processes
-    /// it on the next frame.
-    pub fn send_command(&self, cmd: rustjay_control::WebCommand) -> Result<(), &'static str> {
-        self.command_tx.try_send(cmd).map_err(|_| "Engine command channel full")
-    }
 }
 
 // ── Engine Snapshot DTOs ───────────────────────────────────────────────────
 
-/// A serializable snapshot of engine state, updated once per frame.
+/// A serializable snapshot of engine state, built on-demand in handlers.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EngineSnapshot {
     /// Output window state.
@@ -397,35 +379,6 @@ pub struct ModulationSnapshot {
     pub bpm: f32,
     /// Tap-tempo feedback.
     pub tap_tempo_info: String,
-}
-
-// ── ApiState ───────────────────────────────────────────────────────────────
-
-/// Handle held by the engine to publish state snapshots.
-#[derive(Clone)]
-pub struct ApiState {
-    snapshot: Arc<RwLock<Option<EngineSnapshot>>>,
-}
-
-impl ApiState {
-    /// Create a new `ApiState` and return it together with the `SharedState`
-    /// that route handlers will use.
-    pub fn new(command_tx: mpsc::Sender<rustjay_control::WebCommand>) -> (Self, SharedState) {
-        let snapshot = Arc::new(RwLock::new(None));
-        let shared = SharedState {
-            command_tx,
-            engine_snapshot: Arc::clone(&snapshot),
-        };
-        (Self { snapshot }, shared)
-    }
-
-    /// Publish a new snapshot from the current engine state.
-    pub fn publish(&self, state: &rustjay_core::EngineState) {
-        let snap = build_snapshot(state);
-        if let Ok(mut guard) = self.snapshot.write() {
-            *guard = Some(snap);
-        }
-    }
 }
 
 /// Build a snapshot DTO from the live engine state.

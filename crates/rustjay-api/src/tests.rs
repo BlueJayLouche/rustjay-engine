@@ -1,32 +1,37 @@
 //! Integration tests for rustjay-api.
+//!
+//! These exercise the router produced by [`build_router`]. The router is
+//! stateless in the type sense, so the tests supply state via `.with_state(...)`
+//! to obtain a serveable `Router<()>`. Auth is supplied by `rustjay-control`
+//! when the router is merged under its protected tree, so it is not covered
+//! here — these tests hit the routes directly.
 
-use crate::{build_router, SharedState};
+use crate::build_router;
 use axum::body::Body;
+use axum::Router;
 use axum::http::{Request, StatusCode};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tower::ServiceExt;
 
-fn test_shared_state() -> SharedState {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-    // Keep the receiver alive so try_send succeeds in tests.
-    tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let snapshot = Arc::new(RwLock::new(None));
-    SharedState {
-        command_tx: tx,
-        engine_snapshot: snapshot,
-    }
+/// Create a `WebServer` whose shared state backs the API router. The server is
+/// returned so the caller can keep it alive: it owns the command-channel
+/// receiver, which must outlive the test for `try_send` to succeed.
+fn test_server() -> rustjay_control::WebServer {
+    let (server, _command_tx) =
+        rustjay_control::WebServer::new(rustjay_control::WebConfig::default());
+    server
 }
 
 #[tokio::test]
 async fn test_build_router_does_not_panic() {
-    let shared = test_shared_state();
-    let _router = build_router(shared);
+    let server = test_server();
+    let _router: Router<()> = build_router().with_state(Arc::clone(&server.state));
 }
 
 #[tokio::test]
 async fn test_health_returns_ok() {
-    let shared = test_shared_state();
-    let app = build_router(shared);
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
 
     let resp = app
         .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
@@ -41,8 +46,8 @@ async fn test_health_returns_ok() {
 
 #[tokio::test]
 async fn test_state_returns_503_when_not_initialized() {
-    let shared = test_shared_state();
-    let app = build_router(shared);
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
 
     let resp = app
         .oneshot(Request::get("/api/state").body(Body::empty()).unwrap())
@@ -54,8 +59,8 @@ async fn test_state_returns_503_when_not_initialized() {
 
 #[tokio::test]
 async fn test_set_param_returns_ok() {
-    let shared = test_shared_state();
-    let app = build_router(shared);
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
 
     let body = serde_json::json!({"id": "color/hue_shift", "value": 0.5});
     let resp = app
@@ -65,71 +70,6 @@ async fn test_set_param_returns_ok() {
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn test_auth_rejects_without_token() {
-    let shared = test_shared_state();
-    let auth_state = Arc::new(std::sync::Mutex::new(crate::server::ApiServerState {
-        bearer_token: "test-token-123".to_string(),
-        lan_trust: false,
-    }));
-
-    let app = crate::server::build_router(shared, auth_state);
-
-    let resp = app
-        .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-
-    // Health is inside the protected router, so auth applies.
-    // Wait — in our build_router, /api/health is NOT inside the protected router
-    // that has auth. Let me check...
-    // Actually, build_router in lib.rs has /api/health directly, without auth.
-    // The auth is only added in server.rs's build_router.
-    // So this test tests the server's build_router.
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn test_auth_accepts_with_token() {
-    let shared = test_shared_state();
-    let auth_state = Arc::new(std::sync::Mutex::new(crate::server::ApiServerState {
-        bearer_token: "test-token-123".to_string(),
-        lan_trust: false,
-    }));
-
-    let app = crate::server::build_router(shared, auth_state);
-
-    let resp = app
-        .oneshot(
-            Request::get("/api/health")
-                .header("Authorization", "Bearer test-token-123")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn test_auth_skips_when_lan_trust() {
-    let shared = test_shared_state();
-    let auth_state = Arc::new(std::sync::Mutex::new(crate::server::ApiServerState {
-        bearer_token: "test-token-123".to_string(),
-        lan_trust: true,
-    }));
-
-    let app = crate::server::build_router(shared, auth_state);
-
-    let resp = app
-        .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
         .await
         .unwrap();
 

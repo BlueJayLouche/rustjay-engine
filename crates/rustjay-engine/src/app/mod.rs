@@ -130,12 +130,6 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) web_server: Option<WebServer>,
     pub(crate) web_command_tx: Option<tokio::sync::mpsc::Sender<WebServerCommand>>,
 
-    #[cfg(feature = "api")]
-    pub(crate) api_state: Option<rustjay_api::ApiState>,
-    #[cfg(feature = "api")]
-    #[allow(dead_code)] // kept for Drop-based shutdown on app exit
-    pub(crate) api_handle: Option<rustjay_api::ApiServerHandle>,
-
     #[cfg(feature = "link")]
     pub(crate) link_manager: Option<rustjay_sync::LinkManager>,
     #[cfg(feature = "prodj")]
@@ -323,6 +317,14 @@ impl<P: EffectPlugin> App<P> {
             let (mut server, cmd_tx) = WebServer::new(config);
             server.register_default_parameters();
             server.register_parameters(&descriptors);
+            // Mount the optional REST/OpenAPI router under the same listener and
+            // auth layer as the control web UI (no separate port or runtime).
+            #[cfg(feature = "api")]
+            {
+                server.set_api_router(rustjay_api::build_router());
+                server.set_engine_state(Arc::clone(&shared_state));
+                log::info!("API routes mounted under /api on web port {}", web_port);
+            }
             log::info!("Web server initialized on port {}", web_port);
             (Some(server), Some(cmd_tx))
         };
@@ -330,25 +332,6 @@ impl<P: EffectPlugin> App<P> {
             let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.web_app_name = app_name.clone();
         }
-
-        #[cfg(feature = "api")]
-        let (api_state, api_handle) = {
-            if let Some(ref cmd_tx) = web_command_tx {
-                let (api_state, shared) = rustjay_api::ApiState::new(cmd_tx.clone());
-                let api_config = rustjay_api::ApiConfig {
-                    host: web_host.clone(),
-                    port: web_port + 1,
-                    lan_trust: web_lan_trust,
-                };
-                let handle = rustjay_api::start_server(api_config, shared);
-                if handle.is_some() {
-                    log::info!("API server initialized on port {}", web_port + 1);
-                }
-                (Some(api_state), handle)
-            } else {
-                (None, None)
-            }
-        };
 
         Self {
             shared_state,
@@ -375,10 +358,6 @@ impl<P: EffectPlugin> App<P> {
             preset_bank,
             web_server,
             web_command_tx,
-            #[cfg(feature = "api")]
-            api_state,
-            #[cfg(feature = "api")]
-            api_handle,
             config_manager,
             #[cfg(feature = "link")]
             link_manager: Some(rustjay_sync::LinkManager::new()),
