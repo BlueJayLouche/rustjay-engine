@@ -308,7 +308,7 @@ impl<P: EffectPlugin> App<P> {
         };
         let (web_server, web_command_tx) = {
             let config = WebConfig {
-                host: web_host,
+                host: web_host.clone(),
                 port: web_port,
                 app_name: app_name.clone(),
                 enabled: false,
@@ -317,6 +317,14 @@ impl<P: EffectPlugin> App<P> {
             let (mut server, cmd_tx) = WebServer::new(config);
             server.register_default_parameters();
             server.register_parameters(&descriptors);
+            // Mount the optional REST/OpenAPI router under the same listener and
+            // auth layer as the control web UI (no separate port or runtime).
+            #[cfg(feature = "api")]
+            {
+                server.set_api_router(rustjay_api::build_router());
+                server.set_engine_state(Arc::clone(&shared_state));
+                log::info!("API routes mounted under /api on web port {}", web_port);
+            }
             log::info!("Web server initialized on port {}", web_port);
             (Some(server), Some(cmd_tx))
         };

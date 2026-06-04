@@ -16,6 +16,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -97,6 +98,10 @@ pub struct WebServerState {
     pub last_control_state: Option<ControlStateJson>,
     /// Last-sent modulation state for hydrating new WebSocket clients immediately.
     pub last_modulation_state: Option<ModulationStateJson>,
+    /// Active WebSocket connection count (for capping).
+    pub active_ws_count: AtomicUsize,
+    /// Engine state for API snapshot reads (set by the composition root).
+    pub engine_state: Option<Arc<std::sync::Mutex<rustjay_core::EngineState>>>,
 }
 
 /// Messages sent from server to web clients
@@ -198,12 +203,78 @@ pub enum WebCommand {
     },
     #[serde(rename = "input")]
     Input(InputWebCommand),
+    #[serde(rename = "output")]
+    Output(OutputWebCommand),
+    #[serde(rename = "audio")]
+    Audio(AudioWebCommand),
     #[serde(rename = "control")]
     Control(ControlWebCommand),
     #[serde(rename = "modulation")]
     Modulation(ModulationWebCommand),
     #[serde(rename = "preset")]
     Preset(PresetWebCommand),
+    #[serde(rename = "link")]
+    Link(LinkWebCommand),
+    #[serde(rename = "prodj")]
+    ProDj(ProDjWebCommand),
+}
+
+/// Output subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum OutputWebCommand {
+    #[serde(rename = "start_ndi")]
+    StartNdi,
+    #[serde(rename = "stop_ndi")]
+    StopNdi,
+    #[serde(rename = "start_syphon")]
+    StartSyphon,
+    #[serde(rename = "stop_syphon")]
+    StopSyphon,
+    #[serde(rename = "start_spout")]
+    StartSpout { sender_name: String },
+    #[serde(rename = "stop_spout")]
+    StopSpout,
+    #[serde(rename = "start_v4l2")]
+    StartV4l2 { device_path: String },
+    #[serde(rename = "stop_v4l2")]
+    StopV4l2,
+    #[serde(rename = "resize_output")]
+    ResizeOutput,
+}
+
+/// Audio subsystem commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum AudioWebCommand {
+    #[serde(rename = "start")]
+    Start,
+    #[serde(rename = "stop")]
+    Stop,
+    #[serde(rename = "refresh_devices")]
+    RefreshDevices,
+    #[serde(rename = "select_device")]
+    SelectDevice { device: String },
+    #[serde(rename = "set_fft_size")]
+    SetFftSize { size: usize },
+}
+
+/// Ableton Link commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum LinkWebCommand {
+    #[serde(rename = "enable")]
+    Enable,
+    #[serde(rename = "disable")]
+    Disable,
+    #[serde(rename = "set_quantum")]
+    SetQuantum { quantum: f64 },
+}
+
+/// ProDJ Link commands from web clients.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub enum ProDjWebCommand {
+    #[serde(rename = "start")]
+    Start,
+    #[serde(rename = "stop")]
+    Stop,
 }
 
 /// JSON payload for InputState broadcast.
@@ -269,6 +340,9 @@ pub struct WebServer {
     pub control_dirty: bool,
     pub modulation_dirty: bool,
     pub preset_dirty: bool,
+    /// Optional additional router (e.g. REST/OpenAPI) merged under the same
+    /// auth layer and listener.
+    api_router: Option<Router<Arc<Mutex<WebServerState>>>>,
 }
 
 impl WebServer {
@@ -295,6 +369,8 @@ impl WebServer {
             last_input_state: None,
             last_control_state: None,
             last_modulation_state: None,
+            active_ws_count: AtomicUsize::new(0),
+            engine_state: None,
         }));
 
         let server = Self {
@@ -307,6 +383,7 @@ impl WebServer {
             control_dirty: false,
             modulation_dirty: false,
             preset_dirty: false,
+            api_router: None,
         };
 
         (server, command_tx)
@@ -384,6 +461,19 @@ impl WebServer {
         }
     }
 
+    /// Merge an external router (e.g. REST/OpenAPI) into the protected router
+    /// so it shares the same auth layer and listener.
+    pub fn set_api_router(&mut self, router: Router<Arc<Mutex<WebServerState>>>) {
+        self.api_router = Some(router);
+    }
+
+    /// Provide the engine state for API snapshot reads.
+    pub fn set_engine_state(&mut self, engine_state: Arc<std::sync::Mutex<rustjay_core::EngineState>>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.engine_state = Some(engine_state);
+        }
+    }
+
     /// Update a parameter value and broadcast to all clients.
     ///
     /// Uses a fast-path `last_sent` cache so unchanged values skip the
@@ -439,6 +529,8 @@ impl WebServer {
             (s.config.port, s.config.app_name.clone(), s.config.host.clone(), s.bearer_token.clone())
         };
 
+        let api_router = self.api_router.take();
+
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         self.shutdown_tx = Some(shutdown_tx);
 
@@ -453,7 +545,7 @@ impl WebServer {
             };
 
             rt.block_on(async move {
-                let app = create_router(state, &app_name, &token);
+                let app = create_router(state, &app_name, &token, api_router);
 
                 let addr: SocketAddr = match format!("{}:{}", host, port).parse() {
                     Ok(a) => a,
@@ -475,10 +567,11 @@ impl WebServer {
                 };
 
                 let local_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
+                eprintln!("Web control token: {token}");
                 log::info!("Web server ready:");
-                log::info!("  Local:   http://127.0.0.1:{}/{}?token={}", port, app_name, token);
+                log::info!("  Local:   http://127.0.0.1:{}/{}", port, app_name);
                 if host != "127.0.0.1" && host != "localhost" {
-                    log::info!("  Network: http://{}:{}/{}?token={}", local_ip, port, app_name, token);
+                    log::info!("  Network: http://{}:{}/{}", local_ip, port, app_name);
                 }
 
                 // Run server with graceful shutdown
@@ -708,7 +801,12 @@ fn parse_v4l2_list_devices(output: &str) -> Vec<rustjay_core::InputDeviceInfo> {
 }
 
 /// Create the Axum router
-fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str) -> Router {
+fn create_router(
+    state: Arc<Mutex<WebServerState>>,
+    app_name: &str,
+    token: &str,
+    api_router: Option<Router<Arc<Mutex<WebServerState>>>>,
+) -> Router {
     let ws_path = format!("/{}/ws", app_name);
     let page_path = format!("/{}", app_name);
     let page_path_slash = format!("/{}/", app_name);
@@ -728,7 +826,7 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
 
     // Protected routes: auth required for everything except /health.
     // Auth middleware receives the shared state so it can read `lan_trust` live.
-    let protected = Router::new()
+    let mut protected = Router::new()
         .route(&ws_path, get(ws_handler))
         .route(&page_path, get(move || async move {
             index_handler(&html_with_token).await
@@ -751,11 +849,20 @@ fn create_router(state: Arc<Mutex<WebServerState>>, app_name: &str, token: &str)
         }))
         .route(&presets_path, get(move || async move {
             index_handler(&presets_html_with_token).await
-        }))
-        .route_layer(middleware::from_fn_with_state(
-            Arc::clone(&state),
-            auth_middleware,
-        ));
+        }));
+
+    // Merge the optional API router (REST/OpenAPI/Swagger) BEFORE applying the
+    // auth layer. `route_layer` only wraps routes already present on the router,
+    // so merging after it would leave every /api route and /swagger-ui
+    // unauthenticated. Merge first, then layer the whole tree.
+    if let Some(api) = api_router {
+        protected = protected.merge(api);
+    }
+
+    let protected = protected.route_layer(middleware::from_fn_with_state(
+        Arc::clone(&state),
+        auth_middleware,
+    ));
 
     Router::new()
         .route("/health", get(|| async { "OK" }))
@@ -789,6 +896,13 @@ async fn index_handler(html: &str) -> impl IntoResponse {
     )
 }
 
+/// Maximum concurrent WebSocket connections.
+const MAX_WS_CONNECTIONS: usize = 32;
+/// Maximum text frame size from a WebSocket client (bytes).
+const MAX_WS_MSG_SIZE: usize = 64 * 1024;
+/// Maximum client messages per second per connection.
+const MAX_WS_MSG_RATE: u32 = 60;
+
 /// Query parameters for WebSocket upgrade
 #[derive(Debug, serde::Deserialize)]
 struct WsQuery {
@@ -808,18 +922,28 @@ async fn ws_handler(
         let s = state.lock().unwrap_or_else(|e| e.into_inner());
         (s.bearer_token.clone(), s.lan_trust)
     };
-    if !lan_trust && query.token != valid_token {
+    if !lan_trust && !constant_time_eq(&query.token, &valid_token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    // Verify Origin header is present and non-empty (browser WebSocket requirement).
-    // Requests without an Origin header are rejected to prevent curl/scripts from
-    // bypassing origin checks.
+    // Verify Origin header.
+    // When lan_trust is enabled, any non-empty origin is allowed.
+    // Otherwise, the origin must match the request's Host header.
     match headers.get(axum::http::header::ORIGIN) {
         Some(origin) => {
             let origin_str = origin.to_str().unwrap_or("");
             if origin_str.is_empty() {
                 return StatusCode::FORBIDDEN.into_response();
+            }
+            if !lan_trust {
+                let host = headers
+                    .get(axum::http::header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("");
+                let origin_host = origin_str.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+                if !origin_host.eq_ignore_ascii_case(host) {
+                    return StatusCode::FORBIDDEN.into_response();
+                }
             }
         }
         None => {
@@ -827,11 +951,44 @@ async fn ws_handler(
         }
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    // Atomically reserve a connection slot under the cap. The counter is only
+    // ever read and written while holding the state lock, so this load+store is
+    // a single atomic step with respect to other handshakes — closing the
+    // check-then-act race where several upgrades could each observe a free slot
+    // before any of them incremented. The returned guard owns the reservation
+    // and releases it on drop, including if the upgrade future is dropped
+    // before `handle_socket` runs.
+    let conn_guard = {
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+        let current = s.active_ws_count.load(Ordering::Relaxed);
+        if current >= MAX_WS_CONNECTIONS {
+            log::warn!("WS connection rejected: max connections ({}) reached", MAX_WS_CONNECTIONS);
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        s.active_ws_count.store(current + 1, Ordering::Relaxed);
+        WsConnGuard(Arc::clone(&state))
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, conn_guard))
 }
 
-/// Handle a WebSocket connection
-async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>) {
+/// Drop guard that decrements the active WS counter when a connection (or its
+/// pending upgrade) ends.
+struct WsConnGuard(Arc<Mutex<WebServerState>>);
+impl Drop for WsConnGuard {
+    fn drop(&mut self) {
+        let s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        s.active_ws_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Handle a WebSocket connection. `_conn_guard` owns the connection-cap slot
+/// reserved in `ws_handler` and releases it when this future completes.
+async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>, _conn_guard: WsConnGuard) {
+    // Rate-limit state
+    let mut msg_count: u32 = 0;
+    let mut last_window = std::time::Instant::now();
+
     // Get initial parameters and preset names in one lock acquisition
     let (params, preset_names) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -909,6 +1066,22 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
             // Receive message from client
             Some(Ok(msg)) = socket.recv() => {
                 if let Message::Text(text) = msg {
+                    // Size limit
+                    if text.len() > MAX_WS_MSG_SIZE {
+                        log::warn!("WS message too large ({} bytes); dropping connection", text.len());
+                        break;
+                    }
+                    // Rate limit
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_window).as_secs_f32() >= 1.0 {
+                        last_window = now;
+                        msg_count = 0;
+                    }
+                    msg_count += 1;
+                    if msg_count > MAX_WS_MSG_RATE {
+                        log::warn!("WS message rate exceeded; dropping connection");
+                        break;
+                    }
                     if let Ok(cmd) = serde_json::from_str::<WebCommand>(&text) {
                         // Update local parameter cache for Set commands
                         if let WebCommand::Set { ref id, value } = cmd {
@@ -940,6 +1113,32 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>)
     }
 }
 
+/// Constant-time string comparison to mitigate timing attacks on the bearer token.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.bytes().zip(b.bytes()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
+/// Extract the `token` value from a query string without doing a substring search
+/// that would leak timing information.
+fn token_from_query(req: &Request<Body>) -> Option<&str> {
+    req.uri().query()?.split('&').find_map(|pair| {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next()?;
+        if key == "token" {
+            parts.next()
+        } else {
+            None
+        }
+    })
+}
+
 /// Bearer-token auth middleware.
 /// Accepts the token via `Authorization: Bearer <token>` header or `?token=<token>` query param.
 /// When `lan_trust` is enabled in server state, all requests pass through without a token.
@@ -963,14 +1162,12 @@ async fn auth_middleware(
         .and_then(|h| h.to_str().ok());
 
     let auth_ok = match auth_header {
-        Some(header) if header == format!("Bearer {}", token) => true,
+        Some(header) => {
+            let expected = format!("Bearer {}", token);
+            constant_time_eq(header, &expected)
+        }
         _ => {
-            // Allow token via query parameter so the HTML page can be accessed
-            // directly in a browser (e.g. http://host:port/app_name?token=xxx).
-            req.uri()
-                .query()
-                .map(|q| q.contains(&format!("token={}", token)))
-                .unwrap_or(false)
+            token_from_query(&req).is_some_and(|q| constant_time_eq(q, &token))
         }
     };
 
@@ -1011,3 +1208,52 @@ const INPUT_HTML: &str = include_str!("input.html");
 const CONTROL_HTML: &str = include_str!("control.html");
 const MODULATION_HTML: &str = include_str!("modulation.html");
 const PRESETS_HTML: &str = include_str!("presets.html");
+
+#[cfg(test)]
+mod auth_merge_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::util::ServiceExt;
+
+    // Build the real create_router with a dummy API route merged in, exactly as
+    // the engine wires rustjay-api. Verifies the merged /api routes inherit the
+    // auth layer (regression guard for the route_layer-then-merge ordering).
+    fn router_with_api() -> Router {
+        let (server, _tx) = WebServer::new(WebConfig::default());
+        {
+            let mut s = server.state.lock().unwrap();
+            s.bearer_token = "secret".to_string();
+            s.lan_trust = false;
+        }
+        let api = Router::new().route("/api/health", get(|| async { "ok" }));
+        create_router(Arc::clone(&server.state), "app", "secret", Some(api))
+    }
+
+    #[tokio::test]
+    async fn merged_api_route_requires_auth() {
+        let app = router_with_api();
+        let resp = app
+            .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
+            "merged /api route must be behind auth");
+    }
+
+    #[tokio::test]
+    async fn merged_api_route_passes_with_token() {
+        let app = router_with_api();
+        let resp = app
+            .oneshot(
+                Request::get("/api/health")
+                    .header("Authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
