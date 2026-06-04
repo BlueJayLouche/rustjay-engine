@@ -785,7 +785,7 @@ mod tests {
     fn channel_count_clamped() {
         let mut mixer = Mixer::new();
         for i in 0..8 {
-            assert!(mixer.add_channel(Channel::new(&format!("{i}"), &format!("CH{i}"), Box::new(Stub))).is_ok());
+            assert!(mixer.add_channel(Channel::new(format!("{i}"), format!("CH{i}"), Box::new(Stub))).is_ok());
         }
         assert!(mixer.add_channel(Channel::new("overflow", "OVF", Box::new(Stub))).is_err());
 

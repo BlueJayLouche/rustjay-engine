@@ -203,6 +203,7 @@ impl FrameHistory {
 // Effect plugin
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct DeltaEffect {
     // Custom pipeline + history (created in init())
     pipeline: Option<wgpu::RenderPipeline>,
@@ -214,19 +215,6 @@ struct DeltaEffect {
     uniform_bind_group: Option<wgpu::BindGroup>,
 }
 
-impl Default for DeltaEffect {
-    fn default() -> Self {
-        Self {
-            pipeline: None,
-            texture_bind_group_layout: None,
-            uniform_bind_group_layout: None,
-            history: None,
-            vertex_buffer: None,
-            uniform_buffer: None,
-            uniform_bind_group: None,
-        }
-    }
-}
 
 const DELTA_SHADER: &str = include_str!("shaders/delta.wgsl");
 

@@ -10,6 +10,7 @@
 
 pub mod routes;
 pub mod openapi;
+pub mod ws;
 
 #[cfg(test)]
 mod tests;
@@ -103,6 +104,8 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/modulation/audio-route", post(routes::system::modulation_audio_route))
         .route("/api/modulation/audio-unroute", post(routes::system::modulation_audio_unroute))
         .route("/api/modulation/tap-tempo", post(routes::system::modulation_tap_tempo))
+        // ── WebSocket (JSON-Patch deltas) ─────────────────────────
+        .route("/api/ws", axum::routing::get(ws::ws_upgrade))
         // ── OpenAPI / Swagger ───────────────────────────────────
         .merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi::ApiDoc::openapi()))
         // ── Middleware ───────────────────────────────────────────

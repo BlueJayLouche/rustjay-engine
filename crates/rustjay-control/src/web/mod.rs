@@ -5,6 +5,8 @@
 
 // The wire-protocol command/response structs below are self-describing by field name.
 #![allow(missing_docs)]
+// Router/handler builders thread many params by design.
+#![allow(clippy::too_many_arguments)]
 
 use axum::{
     extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query, Json},
@@ -43,6 +45,9 @@ pub struct WebConfig {
     pub enabled: bool,
     /// When true, clients on the same LAN subnet connect without a token.
     pub lan_trust: bool,
+    /// Optional fixed bearer token. When `None`, a random token is generated
+    /// per launch. When `Some`, the provided token is used instead.
+    pub token: Option<String>,
 }
 
 impl Default for WebConfig {
@@ -53,6 +58,7 @@ impl Default for WebConfig {
             app_name: "rustjay-template".to_string(),
             enabled: false,
             lan_trust: false,
+            token: None,
         }
     }
 }
@@ -351,7 +357,7 @@ impl WebServer {
         let (broadcast_tx, _) = broadcast::channel(100);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
 
-        let bearer_token = generate_token();
+        let bearer_token = config.token.clone().unwrap_or_else(generate_token);
         let lan_trust = config.lan_trust;
 
         let pending_devices = std::sync::Arc::new(std::sync::Mutex::new(None));

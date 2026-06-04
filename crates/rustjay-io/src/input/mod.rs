@@ -48,15 +48,24 @@ pub mod ndi;
 #[cfg(feature = "ndi")]
 pub use ndi::{list_ndi_sources, NdiReceiver};
 
+/// Placeholder NDI receiver (NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
+#[allow(dead_code)]
 pub struct NdiReceiver;
+/// Placeholder NDI frame (NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
+#[allow(dead_code)]
 pub struct NdiFrame {
+    /// Frame pixel data.
     pub data: Vec<u8>,
+    /// Frame width in pixels.
     pub width: u32,
+    /// Frame height in pixels.
     pub height: u32,
 }
+/// List NDI sources (empty; NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
+#[allow(dead_code)]
 pub fn list_ndi_sources(_timeout_ms: u64) -> Vec<String> {
     vec![]
 }
@@ -259,6 +268,7 @@ impl InputManager {
         self.ndi_sources.as_deref().unwrap_or(&[])
     }
 
+    /// NDI source names (empty; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn ndi_sources(&self) -> &[String] {
         &[]
@@ -354,7 +364,7 @@ impl InputManager {
                 sources
             };
             #[cfg(not(feature = "ndi"))]
-            let ndi: Vec<String> = Vec::new();
+            let _ndi: Vec<String> = Vec::new();
 
             #[cfg(target_os = "windows")]
             let spout = {
@@ -474,6 +484,7 @@ impl InputManager {
         Ok(())
     }
 
+    /// Start NDI input (errors; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn start_ndi(&mut self, _source_name: impl Into<String>) -> Result<()> {
         Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
@@ -616,7 +627,7 @@ impl InputManager {
 
         // Handle Syphon frames (zero-copy texture path)
         #[cfg(target_os = "macos")]
-        if let (Some(ref mut syphon), Some(ref device), Some(ref queue)) =
+        if let (Some(ref mut syphon), Some(device), Some(queue)) =
             (self.syphon_receiver.as_mut(), self.syphon_device.as_ref(), self.syphon_queue.as_ref())
         {
             if syphon.try_receive_texture(device, queue) {
@@ -699,6 +710,7 @@ impl InputManager {
         self.ndi_receiver.as_ref().map(|r| r.is_source_lost()).unwrap_or(false)
     }
 
+    /// Whether the NDI source was lost (always false; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn is_ndi_source_lost(&self) -> bool {
         false

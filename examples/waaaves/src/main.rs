@@ -14,6 +14,7 @@ use state::*;
 use uniforms::*;
 
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct WaaavesEffect {
     // Pipelines
     pipeline_a: Option<wgpu::RenderPipeline>,
@@ -53,38 +54,6 @@ pub struct WaaavesEffect {
     bg_inter_c: Option<wgpu::BindGroup>,
 }
 
-impl Default for WaaavesEffect {
-    fn default() -> Self {
-        Self {
-            pipeline_a: None,
-            pipeline_b: None,
-            pipeline_c: None,
-            bgl_a: None,
-            bgl_b: None,
-            bgl_c: None,
-            bgl_uniform: None,
-            intermediate_a: None,
-            intermediate_b: None,
-            fb1: None,
-            fb2: None,
-            uniform_buf_a: None,
-            uniform_buf_b: None,
-            uniform_buf_c: None,
-            uniform_bg_a: None,
-            uniform_bg_b: None,
-            uniform_bg_c: None,
-            sampler: None,
-            dummy: None,
-            cached_width: 0,
-            cached_height: 0,
-            cached_max_delay: 0,
-            fb1_bind_groups: Vec::new(),
-            fb2_bind_groups: Vec::new(),
-            bg_inter_b: None,
-            bg_inter_c: None,
-        }
-    }
-}
 
 impl EffectPlugin for WaaavesEffect {
     type State = WaaavesState;
@@ -542,6 +511,26 @@ fn sync_to_frames(division_index: i32, bpm: f32, fps: f32, max: u32) -> u32 {
     frames.round().clamp(1.0, max as f32) as u32
 }
 
+fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_default_env()
+        .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
+        .filter_module("naga", log::LevelFilter::Warn)
+        .filter_module("wgpu_core", log::LevelFilter::Warn)
+        .filter_module("winit", log::LevelFilter::Warn)
+        .filter_module("tracing::span", log::LevelFilter::Warn)
+        .init();
+
+    log::info!("Starting RustJay Waaaves v{}", env!("CARGO_PKG_VERSION"));
+    rustjay_engine::run_with_tabs(
+        WaaavesEffect::default(),
+        vec![
+            Box::new(tabs::block1_tab::Block1Tab),
+            Box::new(tabs::block2_tab::Block2Tab),
+            Box::new(tabs::block3_tab::Block3Tab),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,24 +550,4 @@ mod tests {
     fn sync_to_frames_minimum_one() {
         assert_eq!(sync_to_frames(0, 300.0, 60.0, 30), 1);
     }
-}
-
-fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_default_env()
-        .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
-        .filter_module("naga", log::LevelFilter::Warn)
-        .filter_module("wgpu_core", log::LevelFilter::Warn)
-        .filter_module("winit", log::LevelFilter::Warn)
-        .filter_module("tracing::span", log::LevelFilter::Warn)
-        .init();
-
-    log::info!("Starting RustJay Waaaves v{}", env!("CARGO_PKG_VERSION"));
-    rustjay_engine::run_with_tabs(
-        WaaavesEffect::default(),
-        vec![
-            Box::new(tabs::block1_tab::Block1Tab),
-            Box::new(tabs::block2_tab::Block2Tab),
-            Box::new(tabs::block3_tab::Block3Tab),
-        ],
-    )
 }

@@ -338,7 +338,7 @@ impl<P: EffectPlugin> App<P> {
                         "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
                         "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
                         _ => {
-                            if let Some(id) = path.split('/').last() {
+                            if let Some(id) = path.split('/').next_back() {
                                 if shared.param_descriptors.iter().any(|d| d.id == id) {
                                     shared.set_param_base(id, *value);
                                 }
@@ -523,9 +523,9 @@ impl<P: EffectPlugin> App<P> {
         }
         self.last_device_poll = poll_now;
 
-        let done = self.input_manager.as_mut().map_or(false, |m| m.poll_discovery());
+        let done = self.input_manager.as_mut().is_some_and(|m| m.poll_discovery());
         if done {
-            if let Some(ref manager) = self.input_manager.as_ref() {
+            if let Some(manager) = self.input_manager.as_ref() {
                 if self.use_egui {
                     #[cfg(feature = "egui")]
                     if let Some(ref mut gui) = self.egui_control_gui.as_mut() {
@@ -551,7 +551,7 @@ impl<P: EffectPlugin> App<P> {
 
         if self.use_egui {
             #[cfg(feature = "egui")]
-            if let (Some(ref mut renderer), Some(ref gui)) =
+            if let (Some(ref mut renderer), Some(gui)) =
                 (self.egui_renderer.as_mut(), self.egui_control_gui.as_ref())
             {
                 let mut encoder = renderer.device().create_command_encoder(
@@ -595,7 +595,7 @@ impl<P: EffectPlugin> App<P> {
                     renderer.queue().submit(std::iter::once(encoder.finish()));
                 }
             }
-        } else if let (Some(ref mut renderer), Some(ref gui)) =
+        } else if let (Some(ref mut renderer), Some(gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
             let mut encoder = renderer.device().create_command_encoder(

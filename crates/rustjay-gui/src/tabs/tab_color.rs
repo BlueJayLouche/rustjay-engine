@@ -53,7 +53,7 @@ impl ControlGui {
                 }
             }
             ui.same_line();
-            ui.text_colored(HUE_COLOR, &format!("{:+.0}°", hsb.hue_shift));
+            ui.text_colored(HUE_COLOR, format!("{:+.0}°", hsb.hue_shift));
 
             // Saturation
             {
@@ -70,7 +70,7 @@ impl ControlGui {
                 }
             }
             ui.same_line();
-            ui.text_colored(SAT_COLOR, &format!("{:.2}x", hsb.saturation));
+            ui.text_colored(SAT_COLOR, format!("{:.2}x", hsb.saturation));
 
             // Brightness
             {
@@ -87,7 +87,7 @@ impl ControlGui {
                 }
             }
             ui.same_line();
-            ui.text_colored(BRITE_COLOR, &format!("{:.2}x", hsb.brightness));
+            ui.text_colored(BRITE_COLOR, format!("{:.2}x", hsb.brightness));
 
             ui.spacing();
             ui.separator();
@@ -119,7 +119,7 @@ impl ControlGui {
                 ui.same_line();
                 ui.text_colored(
                     [0.2, 0.8, 0.2, 1.0],
-                    &format!("({} active)", active_lfos)
+                    format!("({} active)", active_lfos)
                 );
             }
         } else {

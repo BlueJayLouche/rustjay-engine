@@ -196,7 +196,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     self.wgpu_queue = Some(Arc::clone(&engine.queue));
                     self.output_engine = Some(engine);
 
-                    if let (Some(ref mut manager), Some(ref device), Some(ref queue)) =
+                    if let (Some(ref mut manager), Some(device), Some(queue)) =
                         (self.input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
                     {
                         manager.initialize(device, queue);
@@ -226,7 +226,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                             }
                         }
                     }
-                    if let (Some(ref mut manager), Some(ref device), Some(ref queue)) =
+                    if let (Some(ref mut manager), Some(device), Some(queue)) =
                         (self.second_input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
                     {
                         manager.initialize(device, queue);
@@ -399,8 +399,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                         self.trigger_tap_tempo();
                                     }
                                 }
-                                winit::keyboard::Key::Named(named) => {
-                                    if self.shift_pressed {
+                                winit::keyboard::Key::Named(named)
+                                    if self.shift_pressed => {
                                         let slot = match named {
                                             winit::keyboard::NamedKey::F1 => Some(1),
                                             winit::keyboard::NamedKey::F2 => Some(2),
@@ -419,7 +419,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                             }
                                         }
                                     }
-                                }
                                 _ => {}
                             }
                         }
@@ -427,13 +426,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     WindowEvent::Occluded(occluded) => {
                         self.output_occluded = occluded;
                     }
-                    WindowEvent::Resized(size) => {
-                        if !self.output_occluded {
+                    WindowEvent::Resized(size)
+                        if !self.output_occluded => {
                             if let Some(ref mut engine) = self.output_engine {
                                 engine.resize(size.width, size.height);
                             }
                         }
-                    }
                     _ => {}
                 }
                 return;
@@ -485,8 +483,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                             }
                         }
                     }
-                    WindowEvent::Resized(size) => {
-                        if self.control_visible {
+                    WindowEvent::Resized(size)
+                        if self.control_visible => {
                             if self.use_egui {
                                 #[cfg(feature = "egui")]
                                 if let Some(ref mut renderer) = self.egui_renderer {
@@ -496,9 +494,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                 renderer.resize(size.width, size.height);
                             }
                         }
-                    }
-                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        if self.control_visible {
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. }
+                        if self.control_visible => {
                             if self.use_egui {
                                 #[cfg(feature = "egui")]
                                 if let Some(ref mut renderer) = self.egui_renderer {
@@ -516,10 +513,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                 renderer.set_display_size(logical_width, logical_height);
                             }
                         }
-                    }
                     _ => {}
                 }
-                return;
             }
         }
     }
@@ -595,7 +590,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.ui_needs_redraw = false;
             if self.use_egui {
                 #[cfg(feature = "egui")]
-                if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
+                if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) =
                     (self.control_window.as_ref(), self.egui_renderer.as_mut(), self.egui_control_gui.as_mut())
                 {
                     let scale_factor = window.scale_factor();
@@ -609,7 +604,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         log::error!("egui render error: {}", err);
                     }
                 }
-            } else if let (Some(ref window), Some(ref mut renderer), Some(ref mut gui)) =
+            } else if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) =
                 (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
             {
                 let scale_factor = window.scale_factor();

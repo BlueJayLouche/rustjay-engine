@@ -9,11 +9,12 @@ impl EguiControlGui {
     pub(crate) fn build_lfo_tab(&mut self, ui: &mut egui::Ui) {
         let (target_list, hsb_count, param_names) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut targets: Vec<LfoTarget> = Vec::new();
-            targets.push(LfoTarget::None);
-            targets.push(LfoTarget::HueShift);
-            targets.push(LfoTarget::Saturation);
-            targets.push(LfoTarget::Brightness);
+            let mut targets: Vec<LfoTarget> = vec![
+                LfoTarget::None,
+                LfoTarget::HueShift,
+                LfoTarget::Saturation,
+                LfoTarget::Brightness,
+            ];
             let hsb = targets.len() - 1;
             let mut names = std::collections::HashMap::new();
             for d in state.param_descriptors.iter() {

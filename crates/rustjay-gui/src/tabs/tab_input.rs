@@ -38,7 +38,7 @@ impl ControlGui {
         // Input 1 status
         ui.text("Input 1");
         if is_active {
-            ui.text_colored([0.0, 1.0, 0.0, 1.0], &format!("Active: {}", source_name));
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], format!("Active: {}", source_name));
         } else {
             ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
         }
@@ -54,7 +54,7 @@ impl ControlGui {
         // Input 2 status
         ui.text("Input 2");
         if is_active2 {
-            ui.text_colored([0.0, 1.0, 0.0, 1.0], &format!("Active: {}", source_name2));
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], format!("Active: {}", source_name2));
         } else {
             ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
         }
@@ -83,7 +83,7 @@ impl ControlGui {
                 if ui.button("Start Input 1##webcam") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.input_command = InputCommand::StartWebcam {
-                        device_index: self.selected_webcam as usize,
+                        device_index: self.selected_webcam,
                         width: 1920,
                         height: 1080,
                         fps: 30,
@@ -93,7 +93,7 @@ impl ControlGui {
                 if ui.button("Start Input 2##webcam") {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.second_input_command = InputCommand::StartWebcam {
-                        device_index: self.selected_webcam as usize,
+                        device_index: self.selected_webcam,
                         width: 1920,
                         height: 1080,
                         fps: 30,
@@ -117,7 +117,7 @@ impl ControlGui {
                 ui.combo_simple_string("Select NDI Source", &mut self.selected_ndi, &source_names);
 
                 if ui.button("Start Input 1##ndi") {
-                    let source_name = self.ndi_sources.get(self.selected_ndi as usize)
+                    let source_name = self.ndi_sources.get(self.selected_ndi)
                         .cloned()
                         .unwrap_or_default();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,7 +125,7 @@ impl ControlGui {
                 }
                 ui.same_line();
                 if ui.button("Start Input 2##ndi") {
-                    let source_name = self.ndi_sources.get(self.selected_ndi as usize)
+                    let source_name = self.ndi_sources.get(self.selected_ndi)
                         .cloned()
                         .unwrap_or_default();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());

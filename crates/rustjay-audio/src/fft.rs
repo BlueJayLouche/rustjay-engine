@@ -3,6 +3,10 @@
 //! All types in this module are safe to use from the real-time audio callback:
 //! no allocations, no mutexes — only atomics.
 
+// `process_audio_frame` takes pre-allocated `&mut Vec` buffers (documented) to
+// avoid RT-thread allocation, and threads many params for the same reason.
+#![allow(clippy::too_many_arguments, clippy::ptr_arg)]
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;

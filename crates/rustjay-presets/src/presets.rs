@@ -347,7 +347,7 @@ impl PresetBank {
     
     /// Assign a preset to a quick slot (1-8)
     pub fn assign_to_slot(&mut self, preset_index: usize, slot: usize) -> anyhow::Result<()> {
-        if slot < 1 || slot > 8 {
+        if !(1..=8).contains(&slot) {
             return Err(anyhow::anyhow!("Slot must be 1-8"));
         }
         if preset_index >= self.presets.len() {
@@ -362,14 +362,14 @@ impl PresetBank {
     
     /// Clear a quick slot
     pub fn clear_slot(&mut self, slot: usize) {
-        if slot >= 1 && slot <= 8 {
+        if (1..=8).contains(&slot) {
             self.quick_slots[slot - 1] = None;
         }
     }
     
     /// Get preset index for a quick slot
     pub fn get_slot(&self, slot: usize) -> Option<usize> {
-        if slot >= 1 && slot <= 8 {
+        if (1..=8).contains(&slot) {
             self.quick_slots[slot - 1]
         } else {
             None

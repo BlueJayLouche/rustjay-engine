@@ -279,7 +279,7 @@ impl AppSettings {
         state.midi_mappings = self.midi_mappings.iter().map(|m| {
             rustjay_core::MidiMappingSnapshot {
                 name: if m.name.is_empty() {
-                    m.param_path.split('/').last().unwrap_or(&m.param_path).to_string()
+                    m.param_path.split('/').next_back().unwrap_or(&m.param_path).to_string()
                 } else {
                     m.name.clone()
                 },

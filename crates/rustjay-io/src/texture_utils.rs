@@ -22,7 +22,7 @@
 /// assert_eq!(align_to(257, 256), 512);
 /// ```
 pub const fn align_to(value: u32, alignment: u32) -> u32 {
-    ((value + alignment - 1) / alignment) * alignment
+    value.div_ceil(alignment) * alignment
 }
 
 /// Calculate 256-byte aligned row pitch for BGRA8 textures.

@@ -83,6 +83,8 @@ pub struct EguiControlGui {
 impl EguiControlGui {
     /// Create a new control GUI.
     pub fn new(shared_state: Arc<std::sync::Mutex<EngineState>>) -> anyhow::Result<Self> {
+        // `ndi_name` is only read by the `ndi`-gated UI below.
+        #[cfg_attr(not(feature = "ndi"), allow(unused_variables))]
         let (ndi_name, syphon_name) = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             #[cfg(target_os = "macos")]
@@ -474,7 +476,7 @@ impl EguiControlGui {
         // Tab index on the right when active
         if active {
             let idx_g = p.layout_no_wrap(
-                format!("▶"),
+                "▶".to_string(),
                 egui::FontId::monospace(11.0),
                 AMBER,
             );

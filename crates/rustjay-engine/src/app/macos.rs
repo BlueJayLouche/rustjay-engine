@@ -10,6 +10,10 @@
 //! behavior. Monitor winit changelogs closely and consider upstreaming the
 //! needed hooks.
 
+// objc FFI: method-IMP transmutes (no clean named target type) and selector
+// type-encoding strings that read clearest as raw nul-terminated literals.
+#![allow(clippy::missing_transmute_annotations, clippy::manual_c_str_literals)]
+
 use std::sync::OnceLock;
 use winit::event_loop::EventLoopProxy;
 

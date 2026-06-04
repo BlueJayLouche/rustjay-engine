@@ -14,8 +14,10 @@ use crate::params::{ParameterDescriptor, ParamCategory};
 
 /// Commands sent to the input subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum InputCommand {
     /// No-op.
+    #[default]
     None,
     /// Start capturing from a webcam.
     StartWebcam {
@@ -60,14 +62,13 @@ pub enum InputCommand {
     RefreshDevices,
 }
 
-impl Default for InputCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the output subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum OutputCommand {
     /// No-op.
+    #[default]
     None,
     /// Start NDI output streaming (NDI feature only).
     #[cfg(feature = "ndi")]
@@ -103,14 +104,13 @@ pub enum OutputCommand {
     ResizeOutput,
 }
 
-impl Default for OutputCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the audio subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum AudioCommand {
     /// No-op.
+    #[default]
     None,
     /// Start audio capture and analysis.
     Start,
@@ -124,9 +124,6 @@ pub enum AudioCommand {
     SetFftSize(usize),
 }
 
-impl Default for AudioCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// The type of MIDI message used in a CC/Note/AT mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,8 +157,10 @@ pub struct MidiMappingSnapshot {
 
 /// Commands sent to the MIDI subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum MidiCommand {
     /// No-op.
+    #[default]
     None,
     /// Refresh the list of MIDI devices.
     RefreshDevices,
@@ -188,14 +187,13 @@ pub enum MidiCommand {
     RestoreMappings(Vec<MidiMappingSnapshot>),
 }
 
-impl Default for MidiCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the OSC subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum OscCommand {
     /// No-op.
+    #[default]
     None,
     /// Start the OSC server.
     Start,
@@ -207,14 +205,13 @@ pub enum OscCommand {
     RefreshAddresses,
 }
 
-impl Default for OscCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the preset subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum PresetCommand {
     /// No-op.
+    #[default]
     None,
     /// Save the current state as a new preset.
     Save {
@@ -238,14 +235,13 @@ pub enum PresetCommand {
     Refresh,
 }
 
-impl Default for PresetCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the web remote subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum WebCommand {
     /// No-op.
+    #[default]
     None,
     /// Start the web remote server.
     Start,
@@ -257,14 +253,13 @@ pub enum WebCommand {
     SetLanTrust(bool),
 }
 
-impl Default for WebCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the Ableton Link subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum LinkCommand {
     /// No-op.
+    #[default]
     None,
     /// Enable Link session participation.
     Enable,
@@ -274,14 +269,13 @@ pub enum LinkCommand {
     SetQuantum(f64),
 }
 
-impl Default for LinkCommand {
-    fn default() -> Self { Self::None }
-}
 
 /// Commands sent to the ProDJ Link subsystem.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum ProDjCommand {
     /// No-op.
+    #[default]
     None,
     /// Start listening for ProDJ Link devices.
     Start,
@@ -289,16 +283,15 @@ pub enum ProDjCommand {
     Stop,
 }
 
-impl Default for ProDjCommand {
-    fn default() -> Self { Self::None }
-}
 
 // ── Input type ─────────────────────────────────────────────────────────────
 
 /// Discriminant for the active video input source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum InputType {
     /// No input active.
+    #[default]
     None,
     /// Webcam / capture device.
     Webcam,
@@ -316,9 +309,6 @@ pub enum InputType {
     V4l2,
 }
 
-impl Default for InputType {
-    fn default() -> Self { Self::None }
-}
 
 impl InputType {
     /// Human-readable name for display in the UI.
@@ -464,10 +454,12 @@ pub struct CdjDevice {
 
 /// SMPTE frame rate reported by an MTC source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum MtcFrameRate {
     /// 24 frames per second.
     Fps24,
     /// 25 frames per second.
+    #[default]
     Fps25,
     /// 29.97 frames per second, drop-frame.
     Fps2997Drop,
@@ -497,9 +489,6 @@ impl MtcFrameRate {
     }
 }
 
-impl Default for MtcFrameRate {
-    fn default() -> Self { Self::Fps25 }
-}
 
 /// A SMPTE HH:MM:SS:FF timecode position.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -535,6 +524,7 @@ impl std::fmt::Display for SmpteTime {
 
 /// Live state of MIDI Timecode (MTC) receive.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct MtcState {
     /// `true` once any MTC message has been received on any MIDI port.
     pub running: bool,
@@ -546,16 +536,6 @@ pub struct MtcState {
     pub source_device: String,
 }
 
-impl Default for MtcState {
-    fn default() -> Self {
-        Self {
-            running: false,
-            playing: false,
-            position: SmpteTime::default(),
-            source_device: String::new(),
-        }
-    }
-}
 
 /// Live state of ProDJ Link sync.
 #[derive(Debug, Clone, Default)]

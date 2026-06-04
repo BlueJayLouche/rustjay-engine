@@ -894,7 +894,7 @@ mod tests {
         for i in 0..100 {
             let t = i as f32 / 100.0;
             let val = lfo.calculate(t, 0.01, &audio, 0.0);
-            assert!(val >= 0.0 && val <= 1.0, "Sine unipolar out of range: {val} at t={t}");
+            assert!((0.0..=1.0).contains(&val), "Sine unipolar out of range: {val} at t={t}");
         }
     }
 
@@ -911,7 +911,7 @@ mod tests {
         for i in 0..100 {
             let t = i as f32 / 100.0;
             let val = lfo.calculate(t, 0.01, &audio, 0.0);
-            assert!(val >= -1.0 && val <= 1.0, "Sine bipolar out of range: {val}");
+            assert!((-1.0..=1.0).contains(&val), "Sine bipolar out of range: {val}");
         }
     }
 
@@ -976,7 +976,7 @@ mod tests {
         for i in 0..100 {
             let t = i as f32 / 100.0;
             let val = lfo.calculate(t, 0.01, &audio, 0.0);
-            assert!(val >= -0.5 && val <= 0.5, "Amplitude scaling off: {val}");
+            assert!((-0.5..=0.5).contains(&val), "Amplitude scaling off: {val}");
         }
     }
 
@@ -1333,10 +1333,13 @@ mod tests {
         engine.assign("color", &uuid, 1.0, Some(0));
         engine.assign("color", &uuid, 0.5, Some(1));
         let r_mod = engine.get_modulation_for_component("color", Some(0));
-        let _g_mod = engine.get_modulation_for_component("color", Some(1));
+        let g_mod = engine.get_modulation_for_component("color", Some(1));
         let no_mod = engine.get_modulation_for_component("color", Some(2));
+        // Unassigned component has no modulation.
         assert_eq!(no_mod, 0.0);
-        assert!(r_mod != 0.0 || true);
+        // Same source drives both assigned components; component 1's scale (0.5)
+        // is half of component 0's (1.0), so its modulation is half.
+        assert!((g_mod - 0.5 * r_mod).abs() < 1e-6, "g_mod={g_mod} r_mod={r_mod}");
     }
 
     // ── AudioBandPreset tests ────────────────────────────────────────

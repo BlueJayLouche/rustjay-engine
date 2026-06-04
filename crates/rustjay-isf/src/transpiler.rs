@@ -5,6 +5,11 @@
 //! - Shadertoy-compat: `void mainImage(out vec4 fragColor, in vec2 fragCoord)` +
 //!   `void main() { mainImage(gl_FragColor, gl_FragCoord.xy); }` bridge
 
+// This is a line/char scanner with frequent lookahead (`lines[i+1]`, `chars[j]`)
+// and manual prefix/suffix matching; index-based loops and manual stripping read
+// more clearly here than iterator adapters.
+#![allow(clippy::needless_range_loop, clippy::manual_strip, clippy::while_let_loop)]
+
 use isf::{Isf, InputType};
 
 /// Maximum number of ISF uniforms (float/bool/int inputs + 4 built-ins).

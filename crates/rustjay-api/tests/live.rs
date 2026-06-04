@@ -67,6 +67,7 @@ fn start_server() -> (u16, String) {
         app_name: "test".to_string(),
         enabled: false,
         lan_trust: false,
+        token: None,
     };
     let (mut server, _tx) = WebServer::new(config);
     server.set_api_router(build_router());
@@ -137,4 +138,46 @@ fn live_consolidated_server() {
     );
     let r = http(port, &req);
     assert_eq!(r.status, 401, "WS upgrade without token must be 401");
+
+    // 8. Fixed-token server also returns 401 without the token.
+    assert_fixed_token_401();
+}
+
+/// Start a server with a fixed bearer token and verify 401 without it.
+/// This is appended to `live_consolidated_server` to avoid port races
+/// when multiple live tests run in parallel.
+fn assert_fixed_token_401() {
+    let port = free_port();
+    let config = WebConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        app_name: "test".to_string(),
+        enabled: false,
+        lan_trust: false,
+        token: Some("my-fixed-token".to_string()),
+    };
+    let (mut server, _tx) = WebServer::new(config);
+    server.set_api_router(build_router());
+    let engine = Arc::new(Mutex::new(rustjay_core::EngineState::new()));
+    server.set_engine_state(engine);
+    server.start().expect("server start");
+    // Keep the server alive for the whole test process.
+    std::mem::forget(server);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Without the fixed token → 401.
+    let r = http(port, "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert_eq!(r.status, 401, "GET /api/state without fixed token must be 401");
+
+    // With the fixed token → 200.
+    let req = "GET /api/state?token=my-fixed-token HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();
+    let r = http(port, &req);
+    assert_eq!(r.status, 200, "GET /api/state with fixed token must be 200");
 }

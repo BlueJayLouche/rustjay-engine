@@ -56,13 +56,12 @@ impl ControlGui {
         }
 
         let old_internal_preset = internal_preset_idx;
-        if ui.combo_simple_string("Preset##internal", &mut internal_preset_idx, &preset_names) {
-            if internal_preset_idx != old_internal_preset && internal_preset_idx > 0 {
+        if ui.combo_simple_string("Preset##internal", &mut internal_preset_idx, &preset_names)
+            && internal_preset_idx != old_internal_preset && internal_preset_idx > 0 {
                 let (_, w, h) = presets[internal_preset_idx];
                 self.pending_internal_width = w;
                 self.pending_internal_height = h;
             }
-        }
 
         // Manual input
         let mut w = self.pending_internal_width as i32;
@@ -92,13 +91,12 @@ impl ControlGui {
         }
 
         let old_output_preset = output_preset_idx;
-        if ui.combo_simple_string("Preset##output", &mut output_preset_idx, &preset_names) {
-            if output_preset_idx != old_output_preset && output_preset_idx > 0 {
+        if ui.combo_simple_string("Preset##output", &mut output_preset_idx, &preset_names)
+            && output_preset_idx != old_output_preset && output_preset_idx > 0 {
                 let (_, w, h) = presets[output_preset_idx];
                 self.pending_output_width = w;
                 self.pending_output_height = h;
             }
-        }
 
         // Manual input
         let mut ow = self.pending_output_width as i32;

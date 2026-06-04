@@ -4,24 +4,36 @@ on:
   push:
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # NDI is intentionally opt-in (it needs a proprietary SDK), so CI builds the
+      # default feature set (webcam, no ndi). These deps cover alsa (cpal) and the
+      # v4l/udev webcam path (nokhwa).
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: Validate WGSL shaders
         run: |
+          cargo install naga-cli --locked
           naga examples/waaaves/src/shaders/block_a.wgsl
           naga examples/waaaves/src/shaders/block_b.wgsl
           naga examples/waaaves/src/shaders/block_c.wgsl
       - name: Security audit
         run: |
-          cargo install cargo-audit --quiet
+          cargo install cargo-audit --locked
           cargo audit

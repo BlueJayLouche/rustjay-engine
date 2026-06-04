@@ -136,7 +136,7 @@ impl ControlGui {
                     imgui::TreeNodeFlags::empty()
                 };
 
-                if ui.collapsing_header(&cat.name(), flags) {
+                if ui.collapsing_header(cat.name(), flags) {
                     ui.indent();
                     for desc in &cat_params {
                         let path = format!("{}/{}", cat.name().to_lowercase(), desc.id);
@@ -180,7 +180,7 @@ impl ControlGui {
                     MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
                     MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                 };
-                ui.text(&format!("  {} -> {}", m.name, binding));
+                ui.text(format!("  {} -> {}", m.name, binding));
             }
         }
     }
@@ -254,12 +254,12 @@ impl ControlGui {
                     imgui::TreeNodeFlags::empty()
                 };
 
-                if ui.collapsing_header(&cat.name(), flags) {
+                if ui.collapsing_header(cat.name(), flags) {
                     ui.indent();
                     for desc in &cat_params {
                         let addr = format!("/rustjay/{}/{}", cat.name().to_lowercase(), desc.id);
                         ui.text(&addr);
-                        ui.text_disabled(&format!("  Range: {} to {} (step: {})", desc.min, desc.max, desc.step));
+                        ui.text_disabled(format!("  Range: {} to {} (step: {})", desc.min, desc.max, desc.step));
                     }
                     ui.unindent();
                 }

@@ -11,13 +11,13 @@ impl ControlGui {
         // Snapshot target list and param name lookup so we can map indices ↔ targets
         let (target_list, hsb_count, param_names) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let mut targets: Vec<LfoTarget> = Vec::new();
-            // Always include None
-            targets.push(LfoTarget::None);
-            // Include HSB for backward compatibility
-            targets.push(LfoTarget::HueShift);
-            targets.push(LfoTarget::Saturation);
-            targets.push(LfoTarget::Brightness);
+            // None + HSB targets (backward compatibility); more appended below.
+            let mut targets: Vec<LfoTarget> = vec![
+                LfoTarget::None,
+                LfoTarget::HueShift,
+                LfoTarget::Saturation,
+                LfoTarget::Brightness,
+            ];
             let hsb = targets.len() - 1; // count of non-None HSB targets
             let mut names = std::collections::HashMap::new();
             // Append custom modulatable params
@@ -45,7 +45,7 @@ impl ControlGui {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (state.effective_bpm(), state.effective_sync_source())
         };
-        ui.text(&format!("Tempo: {:.1} BPM  (source: {})", bpm, sync_source_name));
+        ui.text(format!("Tempo: {:.1} BPM  (source: {})", bpm, sync_source_name));
         ui.spacing();
 
         let waveforms = ["Sine", "Triangle", "Ramp Up", "Ramp Down", "Square"];
@@ -70,7 +70,7 @@ impl ControlGui {
             let _id_token = ui.push_id(format!("lfo_{}", i));
 
             if ui.collapsing_header(
-                &format!("LFO {} - {}", i + 1, if enabled { "ON" } else { "OFF" }),
+                format!("LFO {} - {}", i + 1, if enabled { "ON" } else { "OFF" }),
                 imgui::TreeNodeFlags::DEFAULT_OPEN
             ) {
                 // Enable/disable
@@ -107,7 +107,7 @@ impl ControlGui {
                 }
                 ui.same_line();
                 if tempo_sync {
-                    ui.text_disabled(&format!("= {:.2} Hz", beat_division_to_hz(division_idx, bpm)));
+                    ui.text_disabled(format!("= {:.2} Hz", beat_division_to_hz(division_idx, bpm)));
                 }
 
                 ui.separator();
