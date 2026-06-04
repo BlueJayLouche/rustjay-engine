@@ -428,14 +428,14 @@ impl OutputManager {
 
                 #[cfg(target_os = "windows")]
                 if let Some(ref mut spout) = self.spout_output {
-                    if let Err(e) = spout.submit_bytes(&data, width, height) {
+                    if let Err(e) = spout.submit_bytes(&_data, _width, _height) {
                         log::error!("Spout output error: {}", e);
                     }
                 }
 
                 #[cfg(target_os = "linux")]
                 if let Some(ref mut v4l2) = self.v4l2_output {
-                    if let Err(e) = v4l2.send_frame(&data, width, height) {
+                    if let Err(e) = v4l2.send_frame(&_data, _width, _height) {
                         log::error!("V4L2 output error: {}", e);
                     }
                 }
