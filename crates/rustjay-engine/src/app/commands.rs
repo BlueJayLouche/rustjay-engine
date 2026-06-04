@@ -588,7 +588,7 @@ impl<P: EffectPlugin> App<P> {
                         let s = lock(&self.shared_state);
                         (s.web_host.clone(), s.web_lan_trust)
                     };
-                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false, lan_trust };
+                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false, lan_trust, token: None };
                     let (new_server, cmd_tx) = WebServer::new(config);
                     *server = new_server;
                     self.web_command_tx = Some(cmd_tx);

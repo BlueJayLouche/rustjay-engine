@@ -542,6 +542,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     let (mut web_server, _web_tx) = WebServer::new(WebConfig {
         host: web_host.clone(), port: web_port,
         app_name: app_name.clone(), enabled: false, lan_trust: web_lan,
+        token: None,
     });
     web_server.register_default_parameters();
     web_server.register_parameters(&descriptors);

@@ -5463,6 +5463,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "varda"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "env_logger",
+ "log",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-isf",
+ "rustjay-mixer",
+ "rustjay-render",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
 name = "vello_common"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

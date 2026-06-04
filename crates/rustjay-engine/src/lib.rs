@@ -43,6 +43,31 @@ pub fn run<P: EffectPlugin>(plugin: P) -> Result<()> {
     run_with_tabs(plugin, vec![])
 }
 
+/// Parse `--web-token <token>` and `--bind <host>` from `std::env::args()` and
+/// apply them to the engine state before the app starts.
+fn apply_cli_args(state: &mut EngineState) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--web-token" => {
+                i += 1;
+                if i < args.len() {
+                    state.web_token = args[i].clone();
+                }
+            }
+            "--bind" => {
+                i += 1;
+                if i < args.len() {
+                    state.web_host = args[i].clone();
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
 /// Run the engine with the given plugin and custom GUI tabs.
 ///
 /// ```ignore
@@ -61,7 +86,9 @@ pub fn run_with_tabs<P: EffectPlugin>(
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
 ) -> Result<()> {
-    let shared_state = Arc::new(Mutex::new(EngineState::new()));
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
     app::run_app(shared_state, plugin, tabs, false)
 }
 
@@ -82,7 +109,9 @@ pub fn run_headless_with_tabs<P: EffectPlugin>(
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
 ) -> Result<()> {
-    let shared_state = Arc::new(Mutex::new(EngineState::new()));
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
     app::run_app(shared_state, plugin, tabs, true)
 }
 
@@ -105,7 +134,9 @@ pub fn run_with_egui_tabs<P: EffectPlugin>(
     plugin: P,
     tabs: Vec<Box<dyn AnyEguiTab>>,
 ) -> Result<()> {
-    let shared_state = Arc::new(Mutex::new(EngineState::new()));
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
     app::run_egui_app(shared_state, plugin, tabs)
 }
 

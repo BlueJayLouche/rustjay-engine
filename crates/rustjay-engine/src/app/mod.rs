@@ -302,9 +302,9 @@ impl<P: EffectPlugin> App<P> {
             }
         };
 
-        let (web_host, web_port, web_lan_trust) = {
+        let (web_host, web_port, web_lan_trust, web_token) = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.web_host.clone(), state.web_port, state.web_lan_trust)
+            (state.web_host.clone(), state.web_port, state.web_lan_trust, state.web_token.clone())
         };
         let (web_server, web_command_tx) = {
             let config = WebConfig {
@@ -313,6 +313,7 @@ impl<P: EffectPlugin> App<P> {
                 app_name: app_name.clone(),
                 enabled: false,
                 lan_trust: web_lan_trust,
+                token: if web_token.is_empty() { None } else { Some(web_token) },
             };
             let (mut server, cmd_tx) = WebServer::new(config);
             server.register_default_parameters();
