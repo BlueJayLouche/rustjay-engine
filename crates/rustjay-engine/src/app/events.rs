@@ -239,6 +239,18 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     return;
                 }
             }
+
+            #[cfg(feature = "projection")]
+            {
+                let inst = self.wgpu_instance.as_ref();
+                let device = self.wgpu_device.as_deref();
+                let adapter = self.wgpu_adapter.as_ref();
+                if let (Some(ref mut sub), Some(inst), Some(device), Some(adapter)) =
+                    (self.projection_subsystem.as_mut(), inst, device, adapter)
+                {
+                    sub.create_pending(event_loop, inst, device, adapter);
+                }
+            }
         }
 
         if !self.nogui && self.control_window.is_none() {
@@ -380,7 +392,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     WindowEvent::CursorEntered { .. } => {
                         output_window.set_cursor_visible(false);
                     }
-                    WindowEvent::KeyboardInput { event, .. } => {
+                    WindowEvent::KeyboardInput { ref event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
                             self.shift_pressed = event.state == winit::event::ElementState::Pressed;
                         }
@@ -463,7 +475,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         self.control_visible = false;
                         log::info!("Control window hidden");
                     }
-                    WindowEvent::KeyboardInput { event, .. } => {
+                    WindowEvent::KeyboardInput { ref event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
                             self.shift_pressed = event.state == winit::event::ElementState::Pressed;
                         }
@@ -515,6 +527,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         }
                     _ => {}
                 }
+            }
+        }
+
+        #[cfg(feature = "projection")]
+        if let Some(ref mut sub) = self.projection_subsystem {
+            if let Some(ref device) = self.wgpu_device {
+                if sub.handle_window_event(window_id, &event, device) {}
             }
         }
     }
@@ -580,6 +599,23 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 self.update_preview_textures();
             }
         }
+
+        #[cfg(feature = "projection")]
+        if let (Some(sub), Some(device), Some(queue), Some(engine)) = (
+            self.projection_subsystem.as_mut(),
+            self.wgpu_device.as_deref(),
+            self.wgpu_queue.as_deref(),
+            self.output_engine.as_ref(),
+        ) {
+            sub.render(
+                device,
+                queue,
+                &engine.render_target.view,
+                Some(&engine.render_target.texture),
+                [engine.render_target.width, engine.render_target.height],
+            );
+        }
+
         // Throttle the control-window UI rebuild/render to ~30 Hz (or sooner if a
         // window event arrived since the last render), independent of the output
         // `target_fps`. The output `engine.render(...)` above is unaffected.

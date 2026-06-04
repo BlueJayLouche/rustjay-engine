@@ -12,6 +12,7 @@ members = [
     "crates/rustjay-sync",
     "crates/rustjay-isf",
     "crates/rustjay-api",
+    "crates/rustjay-projection",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -21,6 +22,7 @@ members = [
     "examples/isf-example",
     "examples/delta-egui",
     "examples/mixer",
+    "examples/projection",
     "examples/varda",
 ]
 resolver = "2"
@@ -91,6 +93,7 @@ rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-
 rustjay-isf     = { path = "crates/rustjay-isf",     version = "0.1.0" }
 rustjay-api     = { path = "crates/rustjay-api",     version = "0.1.0" }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
+rustjay-projection = { path = "crates/rustjay-projection", version = "0.1.0" }
 syphon-core     = "0.1.1"
 syphon-metal    = "0.1.1"
 syphon-wgpu     = "0.1.1"

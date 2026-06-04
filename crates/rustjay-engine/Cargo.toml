@@ -19,6 +19,7 @@ rustjay-render  = { workspace = true }
 rustjay-mixer   = { workspace = true, optional = true }
 rustjay-sync    = { path = "../rustjay-sync", version = "0.1.0", optional = true }
 rustjay-api     = { workspace = true, optional = true }
+rustjay-projection = { workspace = true, optional = true }
 log             = { workspace = true }
 anyhow          = { workspace = true }
 wgpu              = { workspace = true }
@@ -53,6 +54,7 @@ webcam  = ["rustjay-io/webcam"]
 egui    = ["rustjay-gui/egui"]
 mixer   = ["dep:rustjay-mixer"]
 api     = ["dep:rustjay-api"]
+projection = ["dep:rustjay-projection"]
 spout   = []
 v4l2    = []
 link    = ["rustjay-sync/link", "rustjay-core/link", "rustjay-gui/link"]
