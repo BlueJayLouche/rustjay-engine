@@ -18,6 +18,12 @@ use utoipa::OpenApi;
         crate::routes::system::output_start_ndi,
         crate::routes::system::output_stop_ndi,
         crate::routes::system::output_resize,
+        crate::routes::system::output_start_syphon,
+        crate::routes::system::output_stop_syphon,
+        crate::routes::system::output_start_spout,
+        crate::routes::system::output_stop_spout,
+        crate::routes::system::output_start_v4l2,
+        crate::routes::system::output_stop_v4l2,
         // Audio
         crate::routes::system::audio_start,
         crate::routes::system::audio_stop,

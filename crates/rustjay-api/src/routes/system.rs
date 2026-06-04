@@ -403,6 +403,124 @@ pub async fn output_resize(State(state): State<SharedState>) -> impl IntoRespons
     }
 }
 
+/// `POST /api/output/start-syphon` (macOS)
+#[utoipa::path(
+    post,
+    path = "/api/output/start-syphon",
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_start_syphon(State(state): State<SharedState>) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StartSyphon,
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// `POST /api/output/stop-syphon` (macOS)
+#[utoipa::path(
+    post,
+    path = "/api/output/stop-syphon",
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_stop_syphon(State(state): State<SharedState>) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StopSyphon,
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// Start Spout sender request (Windows).
+#[derive(Deserialize, ToSchema)]
+pub struct StartSpoutBody {
+    /// Spout sender name.
+    pub sender_name: String,
+}
+
+/// `POST /api/output/start-spout` (Windows)
+#[utoipa::path(
+    post,
+    path = "/api/output/start-spout",
+    request_body = StartSpoutBody,
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_start_spout(
+    State(state): State<SharedState>,
+    Json(body): Json<StartSpoutBody>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StartSpout { sender_name: body.sender_name },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// `POST /api/output/stop-spout` (Windows)
+#[utoipa::path(
+    post,
+    path = "/api/output/stop-spout",
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_stop_spout(State(state): State<SharedState>) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StopSpout,
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// Start V4L2 loopback sink request (Linux).
+#[derive(Deserialize, ToSchema)]
+pub struct StartV4l2Body {
+    /// V4L2 loopback device path (e.g. `/dev/video10`).
+    pub device_path: String,
+}
+
+/// `POST /api/output/start-v4l2` (Linux)
+#[utoipa::path(
+    post,
+    path = "/api/output/start-v4l2",
+    request_body = StartV4l2Body,
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_start_v4l2(
+    State(state): State<SharedState>,
+    Json(body): Json<StartV4l2Body>,
+) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StartV4l2 { device_path: body.device_path },
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
+/// `POST /api/output/stop-v4l2` (Linux)
+#[utoipa::path(
+    post,
+    path = "/api/output/stop-v4l2",
+    responses((status = 200, body = CommandOk)),
+    tag = "Output"
+)]
+pub async fn output_stop_v4l2(State(state): State<SharedState>) -> impl IntoResponse {
+    match send_command(&state, rustjay_control::WebCommand::Output(
+        rustjay_control::OutputWebCommand::StopV4l2,
+    )) {
+        Ok(()) => command_ok().into_response(),
+        Err(m) => command_err(m).into_response(),
+    }
+}
+
 // ── MIDI ───────────────────────────────────────────────────────────
 
 /// `POST /api/midi/refresh-devices`

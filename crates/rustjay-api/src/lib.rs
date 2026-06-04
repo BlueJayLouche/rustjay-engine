@@ -60,6 +60,12 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/output/start-ndi", post(routes::system::output_start_ndi))
         .route("/api/output/stop-ndi", post(routes::system::output_stop_ndi))
         .route("/api/output/resize", post(routes::system::output_resize))
+        .route("/api/output/start-syphon", post(routes::system::output_start_syphon))
+        .route("/api/output/stop-syphon", post(routes::system::output_stop_syphon))
+        .route("/api/output/start-spout", post(routes::system::output_start_spout))
+        .route("/api/output/stop-spout", post(routes::system::output_stop_spout))
+        .route("/api/output/start-v4l2", post(routes::system::output_start_v4l2))
+        .route("/api/output/stop-v4l2", post(routes::system::output_stop_v4l2))
         // ── Audio ───────────────────────────────────────────────
         .route("/api/audio/start", post(routes::system::audio_start))
         .route("/api/audio/stop", post(routes::system::audio_stop))
