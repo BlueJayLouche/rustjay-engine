@@ -197,7 +197,7 @@ mod tests {
         }
     }
 
-    fn find_zones<'a>(results: &'a [AutoBlendResult], output_idx: usize) -> &'a SurfaceOverlapZones {
+    fn find_zones(results: &[AutoBlendResult], output_idx: usize) -> &SurfaceOverlapZones {
         &results
             .iter()
             .find(|r| r.output_idx == output_idx)

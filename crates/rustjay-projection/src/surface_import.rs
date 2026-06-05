@@ -457,6 +457,35 @@ mod tests {
     }
 
     #[test]
+    fn import_varda_stage_svg() {
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/stage.svg"
+        ));
+        assert!(path.exists(), "stage.svg fixture not found at {:?}", path);
+
+        let mesh = from_svg(path, 17, 17).unwrap();
+        assert_eq!(mesh.cols, 17);
+        assert_eq!(mesh.rows, 17);
+
+        // The stage outline should attract UVs away from identity.
+        let non_identity_count = mesh.points.iter()
+            .filter(|p| (p.position[0] - p.uv[0]).abs() > 1e-3 || (p.position[1] - p.uv[1]).abs() > 1e-3)
+            .count();
+        assert!(
+            non_identity_count > 0,
+            "stage SVG should produce non-identity UVs, got {} non-identity points",
+            non_identity_count
+        );
+
+        // All UVs must remain in [0,1]².
+        for pt in &mesh.points {
+            assert!(pt.uv[0] >= 0.0 && pt.uv[0] <= 1.0, "uv.x out of bounds: {}", pt.uv[0]);
+            assert!(pt.uv[1] >= 0.0 && pt.uv[1] <= 1.0, "uv.y out of bounds: {}", pt.uv[1]);
+        }
+    }
+
+    #[test]
     fn dxf_polyline_vertices_attract() {
         let dir = std::env::temp_dir();
         let path = dir.join("rustjay_test_poly.dxf");

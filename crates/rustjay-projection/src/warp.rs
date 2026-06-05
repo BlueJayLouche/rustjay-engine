@@ -368,18 +368,26 @@ pub struct WarpStage {
     num_indices: u32,
     cached_bind_group: Option<wgpu::BindGroup>,
     cached_input_ptr: Option<usize>,
+    /// Identity warp bypass — blit directly instead of running the warp pass.
+    is_identity: bool,
+    blit: Option<crate::identity::BlitPipeline>,
+    blit_vb: Option<wgpu::Buffer>,
 }
 
 impl WarpStage {
     /// Create a warp stage from a `WarpMesh`.
     pub fn from_mesh(device: &wgpu::Device, format: wgpu::TextureFormat, mesh: &WarpMesh) -> Self {
         let (vertices, indices) = build_mesh_buffers(mesh);
-        Self::new(device, format, &vertices, &indices, false, None)
+        let mut s = Self::new(device, format, &vertices, &indices, false, None);
+        if mesh.is_identity() {
+            s.set_identity_blit(device, format);
+        }
+        s
     }
 
     /// Create a warp stage from a `WarpMode`.
     pub fn from_mode(device: &wgpu::Device, format: wgpu::TextureFormat, mode: &WarpMode) -> Self {
-        match mode {
+        let mut s = match mode {
             WarpMode::CornerPin { corners } => {
                 // Corner-pin uses a unit-square vertex buffer; the homography
                 // maps src [0,1]² → dst corners in the vertex shader.
@@ -393,7 +401,11 @@ impl WarpStage {
                 let (vertices, indices) = build_mesh_buffers(mesh);
                 Self::new(device, format, &vertices, &indices, false, None)
             }
+        };
+        if mode.is_identity() {
+            s.set_identity_blit(device, format);
         }
+        s
     }
 
     fn new(
@@ -522,11 +534,36 @@ impl WarpStage {
             num_indices: indices.len() as u32,
             cached_bind_group: None,
             cached_input_ptr: None,
+            is_identity: false,
+            blit: None,
+            blit_vb: None,
         }
+    }
+
+    fn set_identity_blit(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        self.is_identity = true;
+        self.blit = Some(crate::identity::BlitPipeline::new(device, format));
+        use wgpu::util::DeviceExt;
+        let vertices: &[crate::identity::BlitVertex] = &[
+            crate::identity::BlitVertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
+            crate::identity::BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
+            crate::identity::BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
+            crate::identity::BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
+            crate::identity::BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
+            crate::identity::BlitVertex { position: [ 1.0,  1.0], texcoord: [1.0, 0.0] },
+        ];
+        self.blit_vb = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Warp Identity Blit VB"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
     }
 
     /// Update the homography for corner-pin mode.
     pub fn set_homography(&mut self, queue: &wgpu::Queue, homography: &[f32; 9]) {
+        self.is_identity = false;
+        self.blit = None;
+        self.blit_vb = None;
         queue.write_buffer(
             &self.params_buffer,
             0,
@@ -556,6 +593,14 @@ impl ProjectionStage for WarpStage {
         output: &wgpu::TextureView,
         _output_size: [u32; 2],
     ) {
+        if self.is_identity {
+            if let (Some(blit), Some(vb)) = (self.blit.as_ref(), self.blit_vb.as_ref()) {
+                let bg = blit.create_bind_group(ctx.device, input);
+                blit.blit(ctx.encoder, &bg, output, vb);
+                return;
+            }
+        }
+
         let input_ptr = input as *const _ as usize;
         let bind_group = if self.cached_input_ptr == Some(input_ptr) {
             self.cached_bind_group.as_ref().unwrap()

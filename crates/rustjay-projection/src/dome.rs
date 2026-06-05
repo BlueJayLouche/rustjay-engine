@@ -76,7 +76,6 @@ pub struct DomeStage {
     face_views: Vec<wgpu::TextureView>,
     projection_pipeline: wgpu::RenderPipeline,
     projection_bind_group: wgpu::BindGroup,
-    sampler: wgpu::Sampler,
     params_buffer: wgpu::Buffer,
     /// Current domemaster configuration.
     pub config: DomemasterConfig,
@@ -280,7 +279,6 @@ impl DomeStage {
             face_views,
             projection_pipeline,
             projection_bind_group,
-            sampler,
             params_buffer,
             config,
             face_size,
@@ -453,10 +451,18 @@ mod tests {
 
         let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, output_size, output_size);
 
-        // Center pixel should sample the front-face center → white.
+        // With 0° tilt the zenith maps to the top face; the front face appears
+        // at the top edge of the fisheye image. Check a pixel that samples the
+        // front-face center (top-middle of output).
+        let front_idx = (output_size / 2) * 4;
+        let front = &pixels[front_idx as usize..front_idx as usize + 4];
+        assert!(front[0] > 200, "dome front-face sample should be bright, got {:?}", front);
+
+        // Center pixel samples the top face (cleared black in this simplified
+        // single-face projection).
         let center_idx = ((output_size / 2) * output_size + (output_size / 2)) * 4;
         let center = &pixels[center_idx as usize..center_idx as usize + 4];
-        assert!(center[0] > 200, "dome center should be bright, got {:?}", center);
+        assert!(center[0] < 50, "dome center (top face) should be black, got {:?}", center);
 
         // Edge pixel (top-left corner) is outside the fisheye circle → black.
         let edge = &pixels[0..4];

@@ -213,6 +213,8 @@ impl BlitPipeline {
 pub struct IdentityStage {
     blit: BlitPipeline,
     vertex_buffer: wgpu::Buffer,
+    cached_bind_group: Option<wgpu::BindGroup>,
+    cached_input_ptr: Option<usize>,
 }
 
 impl IdentityStage {
@@ -232,7 +234,7 @@ impl IdentityStage {
             contents: bytemuck::cast_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Self { blit, vertex_buffer }
+        Self { blit, vertex_buffer, cached_bind_group: None, cached_input_ptr: None }
     }
 }
 
@@ -249,8 +251,21 @@ impl ProjectionStage for IdentityStage {
         output: &wgpu::TextureView,
         _output_size: [u32; 2],
     ) {
-        let bind_group = self.blit.create_bind_group_nearest(ctx.device, input);
-        self.blit.blit(ctx.encoder, &bind_group, output, &self.vertex_buffer);
+        let input_ptr = input as *const _ as usize;
+        let bind_group = if self.cached_input_ptr == Some(input_ptr) {
+            self.cached_bind_group.as_ref().unwrap()
+        } else {
+            let bg = self.blit.create_bind_group_nearest(ctx.device, input);
+            self.cached_bind_group = Some(bg);
+            self.cached_input_ptr = Some(input_ptr);
+            self.cached_bind_group.as_ref().unwrap()
+        };
+        self.blit.blit(ctx.encoder, bind_group, output, &self.vertex_buffer);
+    }
+
+    fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {
+        self.cached_bind_group = None;
+        self.cached_input_ptr = None;
     }
 }
 

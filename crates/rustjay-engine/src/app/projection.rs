@@ -8,6 +8,7 @@ use winit::window::Window;
 
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
+    #[allow(dead_code)]
     window: Arc<Window>,
     /// The winit window ID for event routing.
     pub window_id: winit::window::WindowId,
@@ -216,6 +217,8 @@ pub struct ProjectionSubsystem {
     pub projectors: Vec<ProjectorOutput>,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
+    /// Last time projector outputs were rendered (for throttling).
+    last_render: Option<std::time::Instant>,
 }
 
 type StageFactory = Box<dyn FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>> + Send>;
@@ -237,6 +240,7 @@ impl ProjectionSubsystem {
         Self {
             projectors: Vec::new(),
             pending: Vec::new(),
+            last_render: None,
         }
     }
 
@@ -337,13 +341,14 @@ impl ProjectionSubsystem {
             }
         }
         if let Some(id) = remove_id {
-            self.projectors.retain(|p| p.window_id != id);
+            self.remove_output(id);
             return true;
         }
         remove_id.is_some()
     }
 
     /// Render all projector outputs from the given source texture.
+    /// Throttled to ~60 Hz to avoid burning CPU/GPU on unbounded polls.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -352,6 +357,14 @@ impl ProjectionSubsystem {
         source_texture: Option<&wgpu::Texture>,
         source_size: [u32; 2],
     ) {
+        const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_666); // ~60 Hz
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_render {
+            if now.duration_since(last) < MIN_INTERVAL {
+                return;
+            }
+        }
+        self.last_render = Some(now);
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
         }
