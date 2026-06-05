@@ -67,9 +67,9 @@ pub struct VardaAppState {
     /// Workspace handle for save/load.
     #[serde(skip)]
     pub workspace: crate::persistence::Workspace,
-    /// Frame counter for periodic auto-save.
+    /// Wall-clock timestamp of the last auto-save. None until the first save fires.
     #[serde(skip)]
-    pub auto_save_frame_counter: u32,
+    pub auto_save_last: Option<std::time::Instant>,
     /// Keymap bindings.
     #[serde(skip)]
     pub keymap: crate::keymap::Keymap,
@@ -118,7 +118,7 @@ impl Default for VardaAppState {
             #[cfg(feature = "mixer")]
             pending_scene: None,
             workspace: crate::persistence::default_workspace(),
-            auto_save_frame_counter: 0,
+            auto_save_last: None,
             keymap: crate::keymap::Keymap::default_bindings(),
         }
     }
@@ -265,7 +265,7 @@ impl VardaRootPlugin {
         // Phase 4 modulation demo: LFO + audio-band sources on crossfader
         let mod_arc = mixer.modulation.clone();
         {
-            let mut mod_eng = mod_arc.lock().unwrap();
+            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
             let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
                 waveform: rustjay_core::modulation::LFOWaveform::Sine,
                 frequency: 0.25,
@@ -302,7 +302,7 @@ impl VardaRootPlugin {
 
         // Demo: modulate every deck opacity with a slow triangle LFO.
         {
-            let mut mod_eng = mod_arc.lock().unwrap();
+            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
             let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
                 waveform: rustjay_core::modulation::LFOWaveform::Triangle,
                 frequency: 0.2,
@@ -406,7 +406,13 @@ impl EffectPlugin for VardaRootPlugin {
                     match state.workspace.load_stage() {
                         Ok(loaded_stage) => {
                             state.stage = loaded_stage;
+                            // Re-inject Arc handles wiped by serde(skip) on deserialize.
+                            state.stage.warp_sync = Some(self.warp_sync.clone());
+                            state.stage.dome_sync = Some(self.dome_sync.clone());
+                            state.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
                             state.stage.publish_warp();
+                            // Dome/edge-blend runtime state lives in the Sync structs and is
+                            // not serialized, so publish defaults here — ephemeral by design.
                             state.stage.publish_dome(false, rustjay_projection::DomemasterConfig::default(), [0.0; 3]);
                             state.stage.publish_edge_blend(rustjay_projection::EdgeBlendConfig::default());
                             log::info!("[Workspace] loaded stage with {} surfaces", state.stage.surfaces.len());
@@ -494,10 +500,12 @@ impl EffectPlugin for VardaRootPlugin {
             }
         }
 
-        // Auto-save workspace every ~30 seconds (1800 frames @ 60fps)
-        state.auto_save_frame_counter += 1;
-        if state.auto_save_frame_counter >= 1800 {
-            state.auto_save_frame_counter = 0;
+        // Auto-save workspace every 30 seconds (wall-clock, not frame-count).
+        let now = std::time::Instant::now();
+        let auto_save_elapsed = state.auto_save_last
+            .map_or(f32::MAX, |t| now.duration_since(t).as_secs_f32());
+        if auto_save_elapsed >= 30.0 {
+            state.auto_save_last = Some(now);
             #[cfg(feature = "mixer")]
             {
                 if let Ok(mixer) = state.mixer.lock() {
@@ -615,6 +623,8 @@ impl EffectPlugin for VardaRootPlugin {
             self.build_default_graph(device, queue);
 
             // Try to restore saved scene knobs onto the default graph.
+            // FIXME: hardcodes default_workspace() because init() has no access to State.
+            // Wire a workspace field onto the plugin when per-project paths are needed.
             let workspace = crate::persistence::default_workspace();
             if workspace.exists() {
                 match workspace.load_scene() {

@@ -39,6 +39,8 @@ fn main() -> anyhow::Result<()> {
                         .with_title("Varda Projector 1")
                         .with_inner_size(winit::dpi::LogicalSize::new(640u32, 480u32)),
                     move |device, format| {
+                        // Pipeline order: domemaster reproject → edge-blend seam correction → warp.
+                        // This matches the physical signal flow for a domed multi-projector rig.
                         vec![
                             Box::new(VardaDomeStage::new(device, format, dome_sync.clone())),
                             Box::new(VardaEdgeBlendStage::new(device, format, edge_blend_sync.clone())),

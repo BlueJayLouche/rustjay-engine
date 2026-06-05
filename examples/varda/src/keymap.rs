@@ -20,6 +20,9 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    /// Returns the default keybindings.
+    /// NOTE: dispatch is not yet wired; bindings are persisted for future use.
+    /// The actual Cmd+S shortcut is handled by a hardcoded egui check in MixerTab.
     pub fn default_bindings() -> Self {
         let mut bindings = HashMap::new();
         bindings.insert(

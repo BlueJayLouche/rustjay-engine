@@ -94,11 +94,17 @@ pub struct SequencerState {
     pub playing: bool,
     /// Whether to loop back to step 0 after the last step.
     pub looping: bool,
+    /// True once play() has been called at least once; distinguishes "not yet
+    /// started" from "finished" in is_done().
+    pub has_run: bool,
     /// Beat accumulator for the current step (used by Hold steps).
+    #[serde(skip)]
     step_elapsed_beats: f32,
     /// Active auto-crossfade for a Crossfade or TimedCrossfade step.
+    #[serde(skip)]
     auto: Option<AutoCrossfade>,
     /// Wall-clock accumulator for TimedHold steps (seconds).
+    #[serde(skip)]
     step_elapsed_seconds: f32,
 }
 
@@ -111,6 +117,7 @@ impl SequencerState {
     /// Start playback from the current step.
     pub fn play(&mut self) {
         self.playing = true;
+        self.has_run = true;
     }
 
     /// Stop playback and reset to step 0.
@@ -218,8 +225,9 @@ impl SequencerState {
     }
 
     /// Whether the sequencer has run through all steps and stopped.
+    /// Returns false for a sequencer that has never been played.
     pub fn is_done(&self) -> bool {
-        !self.playing && self.index == 0 && self.auto.is_none()
+        self.has_run && !self.playing && self.index == 0 && self.auto.is_none()
     }
 
     fn advance(&mut self) {
