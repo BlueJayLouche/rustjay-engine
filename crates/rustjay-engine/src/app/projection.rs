@@ -3,6 +3,7 @@
 //! Only compiled when the `projection` feature is enabled.
 
 use rustjay_projection::stage::ProjectionStage;
+use rustjay_projection::HeadlessOutput;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -215,6 +216,8 @@ fn create_intermediate(device: &wgpu::Device, width: u32, height: u32, format: w
 pub struct ProjectionSubsystem {
     /// Active projector windows.
     pub projectors: Vec<ProjectorOutput>,
+    /// Active headless outputs (offscreen texture + async readback).
+    pub headless_outputs: Vec<HeadlessOutput>,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
@@ -239,6 +242,7 @@ impl ProjectionSubsystem {
     pub fn new() -> Self {
         Self {
             projectors: Vec::new(),
+            headless_outputs: Vec::new(),
             pending: Vec::new(),
             last_render: None,
         }
@@ -347,7 +351,33 @@ impl ProjectionSubsystem {
         remove_id.is_some()
     }
 
-    /// Render all projector outputs from the given source texture.
+    /// Add a headless output (offscreen texture, no window).
+    ///
+    /// The output format is fixed to `Rgba8Unorm` (linear, non-sRGB).
+    pub fn add_headless_output(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        stages: Vec<Box<dyn ProjectionStage>>,
+    ) {
+        self.headless_outputs
+            .push(HeadlessOutput::new(device, width, height, stages));
+    }
+
+    /// Remove a headless output by index.
+    pub fn remove_headless_output(&mut self, index: usize) {
+        if index < self.headless_outputs.len() {
+            self.headless_outputs.remove(index);
+        }
+    }
+
+    /// Returns the latest readback frame for a headless output, if available.
+    pub fn headless_frame(&self, index: usize) -> Option<&[u8]> {
+        self.headless_outputs.get(index)?.latest_frame()
+    }
+
+    /// Render all projector and headless outputs from the given source texture.
     /// Throttled to ~60 Hz to avoid burning CPU/GPU on unbounded polls.
     pub fn render(
         &mut self,
@@ -367,6 +397,9 @@ impl ProjectionSubsystem {
         self.last_render = Some(now);
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
+        }
+        for headless in &mut self.headless_outputs {
+            headless.render(device, queue, source_view, source_texture, source_size);
         }
     }
 

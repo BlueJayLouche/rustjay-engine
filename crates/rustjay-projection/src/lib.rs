@@ -45,6 +45,10 @@ pub use surface_import::{
     ImportError, Surface,
 };
 
+/// Headless output with async GPU→CPU readback.
+pub mod headless;
+pub use headless::HeadlessOutput;
+
 /// Auto edge-blend computer (CPU-side overlap detection).
 #[cfg(feature = "auto-edge-blend")]
 pub mod auto_blend;
