@@ -11,24 +11,24 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | # | Capability | Task ID | Status |
 |---|-----------|---------|--------|
 | 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
-| 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | in-progress *(rustjay-isf + `EffectNode` done; `notify` watcher detects changes but reload wiring — recreate `EffectNode` for the affected deck — is still a TODO in `lib.rs::prepare`)* |
+| 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher + hot-reload recreates `EffectNode` on `.fs` change in `lib.rs::prepare`)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
 | 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo |
-| 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; each deck owns a session — sharing is a follow-up)* |
+| 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; `CameraSource` uses a global `Arc<Mutex<CameraSession>>` cache keyed by device index, preventing double-open)* |
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
 | 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
 | 8 | **Sources — NDI** receive | T02.1, T09.1 | done *(engine `rustjay-io/ndi_runtime`, feature-gated)* |
 | 9 | **Sources — SRT** receive | T02.2, T09.2 | todo |
 | 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | todo |
 | 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | todo |
-| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | in-progress *(scans ISF shaders dir + 2 builtins; image/video enumeration not yet populated — `Registry::scan` leaves `images`/`videos` empty)* |
+| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images; videos enumerated as stub unloadable entries — decode absent from `rustjay-io`)* |
 | 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
 | 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | todo |
 | 16 | **Transitions** — multi-channel sequencer (beat-synced or timed s/min/hr) | T12.2 | todo |
-| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | in-progress *(all 3 levels have add + per-effect enable APIs (`Deck`/`Channel::add_effect`+`set_effect_enabled`, `Mixer::add_master_effect`) with correct param prefixes; reorder deferred — FX prefixes are positional and need stable ids to survive a move — and GUI wiring is a follow-up)* |
-| 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(engine `rustjay-core` `LfoBank`)* |
-| 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT)* |
+| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | done *(stable FX UUID prefixes `fx<uuid>_` on deck FX; `reorder_fx`/`move_fx` APIs; per-effect enable on all 3 levels; GUI wiring is a follow-up)* |
+| 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(engine `rustjay-core` `LfoBank` + `ModulationEngine`)* |
+| 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT + `AudioBand` `ModulationSource`)* |
 | 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | todo *(engine gap)* |
 | 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | todo *(engine gap)* |
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
@@ -127,3 +127,4 @@ Given the probe results:
 - **2026-06-05** — Phase 1 routing graph core. `graph::Deck` + `graph::DeckCompositor` (implements `EffectInstance`) ported. Two channels × two ISF decks each, crossfader, per-deck opacity, blend modes, zero-opacity culling. Fixed `rustjay_mixer::Channel` param-prefix bug.
 - **2026-06-05** — Phase 2 sources. `ImageSource`, `SolidColorSource`, `CameraSource` (via rustjay-io), `Registry`, and `ShaderWatcher` (notify) implemented. Video/HAP decode deferred (rustjay-io gap).
 - **2026-06-05** — Review fixes (param scheme). Fixed deck-layer parameter plumbing: `Deck` now mirrors `rustjay_mixer::Channel` with cached `opacity_key`/`blend_key`; `DeckCompositor` reads effective opacity/blend through `engine.get_param` (deck-level MIDI/OSC/LFO/GUI now reach the graph) instead of local struct fields; removed the double `ch_<uuid>_ch_<uuid>_` prefix (compositor returns bare deck-prefixed ids, `Mixer` adds the single channel prefix); deck source/FX prefixes propagated to the canonical fully-qualified path via `Deck::set_full_prefix`. Dropped the per-frame `active` Vec allocation in the composite loop. Added `add_effect`/`set_effect_enabled` to `Deck` and `Channel`. Corrected rows 2/12/17 status.
+- **2026-06-05** — Phase 2 carry-over completion + Phase 3. ISF hot-reload wired (`lib.rs::prepare` recreates `EffectNode` on watcher events). Stable FX IDs implemented (`fx<uuid>_` prefixes, `reorder_fx`/`move_fx`). Registry now scans `assets_dir` for images and enumerates video stubs. Camera sharing implemented (global `Arc<Mutex<CameraSession>>` keyed by device index). Build verified green for `default`, `--no-default-features`, `--all-features`.

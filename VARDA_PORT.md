@@ -18,16 +18,14 @@ this is the phase-level rollup.
 |-------|-------|-------|
 | **0 — Scaffolding & parity harness** | ✅ done (T00.4 golden-image harness deferred) | Module tree, feature flags, parity tracker, rustjay-io coverage probe all in place. Golden-image diff harness (T00.4) not yet wired. |
 | **1 — Routing graph core** | ✅ done | Deck → DeckCompositor → `rustjay_mixer::Channel` → Mixer spine runs. Zero-opacity culling **verified to skip the GPU pass** (`compositor.rs`, not multiply-by-zero). Deck opacity/blend now read through `engine.get_param` (post-review fix). |
-| **2 — Sources** | 🟡 partial | ISF, camera, image, solid color, registry, `notify` watcher implemented. **Carry-overs:** ISF hot-reload *reload wiring* is a TODO (watcher only detects); registry does not enumerate images/videos; camera not yet shared across decks (double-open); video/HAP/SRT/HLS/DASH/RTMP absent (rustjay-io gap — port required, see PARITY probe). |
-| **3 — Effect chains** | 🟡 partial | `add_effect` + `set_effect_enabled` on `Deck` and `Channel`; `Mixer::add_master_effect` for master; per-effect enable honored in all three render paths; params reachable via canonical prefixes. **Carry-overs:** FX **reorder** deferred (positional prefixes need stable FX ids); deck/channel FX chains have no GUI and are not exercised in the demo assembly. |
-| **4–14** | ⬜ not started | Modulation, control, GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
+| **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
+| **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
+| **4 — Modulation** | 🟡 in-progress | `rustjay-core` `LfoBank` + `ModulationEngine` and `rustjay-audio` 2048-bin FFT are present in engine. Need to wire mixer `ModulationEngine` to canonical Varda param paths (`deck_<uuid>_opacity`, `ch_<uuid>_opacity`, `crossfader`, etc.) and add demo LFO/audio-band assignments. |
+| **5–14** | ⬜ not started | Control, GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
 ### Carry-over backlog (must be cleared before the relevant phase is "done")
 
-- **T02.1b** Wire ISF hot-reload: on a watcher event, recreate the affected deck's `EffectNode` (`lib.rs::prepare` has the TODO).
-- **T02.4b** Populate `Registry::scan` `images`/`videos` (image/video file enumeration), so the Library lists more than ISF + 2 builtins.
-- **T02.3b** Share one camera `InputManager` session across decks (no double-open).
-- **T03.1b** FX reorder with stable ids: replace positional `fx<index>_` prefixes with stable per-effect ids so a move doesn't re-map param values; then add reorder APIs on `Deck`/`Channel`.
+- **T04.1/4.2** Wire mixer `ModulationEngine` to Varda canonical param paths. Reuse `LfoBank` from `rustjay-core` and engine `AudioState` for audio-band routing.
 - **T00.4** Golden-image harness for headless render diffs (Phase-0 acceptance gate, deferred).
 
 ### Conventions established (do not regress)
