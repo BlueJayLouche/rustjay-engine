@@ -19,14 +19,17 @@ anyhow       = { workspace = true }
 
 # Optional deps for surface import / auto edge-blend
 image        = { workspace = true, optional = true }
+imageproc    = { workspace = true, optional = true }
+earcutr      = { workspace = true, optional = true }
 geo          = { version = "0.29", optional = true }
 usvg         = { version = "0.45", optional = true }
 dxf          = { version = "0.6", optional = true }
+thiserror    = { version = "2", optional = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
 
 [features]
 default = []
-surface-import = ["dep:image", "dep:usvg", "dep:dxf"]
+surface-import = ["dep:image", "dep:imageproc", "dep:earcutr", "dep:usvg", "dep:dxf", "dep:thiserror"]
 auto-edge-blend = ["dep:geo"]

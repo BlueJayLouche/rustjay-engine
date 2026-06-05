@@ -35,11 +35,15 @@ pub use slicer::{
     SLICER_GRID_COLS, SLICER_GRID_ROWS,
 };
 
-/// Surface import — SVG / DXF / raster → warp mesh.
+/// Surface import — SVG / DXF / raster → contours → `Surface` → `WarpMesh`.
 #[cfg(feature = "surface-import")]
 pub mod surface_import;
 #[cfg(feature = "surface-import")]
-pub use surface_import::{from_raster, from_svg, from_dxf};
+pub use surface_import::{
+    contour_to_warp_mesh, detect_from_dxf, detect_from_file, detect_from_image, detect_from_rgba,
+    detect_from_svg, DetectedContour, DetectionMethod, DetectionParams, DetectionResult, HullMode,
+    ImportError, Surface,
+};
 
 /// Auto edge-blend computer (CPU-side overlap detection).
 #[cfg(feature = "auto-edge-blend")]
