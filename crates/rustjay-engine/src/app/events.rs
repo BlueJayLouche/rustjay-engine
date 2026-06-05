@@ -245,10 +245,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 let inst = self.wgpu_instance.as_ref();
                 let device = self.wgpu_device.as_deref();
                 let adapter = self.wgpu_adapter.as_ref();
-                if let (Some(ref mut sub), Some(inst), Some(device), Some(adapter)) =
-                    (self.projection_subsystem.as_mut(), inst, device, adapter)
+                if let (Some(sub), Some(inst), Some(device), Some(adapter)) =
+                    (self.projection_subsystem.as_ref(), inst, device, adapter)
                 {
-                    sub.create_pending(event_loop, inst, device, adapter);
+                    if let Ok(ref mut sub) = sub.lock() {
+                        sub.create_pending(event_loop, inst, device, adapter);
+                    }
                 }
             }
         }
@@ -531,9 +533,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         }
 
         #[cfg(feature = "projection")]
-        if let Some(ref mut sub) = self.projection_subsystem {
+        if let Some(sub) = self.projection_subsystem.as_ref() {
             if let Some(ref device) = self.wgpu_device {
-                if sub.handle_window_event(window_id, &event, device) {}
+                if let Ok(ref mut sub) = sub.lock() {
+                    if sub.handle_window_event(window_id, &event, device) {}
+                }
             }
         }
     }
@@ -602,18 +606,20 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
 
         #[cfg(feature = "projection")]
         if let (Some(sub), Some(device), Some(queue), Some(engine)) = (
-            self.projection_subsystem.as_mut(),
+            self.projection_subsystem.as_ref(),
             self.wgpu_device.as_deref(),
             self.wgpu_queue.as_deref(),
             self.output_engine.as_ref(),
         ) {
-            sub.render(
-                device,
-                queue,
-                &engine.render_target.view,
-                Some(&engine.render_target.texture),
-                [engine.render_target.width, engine.render_target.height],
-            );
+            if let Ok(ref mut sub) = sub.lock() {
+                sub.render(
+                    device,
+                    queue,
+                    &engine.render_target.view,
+                    Some(&engine.render_target.texture),
+                    [engine.render_target.width, engine.render_target.height],
+                );
+            }
         }
 
         // Throttle the control-window UI rebuild/render to ~30 Hz (or sooner if a

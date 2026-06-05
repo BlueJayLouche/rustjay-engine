@@ -63,8 +63,10 @@ pub(crate) fn run_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection
         macos::setup_macos_app_delegate();
     }
 
-    if let Some(ref mut sub) = app.projection_subsystem {
-        projection_setup(sub);
+    if let Some(sub) = app.projection_subsystem.as_ref() {
+        if let Ok(ref mut sub) = sub.lock() {
+            projection_setup(sub);
+        }
     }
 
     event_loop.run_app(&mut app)?;
@@ -146,8 +148,10 @@ pub(crate) fn run_egui_app_with_projection<P: EffectPlugin, F: FnOnce(&mut proje
         macos::setup_macos_app_delegate();
     }
 
-    if let Some(ref mut sub) = app.projection_subsystem {
-        projection_setup(sub);
+    if let Some(sub) = app.projection_subsystem.as_ref() {
+        if let Ok(ref mut sub) = sub.lock() {
+            projection_setup(sub);
+        }
     }
 
     event_loop.run_app(&mut app)?;
@@ -267,7 +271,7 @@ pub(crate) struct App<P: EffectPlugin> {
 
     /// Optional projection-mapping subsystem (extra projector windows + stage chains).
     #[cfg(feature = "projection")]
-    pub(crate) projection_subsystem: Option<projection::ProjectionSubsystem>,
+    pub(crate) projection_subsystem: Option<projection::ProjectionSubsystemHandle>,
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -414,6 +418,9 @@ impl<P: EffectPlugin> App<P> {
             state.web_app_name = app_name.clone();
         }
 
+        #[cfg(feature = "projection")]
+        let shared_state_for_projection = Arc::clone(&shared_state);
+
         Self {
             shared_state,
             wgpu_instance: None,
@@ -473,7 +480,13 @@ impl<P: EffectPlugin> App<P> {
             #[cfg(feature = "drm-gles2")]
             drm_gles2: false,
             #[cfg(feature = "projection")]
-            projection_subsystem: Some(projection::ProjectionSubsystem::new()),
+            projection_subsystem: {
+                let sub = Arc::new(std::sync::Mutex::new(projection::ProjectionSubsystem::new()));
+                if let Ok(mut state) = shared_state_for_projection.lock() {
+                    state.projection_handle = Some(Arc::clone(&sub) as Arc<std::sync::Mutex<dyn std::any::Any + Send>>);
+                }
+                Some(sub)
+            },
         }
     }
 

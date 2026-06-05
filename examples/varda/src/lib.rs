@@ -73,6 +73,14 @@ pub struct VardaAppState {
     /// Keymap bindings.
     #[serde(skip)]
     pub keymap: crate::keymap::Keymap,
+    /// Cached projection subsystem handle for runtime headless output management.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub projection_handle: Option<std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send>>>,
+    /// Number of headless outputs already pushed to the projection subsystem.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub headless_pushed_count: usize,
 }
 
 impl VardaAppState {
@@ -120,6 +128,10 @@ impl Default for VardaAppState {
             workspace: crate::persistence::default_workspace(),
             auto_save_last: None,
             keymap: crate::keymap::Keymap::default_bindings(),
+            #[cfg(feature = "projection")]
+            projection_handle: None,
+            #[cfg(feature = "projection")]
+            headless_pushed_count: 0,
         }
     }
 }
@@ -384,6 +396,13 @@ impl EffectPlugin for VardaRootPlugin {
     fn prepare(&mut self, state: &mut VardaAppState, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         if !state.ready {
             state.ready = true;
+
+            // Capture projection subsystem handle for runtime headless management.
+            #[cfg(feature = "projection")]
+            {
+                state.projection_handle = engine.projection_handle.clone();
+            }
+
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let shaders_dir = manifest_dir.join("shaders");
             state.registry = Registry::scan(&shaders_dir, &manifest_dir.join("assets"));
@@ -523,6 +542,33 @@ impl EffectPlugin for VardaRootPlugin {
             }
             if let Err(e) = state.workspace.save_keymap(&state.keymap) {
                 log::warn!("[AutoSave] keymap failed: {}", e);
+            }
+        }
+
+        // Sync headless outputs: add any newly-enabled configs.
+        #[cfg(feature = "projection")]
+        {
+            let enabled_count = state.stage.headless_outputs.iter()
+                .filter(|h| h.enabled)
+                .count();
+            if enabled_count > state.headless_pushed_count {
+                if let Some(handle) = &state.projection_handle {
+                    if let Ok(mut any_guard) = handle.lock() {
+                        if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                            for (i, cfg) in state.stage.headless_outputs.iter().enumerate() {
+                                if cfg.enabled && i >= state.headless_pushed_count {
+                                    sub.add_headless_output(
+                                        cfg.width,
+                                        cfg.height,
+                                        vec![Box::new(rustjay_projection::IdentityStage::new(device, wgpu::TextureFormat::Rgba8Unorm))],
+                                    );
+                                    log::info!("[Headless] added {}x{} output '{}'", cfg.width, cfg.height, cfg.name);
+                                }
+                            }
+                            state.headless_pushed_count = enabled_count;
+                        }
+                    }
+                }
             }
         }
     }

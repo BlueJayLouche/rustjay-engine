@@ -763,13 +763,67 @@ mod egui_impl {
 
             ui.heading("Outputs");
             ui.separator();
-            ui.label("Multi-output window/display assignment, NDI, streaming, and recording.");
-            ui.label("Coming in Phase 8+.");
 
             #[cfg(feature = "projection")]
             {
+                // ── Projectors ──────────────────────────────────────────────
+                ui.label(egui::RichText::new("Projectors").strong());
+                let mut remove_proj: Option<usize> = None;
+                for (i, proj) in state.stage.projectors.iter_mut().enumerate() {
+                    ui.push_id(i, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut proj.enabled, "");
+                            ui.text_edit_singleline(&mut proj.name);
+                            ui.label("size:");
+                            ui.add(egui::DragValue::new(&mut proj.width).speed(10).range(1..=8192));
+                            ui.label("×");
+                            ui.add(egui::DragValue::new(&mut proj.height).speed(10).range(1..=8192));
+                            ui.label("monitor:");
+                            let mut monitor = proj.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
+                            if ui.add(egui::DragValue::new(&mut monitor).speed(1).range(-1..=16)).changed() {
+                                proj.fullscreen_monitor = if monitor < 0 { None } else { Some(monitor as usize) };
+                            }
+                            if ui.button("🗑").clicked() {
+                                remove_proj = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let Some(i) = remove_proj {
+                    state.stage.projectors.remove(i);
+                }
+                if ui.button("+ Add projector").clicked() {
+                    state.stage.projectors.push(crate::stage::VardaProjector::default());
+                }
                 ui.separator();
-                // Edge-blend controls (single-output manual config)
+
+                // ── Headless outputs ────────────────────────────────────────
+                ui.label(egui::RichText::new("Headless Outputs").strong());
+                let mut remove_hl: Option<usize> = None;
+                for (i, hl) in state.stage.headless_outputs.iter_mut().enumerate() {
+                    ui.push_id(format!("hl_{}", i), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut hl.enabled, "");
+                            ui.text_edit_singleline(&mut hl.name);
+                            ui.label("size:");
+                            ui.add(egui::DragValue::new(&mut hl.width).speed(10).range(1..=8192));
+                            ui.label("×");
+                            ui.add(egui::DragValue::new(&mut hl.height).speed(10).range(1..=8192));
+                            if ui.button("🗑").clicked() {
+                                remove_hl = Some(i);
+                            }
+                        });
+                    });
+                }
+                if let Some(i) = remove_hl {
+                    state.stage.headless_outputs.remove(i);
+                }
+                if ui.button("+ Add headless").clicked() {
+                    state.stage.headless_outputs.push(crate::stage::VardaHeadlessConfig::default());
+                }
+                ui.separator();
+
+                // Edge-blend controls
                 ui.label(egui::RichText::new("Edge Blend").strong());
                 let mut config = rustjay_projection::EdgeBlendConfig::default();
                 if let Some(sync) = &state.stage.edge_blend_sync {
@@ -802,6 +856,12 @@ mod egui_impl {
                 if dirty {
                     state.stage.publish_edge_blend(config);
                 }
+            }
+
+            #[cfg(not(feature = "projection"))]
+            {
+                ui.label("Projection feature not enabled.");
+                ui.label("Enable the 'projection' feature for multi-output support.");
             }
         }
     }

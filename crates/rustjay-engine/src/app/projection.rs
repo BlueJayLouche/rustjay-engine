@@ -7,6 +7,9 @@ use rustjay_projection::HeadlessOutput;
 use std::sync::Arc;
 use winit::window::Window;
 
+/// Opaque handle type for sharing the projection subsystem with the plugin.
+pub type ProjectionSubsystemHandle = Arc<std::sync::Mutex<ProjectionSubsystem>>;
+
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
     #[allow(dead_code)]
@@ -222,6 +225,8 @@ pub struct ProjectionSubsystem {
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
     last_render: Option<std::time::Instant>,
+    /// Shared GPU device, set once `create_pending()` has run.
+    device: Option<Arc<wgpu::Device>>,
 }
 
 type StageFactory = Box<dyn FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>> + Send>;
@@ -245,6 +250,7 @@ impl ProjectionSubsystem {
             headless_outputs: Vec::new(),
             pending: Vec::new(),
             last_render: None,
+            device: None,
         }
     }
 
@@ -277,6 +283,7 @@ impl ProjectionSubsystem {
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
     ) {
+        self.device = Some(Arc::new(device.clone()));
 
         for pending in self.pending.drain(..) {
             let window = match event_loop.create_window(pending.window_attrs) {
@@ -354,13 +361,16 @@ impl ProjectionSubsystem {
     /// Add a headless output (offscreen texture, no window).
     ///
     /// The output format is fixed to `Rgba8Unorm` (linear, non-sRGB).
+    /// Requires that `create_pending()` has already been called so the
+    /// shared device is available.
     pub fn add_headless_output(
         &mut self,
-        device: &wgpu::Device,
         width: u32,
         height: u32,
         stages: Vec<Box<dyn ProjectionStage>>,
     ) {
+        let device = self.device.as_ref()
+            .expect("add_headless_output called before create_pending");
         self.headless_outputs
             .push(HeadlessOutput::new(device, width, height, stages));
     }

@@ -971,6 +971,12 @@ pub struct EngineState {
     /// layer serves it verbatim via `GET /api/app/state` and includes it in
     /// the WebSocket delta stream.
     pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+
+    /// Opaque handle to the engine's projection subsystem, when the
+    /// `projection` feature is enabled.  The app can downcast this to
+    /// `Arc<std::sync::Mutex<ProjectionSubsystem>>` to add/remove headless
+    /// outputs or read back frames at runtime.
+    pub projection_handle: Option<Arc<std::sync::Mutex<dyn std::any::Any + Send>>>,
 }
 
 impl EngineState {
@@ -1052,6 +1058,7 @@ impl EngineState {
             param_lookup_prefix: RefCell::new(None),
             param_resolver: None,
             app_state: Arc::new(std::sync::Mutex::new(None)),
+            projection_handle: None,
         }
     }
 }

@@ -125,12 +125,16 @@ impl VardaSurface {
     }
 }
 
-/// The stage holds all surfaces.
+/// The stage holds all surfaces, projector configs, and headless output configs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VardaStage {
     pub surfaces: Vec<VardaSurface>,
     /// Stage canvas size in pixels (logical design resolution).
     pub canvas_size: [u32; 2],
+    /// Projector output windows.
+    pub projectors: Vec<VardaProjector>,
+    /// Headless (offscreen) outputs.
+    pub headless_outputs: Vec<VardaHeadlessConfig>,
     /// Shared warp state for the Master-routed surface, read each frame by the
     /// projector's [`VardaWarpStage`]. Injected by the plugin (`default_state`);
     /// the GUI publishes edits into it via [`VardaStage::publish_warp`]. Not
@@ -153,6 +157,8 @@ impl VardaStage {
         Self {
             surfaces: Vec::new(),
             canvas_size: [1920, 1080],
+            projectors: Vec::new(),
+            headless_outputs: Vec::new(),
             #[cfg(feature = "projection")]
             warp_sync: None,
             #[cfg(feature = "projection")]
@@ -165,6 +171,8 @@ impl VardaStage {
     pub fn with_default_surface() -> Self {
         let mut stage = Self::new();
         stage.surfaces.push(VardaSurface::full_frame("Main", "main"));
+        // One default projector
+        stage.projectors.push(VardaProjector::default());
         stage
     }
 
@@ -210,6 +218,78 @@ impl VardaStage {
                 g.mode = surf.warp.clone();
                 g.version = g.version.wrapping_add(1);
             }
+        }
+    }
+}
+
+/// Configuration for one projector output window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VardaProjector {
+    pub name: String,
+    pub enabled: bool,
+    pub width: u32,
+    pub height: u32,
+    /// `None` = windowed; `Some(index)` = fullscreen on monitor N.
+    pub fullscreen_monitor: Option<usize>,
+    /// Which surface's warp to apply (`None` = first Master surface).
+    pub surface_index: Option<usize>,
+    /// Use the global warp/dome/edge-blend syncs, or per-projector overrides.
+    #[cfg(feature = "projection")]
+    pub use_global_warp: bool,
+    #[cfg(feature = "projection")]
+    pub use_global_dome: bool,
+    #[cfg(feature = "projection")]
+    pub use_global_edge_blend: bool,
+    /// Per-projector overrides (only used when `use_global_*` is false).
+    #[cfg(feature = "projection")]
+    pub warp_mode: Option<rustjay_projection::WarpMode>,
+    #[cfg(feature = "projection")]
+    pub dome_enabled: Option<bool>,
+    #[cfg(feature = "projection")]
+    pub edge_blend_config: Option<rustjay_projection::EdgeBlendConfig>,
+}
+
+impl Default for VardaProjector {
+    fn default() -> Self {
+        Self {
+            name: "Projector".to_string(),
+            enabled: true,
+            width: 1920,
+            height: 1080,
+            fullscreen_monitor: None,
+            surface_index: None,
+            #[cfg(feature = "projection")]
+            use_global_warp: true,
+            #[cfg(feature = "projection")]
+            use_global_dome: true,
+            #[cfg(feature = "projection")]
+            use_global_edge_blend: true,
+            #[cfg(feature = "projection")]
+            warp_mode: None,
+            #[cfg(feature = "projection")]
+            dome_enabled: None,
+            #[cfg(feature = "projection")]
+            edge_blend_config: None,
+        }
+    }
+}
+
+/// Configuration for a headless (offscreen) output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VardaHeadlessConfig {
+    pub name: String,
+    pub enabled: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for VardaHeadlessConfig {
+    fn default() -> Self {
+        Self {
+            name: "Headless".to_string(),
+            enabled: false,
+            width: 1920,
+            height: 1080,
         }
     }
 }

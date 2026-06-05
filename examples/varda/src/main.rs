@@ -1,3 +1,6 @@
+#[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
+use rustjay_engine::EffectPlugin;
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_default_env()
         .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
@@ -28,26 +31,54 @@ fn main() -> anyhow::Result<()> {
         let warp_sync = plugin.warp_sync();
         let dome_sync = plugin.dome_sync();
         let edge_blend_sync = plugin.edge_blend_sync();
+
+        // Load saved stage config (projector/headless list) so we can register
+        // multiple projector windows at startup.
+        let mut stage = plugin.default_state().stage;
+        let workspace = varda::persistence::default_workspace();
+        if let Ok(loaded) = workspace.load_stage() {
+            stage.projectors = loaded.projectors;
+            stage.headless_outputs = loaded.headless_outputs;
+            log::info!("[Main] loaded stage with {} projector(s), {} headless output(s)",
+                stage.projectors.len(), stage.headless_outputs.len());
+        }
+
         rustjay_engine::run_with_projection_egui_tabs(
             plugin,
             tabs,
             move |sub| {
                 use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
                 use winit::window::WindowAttributes;
-                sub.add_projector(
-                    WindowAttributes::default()
-                        .with_title("Varda Projector 1")
-                        .with_inner_size(winit::dpi::LogicalSize::new(640u32, 480u32)),
-                    move |device, format| {
-                        // Pipeline order: domemaster reproject → edge-blend seam correction → warp.
-                        // This matches the physical signal flow for a domed multi-projector rig.
-                        vec![
-                            Box::new(VardaDomeStage::new(device, format, dome_sync.clone())),
-                            Box::new(VardaEdgeBlendStage::new(device, format, edge_blend_sync.clone())),
-                            Box::new(VardaWarpStage::new(device, format, warp_sync.clone())),
-                        ]
-                    },
-                );
+                for (i, proj) in stage.projectors.iter().enumerate() {
+                    if !proj.enabled {
+                        continue;
+                    }
+                    let attrs = WindowAttributes::default()
+                        .with_title(format!("Varda Projector {} - {}", i + 1, proj.name))
+                        .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
+                    if let Some(monitor_idx) = proj.fullscreen_monitor {
+                        // winit monitor selection — iterate available monitors
+                        // and pick the Nth one.  If the index is out of range,
+                        // fall back to windowed.
+                        // NOTE: event_loop is not available here; fullscreen
+                        // is applied after window creation in a follow-up.
+                        // For now we just size the window to the display.
+                        log::info!("[Projector {}] requested fullscreen on monitor {}", i, monitor_idx);
+                    }
+                    let w = warp_sync.clone();
+                    let d = dome_sync.clone();
+                    let e = edge_blend_sync.clone();
+                    sub.add_projector(
+                        attrs,
+                        move |device, format| {
+                            vec![
+                                Box::new(VardaDomeStage::new(device, format, d.clone())),
+                                Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
+                                Box::new(VardaWarpStage::new(device, format, w.clone())),
+                            ]
+                        },
+                    );
+                }
                 log::info!("Queued {} projector window(s)", sub.pending_len());
             },
         )
