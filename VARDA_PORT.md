@@ -9,6 +9,35 @@ assembled as `examples/varda`.
 
 ---
 
+## 0. Current status (2026-06-05)
+
+Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
+this is the phase-level rollup.
+
+| Phase | State | Notes |
+|-------|-------|-------|
+| **0 — Scaffolding & parity harness** | ✅ done (T00.4 golden-image harness deferred) | Module tree, feature flags, parity tracker, rustjay-io coverage probe all in place. Golden-image diff harness (T00.4) not yet wired. |
+| **1 — Routing graph core** | ✅ done | Deck → DeckCompositor → `rustjay_mixer::Channel` → Mixer spine runs. Zero-opacity culling **verified to skip the GPU pass** (`compositor.rs`, not multiply-by-zero). Deck opacity/blend now read through `engine.get_param` (post-review fix). |
+| **2 — Sources** | 🟡 partial | ISF, camera, image, solid color, registry, `notify` watcher implemented. **Carry-overs:** ISF hot-reload *reload wiring* is a TODO (watcher only detects); registry does not enumerate images/videos; camera not yet shared across decks (double-open); video/HAP/SRT/HLS/DASH/RTMP absent (rustjay-io gap — port required, see PARITY probe). |
+| **3 — Effect chains** | 🟡 partial | `add_effect` + `set_effect_enabled` on `Deck` and `Channel`; `Mixer::add_master_effect` for master; per-effect enable honored in all three render paths; params reachable via canonical prefixes. **Carry-overs:** FX **reorder** deferred (positional prefixes need stable FX ids); deck/channel FX chains have no GUI and are not exercised in the demo assembly. |
+| **4–14** | ⬜ not started | Modulation, control, GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
+
+### Carry-over backlog (must be cleared before the relevant phase is "done")
+
+- **T02.1b** Wire ISF hot-reload: on a watcher event, recreate the affected deck's `EffectNode` (`lib.rs::prepare` has the TODO).
+- **T02.4b** Populate `Registry::scan` `images`/`videos` (image/video file enumeration), so the Library lists more than ISF + 2 builtins.
+- **T02.3b** Share one camera `InputManager` session across decks (no double-open).
+- **T03.1b** FX reorder with stable ids: replace positional `fx<index>_` prefixes with stable per-effect ids so a move doesn't re-map param values; then add reorder APIs on `Deck`/`Channel`.
+- **T00.4** Golden-image harness for headless render diffs (Phase-0 acceptance gate, deferred).
+
+### Conventions established (do not regress)
+
+- **Parameter scheme:** every level's `parameters()` returns ids prefixed with **only its own component**; the enclosing level adds its prefix (`Mixer` adds `ch_<uuid>_`, `DeckCompositor` decks add `deck_<uuid>_`). At render, read modulated values through `engine.get_param(&cached_key)` — **never** from local struct fields. `Deck` mirrors `rustjay_mixer::Channel` (cached `opacity_key`/`blend_key`, `set_full_prefix` propagation). This is the fix for the "modulation does nothing" class of bug; keep new nodes consistent.
+- **Perf:** no per-frame allocations in `render`/`prepare`/`build_uniforms` (reuse scratch buffers, cache key strings); zero-opacity layers must skip the pass.
+- **Features:** heavy features (`ndi`/`api`/`projection`/streaming/recording/syphon) stay off by default; the `--no-default-features` build stays green and warning-clean.
+
+---
+
 ## 1. Decisions (locked)
 
 | Axis | Decision | Consequence |
@@ -126,7 +155,7 @@ adapting to the plugin model. **Extend** = the crate covers most of it; add the 
 Phases are ordered so each ends with something runnable. IDs follow the waaaves
 `Txx` convention. Each task notes **reuse/port/extend** and an acceptance check.
 
-### Phase 0 — Scaffolding & parity harness
+### Phase 0 — Scaffolding & parity harness ✅ *(T00.4 deferred)*
 - **T00.1** Promote `examples/varda` from stub to module tree: `graph/`, `scene/`,
   `stage/`, `sources/`, `ui/`, `persistence/`, `control/`. Keep the current
   mixer-as-root render spine working at every step.
@@ -137,7 +166,7 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - **T00.4** Golden-image harness: reuse `rustjay-projection/test_harness.rs` pattern
   for headless render diffs against reference frames.
 
-### Phase 1 — Routing graph core *(runnable: multi-deck → channel → mixer)*
+### Phase 1 — Routing graph core ✅ *(runnable: multi-deck → channel → mixer)*
 - **T01.1 [Port]** `graph::Deck` — source handle + opacity + `BlendMode` + scaling
   + FX chain slot. Renders to an offscreen `Texture`.
 - **T01.2 [Extend]** `graph::Channel` wraps `rustjay_mixer::Channel`; owns an ordered
@@ -149,7 +178,7 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - *Acceptance:* 2 channels × 2 ISF decks each, crossfader + per-deck opacity, all
   6 blend modes, zero-opacity culling verified by golden image.
 
-### Phase 2 — Sources *(runnable: every source type on a deck)*
+### Phase 2 — Sources 🟡 *(runnable: every source type on a deck)*
 - **T02.1 [Reuse]** ISF generators/filters via `rustjay-isf` + hot-reload (`notify`).
 - **T02.2 [Extend]** Video decode (ffmpeg) + loop/ping-pong/one-shot, speed, scrub,
   in/out — via `rustjay-io/input`. **Confirm/port HAP** GPU-native path (BC/YCoCg).
@@ -158,9 +187,11 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - *Acceptance:* each source type renders on a deck; HAP plays GPU-native; camera
   shared by 2 decks without double-open.
 
-### Phase 3 — Effect chains
+### Phase 3 — Effect chains 🟡
 - **T03.1 [Extend]** 3-level FX (deck / channel / master) as ordered `EffectNode`
   lists; reorder + per-effect enable. Master FX via `Mixer::add_master_effect`.
+  *(Done: add + per-effect enable at all 3 levels, canonical param prefixes.
+  Pending: T03.1b reorder with stable FX ids; demo/GUI exercising deck & channel FX.)*
 - **T03.2 [Reuse]** ISF filters as effects; typed params surfaced into the graph.
 - *Acceptance:* reorder/toggle an FX at each level; params modulatable.
 

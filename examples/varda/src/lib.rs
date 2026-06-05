@@ -12,18 +12,22 @@ pub mod sources;
 pub mod stage;
 pub mod ui;
 
-use rustjay_core::{
-    EffectInput, EffectInstance, EffectPlugin, EngineState, RenderCtx, RenderHookCtx, RenderTarget,
-};
+use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
+#[cfg(feature = "mixer")]
+use rustjay_core::{EffectInput, EffectInstance, RenderCtx, RenderTarget};
 #[cfg(feature = "mixer")]
 use rustjay_mixer::{Channel, Mixer};
+#[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
 use std::path::PathBuf;
+#[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "mixer")]
 use crate::graph::{Deck, DeckCompositor};
-use crate::sources::{CameraSource, Registry, ShaderWatcher, SolidColorSource};
+use crate::sources::{Registry, ShaderWatcher};
+#[cfg(feature = "mixer")]
+use crate::sources::{CameraSource, SolidColorSource};
 
 // ---------------------------------------------------------------------------
 // App state
@@ -108,6 +112,7 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     fn default_state(&self) -> VardaAppState {
+        #[cfg_attr(not(feature = "mixer"), allow(unused_mut))]
         let mut s = VardaAppState::default();
         #[cfg(feature = "mixer")]
         {
@@ -166,6 +171,7 @@ impl EffectPlugin for VardaRootPlugin {
         self.params_dirty = false;
     }
 
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn init(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(feature = "mixer")]
         {
@@ -209,6 +215,7 @@ impl EffectPlugin for VardaRootPlugin {
         }
     }
 
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn render(
         &mut self,
         ctx: &mut RenderHookCtx<'_>,

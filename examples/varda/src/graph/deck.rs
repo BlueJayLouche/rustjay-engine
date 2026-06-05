@@ -21,10 +21,19 @@ pub struct Deck {
     pub source: Box<dyn EffectInstance>,
     /// Ordered post-source FX chain.
     pub chain: Vec<EffectSlot>,
-    /// Mix opacity, 0.0–1.0.
+    /// Mix opacity, 0.0–1.0. Base value; `opacity_key` is the modulated source.
     pub opacity: f32,
-    /// How this deck blends onto the channel composite.
+    /// How this deck blends onto the channel composite. Base value;
+    /// `blend_key` is the modulated source.
     pub blend_mode: BlendMode,
+
+    /// Fully-qualified parameter prefix (`<channel>deck_<uuid>_`). Set once the
+    /// enclosing channel's prefix is known; defaults to the bare deck prefix.
+    full_prefix: String,
+    /// Cached lookup key for the deck opacity param (`<full_prefix>opacity`).
+    pub(crate) opacity_key: String,
+    /// Cached lookup key for the deck blend param (`<full_prefix>blend`).
+    pub(crate) blend_key: String,
 
     // GPU resources — allocated lazily on first render.
     texture: Option<Texture>,
@@ -40,19 +49,57 @@ impl Deck {
     pub fn new(uuid: impl Into<String>, name: impl Into<String>, mut source: Box<dyn EffectInstance>) -> Self {
         let uuid = uuid.into();
         let name = name.into();
-        source.set_param_prefix(&format!("deck_{}_", &uuid));
+        // Bare default prefix; upgraded to include the channel component once the
+        // deck is added to a channel (see `set_full_prefix`).
+        let full_prefix = format!("deck_{}_", &uuid);
+        source.set_param_prefix(&full_prefix);
         Self {
+            opacity_key: format!("{full_prefix}opacity"),
+            blend_key: format!("{full_prefix}blend"),
             uuid,
             name,
             source,
             chain: Vec::new(),
             opacity: 1.0,
             blend_mode: BlendMode::default(),
+            full_prefix,
             texture: None,
             ping: None,
             size: [0, 0],
             last_output: LastOutput::Texture,
             last_enabled_count: 0,
+        }
+    }
+
+    /// Assign the fully-qualified parameter prefix once the enclosing channel's
+    /// prefix is known. Recomputes the cached opacity/blend keys and re-prefixes
+    /// the source and every FX slot so all params resolve to a single canonical
+    /// path shared by registration, GUI, MIDI, OSC, and modulation.
+    ///
+    /// Mirrors `rustjay_mixer::Channel`'s cached `opacity_key`/`blend_key`.
+    pub(crate) fn set_full_prefix(&mut self, channel_prefix: &str) {
+        self.full_prefix = format!("{channel_prefix}deck_{}_", self.uuid);
+        self.opacity_key = format!("{}opacity", self.full_prefix);
+        self.blend_key = format!("{}blend", self.full_prefix);
+        self.source.set_param_prefix(&self.full_prefix);
+        for (i, slot) in self.chain.iter_mut().enumerate() {
+            slot.effect.set_param_prefix(&format!("{}fx{}_", self.full_prefix, i));
+        }
+    }
+
+    /// Append an FX to this deck's chain, assigning its parameter prefix
+    /// (`<full_prefix>fx<index>_`) so its params are reachable by control/modulation.
+    pub fn add_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
+        let prefix = format!("{}fx{}_", self.full_prefix, self.chain.len());
+        effect.set_param_prefix(&prefix);
+        self.chain.push(EffectSlot::new(effect));
+    }
+
+    /// Enable or disable the FX at `index` without removing it. Out-of-range
+    /// indices are ignored.
+    pub fn set_effect_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(slot) = self.chain.get_mut(index) {
+            slot.enabled = enabled;
         }
     }
 

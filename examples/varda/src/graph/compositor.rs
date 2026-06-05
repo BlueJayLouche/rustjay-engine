@@ -30,6 +30,11 @@ pub struct DeckCompositor {
     acc_b: Option<Texture>,
     size: [u32; 2],
     generation: u64,
+
+    // Reused per-frame scratch — effective (modulated) opacity/blend per deck,
+    // computed once per frame to avoid recomputation and per-frame allocation.
+    eff_opacity: Vec<f32>,
+    eff_blend: Vec<BlendMode>,
 }
 
 impl DeckCompositor {
@@ -44,6 +49,8 @@ impl DeckCompositor {
             acc_b: None,
             size: [0, 0],
             generation: 0,
+            eff_opacity: Vec::new(),
+            eff_blend: Vec::new(),
         }
     }
 
@@ -74,9 +81,20 @@ impl DeckCompositor {
     }
 }
 
+impl Default for DeckCompositor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EffectInstance for DeckCompositor {
     fn set_param_prefix(&mut self, prefix: &str) {
         self.param_prefix = prefix.to_string();
+        // Propagate the channel prefix down so each deck's source, FX, and
+        // cached opacity/blend keys share the canonical fully-qualified path.
+        for deck in &mut self.decks {
+            deck.set_full_prefix(&self.param_prefix);
+        }
     }
 
     fn label(&self) -> &str {
@@ -85,8 +103,11 @@ impl EffectInstance for DeckCompositor {
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         let mut out = Vec::new();
+        // Return ids prefixed only with this deck's own component; the enclosing
+        // `Mixer` adds the single `ch_<uuid>_` channel prefix (CORR: previously
+        // self-prefixing here caused a double `ch_<uuid>_ch_<uuid>_` path).
         for deck in &self.decks {
-            let prefix = format!("{}deck_{}_", self.param_prefix, deck.uuid);
+            let prefix = format!("deck_{}_", deck.uuid);
 
             out.push(ParameterDescriptor::float(
                 format!("{prefix}opacity"),
@@ -134,6 +155,17 @@ impl EffectInstance for DeckCompositor {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
+        // Ensure decks added after this compositor learned its channel prefix
+        // carry the canonical fully-qualified prefix. No allocation once assigned
+        // (the `starts_with` check is alloc-free; only a fresh deck re-prefixes).
+        if !self.param_prefix.is_empty() {
+            for deck in &mut self.decks {
+                if !deck.opacity_key.starts_with(self.param_prefix.as_str()) {
+                    deck.set_full_prefix(&self.param_prefix);
+                }
+            }
+        }
+
         // Detect enabled-count changes that flip output_texture() parity.
         for deck in &mut self.decks {
             let current = deck.chain.iter().filter(|s| s.enabled).count();
@@ -143,18 +175,36 @@ impl EffectInstance for DeckCompositor {
             }
         }
 
+        // Resolve effective (base + modulation) opacity/blend per deck up front,
+        // reading through the engine so GUI/MIDI/OSC/LFO reach these params.
+        // Reuses scratch buffers — no per-frame allocation after warmup. Read
+        // here, before the lookup prefix is set, so the full keys resolve directly.
+        self.eff_opacity.clear();
+        self.eff_blend.clear();
+        for deck in &self.decks {
+            self.eff_opacity
+                .push(engine.get_param(&deck.opacity_key).unwrap_or(deck.opacity));
+            self.eff_blend.push(
+                engine
+                    .get_param(&deck.blend_key)
+                    .and_then(|v| BlendMode::from_index(v as u32))
+                    .unwrap_or(deck.blend_mode),
+            );
+        }
+
         // Temporarily set param prefix so nested decks read prefixed params.
         let old_prefix = engine.param_lookup_prefix.borrow().clone();
         if !self.param_prefix.is_empty() {
             *engine.param_lookup_prefix.borrow_mut() = Some(self.param_prefix.clone());
         }
 
-        // 1. Render each active deck into its own texture.
-        for deck in &mut self.decks {
-            if deck.opacity < 0.001 {
+        // 1. Render each active deck into its own texture (zero-opacity culled —
+        //    the render pass is skipped entirely, not multiplied by zero).
+        for idx in 0..self.decks.len() {
+            if self.eff_opacity[idx] < 0.001 {
                 continue;
             }
-            deck.render(ctx, inputs, engine);
+            self.decks[idx].render(ctx, inputs, engine);
         }
 
         // 2. Composite decks onto the running accumulation.
@@ -164,19 +214,13 @@ impl EffectInstance for DeckCompositor {
 
         clear_texture(ctx.encoder, &acc_a.view);
 
-        let active: Vec<usize> = self
-            .decks
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.opacity >= 0.001)
-            .map(|(i, _)| i)
-            .collect();
-
         let mut written_acc: Option<&Texture> = None;
 
-        for &i in &active {
-            let deck = &self.decks[i];
-            let Some(src) = deck.output_texture() else { continue };
+        for i in 0..self.decks.len() {
+            if self.eff_opacity[i] < 0.001 {
+                continue;
+            }
+            let Some(src) = self.decks[i].output_texture() else { continue };
 
             let (read_acc, write_acc) = match written_acc {
                 None => (acc_a, acc_b),
@@ -195,8 +239,8 @@ impl EffectInstance for DeckCompositor {
                 &src.view,
                 &read_acc.view,
                 &write_acc.view,
-                deck.opacity,
-                deck.blend_mode,
+                self.eff_opacity[i],
+                self.eff_blend[i],
                 ctx.vertex_buffer,
             );
             written_acc = Some(write_acc);

@@ -164,6 +164,23 @@ impl Channel {
         }
     }
 
+    /// Append an effect to this channel's post-chain, assigning its parameter
+    /// prefix (`ch_<uuid>_fx<index>_`) so its params are reachable by GUI/MIDI/
+    /// OSC/LFO — mirrors [`Mixer::add_master_effect`].
+    pub fn add_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
+        let prefix = format!("ch_{}_fx{}_", self.uuid, self.chain.len());
+        effect.set_param_prefix(&prefix);
+        self.chain.push(EffectSlot::new(effect));
+    }
+
+    /// Enable or disable the effect at `index` without removing it (per-effect
+    /// enable). Out-of-range indices are ignored.
+    pub fn set_effect_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(slot) = self.chain.get_mut(index) {
+            slot.enabled = enabled;
+        }
+    }
+
     /// Ensure the channel's render-target textures match `size`.
     fn ensure_size(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if self.size == size {
