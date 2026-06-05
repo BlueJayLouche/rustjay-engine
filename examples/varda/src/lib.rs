@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "mixer")]
 use crate::graph::{Deck, DeckCompositor};
+use crate::sources::{CameraSource, Registry, ShaderWatcher, SolidColorSource};
 
 // ---------------------------------------------------------------------------
 // App state
@@ -34,6 +35,10 @@ pub struct VardaAppState {
     #[cfg(feature = "mixer")]
     pub mixer: Arc<Mutex<Mixer>>,
     pub ready: bool,
+    #[serde(skip)]
+    pub registry: Registry,
+    #[serde(skip)]
+    pub shader_watcher: Option<ShaderWatcher>,
 }
 
 impl Default for VardaAppState {
@@ -42,6 +47,13 @@ impl Default for VardaAppState {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
             ready: false,
+            registry: Registry {
+                shaders: Vec::new(),
+                images: Vec::new(),
+                videos: Vec::new(),
+                builtins: Vec::new(),
+            },
+            shader_watcher: None,
         }
     }
 }
@@ -104,6 +116,30 @@ impl EffectPlugin for VardaRootPlugin {
         s
     }
 
+    fn prepare(&mut self, state: &mut VardaAppState, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+        if !state.ready {
+            state.ready = true;
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let shaders_dir = manifest_dir.join("shaders");
+            state.registry = Registry::scan(&shaders_dir, &manifest_dir.join("assets"));
+            log::info!("[Registry] scanned {} shaders", state.registry.shaders.len());
+            state.shader_watcher = ShaderWatcher::new(&shaders_dir).ok();
+            if state.shader_watcher.is_some() {
+                log::info!("[ShaderWatcher] started");
+            }
+        }
+
+        if let Some(ref watcher) = state.shader_watcher {
+            let events = watcher.poll();
+            for event in events {
+                for path in &event.paths {
+                    log::info!("[ShaderWatcher] changed: {}", path.display());
+                    // TODO: wire hot-reload — recreate EffectNode for affected deck.
+                }
+            }
+        }
+    }
+
     fn build_uniforms(&self, _state: &VardaAppState, _engine: &EngineState) -> DummyUniforms {
         DummyUniforms { _pad: [0.0; 4] }
     }
@@ -135,9 +171,10 @@ impl EffectPlugin for VardaRootPlugin {
         {
             let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
             let dummy_engine = EngineState::new();
-            let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let shaders_dir = manifest_dir.join("shaders");
 
-            // Channel A: ColorCycle + ConcentricRings
+            // Channel A: ColorCycle (ISF) + Solid Color (red)
             let mut comp_a = DeckCompositor::new();
             let path_a1 = shaders_dir.join("ColorCycle.fs");
             if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
@@ -146,18 +183,13 @@ impl EffectPlugin for VardaRootPlugin {
             } else {
                 log::warn!("Failed to load ColorCycle.fs");
             }
-            let path_a2 = shaders_dir.join("ConcentricRings.fs");
-            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a2) {
-                let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
-                comp_a.decks.push(Deck::new("a2", "ConcentricRings", Box::new(node)));
-            } else {
-                log::warn!("Failed to load ConcentricRings.fs");
-            }
+            let solid = SolidColorSource::new(device, wgpu::TextureFormat::Bgra8Unorm, [1.0, 0.0, 0.0, 1.0]);
+            comp_a.decks.push(Deck::new("a2", "Solid Red", Box::new(solid)));
             if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
                 log::warn!("Failed to add channel A: {}", e);
             }
 
-            // Channel B: AuroraWaves + ColorCycle
+            // Channel B: AuroraWaves (ISF) + Camera
             let mut comp_b = DeckCompositor::new();
             let path_b1 = shaders_dir.join("AuroraWaves.fs");
             if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
@@ -166,13 +198,8 @@ impl EffectPlugin for VardaRootPlugin {
             } else {
                 log::warn!("Failed to load AuroraWaves.fs");
             }
-            let path_b2 = shaders_dir.join("ColorCycle.fs");
-            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b2) {
-                let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-                comp_b.decks.push(Deck::new("b2", "ColorCycle", Box::new(node)));
-            } else {
-                log::warn!("Failed to load ColorCycle.fs");
-            }
+            let camera = CameraSource::new(device, 0);
+            comp_b.decks.push(Deck::new("b2", "Camera", Box::new(camera)));
             if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
                 log::warn!("Failed to add channel B: {}", e);
             }

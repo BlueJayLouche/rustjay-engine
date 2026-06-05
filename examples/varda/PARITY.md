@@ -11,17 +11,17 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | # | Capability | Task ID | Status |
 |---|-----------|---------|--------|
 | 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | in-progress |
-| 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(stub uses `rustjay-isf` + `EffectNode`)* |
+| 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher logs changes, reload wiring TODO)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
 | 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo |
-| 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(engine `rustjay-io/webcam` via nokhwa)* |
-| 6 | **Sources — image** (PNG / JPG) | T02.3 | todo *(engine has `image` crate; needs deck wiring)* |
-| 7 | **Sources — solid color** | T02.3 | todo |
+| 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; each deck owns a session — sharing is a follow-up)* |
+| 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
+| 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
 | 8 | **Sources — NDI** receive | T02.1, T09.1 | done *(engine `rustjay-io/ndi_runtime`, feature-gated)* |
 | 9 | **Sources — SRT** receive | T02.2, T09.2 | todo |
 | 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | todo |
 | 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | todo |
-| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | todo |
+| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans shaders dir + builtins)* |
 | 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
 | 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | todo |
@@ -125,3 +125,4 @@ Given the probe results:
 
 - **2026-06-05** — Phase 0 scaffolding + coverage probe. Module tree created, feature flags added, parity tracker initialized.
 - **2026-06-05** — Phase 1 routing graph core. `graph::Deck` + `graph::DeckCompositor` (implements `EffectInstance`) ported. Two channels × two ISF decks each, crossfader, per-deck opacity, blend modes, zero-opacity culling. Fixed `rustjay_mixer::Channel` param-prefix bug.
+- **2026-06-05** — Phase 2 sources. `ImageSource`, `SolidColorSource`, `CameraSource` (via rustjay-io), `Registry`, and `ShaderWatcher` (notify) implemented. Video/HAP decode deferred (rustjay-io gap).

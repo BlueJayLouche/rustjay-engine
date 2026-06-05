@@ -7,5 +7,14 @@
 //! - Video decode / HAP / SRT / HLS / DASH / RTMP → coverage gaps;
 //!   see `PARITY.md` Phase 2 / 9 / 10 probes.
 
-/// Source/effect registry (library). Drives the Library panel + API.
-pub struct Registry;
+mod camera_source;
+mod image_source;
+pub mod registry;
+mod solid_color_source;
+mod watcher;
+
+pub use camera_source::CameraSource;
+pub use image_source::ImageSource;
+pub use registry::{Registry, SourceEntry, SourceKind};
+pub use solid_color_source::SolidColorSource;
+pub use watcher::ShaderWatcher;
