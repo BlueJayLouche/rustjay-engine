@@ -7,8 +7,13 @@
 
 use crate::stage::ProjectionStage;
 use rustjay_core::RenderCtx;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+
+/// Readback state shared with the `map_async` callback.
+const MAP_PENDING: u8 = 0;
+const MAP_READY: u8 = 1;
+const MAP_FAILED: u8 = 2;
 
 /// A headless projector output: offscreen texture + stage chain + async readback.
 ///
@@ -26,8 +31,9 @@ pub struct HeadlessOutput {
     readback_buffer: wgpu::Buffer,
     /// Tightly-packed RGBA8 pixels from the latest completed readback.
     latest_pixels: Vec<u8>,
-    /// `true` once the `map_async` callback has fired.
-    mapped_flag: Arc<AtomicBool>,
+    /// Readback status for the in-flight buffer, set by the `map_async` callback
+    /// (`MAP_PENDING` / `MAP_READY` / `MAP_FAILED`).
+    map_state: Arc<AtomicU8>,
     /// Whether a readback is currently in flight (buffer may be mapped).
     readback_in_flight: bool,
     /// Whether `latest_pixels` contains at least one completed frame.
@@ -69,7 +75,7 @@ impl HeadlessOutput {
             ping_views,
             readback_buffer,
             latest_pixels,
-            mapped_flag: Arc::new(AtomicBool::new(false)),
+            map_state: Arc::new(AtomicU8::new(MAP_PENDING)),
             readback_in_flight: false,
             has_frame: false,
             dummy_vb,
@@ -97,6 +103,14 @@ impl HeadlessOutput {
             self.readback_buffer = create_readback_buffer(device, width, height);
             self.latest_pixels.resize((width * height * 4) as usize, 0);
             self.has_frame = false;
+
+            // Abandon any in-flight readback against the old buffer. The old
+            // buffer's `map_async` callback still holds a clone of the previous
+            // `mapped_flag` Arc; swap in a fresh Arc so that stale callback can
+            // never flip the flag we now poll against (which would call
+            // `get_mapped_range` on the new, unmapped buffer → panic).
+            self.readback_in_flight = false;
+            self.map_state = Arc::new(AtomicU8::new(MAP_PENDING));
 
             for stage in &mut self.stages {
                 stage.on_input_changed(device, [width, height]);
@@ -186,12 +200,20 @@ impl HeadlessOutput {
 
             queue.submit(std::iter::once(encoder.finish()));
 
-            self.mapped_flag.store(false, Ordering::SeqCst);
-            let flag = Arc::clone(&self.mapped_flag);
+            // Fresh state per submission so a callback from a previously-abandoned
+            // buffer (e.g. after a resize) can never flip the state we poll here.
+            let state = Arc::new(AtomicU8::new(MAP_PENDING));
+            self.map_state = Arc::clone(&state);
             self.readback_buffer
                 .slice(..)
-                .map_async(wgpu::MapMode::Read, move |_| {
-                    flag.store(true, Ordering::SeqCst);
+                .map_async(wgpu::MapMode::Read, move |res| {
+                    match res {
+                        Ok(()) => state.store(MAP_READY, Ordering::SeqCst),
+                        Err(e) => {
+                            log::error!("headless readback map_async failed: {e:?}");
+                            state.store(MAP_FAILED, Ordering::SeqCst);
+                        }
+                    }
                 });
             self.readback_in_flight = true;
         } else {
@@ -212,22 +234,31 @@ impl HeadlessOutput {
 
         device.poll(wgpu::PollType::Poll).ok();
 
-        if self.mapped_flag.load(Ordering::SeqCst) {
-            let bytes_per_row = ((self.width * 4).div_ceil(256)) * 256;
-            let slice = self.readback_buffer.slice(..);
-            let data = slice.get_mapped_range();
-            self.latest_pixels.clear();
-            self.latest_pixels
-                .reserve((self.width * self.height * 4) as usize);
-            for row in 0..self.height {
-                let start = (row * bytes_per_row) as usize;
+        match self.map_state.load(Ordering::SeqCst) {
+            MAP_READY => {
+                let bytes_per_row = ((self.width * 4).div_ceil(256)) * 256;
+                let slice = self.readback_buffer.slice(..);
+                let data = slice.get_mapped_range();
+                self.latest_pixels.clear();
                 self.latest_pixels
-                    .extend_from_slice(&data[start..start + (self.width * 4) as usize]);
+                    .reserve((self.width * self.height * 4) as usize);
+                for row in 0..self.height {
+                    let start = (row * bytes_per_row) as usize;
+                    self.latest_pixels
+                        .extend_from_slice(&data[start..start + (self.width * 4) as usize]);
+                }
+                drop(data);
+                self.readback_buffer.unmap();
+                self.readback_in_flight = false;
+                self.has_frame = true;
             }
-            drop(data);
-            self.readback_buffer.unmap();
-            self.readback_in_flight = false;
-            self.has_frame = true;
+            MAP_FAILED => {
+                // Mapping failed (already logged in the callback). Drop the
+                // in-flight state so a fresh readback can be submitted next frame;
+                // do NOT call get_mapped_range on an unmapped buffer.
+                self.readback_in_flight = false;
+            }
+            _ => {} // MAP_PENDING — still in flight.
         }
     }
 
@@ -317,7 +348,7 @@ fn create_readback_buffer(device: &wgpu::Device, width: u32, height: u32) -> wgp
     let bytes_per_row = ((width * 4).div_ceil(256)) * 256;
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Headless Readback Buffer"),
-        size: (bytes_per_row * height) as u64,
+        size: bytes_per_row as u64 * height as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     })
@@ -418,9 +449,8 @@ mod tests {
     fn headless_row_padding_handled() {
         let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
 
-        // 65×1 texture forces a padded row (65*4 = 260, padded to 256*2 = 512? Wait.
-        // 65*4 = 260, div_ceil(260, 256) = 2, so bytes_per_row = 512.
-        // This is a good test for the un-padding logic.
+        // 65×1 forces a padded row: 65*4 = 260, div_ceil(260, 256) = 2, so
+        // bytes_per_row = 512 — exercises the un-padding logic.
         let width = 65;
         let height = 1;
         let (input_tex, input_view) =
@@ -446,5 +476,46 @@ mod tests {
             let base = i * 4;
             assert_eq!(&pixels[base..base + 4], &[42, 43, 44, 255]);
         }
+    }
+
+    // Regression: resizing while a readback is in flight must not panic on the
+    // next poll (previously the stale buffer's callback could flip the shared
+    // flag and trigger `get_mapped_range` on the new, unmapped buffer).
+    #[test]
+    fn headless_resize_while_readback_in_flight() {
+        let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
+        let (input_tex, input_view) =
+            crate::test_harness::create_solid_texture(&device, &queue, 4, 4, [10, 20, 30, 255]);
+        let mut output = HeadlessOutput::new(
+            &device,
+            2,
+            2,
+            vec![Box::new(IdentityStage::new(&device, wgpu::TextureFormat::Rgba8Unorm))],
+        );
+
+        // Submit a readback but do NOT poll it to completion — leave it in flight.
+        output.render(&device, &queue, &input_view, Some(&input_tex), [4, 4]);
+
+        // Resize mid-flight: abandons the old buffer + its callback's flag.
+        output.resize(&device, 4, 4);
+
+        // Poll repeatedly: the abandoned callback may now fire against the old
+        // flag, but it must not affect the new buffer. No panic expected.
+        for _ in 0..10 {
+            output.poll_readback(&device);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        // A fresh render at the new size still reads back correctly.
+        output.render(&device, &queue, &input_view, Some(&input_tex), [4, 4]);
+        let start = std::time::Instant::now();
+        while output.latest_frame().is_none() && start.elapsed() < std::time::Duration::from_secs(5)
+        {
+            output.poll_readback(&device);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let pixels = output.latest_frame().expect("readback should complete after resize");
+        assert_eq!(pixels.len(), 4 * 4 * 4);
+        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
     }
 }
