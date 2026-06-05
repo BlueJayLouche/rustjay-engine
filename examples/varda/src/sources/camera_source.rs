@@ -1,16 +1,43 @@
 //! Camera source — captures from a webcam via `rustjay-io` and uploads frames
 //! to a GPU texture each frame.
 //!
-//! NOTE: Each `CameraSource` currently owns its own `InputManager` session.
-//! Sharing one physical camera across multiple decks without double-open is
-//! tracked as a follow-up (see PARITY.md).
+//! One physical camera is shared across all `CameraSource` instances with the
+//! same `device_index` (T02.3b). The first deck opens the session; subsequent
+//! decks join it. Frames are cached in an `Arc<Vec<u8>>` so each deck can
+//! upload to its own texture without per-frame cloning.
 
 use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
 use rustjay_io::InputManager;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+struct CameraSession {
+    manager: InputManager,
+    frame: Option<Arc<Vec<u8>>>,
+    resolution: (u32, u32),
+}
+
+static CAMERA_SESSIONS: OnceLock<Mutex<HashMap<usize, Arc<Mutex<CameraSession>>>>> =
+    OnceLock::new();
+
+fn get_session(device_index: usize) -> Arc<Mutex<CameraSession>> {
+    let map = CAMERA_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    guard
+        .entry(device_index)
+        .or_insert_with(|| {
+            Arc::new(Mutex::new(CameraSession {
+                manager: InputManager::new(),
+                frame: None,
+                resolution: (1280, 720),
+            }))
+        })
+        .clone()
+}
 
 /// Renders live webcam frames to the target.
 pub struct CameraSource {
-    manager: InputManager,
+    session: Arc<Mutex<CameraSession>>,
     device_index: usize,
     started: bool,
     pipeline: wgpu::RenderPipeline,
@@ -117,7 +144,7 @@ impl CameraSource {
         });
 
         Self {
-            manager: InputManager::new(),
+            session: get_session(device_index),
             device_index,
             started: false,
             pipeline,
@@ -139,7 +166,11 @@ impl CameraSource {
         self.height = height;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Camera Source Texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -174,22 +205,28 @@ impl EffectInstance for CameraSource {
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
+        let mut session = self.session.lock().unwrap();
         if !self.started {
-            if let Err(e) = self
-                .manager
-                .start_webcam(self.device_index, self.width, self.height, 30)
-            {
-                log::warn!("CameraSource failed to start webcam {}: {}", self.device_index, e);
+            if !session.manager.is_active() {
+                if let Err(e) = session
+                    .manager
+                    .start_webcam(self.device_index, self.width, self.height, 30)
+                {
+                    log::warn!("CameraSource failed to start webcam {}: {}", self.device_index, e);
+                } else {
+                    self.started = true;
+                    log::info!("CameraSource started webcam {}", self.device_index);
+                }
             } else {
                 self.started = true;
-                log::info!("CameraSource started webcam {}", self.device_index);
+                log::info!("CameraSource joined existing webcam {}", self.device_index);
             }
         }
         // Discover devices in background (nokhwa may need this on some platforms)
-        if !self.manager.is_discovering() {
-            self.manager.begin_refresh_devices();
+        if !session.manager.is_discovering() {
+            session.manager.begin_refresh_devices();
         }
-        let _ = self.manager.poll_discovery();
+        let _ = session.manager.poll_discovery();
     }
 
     fn render_to(
@@ -203,31 +240,41 @@ impl EffectInstance for CameraSource {
             return;
         }
 
-        self.manager.update();
+        {
+            let mut session = self.session.lock().unwrap();
+            session.manager.update();
+            if let Some(frame) = session.manager.take_frame() {
+                session.resolution = session.manager.resolution();
+                session.frame = Some(Arc::new(frame));
+            }
 
-        if let Some(frame) = self.manager.take_frame() {
-            let (w, h) = self.manager.resolution();
-            self.ensure_texture(ctx.device, w, h);
-            if let Some(ref texture) = self.texture {
-                ctx.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &frame,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(w * 4),
-                        rows_per_image: Some(h),
-                    },
-                    wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                );
+            let frame_arc: Option<Arc<Vec<u8>>> = session.frame.clone();
+            let (w, h) = session.resolution;
+            drop(session);
+
+            if let Some(frame) = frame_arc {
+                self.ensure_texture(ctx.device, w, h);
+                if let Some(ref texture) = self.texture {
+                    ctx.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(w * 4),
+                            rows_per_image: Some(h),
+                        },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
             }
         }
 
