@@ -84,6 +84,21 @@ enum LastOutput {
     Ping,
 }
 
+/// An effect in a chain with an on/off toggle.
+pub struct EffectSlot {
+    /// The actual effect instance to render.
+    pub effect: Box<dyn EffectInstance>,
+    /// Whether this slot is currently active in the chain.
+    pub enabled: bool,
+}
+
+impl EffectSlot {
+    /// Create a new slot, enabled by default.
+    pub fn new(effect: Box<dyn EffectInstance>) -> Self {
+        Self { effect, enabled: true }
+    }
+}
+
 /// One mixer channel: an effect plus how it is mixed into the composite.
 pub struct Channel {
     /// Stable identity, persisted across presets (REQ-01.3).
@@ -93,7 +108,7 @@ pub struct Channel {
     /// The effect this channel renders.
     pub effect: Box<dyn EffectInstance>,
     /// Ordered post-effect chain applied before compositing (REQ-01.5).
-    pub chain: Vec<Box<dyn EffectInstance>>,
+    pub chain: Vec<EffectSlot>,
     /// Mix opacity, 0.0–1.0.
     pub opacity: f32,
     /// How this channel blends onto the composite.
@@ -115,9 +130,9 @@ pub struct Channel {
     opacity_key: String,
     blend_key: String,
     input_select_key: String,
-    /// Last-seen chain length; used to detect parity flips that change
+    /// Last-seen count of enabled FX; used to detect parity flips that change
     /// `output_texture()` and invalidate the composite cache (CORR-2).
-    last_chain_len: usize,
+    last_enabled_count: usize,
 }
 
 impl Channel {
@@ -145,7 +160,7 @@ impl Channel {
             ping: None,
             size: [0, 0],
             last_output: LastOutput::Texture,
-            last_chain_len: 0,
+            last_enabled_count: 0,
         }
     }
 
@@ -185,7 +200,10 @@ impl Channel {
         let ping = self.ping.as_ref()?;
         let mut is_ping = false; // false → src=tex, dst=ping
 
-        for fx in self.chain.iter_mut() {
+        for slot in self.chain.iter_mut() {
+            if !slot.enabled {
+                continue;
+            }
             let (src_tex, dst_tex) = if is_ping {
                 (ping, tex)
             } else {
@@ -197,7 +215,7 @@ impl Channel {
                 generation: src_tex.generation,
                 texture: Some(&src_tex.texture),
             };
-            fx.render_to(
+            slot.effect.render_to(
                 ctx,
                 &[input],
                 RenderTarget { view: &dst_tex.view, size: self.size },
@@ -238,7 +256,7 @@ pub struct Mixer {
     /// 2-channel case; ignored when `channels.len() != 2`.
     pub crossfader: f32,
     /// Master effect chain applied after compositing (REQ-06).
-    pub master: Vec<Box<dyn EffectInstance>>,
+    pub master: Vec<EffectSlot>,
     /// Active auto-crossfade state machine (REQ-04.1).
     pub auto: Option<AutoCrossfade>,
     /// Active beat-synced crossfade (REQ-04.3).
@@ -327,7 +345,7 @@ impl Mixer {
     pub fn add_master_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
         let prefix = format!("master_fx{}_", self.master.len());
         effect.set_param_prefix(&prefix);
-        self.master.push(effect);
+        self.master.push(EffectSlot::new(effect));
     }
 
     /// Effective per-channel opacity for the current frame (REQ-02.4).
@@ -476,18 +494,18 @@ impl EffectInstance for Mixer {
             }
 
             // Channel chain effect params
-            for (k, fx) in ch.chain.iter().enumerate() {
+            for (k, slot) in ch.chain.iter().enumerate() {
                 let chain_prefix = format!("{prefix}fx{k}_");
-                for p in fx.parameters() {
+                for p in slot.effect.parameters() {
                     out.push(prefix_descriptor(&chain_prefix, &p));
                 }
             }
         }
 
         // Master chain params
-        for (k, fx) in self.master.iter().enumerate() {
+        for (k, slot) in self.master.iter().enumerate() {
             let prefix = format!("master_fx{k}_");
-            for p in fx.parameters() {
+            for p in slot.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
             }
         }
@@ -512,13 +530,13 @@ impl EffectInstance for Mixer {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
-        // CORR-2: detect chain length changes that flip output_texture() parity.
+        // CORR-2: detect enabled-count changes that flip output_texture() parity.
         // A parity flip changes which texture (main vs ping) the composite samples,
         // so the generation must bump to invalidate the bind-group cache.
         for ch in &mut self.channels {
-            let current = ch.chain.len();
-            if ch.last_chain_len != current {
-                ch.last_chain_len = current;
+            let current = ch.chain.iter().filter(|s| s.enabled).count();
+            if ch.last_enabled_count != current {
+                ch.last_enabled_count = current;
                 self.generation = self.generation.wrapping_add(1);
             }
         }
@@ -667,7 +685,7 @@ fn prefix_descriptor(prefix: &str, desc: &ParameterDescriptor) -> ParameterDescr
 ///
 /// Shared between per-channel chains and the master chain (design.md §Q2).
 fn run_chain<'a>(
-    effects: &'a mut [Box<dyn EffectInstance>],
+    effects: &'a mut [EffectSlot],
     ctx: &mut RenderCtx<'_>,
     initial_input: &'a Texture,
     ping: &'a Texture,
@@ -680,7 +698,10 @@ fn run_chain<'a>(
 
     let mut is_ping = false; // false → src=initial_input, dst=ping
 
-    for fx in effects.iter_mut() {
+    for slot in effects.iter_mut() {
+        if !slot.enabled {
+            continue;
+        }
         let (src_tex, dst_tex) = if is_ping {
             (ping, initial_input)
         } else {
@@ -692,7 +713,7 @@ fn run_chain<'a>(
             generation: src_tex.generation,
             texture: Some(&src_tex.texture),
         };
-        fx.render_to(
+        slot.effect.render_to(
             ctx,
             &[input],
             RenderTarget { view: &dst_tex.view, size },

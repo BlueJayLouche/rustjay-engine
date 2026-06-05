@@ -1,7 +1,7 @@
 //! A single deck: source + FX chain + opacity + blend mode.
 
 use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
-use rustjay_mixer::BlendMode;
+use rustjay_mixer::{BlendMode, EffectSlot};
 use rustjay_render::Texture;
 
 /// Tracks which texture holds the most recent render result.
@@ -20,7 +20,7 @@ pub struct Deck {
     /// The source effect (ISF shader, video, image, etc.).
     pub source: Box<dyn EffectInstance>,
     /// Ordered post-source FX chain.
-    pub chain: Vec<Box<dyn EffectInstance>>,
+    pub chain: Vec<EffectSlot>,
     /// Mix opacity, 0.0–1.0.
     pub opacity: f32,
     /// How this deck blends onto the channel composite.
@@ -31,8 +31,8 @@ pub struct Deck {
     ping: Option<Texture>,
     size: [u32; 2],
     last_output: LastOutput,
-    /// Last-seen chain length; bumps compositor generation on change.
-    pub(crate) last_chain_len: usize,
+    /// Last-seen count of enabled FX; bumps compositor generation on parity change.
+    pub(crate) last_enabled_count: usize,
 }
 
 impl Deck {
@@ -52,7 +52,7 @@ impl Deck {
             ping: None,
             size: [0, 0],
             last_output: LastOutput::Texture,
-            last_chain_len: 0,
+            last_enabled_count: 0,
         }
     }
 
@@ -103,7 +103,10 @@ impl Deck {
         let ping = self.ping.as_ref()?;
         let mut is_ping = false;
 
-        for fx in self.chain.iter_mut() {
+        for slot in self.chain.iter_mut() {
+            if !slot.enabled {
+                continue;
+            }
             let (src_tex, dst_tex) = if is_ping {
                 (ping, tex)
             } else {
@@ -115,7 +118,7 @@ impl Deck {
                 generation: src_tex.generation,
                 texture: Some(&src_tex.texture),
             };
-            fx.render_to(
+            slot.effect.render_to(
                 ctx,
                 &[input],
                 RenderTarget {

@@ -10,7 +10,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 
 | # | Capability | Task ID | Status |
 |---|-----------|---------|--------|
-| 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | in-progress |
+| 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
 | 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher logs changes, reload wiring TODO)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
 | 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo |
@@ -26,7 +26,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
 | 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | todo |
 | 16 | **Transitions** — multi-channel sequencer (beat-synced or timed s/min/hr) | T12.2 | todo |
-| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | todo |
+| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | done *(structural + per-effect enable/disable; reorder is API/GUI follow-up)* |
 | 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(engine `rustjay-core` `LfoBank`)* |
 | 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT)* |
 | 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | todo *(engine gap)* |

@@ -115,9 +115,9 @@ impl EffectInstance for DeckCompositor {
             }
 
             // Deck FX chain params
-            for (k, fx) in deck.chain.iter().enumerate() {
+            for (k, slot) in deck.chain.iter().enumerate() {
                 let chain_prefix = format!("{prefix}fx{k}_");
-                for p in fx.parameters() {
+                for p in slot.effect.parameters() {
                     out.push(prefix_descriptor(&chain_prefix, &p));
                 }
             }
@@ -134,11 +134,11 @@ impl EffectInstance for DeckCompositor {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
-        // Detect chain length changes that flip output_texture() parity.
+        // Detect enabled-count changes that flip output_texture() parity.
         for deck in &mut self.decks {
-            let current = deck.chain.len();
-            if deck.last_chain_len != current {
-                deck.last_chain_len = current;
+            let current = deck.chain.iter().filter(|s| s.enabled).count();
+            if deck.last_enabled_count != current {
+                deck.last_enabled_count = current;
                 self.generation = self.generation.wrapping_add(1);
             }
         }
