@@ -431,13 +431,50 @@ impl EguiControlGui {
                 hud_section_header(ui, "MANAGE",  Some("02 CH"));
                 self.sidebar_button(ui, GuiTab::Presets,  "PRESETS",  vis(GuiTab::Presets));
                 self.sidebar_button(ui, GuiTab::Settings, "SETTINGS", true);
+
+                // App-provided custom tabs that don't replace a builtin get their
+                // own sidebar buttons (replacing tabs render in their builtin's
+                // slot). Mirrors the imgui host's custom-tab handling.
+                let custom: Vec<(usize, String)> = self
+                    .custom_tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.replaces().is_none())
+                    .map(|(i, t)| (i, t.name().to_uppercase()))
+                    .collect();
+                if !custom.is_empty() {
+                    let count = format!("{:02} CH", custom.len());
+                    hud_section_header(ui, "APP", Some(&count));
+                    for (idx, label) in &custom {
+                        self.custom_sidebar_button(ui, *idx, label);
+                    }
+                }
             });
     }
 
     fn sidebar_button(&mut self, ui: &mut egui::Ui, tab: GuiTab, label: &str, visible: bool) {
-        use crate::egui_theme::colors::*;
         if !visible { return; }
-        let active = self.active_tab == tab;
+        // A builtin button reads as active only when no custom tab is open.
+        let active = self.active_tab == tab && self.custom_tab_active.is_none();
+        if Self::draw_sidebar_button(ui, label, active) {
+            self.active_tab = tab;
+            self.custom_tab_active = None;
+        }
+    }
+
+    /// Sidebar button for an app-provided custom tab (selected via
+    /// `custom_tab_active`, drawn in the central panel before builtin dispatch).
+    fn custom_sidebar_button(&mut self, ui: &mut egui::Ui, idx: usize, label: &str) {
+        let active = self.custom_tab_active == Some(idx);
+        if Self::draw_sidebar_button(ui, label, active) {
+            self.custom_tab_active = Some(idx);
+        }
+    }
+
+    /// Draw one sidebar button; returns `true` if clicked. Shared by builtin and
+    /// custom-tab buttons so they look and behave identically.
+    fn draw_sidebar_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
+        use crate::egui_theme::colors::*;
 
         let height = 32.0;
         let (rect, resp) = ui.allocate_exact_size(
@@ -487,10 +524,7 @@ impl EguiControlGui {
             );
         }
 
-        if resp.clicked() {
-            self.active_tab = tab;
-            self.custom_tab_active = None;
-        }
+        resp.clicked()
     }
 
     // ── Central panel ────────────────────────────────────────────────────────
@@ -501,6 +535,17 @@ impl EguiControlGui {
         #[allow(deprecated)] // top-level CentralPanel::show; see note on the top panel
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // A custom tab opened via its own sidebar button (it does not
+                // replace a builtin) takes precedence over the builtin dispatch.
+                if let Some(idx) = self.custom_tab_active {
+                    if let Some(ct) = self.custom_tabs.get_mut(idx) {
+                        if let Ok(mut state) = self.shared_state.lock() {
+                            ct.draw(ui, app_state, &mut state);
+                        }
+                    }
+                    return;
+                }
+
                 // Check if a custom tab replaces the currently active built-in tab
                 let custom_replacement = self.custom_tabs.iter().enumerate().find(|(_, t)| t.replaces() == Some(self.active_tab));
 

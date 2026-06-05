@@ -230,6 +230,10 @@ impl EffectPlugin for VardaRootPlugin {
         self.params_dirty = false;
     }
 
+    // Varda's egui tabs are non-replacing (each gets its own sidebar button via
+    // the engine host), so the built-in tabs — including the working LFO and MIDI
+    // panels the Varda tabs only summarize — stay available. Nothing is hidden.
+
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn on_engine_ready(&mut self, engine: &mut EngineState) {
         #[cfg(feature = "mixer")]

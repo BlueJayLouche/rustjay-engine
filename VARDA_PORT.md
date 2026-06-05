@@ -14,7 +14,7 @@ assembled as `examples/varda`.
 Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
 this is the phase-level rollup.
 
-**Phases 0–5 reviewed and verified (2026-06-05).** Phase 5 complete:
+**Phases 0–6 reviewed and verified (2026-06-05).** Phase 5 complete:
 T05.1/05.2 — MIDI and OSC reach the canonical engine params (OSC via the
 auto-registered OSC address on each `param_descriptor`; MIDI via learned maps).
 T05.4 — `param_router` maps the hierarchical `deck|channel/<uuid>/param/<name>`
@@ -28,12 +28,23 @@ The **Varda schema lives entirely in `examples/varda`** (`api_state.rs`), rebuil
 with live values every frame into `app_state`; that slot is included in the WS
 snapshot so JSON-Patch deltas carry app state on change. (The shared crate knows
 no Varda types — a review-rework fix; the prior draft had hard-coded Varda DTOs
-+ `/api/varda/*` routes into rustjay-api.) Current gate state: `cargo build -p varda`
++ `/api/varda/*` routes into rustjay-api.) Phase 6: T06.1–T06.9 custom egui tabs
+(Mixer, Deck, Effects/Library, Modulation, MIDI, + Stage/Outputs/Sequencer/Inspector
+stubs) wired via `run_with_egui_tabs`. **Each tab is non-replacing and gets its own
+sidebar button** (Mixer/Deck/Effects drive live params through canonical engine ids:
+`crossfader`, `ch_<uuid>_opacity/blend`, `ch_<uuid>_deck_<uuid>_opacity/blend`, FX
+enable toggles); Modulation/MIDI are read-only info panels and the built-in
+LFO/MIDI/Input tabs are **kept** (no `hidden_tabs()`), so no working UI is lost.
+This required an **engine-host fix**: the egui host (`rustjay-gui`) now renders a
+sidebar button per non-replacing custom tab (previously only `replaces()` tabs were
+reachable — they were dead because their replaced builtins were hidden). Per-item
+`ui.push_id(uuid)` scopes and blocking (poison-tolerant) mixer locks added.
+*(Live GUI smoke-test — actually running and clicking the tabs — still pending; needs
+a display.)* Current gate: `cargo build -p varda`
 (default / `--no-default-features` / `--all-features` / `-F api`) green and
-warning-clean, `cargo clippy -p varda -F api` clean, `cargo test`
-`-p rustjay-mixer` (21) / `-p varda` (5) / `-p rustjay-api` (8) / `-p rustjay-core`
-(83) green, `cargo build --workspace` green. *(Live HTTP/WS smoke-test against a
-running server not yet run — needs a process + port.)*
+warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo test`
+`-p rustjay-mixer` (21) / `-p varda` (5) / `-p rustjay-api` (9) / `-p rustjay-core`
+(83) green, `cargo build --workspace` green.
 
 | Phase | State | Notes |
 |-------|-------|-------|
@@ -42,8 +53,9 @@ running server not yet run — needs a process + port.)*
 | **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader. Engine `AudioState` → `AudioValues` bridge feeds FFT into `ModulationEngine::update`. ADSR + step-sequencer + mod-on-mod are engine-present but not yet demoed. |
-| **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema (owned in `examples/varda/api_state.rs`) into the opaque `EngineState::app_state`, rebuilt with live values each frame; WS JSON-Patch deltas carry it. Live HTTP/WS smoke-test pending. |
-| **6–14** | ⬜ not started | GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
+| **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema into the opaque `EngineState::app_state`; WS JSON-Patch deltas carry it. |
+| **6 — GUI** | ✅ done *(live click-test pending)* | Non-replacing egui tabs each with own sidebar button (engine-host fix in `rustjay-gui`). Mixer/Deck/Effects drive live graph params via canonical ids; Modulation/MIDI are read-only panels (built-in LFO/MIDI retained, nothing hidden). Stage/Outputs/Sequencer/Inspector stubbed (Phase 7+/11/12). |
+| **7–14** | ⬜ not started | Surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
@@ -244,9 +256,13 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
   UI lists the routes; WS pushes deltas. *(MIDI/OSC/HTTP write paths met in code +
   unit tests; live server smoke-test still to run.)*
 
-### Phase 6 — GUI (egui tabs) — see §5
-- **T06.1–T06.11** one task per panel (Mixer, Decks/DeckDetail, Effects/Library,
-  Modulation, Sequence, MIDI, Stage, Outputs, Geometry, RightPanel, Notifications).
+### Phase 6 — GUI (egui tabs) — see §5 ✅ done
+- **T06.1 MixerTab** — crossfader, per-channel opacity/blend sliders, master FX list.
+- **T06.2 DeckTab** — per-channel deck opacity/blend sliders, deck FX enable toggles.
+- **T06.3 EffectsTab** — library registry listing + live FX chain enable toggles (deck/channel/master).
+- **T06.4 ModulationTab** — modulation sources + assignments read-out; replaces built-in Lfo.
+- **T06.5 MidiTab** — replaces built-in Midi tab (MIDI is engine-managed).
+- **T06.6–T06.9 Stage/Outputs/Sequencer/Inspector** — stubbed placeholders for future phases.
 - *Acceptance:* full live control of the graph from the desktop UI; built-in tabs
   Varda supersedes are hidden via `hidden_tabs()`/`replaces()`.
 

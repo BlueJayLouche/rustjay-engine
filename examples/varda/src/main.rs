@@ -9,5 +9,25 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Starting Varda v{}", env!("CARGO_PKG_VERSION"));
 
-    rustjay_engine::run(varda::VardaRootPlugin::new())
+    #[cfg(all(feature = "egui", feature = "mixer"))]
+    {
+        rustjay_engine::run_with_egui_tabs(
+            varda::VardaRootPlugin::new(),
+            vec![
+                Box::new(varda::ui::MixerTab),
+                Box::new(varda::ui::DeckTab),
+                Box::new(varda::ui::EffectsTab),
+                Box::new(varda::ui::ModulationTab),
+                Box::new(varda::ui::MidiTab),
+                Box::new(varda::ui::StageTab),
+                Box::new(varda::ui::OutputsTab),
+                Box::new(varda::ui::SequencerTab),
+                Box::new(varda::ui::InspectorTab),
+            ],
+        )
+    }
+    #[cfg(not(all(feature = "egui", feature = "mixer")))]
+    {
+        rustjay_engine::run(varda::VardaRootPlugin::new())
+    }
 }

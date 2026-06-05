@@ -46,7 +46,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(see rustjay-io probe below)* |
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | todo *(engine preset bank + `serialize_preset_state` hooks)* |
 | 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | todo |
-| 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | todo *(engine `AnyEguiTab` system ready)* |
+| 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
 | 38 | **Notifications** — toast overlay | T06.x | todo |
 | 39 | **Sysmon** — CPU/GPU/mem readout for status bar | (adhoc) | todo |
 | 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(engine `rustjay-projection/dome.rs`)* 🧪 |

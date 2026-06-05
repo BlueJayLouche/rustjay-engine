@@ -6279,6 +6279,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "egui",
  "env_logger",
  "image",
  "log",
