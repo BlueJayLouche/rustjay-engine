@@ -265,25 +265,58 @@ impl EffectPlugin for VardaRootPlugin {
             }
 
             // Phase 4 modulation demo: LFO + audio-band sources on crossfader
-            let lfo = mixer.modulation.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                waveform: rustjay_core::modulation::LFOWaveform::Sine,
-                frequency: 0.25,
-                phase: 0.0,
-                amplitude: 0.5,
-                bipolar: true,
-            });
-            mixer.modulation.assign("crossfader", &lfo, 1.0, None);
+            let mod_arc = mixer.modulation.clone();
+            {
+                let mut mod_eng = mod_arc.lock().unwrap();
+                let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
+                    waveform: rustjay_core::modulation::LFOWaveform::Sine,
+                    frequency: 0.25,
+                    phase: 0.0,
+                    amplitude: 0.5,
+                    bipolar: true,
+                });
+                mod_eng.assign("crossfader", &lfo, 1.0, None);
 
-            let audio = mixer.modulation.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
-                source_id: None,
-                freq_low: 20.0,
-                freq_high: 250.0,
-                gain: 2.0,
-                smoothing: 0.6,
-                mode: rustjay_core::modulation::AudioReactMode::Direct,
-                noise_gate: 0.1,
-            });
-            mixer.modulation.assign("crossfader", &audio, 1.0, None);
+                let audio = mod_eng.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
+                    source_id: None,
+                    freq_low: 20.0,
+                    freq_high: 250.0,
+                    gain: 2.0,
+                    smoothing: 0.6,
+                    mode: rustjay_core::modulation::AudioReactMode::Direct,
+                    noise_gate: 0.1,
+                });
+                mod_eng.assign("crossfader", &audio, 1.0, None);
+            }
+
+            // Collect deck opacity keys and inject the shared modulation engine
+            // into every DeckCompositor so deck-level params can be modulated.
+            let mut deck_keys: Vec<String> = Vec::new();
+            for ch in &mut mixer.channels {
+                if let Some(compositor) = ch.effect.as_any_mut() {
+                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                        for deck in &compositor.decks {
+                            deck_keys.push(deck.opacity_key.clone());
+                        }
+                        compositor.set_modulation_engine(mod_arc.clone());
+                    }
+                }
+            }
+
+            // Demo: modulate every deck opacity with a slow triangle LFO.
+            {
+                let mut mod_eng = mod_arc.lock().unwrap();
+                let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
+                    waveform: rustjay_core::modulation::LFOWaveform::Triangle,
+                    frequency: 0.2,
+                    phase: 0.0,
+                    amplitude: 1.0,
+                    bipolar: true,
+                });
+                for key in &deck_keys {
+                    mod_eng.assign(key, &deck_lfo, 0.4, None);
+                }
+            }
 
             drop(mixer);
             self.params_dirty = true;

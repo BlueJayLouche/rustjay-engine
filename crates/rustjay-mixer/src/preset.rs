@@ -128,7 +128,7 @@ impl Mixer {
                     mute: ch.mute,
                 })
                 .collect(),
-            modulation: self.modulation.clone(),
+            modulation: self.modulation.lock().unwrap().clone(),
         }
     }
 
@@ -152,8 +152,11 @@ impl Mixer {
         }
 
         // Restore modulation state (T13).
-        self.modulation = state.modulation.clone();
-        self.modulation.ensure_index();
+        {
+            let mut mod_eng = self.modulation.lock().unwrap();
+            *mod_eng = state.modulation.clone();
+            mod_eng.ensure_index();
+        }
 
         matched
     }
@@ -186,7 +189,7 @@ mod tests {
 
     #[test]
     fn round_trips_mix_state() {
-        let mut m = mixer_ab();
+        let m = mixer_ab();
         m.crossfader = 0.3;
         m.channels[0].opacity = 0.4;
         m.channels[0].blend_mode = BlendMode::Add;
@@ -248,10 +251,10 @@ mod tests {
     #[test]
     fn round_trip_modulation_state() {
         let mut m = mixer_ab();
-        let lfo = m.modulation.add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
-        m.modulation.assign("crossfader", &lfo, 0.5, None);
-        m.modulation.assign("ch_a_opacity", &lfo, 0.25, None);
-        m.modulation.assign("ch_b_opacity", &lfo, 0.25, None);
+        let lfo = m.modulation.lock().unwrap().add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
+        m.modulation.lock().unwrap().assign("crossfader", &lfo, 0.5, None);
+        m.modulation.lock().unwrap().assign("ch_a_opacity", &lfo, 0.25, None);
+        m.modulation.lock().unwrap().assign("ch_b_opacity", &lfo, 0.25, None);
 
         let json = m.serialize_state().to_json().unwrap();
 
@@ -260,10 +263,10 @@ mod tests {
         let state = MixerState::from_json(&json).unwrap();
         restored.apply_state(&state);
 
-        assert_eq!(restored.modulation.source_count(), 1);
-        assert!(restored.modulation.has_modulation("crossfader"));
-        assert!(restored.modulation.has_modulation("ch_a_opacity"));
-        assert!(restored.modulation.has_modulation("ch_b_opacity"));
+        assert_eq!(restored.modulation.lock().unwrap().source_count(), 1);
+        assert!(restored.modulation.lock().unwrap().has_modulation("crossfader"));
+        assert!(restored.modulation.lock().unwrap().has_modulation("ch_a_opacity"));
+        assert!(restored.modulation.lock().unwrap().has_modulation("ch_b_opacity"));
     }
 
     #[test]
