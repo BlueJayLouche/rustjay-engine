@@ -75,3 +75,31 @@ async fn test_set_param_returns_ok() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ── Generic app routes ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_app_state_returns_503_when_not_initialized() {
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
+
+    let resp = app
+        .oneshot(Request::get("/api/app/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_app_params_returns_503_when_not_initialized() {
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
+
+    let resp = app
+        .oneshot(Request::get("/api/app/params").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}

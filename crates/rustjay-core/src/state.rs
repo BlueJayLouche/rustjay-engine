@@ -964,6 +964,13 @@ pub struct EngineState {
     /// `deck/<uuid>/param/<name>` → `ch_<uuid>_deck_<uuid>_<name>`) without
     /// forking the core parameter system.
     pub param_resolver: Option<ParamResolver>,
+
+    /// Optional app-published API snapshot, stored as opaque JSON so the
+    /// generic engine does not need to know the concrete app schema. Apps
+    /// (e.g. `examples/varda`) publish their structure/state here; the API
+    /// layer serves it verbatim via `GET /api/app/state` and includes it in
+    /// the WebSocket delta stream.
+    pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
 }
 
 impl EngineState {
@@ -1044,6 +1051,7 @@ impl EngineState {
             hidden_tabs: Vec::new(),
             param_lookup_prefix: RefCell::new(None),
             param_resolver: None,
+            app_state: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

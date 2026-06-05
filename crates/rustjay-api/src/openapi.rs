@@ -61,6 +61,10 @@ use utoipa::OpenApi;
         crate::routes::system::modulation_audio_route,
         crate::routes::system::modulation_audio_unroute,
         crate::routes::system::modulation_tap_tempo,
+        // App (generic, app-agnostic)
+        crate::routes::app::get_app_state,
+        crate::routes::app::list_params,
+        crate::routes::app::set_param_by_path,
     ),
     tags(
         (name = "System", description = "Health, state, parameters"),
@@ -74,6 +78,7 @@ use utoipa::OpenApi;
         (name = "ProDJ", description = "ProDJ Link sync control"),
         (name = "Mixer", description = "Mixer crossfader and opacity"),
         (name = "Modulation", description = "LFO and audio-routing modulation control"),
+        (name = "App", description = "App-published state snapshot and hierarchical param I/O"),
     )
 )]
 /// OpenAPI documentation container.

@@ -104,6 +104,10 @@ impl EffectInstance for DeckCompositor {
         Some(self)
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_param_prefix(&mut self, prefix: &str) {
         self.param_prefix = prefix.to_string();
         // Propagate the channel prefix down so each deck's source, FX, and

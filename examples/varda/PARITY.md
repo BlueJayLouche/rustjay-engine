@@ -34,7 +34,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
 | 23 | **Control** — MIDI (learn/unlearn, APC-mini profile, auto-map) | T05.1 | done *(engine `rustjay-control/midi`)* |
 | 24 | **Control** — OSC | T05.2 | done *(engine `rustjay-control/osc`)* |
-| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | todo *(engine `rustjay-api` base exists; needs Varda route groups)* |
+| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | done *(generic app-agnostic routes on `rustjay-api`: `GET /api/app/state` serves the opaque snapshot the app publishes into `EngineState::app_state` (rebuilt with live values each frame); `GET\|PUT /api/app/params` lists/sets params via `param_resolver` → `WebCommand::Set`; WS JSON-Patch deltas carry `app_state`. Varda schema owned in `examples/varda/api_state.rs`, not the shared crate. Live server smoke-test pending)* |
 | 26 | **Control** — param router (`deck/<uuid>/param/<name>` → `set_param_base`) | T05.4 | done *(structurally maps any hierarchical `deck\|channel/<uuid>/param/<name>` to flat canonical ids; wired into engine `WebCommand::Set` + MIDI param-path fallback via `EngineState::param_resolver`; OSC resolves to canonical ids directly. Router output cross-checked against real mixer registration in a test)* |
 | 27 | **Projection mapping** — 2D stage editor, polygon/circle surfaces, source selector | T07.1, T07.3 | todo *(engine `rustjay-projection` warp + import)* |
 | 28 | **Projection mapping** — corner-pin + mesh warp, calibration cards | T07.2 | done *(engine `rustjay-projection` `warp.rs`)* |

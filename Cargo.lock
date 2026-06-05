@@ -6292,6 +6292,7 @@ dependencies = [
  "rustjay-projection",
  "rustjay-render",
  "serde",
+ "serde_json",
  "wgpu",
 ]
 

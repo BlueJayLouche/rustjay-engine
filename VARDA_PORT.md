@@ -14,18 +14,26 @@ assembled as `examples/varda`.
 Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
 this is the phase-level rollup.
 
-**Phases 0–4 reviewed and verified (2026-06-05).** Phase 5 partial:
+**Phases 0–5 reviewed and verified (2026-06-05).** Phase 5 complete:
 T05.1/05.2 — MIDI and OSC reach the canonical engine params (OSC via the
 auto-registered OSC address on each `param_descriptor`; MIDI via learned maps).
 T05.4 — `param_router` maps the hierarchical `deck|channel/<uuid>/param/<name>`
-namespace **structurally** (any param name, not an allowlist) to flat canonical
-ids, wired into the engine's `WebCommand::Set` and MIDI param-path fallback via
-`EngineState::param_resolver`. (OSC already resolves to canonical ids directly,
-so it does **not** route through the resolver.) Router output is cross-checked
-against real `rustjay_mixer` registration in a test. Current gate state:
-`cargo build -p varda` (default / `--no-default-features` / `--all-features`)
-green and warning-clean, `cargo clippy -p varda` clean,
-`cargo test -p rustjay-mixer` green (21), `cargo test -p varda` green.
+namespace **structurally** to flat canonical ids, wired into the engine's
+`WebCommand::Set` and MIDI param-path fallback via `EngineState::param_resolver`.
+T05.3 — HTTP/WS via **generic, app-agnostic** routes on `rustjay-api` (behind the
+`api` feature): `GET /api/app/state` serves the opaque JSON snapshot the app
+publishes into `EngineState::app_state`; `GET|PUT /api/app/params` lists/sets
+params, writes resolving through the same `param_resolver` → `WebCommand::Set`.
+The **Varda schema lives entirely in `examples/varda`** (`api_state.rs`), rebuilt
+with live values every frame into `app_state`; that slot is included in the WS
+snapshot so JSON-Patch deltas carry app state on change. (The shared crate knows
+no Varda types — a review-rework fix; the prior draft had hard-coded Varda DTOs
++ `/api/varda/*` routes into rustjay-api.) Current gate state: `cargo build -p varda`
+(default / `--no-default-features` / `--all-features` / `-F api`) green and
+warning-clean, `cargo clippy -p varda -F api` clean, `cargo test`
+`-p rustjay-mixer` (21) / `-p varda` (5) / `-p rustjay-api` (8) / `-p rustjay-core`
+(83) green, `cargo build --workspace` green. *(Live HTTP/WS smoke-test against a
+running server not yet run — needs a process + port.)*
 
 | Phase | State | Notes |
 |-------|-------|-------|
@@ -34,7 +42,7 @@ green and warning-clean, `cargo clippy -p varda` clean,
 | **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader. Engine `AudioState` → `AudioValues` bridge feeds FFT into `ModulationEngine::update`. ADSR + step-sequencer + mod-on-mod are engine-present but not yet demoed. |
-| **5 — Control** | 🔄 in-progress | T05.1/05.2 MIDI/OSC reach canonical params (OSC via auto-registered addresses, MIDI via learned maps); T05.4 param_router (structural, all params, cross-checked vs real registration) wired into `WebCommand::Set` + MIDI fallback; T05.3 HTTP API route groups pending. |
+| **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema (owned in `examples/varda/api_state.rs`) into the opaque `EngineState::app_state`, rebuilt with live values each frame; WS JSON-Patch deltas carry it. Live HTTP/WS smoke-test pending. |
 | **6–14** | ⬜ not started | GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
@@ -50,6 +58,7 @@ green and warning-clean, `cargo clippy -p varda` clean,
 - **Perf:** no per-frame allocations in `render`/`prepare`/`build_uniforms` (reuse scratch buffers, cache key strings); zero-opacity layers must skip the pass.
 - **Features:** heavy features (`ndi`/`api`/`projection`/streaming/recording/syphon) stay off by default; the `--no-default-features` build stays green and warning-clean.
 - **Modulation single-authority:** effective opacity/crossfader = `engine.get_param` base **plus** the mixer's `ModulationEngine` (this is `rustjay_mixer`'s established pattern, now extended to deck opacity via a shared `Arc<Mutex<ModulationEngine>>`). A given param key must be assigned in **exactly one** modulation system — assign through the mixer's `ModulationEngine` (as the app does), never *also* the engine's `LfoBank`, or the two contributions double-sum.
+- **Control targets canonical ids:** all external control (HTTP/MIDI/OSC) ultimately writes a flat canonical engine id (`crossfader`, `ch_<uuid>_…`, `ch_<uuid>_deck_<uuid>_…`) via `engine.set_param_base`. Hierarchical addresses are translated by `examples/varda`'s `ParamRouter` (via `EngineState::param_resolver`) — a thin string mapping, **not** a second param store. New control surfaces must resolve to these same ids; never read/write control state off to the side.
 
 ---
 
@@ -219,16 +228,21 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - *Acceptance:* LFO→param, audio→param, ADSR (MIDI-triggered), step-seq, and an
   LFO modulating another LFO's frequency all observable on one parameter.
 
-### Phase 5 — Control (co-equal consumers)
-- **T05.1 [Reuse]** MIDI via `rustjay-control/midi` (learn, unlearn, APC-mini,
+### Phase 5 — Control (co-equal consumers) ✅ *(live HTTP/WS smoke-test pending)*
+- **T05.1 [Reuse]** ✅ MIDI via `rustjay-control/midi` (learn, unlearn, APC-mini,
   auto-map). Bridge to Varda param paths.
-- **T05.2 [Reuse]** OSC via `rustjay-control/osc`.
-- **T05.3 [Extend]** HTTP/WS via `rustjay-api`: add `decks/channels/scene/surfaces/
-  stage/sequences/library/effects` routes + WS JSON-Patch deltas; keep single
-  listener (merged into `rustjay-control` web server).
-- **T05.4 [Extend]** `param_router` bridging incoming control → `set_param_base`.
+- **T05.2 [Reuse]** ✅ OSC via `rustjay-control/osc` (auto-registered addresses).
+- **T05.3 [Extend]** ✅ HTTP/WS via `rustjay-api` as **generic, app-agnostic** routes:
+  `GET /api/app/state` (opaque app snapshot) + `GET|PUT /api/app/params`, single
+  listener, WS JSON-Patch deltas carry `app_state`. The Varda schema lives in
+  `examples/varda/api_state.rs` (app-owned), not the shared crate. *(Typed per-
+  resource routes — decks/channels/effects/library — are reconstructable client-
+  side from the snapshot; not added to the shared crate.)*
+- **T05.4 [Extend]** ✅ `param_router` bridging incoming control → `set_param_base`
+  via `EngineState::param_resolver` (structural, all params, cross-checked).
 - *Acceptance:* same parameter driven identically from MIDI, OSC, and HTTP; Swagger
-  UI lists the new routes; WS pushes deltas.
+  UI lists the routes; WS pushes deltas. *(MIDI/OSC/HTTP write paths met in code +
+  unit tests; live server smoke-test still to run.)*
 
 ### Phase 6 — GUI (egui tabs) — see §5
 - **T06.1–T06.11** one task per panel (Mixer, Decks/DeckDetail, Effects/Library,

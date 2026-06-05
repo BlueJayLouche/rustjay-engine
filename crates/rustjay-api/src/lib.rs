@@ -104,6 +104,9 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/modulation/audio-route", post(routes::system::modulation_audio_route))
         .route("/api/modulation/audio-unroute", post(routes::system::modulation_audio_unroute))
         .route("/api/modulation/tap-tempo", post(routes::system::modulation_tap_tempo))
+        // ── Generic app routes (app-published state + hierarchical params) ─
+        .route("/api/app/state", get(routes::app::get_app_state))
+        .route("/api/app/params", get(routes::app::list_params).put(routes::app::set_param_by_path))
         // ── WebSocket (JSON-Patch deltas) ─────────────────────────
         .route("/api/ws", axum::routing::get(ws::ws_upgrade))
         // ── OpenAPI / Swagger ───────────────────────────────────
@@ -153,6 +156,9 @@ pub struct EngineSnapshot {
     pub target_fps: u32,
     /// Currently selected GUI tab.
     pub current_tab: String,
+    /// Opaque JSON snapshot the active app published (or null). Included here
+    /// so the WebSocket delta stream carries app state changes.
+    pub app_state: serde_json::Value,
 }
 
 /// Output subsystem snapshot.
@@ -506,6 +512,12 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
         },
         target_fps: state.target_fps,
         current_tab: state.current_tab.name().to_string(),
+        app_state: state
+            .app_state
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or(serde_json::Value::Null),
     }
 }
 

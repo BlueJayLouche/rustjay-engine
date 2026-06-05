@@ -4,6 +4,8 @@
 //! into a single engine. Two ISF shader channels are composited via the mixer
 //! with crossfader, blend modes, and transitions.
 
+#[cfg(feature = "api")]
+pub mod api_state;
 pub mod control;
 pub mod graph;
 pub mod persistence;
@@ -23,6 +25,12 @@ use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(all(feature = "mixer", feature = "api"))]
+use crate::api_state::{
+    VardaChannel, VardaDeck, VardaEffect, VardaLibrary, VardaSourceEntry, VardaStateSnapshot,
+};
+
+#[cfg(feature = "mixer")]
 use crate::control::param_router::ParamRouter;
 
 #[cfg(feature = "mixer")]
@@ -179,6 +187,21 @@ impl EffectPlugin for VardaRootPlugin {
                 }
             }
         }
+
+        // Publish a fresh app-state snapshot (structure + live modulated values)
+        // every frame into the engine's opaque `app_state` slot. The generic
+        // `/api/app/state` route serves it, and the WS delta stream diffs it —
+        // so runtime structure changes (add/remove/reorder/hot-reload) and live
+        // param moves both surface. Only built when the `api` feature is on.
+        #[cfg(all(feature = "mixer", feature = "api"))]
+        {
+            if let Ok(mixer) = self.mixer.lock() {
+                let snapshot = build_varda_snapshot(&mixer, &state.registry, engine);
+                if let Ok(mut guard) = engine.app_state.lock() {
+                    *guard = Some(serde_json::to_value(&snapshot).unwrap_or_default());
+                }
+            }
+        }
     }
 
     fn build_uniforms(&self, _state: &VardaAppState, _engine: &EngineState) -> DummyUniforms {
@@ -228,6 +251,8 @@ impl EffectPlugin for VardaRootPlugin {
                 log::info!("[ParamRouter] populated with {} mappings", router.len());
             }
             engine.param_resolver = Some(rustjay_core::ParamResolver(std::sync::Arc::new(move |path| router.resolve(path))));
+            // The app-state snapshot is published every frame in `prepare`
+            // (with live values) — no one-time publish needed here.
         }
     }
 
@@ -423,5 +448,135 @@ impl EffectPlugin for VardaRootPlugin {
             // Fallback when mixer is disabled: let the engine render the default shader pass.
             false
         }
+    }
+}
+
+// ── API snapshot builders (behind `api` feature) ───────────────────────────
+
+#[cfg(all(feature = "mixer", feature = "api"))]
+fn build_varda_snapshot(
+    mixer: &Mixer,
+    registry: &Registry,
+    engine: &EngineState,
+) -> VardaStateSnapshot {
+    use rustjay_mixer::{BlendMode, InputSelect};
+
+    // Live (base + modulation) value of a param key, falling back to `base`.
+    let live = |key: &str, base: f32| engine.get_param(key).unwrap_or(base);
+    // Live blend-mode name for an enum param key.
+    let live_blend = |key: &str, base: BlendMode| -> String {
+        let bm = engine
+            .get_param(key)
+            .and_then(|v| BlendMode::from_index(v as u32))
+            .unwrap_or(base);
+        format!("{bm:?}")
+    };
+
+    let mut channels = Vec::new();
+    let mut master_effects = Vec::new();
+
+    for ch in &mixer.channels {
+        let mut decks = Vec::new();
+        let mut ch_effects = Vec::new();
+
+        if let Some(compositor) = ch.effect.as_any() {
+            if let Some(compositor) = compositor.downcast_ref::<DeckCompositor>() {
+                for deck in &compositor.decks {
+                    let mut deck_effects = Vec::new();
+                    for slot in &deck.chain {
+                        deck_effects.push(VardaEffect {
+                            uuid: slot.uuid.clone(),
+                            name: slot.effect.label().to_string(),
+                            enabled: slot.enabled,
+                            param_prefix: format!("{}fx{}_", deck.full_prefix, slot.uuid),
+                        });
+                    }
+                    decks.push(VardaDeck {
+                        uuid: deck.uuid.clone(),
+                        name: deck.name.clone(),
+                        channel_uuid: ch.uuid.clone(),
+                        opacity_key: deck.opacity_key.clone(),
+                        blend_key: deck.blend_key.clone(),
+                        opacity: live(&deck.opacity_key, deck.opacity),
+                        blend: live_blend(&deck.blend_key, deck.blend_mode),
+                        effects: deck_effects,
+                    });
+                }
+            }
+        }
+
+        for slot in &ch.chain {
+            ch_effects.push(VardaEffect {
+                uuid: slot.uuid.clone(),
+                name: slot.effect.label().to_string(),
+                enabled: slot.enabled,
+                param_prefix: format!("ch_{}_fx{}_", ch.uuid, slot.uuid),
+            });
+        }
+
+        channels.push(VardaChannel {
+            uuid: ch.uuid.clone(),
+            name: ch.name.clone(),
+            opacity_key: format!("ch_{}_opacity", ch.uuid),
+            blend_key: format!("ch_{}_blend", ch.uuid),
+            input_select_key: format!("ch_{}_input_select", ch.uuid),
+            opacity: live(&format!("ch_{}_opacity", ch.uuid), ch.opacity),
+            blend: live_blend(&format!("ch_{}_blend", ch.uuid), ch.blend_mode),
+            input_select: match ch.input_select {
+                InputSelect::Slot1 => "Slot 1".to_string(),
+                InputSelect::Slot2 => "Slot 2".to_string(),
+                InputSelect::Both => "Both".to_string(),
+            },
+            decks,
+            effects: ch_effects,
+        });
+    }
+
+    for slot in &mixer.master {
+        master_effects.push(VardaEffect {
+            uuid: slot.uuid.clone(),
+            name: slot.effect.label().to_string(),
+            enabled: slot.enabled,
+            param_prefix: format!("master_fx{}_", slot.uuid),
+        });
+    }
+
+    VardaStateSnapshot {
+        crossfader: live("crossfader", mixer.crossfader),
+        channels,
+        master_effects,
+        library: registry_to_library(registry),
+    }
+}
+
+#[cfg(all(feature = "mixer", feature = "api"))]
+fn registry_to_library(registry: &Registry) -> VardaLibrary {
+    VardaLibrary {
+        shaders: registry.shaders.iter().map(source_entry_to_api).collect(),
+        images: registry.images.iter().map(source_entry_to_api).collect(),
+        videos: registry.videos.iter().map(source_entry_to_api).collect(),
+        builtins: registry.builtins.iter().map(source_entry_to_api).collect(),
+    }
+}
+
+#[cfg(all(feature = "mixer", feature = "api"))]
+fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
+    use crate::sources::SourceKind;
+    VardaSourceEntry {
+        id: e.id.clone(),
+        name: e.name.clone(),
+        kind: match e.kind {
+            SourceKind::Isf => "isf",
+            SourceKind::Image => "image",
+            SourceKind::Video => "video",
+            SourceKind::SolidColor => "solid_color",
+            SourceKind::Camera => "camera",
+            SourceKind::Ndi => "ndi",
+            SourceKind::Srt => "srt",
+            SourceKind::Hls => "hls",
+            SourceKind::Dash => "dash",
+            SourceKind::Rtmp => "rtmp",
+        }.to_string(),
+        path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
     }
 }
