@@ -28,7 +28,25 @@ pub struct SequencerTab;
 pub struct MidiTab;
 
 /// Stage tab — 2D surface editor, warp handles, import.
-pub struct StageTab;
+pub struct StageTab {
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    import_path: String,
+}
+
+impl Default for StageTab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StageTab {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            import_path: String::new(),
+        }
+    }
+}
 
 /// Outputs tab — window/display/NDI/stream/record assignment.
 pub struct OutputsTab;
@@ -356,7 +374,7 @@ mod egui_impl {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Stub tabs (Phase 7+)
+    // StageTab — 2D surface editor
     // ─────────────────────────────────────────────────────────────────────────
     impl AnyEguiTab for StageTab {
         fn name(&self) -> &str {
@@ -368,12 +386,291 @@ mod egui_impl {
             _app_state: &mut dyn std::any::Any,
             _engine: &mut EngineState,
         ) {
-            ui.heading("Stage / Geometry");
+            ui.heading("Stage");
             ui.separator();
-            ui.label("2D surface editor, warp handles, and SVG/DXF import.");
-            ui.label("Coming in Phase 7 (projection mapping).");
+
+            #[cfg(feature = "projection")]
+            {
+                let state = _app_state
+                    .downcast_mut::<VardaAppState>()
+                    .expect("StageTab expects VardaAppState");
+                Self::draw_stage_tab(ui, state, &mut self.import_path);
+            }
+
+            #[cfg(not(feature = "projection"))]
+            {
+                ui.label("Projection feature is not enabled. Enable it to use surfaces.");
+            }
         }
     }
+
+    #[cfg(feature = "projection")]
+    impl StageTab {
+        fn draw_stage_tab(ui: &mut egui::Ui, state: &mut VardaAppState, import_path: &mut String) {
+            use crate::stage::{SurfaceSource, VardaSurface};
+            use egui::{Color32, Rect, Pos2, Vec2, Stroke, CornerRadius};
+
+            // Collect channel/deck names for source selector
+            let source_options: Vec<(String, SurfaceSource)> = {
+                let mut opts = vec![("Master".to_string(), SurfaceSource::Master)];
+                if let Ok(mixer) = state.mixer.try_lock() {
+                    for ch in &mixer.channels {
+                        opts.push((
+                            format!("{} ({})", ch.name, &ch.uuid[..ch.uuid.len().min(4)]),
+                            SurfaceSource::Channel(ch.uuid.clone()),
+                        ));
+                        if let Some(compositor) = ch.effect.as_any() {
+                            if let Some(compositor) = compositor.downcast_ref::<crate::graph::DeckCompositor>() {
+                                for deck in &compositor.decks {
+                                    opts.push((
+                                        format!("  {} ({})", deck.name, &deck.uuid[..deck.uuid.len().min(4)]),
+                                        SurfaceSource::Deck {
+                                            channel_uuid: ch.uuid.clone(),
+                                            deck_uuid: deck.uuid.clone(),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                opts.push(("Domemaster".to_string(), SurfaceSource::Domemaster));
+                opts
+            };
+
+            // Set when a surface warp is edited this frame, so we publish to the
+            // projector only on change (avoids per-frame mesh rebuilds).
+            let mut warp_dirty = false;
+
+            // Left panel: surface list
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(180.0);
+                    ui.label(egui::RichText::new("Surfaces").strong());
+                    ui.separator();
+
+                    let mut to_remove: Option<usize> = None;
+                    for (i, surf) in state.stage.surfaces.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(surf.name.to_string());
+                            if ui.small_button("✖").clicked() {
+                                to_remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = to_remove {
+                        state.stage.surfaces.remove(i);
+                    }
+
+                    if ui.button("+ Add Rectangle").clicked() {
+                        let idx = state.stage.surfaces.len() + 1;
+                        state.stage.surfaces.push(VardaSurface::full_frame(
+                            format!("Surface {}", idx),
+                            format!("surf{}", idx),
+                        ));
+                    }
+                    if ui.button("+ Add Circle").clicked() {
+                        let idx = state.stage.surfaces.len() + 1;
+                        state.stage.surfaces.push(VardaSurface::circle(
+                            format!("Circle {}", idx),
+                            format!("circle{}", idx),
+                            [0.5, 0.5],
+                            0.25,
+                        ));
+                    }
+                    ui.separator();
+                    ui.label("Import:");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(import_path).hint_text("Path to SVG/DXF..."));
+                        if ui.button("Import").clicked() && !import_path.is_empty() {
+                            let path = std::path::Path::new(&*import_path);
+                            let params = rustjay_projection::surface_import::DetectionParams::default();
+                            match rustjay_projection::surface_import::detect_from_file(path, &params) {
+                                Ok(result) => {
+                                    for (i, contour) in result.contours.iter().enumerate() {
+                                        let s = contour.to_surface(i);
+                                        state.stage.surfaces.push(VardaSurface {
+                                            name: s.name,
+                                            uuid: format!("import{}", i),
+                                            vertices: s.vertices,
+                                            is_circular: s.is_circular,
+                                            radius: contour.circle_fit.map(|(_, r)| r).unwrap_or(0.1),
+                                            source: SurfaceSource::Master,
+                                            warp: rustjay_projection::WarpMode::identity(),
+                                        });
+                                    }
+                                    log::info!("Imported {} contours from {}", result.contours.len(), import_path);
+                                }
+                                Err(e) => {
+                                    log::warn!("Import failed for {}: {}", import_path, e);
+                                }
+                            }
+                        }
+                    });
+                });
+
+                ui.separator();
+
+                // Center: 2D canvas
+                let canvas_rect = ui.available_rect_before_wrap();
+                let canvas_size = canvas_rect.size().min_elem();
+                let canvas_rect = Rect::from_min_size(
+                    canvas_rect.min,
+                    Vec2::splat(canvas_size),
+                );
+
+                let response = ui.interact(canvas_rect, ui.id().with("stage_canvas"), egui::Sense::click());
+                let painter = ui.painter_at(canvas_rect);
+
+                // Background
+                painter.rect_filled(canvas_rect, CornerRadius::ZERO, Color32::from_gray(30));
+                painter.rect_stroke(canvas_rect, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Inside);
+
+                // Grid
+                for i in 0..=10 {
+                    let t = i as f32 / 10.0;
+                    let x = canvas_rect.min.x + t * canvas_rect.width();
+                    let y = canvas_rect.min.y + t * canvas_rect.height();
+                    painter.line_segment(
+                        [Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)],
+                        Stroke::new(0.5, Color32::from_gray(50)),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)],
+                        Stroke::new(0.5, Color32::from_gray(50)),
+                    );
+                }
+
+                // Draw surfaces
+                for surf in state.stage.surfaces.iter() {
+                    let color = if response.clicked_by(egui::PointerButton::Primary) {
+                        Color32::from_rgb(100, 150, 255)
+                    } else {
+                        Color32::from_rgb(200, 100, 100)
+                    };
+
+                    if surf.is_circular && !surf.vertices.is_empty() {
+                        let center = surf.vertices[0];
+                        let cx = canvas_rect.min.x + center[0] * canvas_rect.width();
+                        let cy = canvas_rect.min.y + center[1] * canvas_rect.height();
+                        let r = surf.radius * canvas_rect.width();
+                        painter.circle_stroke(Pos2::new(cx, cy), r, Stroke::new(2.0, color));
+                        painter.text(
+                            Pos2::new(cx, cy),
+                            egui::Align2::CENTER_CENTER,
+                            &surf.name,
+                            egui::FontId::proportional(12.0),
+                            Color32::WHITE,
+                        );
+                    } else if surf.vertices.len() >= 3 {
+                        let points: Vec<Pos2> = surf.vertices.iter().map(|v| {
+                            Pos2::new(
+                                canvas_rect.min.x + v[0] * canvas_rect.width(),
+                                canvas_rect.min.y + v[1] * canvas_rect.height(),
+                            )
+                        }).collect();
+                        painter.add(egui::Shape::convex_polygon(
+                            points.clone(),
+                            color.linear_multiply(0.3),
+                            Stroke::new(2.0, color),
+                        ));
+                        // Label at centroid
+                        let centroid_x: f32 = surf.vertices.iter().map(|v| v[0]).sum::<f32>() / surf.vertices.len() as f32;
+                        let centroid_y: f32 = surf.vertices.iter().map(|v| v[1]).sum::<f32>() / surf.vertices.len() as f32;
+                        painter.text(
+                            Pos2::new(
+                                canvas_rect.min.x + centroid_x * canvas_rect.width(),
+                                canvas_rect.min.y + centroid_y * canvas_rect.height(),
+                            ),
+                            egui::Align2::CENTER_CENTER,
+                            &surf.name,
+                            egui::FontId::proportional(12.0),
+                            Color32::WHITE,
+                        );
+                    }
+                }
+
+                ui.allocate_rect(canvas_rect, egui::Sense::hover());
+
+                ui.separator();
+
+                // Right panel: selected surface properties
+                ui.vertical(|ui| {
+                    ui.set_width(220.0);
+                    ui.label(egui::RichText::new("Properties").strong());
+                    ui.separator();
+
+                    if let Some(surf) = state.stage.surfaces.first_mut() {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut surf.name);
+                        ui.separator();
+
+                        ui.label("Source:");
+                        let current_label = surf.source.label();
+                        egui::ComboBox::from_id_salt("source_sel")
+                            .selected_text(&current_label)
+                            .show_ui(ui, |ui| {
+                                for (label, src) in &source_options {
+                                    if ui.selectable_label(surf.source == *src, label).clicked() {
+                                        surf.source = src.clone();
+                                    }
+                                }
+                            });
+                        ui.separator();
+
+                        ui.label("Warp Mode:");
+                        let warp_label = match &surf.warp {
+                            rustjay_projection::WarpMode::CornerPin { .. } => "Corner Pin",
+                            rustjay_projection::WarpMode::Mesh(_) => "Mesh",
+                        };
+                        egui::ComboBox::from_id_salt("warp_mode")
+                            .selected_text(warp_label)
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_label(matches!(surf.warp, rustjay_projection::WarpMode::CornerPin { .. }), "Corner Pin").clicked() {
+                                    surf.warp = rustjay_projection::WarpMode::corner_pin([
+                                        [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+                                    ]);
+                                    warp_dirty = true;
+                                }
+                                if ui.selectable_label(matches!(surf.warp, rustjay_projection::WarpMode::Mesh(_)), "Mesh").clicked() {
+                                    surf.warp = rustjay_projection::WarpMode::Mesh(
+                                        rustjay_projection::WarpMesh::identity(4, 4),
+                                    );
+                                    warp_dirty = true;
+                                }
+                            });
+
+                        if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
+                            ui.label("Corners (normalized):");
+                            for (i, corner) in corners.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(["TL", "TR", "BR", "BL"][i]);
+                                    if ui.add(egui::DragValue::new(&mut corner[0]).speed(0.01).range(0.0..=1.0)).changed() {
+                                        warp_dirty = true;
+                                    }
+                                    if ui.add(egui::DragValue::new(&mut corner[1]).speed(0.01).range(0.0..=1.0)).changed() {
+                                        warp_dirty = true;
+                                    }
+                                });
+                            }
+                        }
+                    } else {
+                        ui.label("No surfaces. Add one from the list.");
+                    }
+                });
+            });
+
+            // Push warp edits to the projector's live warp stage (version-bumped,
+            // so the projector re-applies only on an actual change).
+            if warp_dirty {
+                state.stage.publish_warp();
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stub tabs (Phase 8+)
+    // ─────────────────────────────────────────────────────────────────────────
 
     impl AnyEguiTab for OutputsTab {
         fn name(&self) -> &str {

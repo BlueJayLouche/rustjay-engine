@@ -14,7 +14,7 @@ assembled as `examples/varda`.
 Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
 this is the phase-level rollup.
 
-**Phases 0–6 reviewed and verified (2026-06-05).** Phase 5 complete:
+**Phases 0–7 reviewed and verified (2026-06-05).** Phase 5 complete:
 T05.1/05.2 — MIDI and OSC reach the canonical engine params (OSC via the
 auto-registered OSC address on each `param_descriptor`; MIDI via learned maps).
 T05.4 — `param_router` maps the hierarchical `deck|channel/<uuid>/param/<name>`
@@ -39,10 +39,22 @@ This required an **engine-host fix**: the egui host (`rustjay-gui`) now renders 
 sidebar button per non-replacing custom tab (previously only `replaces()` tabs were
 reachable — they were dead because their replaced builtins were hidden). Per-item
 `ui.push_id(uuid)` scopes and blocking (poison-tolerant) mixer locks added.
-*(Live GUI smoke-test — actually running and clicking the tabs — still pending; needs
-a display.)* Current gate: `cargo build -p varda`
-(default / `--no-default-features` / `--all-features` / `-F api`) green and
-warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo test`
+Phase 7: T07.1–T07.3 surface model (`VardaSurface`/`VardaStage`), corner-pin/mesh
+warp, 2D StageTab with SVG/DXF contour import, and the combined
+`run_with_projection_egui_tabs` entrypoint in `rustjay-engine` (egui tabs + projection
+outputs simultaneously). **Warp actually reaches the projector:** the StageTab's
+corner-pin/mesh edits to the Master surface flow through a shared `WarpSync`
+(`Arc<Mutex>`, plugin-owned, injected into app state) into a `VardaWarpStage`
+(`rustjay_projection::WarpStage::from_mode` + live `set_homography`) in the projector
+stage chain — corner drags update the homography in place each change; a mode/mesh
+switch rebuilds. Per-surface source selector (Master/Channel/Deck/Domemaster) is
+modeled in data + UI but only **Master** renders to the projector, and the properties
+panel edits surface 0 only — non-Master source routing, per-surface selection, and
+multi-surface output are Phase 8 follow-ups.
+*(Live GUI/projection smoke-test — actually running and drawing a warped surface —
+still pending; needs a display.)* Current gate: `cargo build -p varda`
+(default / `--no-default-features` / `--all-features` / `-F api` / `-F projection`)
+green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo test`
 `-p rustjay-mixer` (21) / `-p varda` (5) / `-p rustjay-api` (9) / `-p rustjay-core`
 (83) green, `cargo build --workspace` green.
 
@@ -55,7 +67,8 @@ warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo test`
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader. Engine `AudioState` → `AudioValues` bridge feeds FFT into `ModulationEngine::update`. ADSR + step-sequencer + mod-on-mod are engine-present but not yet demoed. |
 | **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema into the opaque `EngineState::app_state`; WS JSON-Patch deltas carry it. |
 | **6 — GUI** | ✅ done *(live click-test pending)* | Non-replacing egui tabs each with own sidebar button (engine-host fix in `rustjay-gui`). Mixer/Deck/Effects drive live graph params via canonical ids; Modulation/MIDI are read-only panels (built-in LFO/MIDI retained, nothing hidden). Stage/Outputs/Sequencer/Inspector stubbed (Phase 7+/11/12). |
-| **7–14** | ⬜ not started | Surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
+| **7 — Surfaces & projection** | ✅ done *(Master corner-pin/mesh warp reaches projector; live display smoke-test pending)* | T07.1 surface model (polygon/circle + source enum); T07.2 corner-pin/mesh warp **wired to projector output** via `VardaWarpStage`+`WarpSync` bridge (Master surface); T07.3 StageTab 2D canvas + surface list + warp editor + SVG/DXF import. Combined `run_with_projection_egui_tabs` entrypoint in `rustjay-engine`. Non-Master source routing, per-surface selection, multi-surface output → Phase 8. |
+| **8–14** | ⬜ not started | Multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
@@ -266,12 +279,32 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - *Acceptance:* full live control of the graph from the desktop UI; built-in tabs
   Varda supersedes are hidden via `hidden_tabs()`/`replaces()`.
 
-### Phase 7 — Surfaces & projection mapping
-- **T07.1 [Extend]** Surface model (polygon/circle) + source selector (Master /
-  Channel / multi-Channel sub-mix / Deck / Domemaster) over `rustjay-projection`.
-- **T07.2 [Reuse]** Corner-pin + mesh warp (`warp.rs`), calibration cards.
-- **T07.3 [Extend]** Stage editor tab (2D), `surface_import.rs` (SVG/DXF contours).
-- *Acceptance:* draw surfaces, assign sources, corner-pin warp, import a contour.
+### Phase 7 — Surfaces & projection mapping ✅ done
+- **T07.1 [Extend]** `VardaSurface` / `VardaStage` model in `stage/mod.rs` — polygon
+  (vertices) + circle (center/radius) shapes; `SurfaceSource` enum (Master /
+  Channel / Deck / Domemaster); stored in `VardaAppState`; default full-frame
+  surface created on init.
+- **T07.2 [Reuse]** `WarpMode::CornerPin` + `WarpMode::Mesh` per surface. A
+  `VardaWarpStage` (in `stage/mod.rs`) sits in the projector stage chain and reads a
+  shared `WarpSync` (`Arc<Mutex>`, plugin-owned, injected into `VardaAppState.stage`)
+  each frame: it `WarpStage::from_mode`s the initial mode and applies StageTab edits
+  via `set_homography` (corner-pin) or rebuild (mesh), version-gated so it re-applies
+  only on change. The StageTab `publish_warp`es the Master surface's warp on edit, so
+  corner drags actually warp the projector output. Corner-pin editable numerically.
+- **T07.3 [Extend]** `StageTab` 2D canvas (egui painter) draws surfaces as
+  polygons/circles with labels; left panel lists surfaces + add/remove/import
+  buttons; right panel shows source selector, warp mode combo, corner-pin
+  drag-values. SVG/DXF/raster contour import via
+  `rustjay-projection::surface_import::detect_from_file` → `DetectedContour::to_surface`.
+- **Entrypoint** `run_with_projection_egui_tabs` added to `rustjay-engine`
+  (`crates/rustjay-engine/src/lib.rs` + `app/mod.rs`) — combines egui tabs
+  (`App::new_with_egui`) with projection setup closure, gated on
+  `projection` + `egui` features. Varda `main.rs` branches:
+  `projection` on → `run_with_projection_egui_tabs` with identity projector;
+  `projection` off → `run_with_egui_tabs` (Phase 6 spine preserved).
+- *Acceptance:* draw surfaces ✅, assign sources ✅ (data model + UI; only Master
+  wired to projector output — Channel/Deck source rendering is Phase 8 follow-up),
+  corner-pin warp ✅, import a contour ✅.
 
 ### Phase 8 — Multi-output & headless
 - **T08.1 [Extend]** Output model: window/fullscreen-on-display + per-surface
@@ -372,10 +405,22 @@ rustjay_engine::run_with_egui_tabs(
 5. **Two render-driver shapes** — imperative `render()` hook (current spine) vs
    declarative `render_graph()`. Stay imperative for the routing graph; reserve
    declarative passes for surfaces/projection where it fits.
-6. **Feature-flag matrix** — NDI default-on broke Linux CI before
+6. **Egui tabs + projection entrypoint gap** — `run_with_egui_tabs` has no projection
+   setup hook; `run_with_projection` uses imgui tabs, not egui. **Resolution:** a new
+   combined entrypoint `run_with_projection_egui_tabs(plugin, tabs, setup)` was added
+   to `rustjay-engine` (gated on `projection` + `egui`). It creates `App::new_with_egui`
+   (sets `use_egui = true`) then runs the projection setup closure on
+   `app.projection_subsystem` before the event loop. The frame loop already calls
+   `sub.render()` after `engine.render()` when `feature = "projection"` is on,
+   regardless of entrypoint. Varda's `main.rs` branches:
+   - `projection` on → `run_with_projection_egui_tabs` with one identity projector
+   - `projection` off → `run_with_egui_tabs` (Phase 6 behavior preserved)
+   - no `egui`/`mixer` → `run()` fallback. Verified: `--no-default-features`,
+     default, `--features projection`, `--all-features` all green.
+7. **Feature-flag matrix** — NDI default-on broke Linux CI before
    ([[project_pr18_ci_parked]]). Gate NDI/streaming/recording off-by-default and
    keep a no-feature build green.
-7. **Perf regressions** — multi-deck offscreen passes multiply submits; honor the
+8. **Perf regressions** — multi-deck offscreen passes multiply submits; honor the
    per-file perf findings and verify opacity-culling actually elides GPU work.
 
 ---

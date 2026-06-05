@@ -6295,6 +6295,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wgpu",
+ "winit",
 ]
 
 [[package]]

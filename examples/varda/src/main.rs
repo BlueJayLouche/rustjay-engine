@@ -9,22 +9,53 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Starting Varda v{}", env!("CARGO_PKG_VERSION"));
 
-    #[cfg(all(feature = "egui", feature = "mixer"))]
+    #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
-        rustjay_engine::run_with_egui_tabs(
-            varda::VardaRootPlugin::new(),
-            vec![
-                Box::new(varda::ui::MixerTab),
-                Box::new(varda::ui::DeckTab),
-                Box::new(varda::ui::EffectsTab),
-                Box::new(varda::ui::ModulationTab),
-                Box::new(varda::ui::MidiTab),
-                Box::new(varda::ui::StageTab),
-                Box::new(varda::ui::OutputsTab),
-                Box::new(varda::ui::SequencerTab),
-                Box::new(varda::ui::InspectorTab),
-            ],
+        let tabs = vec![
+            Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(varda::ui::DeckTab),
+            Box::new(varda::ui::EffectsTab),
+            Box::new(varda::ui::ModulationTab),
+            Box::new(varda::ui::MidiTab),
+            Box::new(varda::ui::StageTab::new()),
+            Box::new(varda::ui::OutputsTab),
+            Box::new(varda::ui::SequencerTab),
+            Box::new(varda::ui::InspectorTab),
+        ];
+        let plugin = varda::VardaRootPlugin::new();
+        // Share the live warp state with the projector's warp stage so Stage-tab
+        // edits actually warp the projector output.
+        let warp_sync = plugin.warp_sync();
+        rustjay_engine::run_with_projection_egui_tabs(
+            plugin,
+            tabs,
+            move |sub| {
+                use varda::stage::VardaWarpStage;
+                use winit::window::WindowAttributes;
+                sub.add_projector(
+                    WindowAttributes::default()
+                        .with_title("Varda Projector 1")
+                        .with_inner_size(winit::dpi::LogicalSize::new(640u32, 480u32)),
+                    move |device, format| vec![Box::new(VardaWarpStage::new(device, format, warp_sync))],
+                );
+                log::info!("Queued {} projector window(s)", sub.pending_len());
+            },
         )
+    }
+    #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
+    {
+        let tabs = vec![
+            Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(varda::ui::DeckTab),
+            Box::new(varda::ui::EffectsTab),
+            Box::new(varda::ui::ModulationTab),
+            Box::new(varda::ui::MidiTab),
+            Box::new(varda::ui::StageTab::new()),
+            Box::new(varda::ui::OutputsTab),
+            Box::new(varda::ui::SequencerTab),
+            Box::new(varda::ui::InspectorTab),
+        ];
+        rustjay_engine::run_with_egui_tabs(varda::VardaRootPlugin::new(), tabs)
     }
     #[cfg(not(all(feature = "egui", feature = "mixer")))]
     {

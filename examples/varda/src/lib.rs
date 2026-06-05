@@ -12,6 +12,8 @@ pub mod persistence;
 pub mod scene;
 pub mod sources;
 pub mod stage;
+#[cfg(feature = "projection")]
+use stage::VardaStage;
 pub mod ui;
 
 use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
@@ -53,6 +55,8 @@ pub struct VardaAppState {
     pub registry: Registry,
     #[serde(skip)]
     pub shader_watcher: Option<ShaderWatcher>,
+    #[cfg(feature = "projection")]
+    pub stage: VardaStage,
 }
 
 impl Default for VardaAppState {
@@ -68,6 +72,8 @@ impl Default for VardaAppState {
                 builtins: Vec::new(),
             },
             shader_watcher: None,
+            #[cfg(feature = "projection")]
+            stage: VardaStage::with_default_surface(),
         }
     }
 }
@@ -80,6 +86,10 @@ pub struct VardaRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
     params_dirty: bool,
+    /// Canonical live warp state, shared with the app state (GUI writer) and the
+    /// projector's `VardaWarpStage` (reader). See `stage::WarpSync`.
+    #[cfg(feature = "projection")]
+    warp_sync: std::sync::Arc<std::sync::Mutex<stage::WarpSync>>,
 }
 
 impl VardaRootPlugin {
@@ -88,7 +98,16 @@ impl VardaRootPlugin {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
+            #[cfg(feature = "projection")]
+            warp_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::WarpSync::default())),
         }
+    }
+
+    /// Shared warp state for the projector stage (clone into the
+    /// `run_with_projection_egui_tabs` setup closure).
+    #[cfg(feature = "projection")]
+    pub fn warp_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::WarpSync>> {
+        self.warp_sync.clone()
     }
 }
 
@@ -127,6 +146,10 @@ impl EffectPlugin for VardaRootPlugin {
         #[cfg(feature = "mixer")]
         {
             s.mixer = self.mixer.clone();
+        }
+        #[cfg(feature = "projection")]
+        {
+            s.stage.warp_sync = Some(self.warp_sync.clone());
         }
         s
     }

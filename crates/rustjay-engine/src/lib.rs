@@ -173,6 +173,44 @@ pub fn run_with_egui_tabs<P: EffectPlugin>(
     app::run_egui_app(shared_state, plugin, tabs)
 }
 
+/// Run the engine with egui custom tabs **and** projection mapping.
+///
+/// This is the combined entrypoint for apps that need both the modern egui
+/// control panel and projector/output stage chains. The `setup` closure
+/// receives a [`ProjectionSubsystem`] where you register extra projector
+/// windows and their post-processing stage chains, exactly as with
+/// [`run_with_projection`].
+///
+/// ```ignore
+/// use rustjay_engine::prelude::*;
+/// use rustjay_projection::IdentityStage;
+/// use winit::window::WindowAttributes;
+///
+/// fn main() -> anyhow::Result<()> {
+///     rustjay_engine::run_with_projection_egui_tabs(
+///         MyEffect,
+///         vec![Box::new(MyTab)],
+///         |sub| {
+///             sub.add_projector(
+///                 WindowAttributes::default().with_title("Projector 1"),
+///                 |device, format| vec![Box::new(IdentityStage::new(device, format))],
+///             );
+///         },
+///     )
+/// }
+/// ```
+#[cfg(all(feature = "projection", feature = "egui"))]
+pub fn run_with_projection_egui_tabs<P: EffectPlugin, F: FnOnce(&mut ProjectionSubsystem)>(
+    plugin: P,
+    tabs: Vec<Box<dyn AnyEguiTab>>,
+    setup: F,
+) -> Result<()> {
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
+    app::run_egui_app_with_projection(shared_state, plugin, tabs, false, setup)
+}
+
 /// Run using a Wayland-backed GLES 2.0 context (compositor required).
 #[cfg(feature = "gles2")]
 pub fn run_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
@@ -210,6 +248,8 @@ pub mod prelude {
     pub use crate::{run, run_with_tabs, run_headless, run_headless_with_tabs};
     #[cfg(feature = "egui")]
     pub use crate::run_with_egui_tabs;
+    #[cfg(all(feature = "projection", feature = "egui"))]
+    pub use crate::run_with_projection_egui_tabs;
     #[cfg(feature = "gles2")]
     pub use crate::gles2::{Gles2Effect, run_gles2_headless_with_tabs};
     #[cfg(feature = "drm-gles2")]

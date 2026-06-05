@@ -124,6 +124,37 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
     Ok(())
 }
 
+#[cfg(all(feature = "egui", feature = "projection"))]
+pub(crate) fn run_egui_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection::ProjectionSubsystem)>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    tabs: Vec<Box<dyn AnyEguiTab>>,
+    nogui: bool,
+    projection_setup: F,
+) -> Result<()> {
+    let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    #[cfg(target_os = "macos")]
+    let proxy = event_loop.create_proxy();
+
+    let mut app = App::new_with_egui(shared_state, plugin, tabs, nogui);
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_proxy(proxy);
+        macos::setup_macos_app_delegate();
+    }
+
+    if let Some(ref mut sub) = app.projection_subsystem {
+        projection_setup(sub);
+    }
+
+    event_loop.run_app(&mut app)?;
+
+    Ok(())
+}
+
 #[cfg(feature = "gles2")]
 pub(crate) fn run_gles2_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
