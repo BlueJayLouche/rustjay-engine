@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn round_trips_mix_state() {
-        let m = mixer_ab();
+        let mut m = mixer_ab();
         m.crossfader = 0.3;
         m.channels[0].opacity = 0.4;
         m.channels[0].blend_mode = BlendMode::Add;
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn round_trip_modulation_state() {
-        let mut m = mixer_ab();
+        let m = mixer_ab();
         let lfo = m.modulation.lock().unwrap().add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
         m.modulation.lock().unwrap().assign("crossfader", &lfo, 0.5, None);
         m.modulation.lock().unwrap().assign("ch_a_opacity", &lfo, 0.25, None);

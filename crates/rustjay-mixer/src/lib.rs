@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn crossfader_splits_two_channel_opacity() {
-        let mixer = Mixer::new();
+        let mut mixer = Mixer::new();
         mixer.add_channel(Channel::new("a", "A", Box::new(Stub))).unwrap();
         mixer.add_channel(Channel::new("b", "B", Box::new(Stub))).unwrap();
         mixer.crossfader = 0.25;
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn mixer_owns_modulation_engine() {
-        let mut mixer = Mixer::new();
+        let mixer = Mixer::new();
         let lfo = mixer.modulation.lock().unwrap().add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
         mixer.modulation.lock().unwrap().assign("crossfader", &lfo, 1.0, None);
         mixer.modulation.lock().unwrap().assign("ch_a_opacity", &lfo, 0.5, None);

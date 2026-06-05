@@ -32,6 +32,7 @@ this is the phase-level rollup.
 - **Parameter scheme:** every level's `parameters()` returns ids prefixed with **only its own component**; the enclosing level adds its prefix (`Mixer` adds `ch_<uuid>_`, `DeckCompositor` decks add `deck_<uuid>_`). At render, read modulated values through `engine.get_param(&cached_key)` — **never** from local struct fields. `Deck` mirrors `rustjay_mixer::Channel` (cached `opacity_key`/`blend_key`, `set_full_prefix` propagation). This is the fix for the "modulation does nothing" class of bug; keep new nodes consistent.
 - **Perf:** no per-frame allocations in `render`/`prepare`/`build_uniforms` (reuse scratch buffers, cache key strings); zero-opacity layers must skip the pass.
 - **Features:** heavy features (`ndi`/`api`/`projection`/streaming/recording/syphon) stay off by default; the `--no-default-features` build stays green and warning-clean.
+- **Modulation single-authority:** effective opacity/crossfader = `engine.get_param` base **plus** the mixer's `ModulationEngine` (this is `rustjay_mixer`'s established pattern, now extended to deck opacity via a shared `Arc<Mutex<ModulationEngine>>`). A given param key must be assigned in **exactly one** modulation system — assign through the mixer's `ModulationEngine` (as the app does), never *also* the engine's `LfoBank`, or the two contributions double-sum.
 
 ---
 

@@ -198,6 +198,12 @@ impl EffectInstance for DeckCompositor {
         self.eff_opacity.clear();
         self.eff_blend.clear();
         for deck in &self.decks {
+            // base (incl. any engine-level LFO/audio) from get_param, plus the
+            // mixer's ModulationEngine — mirrors `rustjay_mixer::Mixer`'s own
+            // channel-opacity handling. NOTE: a given key must be assigned in
+            // exactly ONE modulation system (the mixer's `ModulationEngine`, used
+            // throughout this app — NOT the engine LfoBank as well) or the two
+            // contributions double-sum.
             let mut opacity = engine.get_param(&deck.opacity_key).unwrap_or(deck.opacity);
             if let Some(ref mod_arc) = self.modulation {
                 if let Ok(mod_eng) = mod_arc.lock() {
