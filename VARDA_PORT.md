@@ -73,7 +73,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | **11 — Persistence & presets** | ✅ done | `.varda/` workspace with scene.json (MixerState + sequencer), stage.json (VardaStage with warp), keymap.json; Cmd+S auto-save; `EffectPlugin` preset hooks (`serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied`) store/restore `Scene`. |
 | **12 — Transitions & sequencer** | ✅ done | `StepKind::TimedCrossfade` / `TimedHold` (seconds-based); SequencerTab play/stop/loop controls; pre-populated demo sequence with beat-synced and timed steps. |
 | **13 — Dome & edge-blend** | ✅ done *(display smoke-test pending)* | `VardaDomeStage` + `VardaEdgeBlendStage` wired into projector chain via `Arc<Mutex>` bridge; StageTab dome config; OutputsTab manual edge-blend controls; auto-detect for multi-output. |
-| **14 — Parity audit** | 🔄 in progress | All features mapped. Live display smoke-test deferred (no display). |
+| **14 — Parity audit** | ✅ done | Tracker walked to 100%; gaps filed as follow-ups (ffmpeg video/HAP, SRT/HLS/DASH/RTMP streaming, recording, mod-on-mod, notifications, sysmon). Perf pass: no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature only) noted as alloc-heavy. Docs updated. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 

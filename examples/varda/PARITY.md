@@ -56,6 +56,42 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 
 ---
 
+## Gaps & Follow-ups (post-audit)
+
+These items are **intentionally deferred** — they represent either engine-crate gaps
+(requires upstream work in `rustjay-io` / `rustjay-core`) or app-level niceties that
+do not block core VJ functionality.
+
+| # | Gap | Blocking? | Recommended path |
+|---|-----|-----------|------------------|
+| 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | Add `ffmpeg` feature to `rustjay-io` with `input/ffmpeg.rs` (~400 LOC). Reuse `ffmpeg-next` or `rust-ffmpeg`. |
+| 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | Port Varda's `internal/video/hap.rs` (~200 LOC) into `rustjay-io/input/hap.rs` behind `hap` feature. |
+| 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | Wrap `ffmpeg` subprocess for protocol ingest (same architecture Varda uses today). |
+| 21 | **Mod-on-mod chaining** (4-deep) | Low | Engine `rustjay-core` gap — `ModulationEngine` needs depth-budgeted recursion in `get_modulation()`. |
+| 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Extend `rustjay-io/output` with ffmpeg muxer subprocesses, or build per-output recorder. |
+| 34 | **Recording** (H.264/H.265/AV1/ProRes/HAP Q) | Low | Greenfield over `rustjay-io/output` + ffmpeg. Varda's existing recorder is a 5-LOC stub. |
+| 38 | **Notifications toast overlay** | No | Pure UI — add an egui overlay layer in Varda, or reuse engine notification system if one is added. |
+| 39 | **Sysmon readout** (CPU/GPU/mem) | No | Adhoc — poll `sysinfo` or `nvml-wrapper` in a background thread, display in a status bar. |
+| — | **Calibration cards** for warp | No | Generate checkerboard / grid texture in StageTab for projector alignment. |
+| — | **Per-projector render graphs** (different content per output) | No | Requires decoupling `WgpuEngine` from singleton output surface — major engine refactor. |
+| — | **Per-projector warp/dome/edge-blend overrides** | No | Data model exists (`VardaProjector.use_global_*` flags); needs per-projector sync objects + stage factory plumbing. |
+| — | **Fullscreen on monitor** (winit monitor selection) | No | `VardaProjector.fullscreen_monitor` is stored; `main.rs` setup closure needs `ActiveEventLoop` access to resolve monitor handles. |
+
+### Phase 9–10 Recommendation
+
+Given the probe results, **do not build native protocol implementations** for
+SRT/HLS/DASH/RTMP. Instead:
+
+1. Add a single `ffmpeg` feature to `rustjay-io`.
+2. `input/ffmpeg.rs`: file decode + loop/scrub/speed + protocol ingest (ffmpeg can receive all four protocols).
+3. `output/recorder.rs`: encode to H.264/H.265/AV1/ProRes via ffmpeg.
+4. HAP decode can be a separate `input/hap.rs` or bundled under the same feature.
+
+This reuses Varda's proven subprocess architecture and avoids maintaining
+protocol-specific Rust code.
+
+---
+
 ## rustjay-io Coverage Probe (Phases 2 / 9 / 10)
 
 Audited: `crates/rustjay-io/src/input/mod.rs`, `webcam.rs`, `ndi.rs`, `syphon_input.rs`, `spout_input.rs`, `output/mod.rs`, `ndi_output.rs`, `syphon_output.rs`, `spout_output.rs`, `v4l2_output.rs`, `Cargo.toml`.
@@ -129,3 +165,9 @@ Given the probe results:
 - **2026-06-05** — Review fixes (param scheme). Fixed deck-layer parameter plumbing: `Deck` now mirrors `rustjay_mixer::Channel` with cached `opacity_key`/`blend_key`; `DeckCompositor` reads effective opacity/blend through `engine.get_param` (deck-level MIDI/OSC/LFO/GUI now reach the graph) instead of local struct fields; removed the double `ch_<uuid>_ch_<uuid>_` prefix (compositor returns bare deck-prefixed ids, `Mixer` adds the single channel prefix); deck source/FX prefixes propagated to the canonical fully-qualified path via `Deck::set_full_prefix`. Dropped the per-frame `active` Vec allocation in the composite loop. Added `add_effect`/`set_effect_enabled` to `Deck` and `Channel`. Corrected rows 2/12/17 status.
 - **2026-06-05** — Phase 2 carry-over completion + Phase 3. ISF hot-reload wired (`lib.rs::prepare` recreates `EffectNode` on watcher events). Stable FX IDs implemented (`fx<uuid>_` prefixes, `reorder_fx`/`move_fx`). Registry now scans `assets_dir` for images and enumerates video stubs. Camera sharing implemented (global `Arc<Mutex<CameraSession>>` keyed by device index). Build verified green for `default`, `--no-default-features`, `--all-features`.
 - **2026-06-05** — Phase 4 (Modulation). `Mixer::modulation` changed to `Arc<Mutex<ModulationEngine>>` so it can be shared with nested `DeckCompositor`s. `DeckCompositor::render_to` now applies mixer-level modulation offsets to deck opacity (in addition to engine-level modulation via `get_param`). Demo assigns LFO to crossfader + all deck opacities, and audio-band to crossfader. All `rustjay-mixer` tests pass.
+- **2026-06-05** — Phase 5 (Control). MIDI/OSC reach canonical params; generic `rustjay-api` routes (`GET /api/app/state`, `GET|PUT /api/app/params`) with WS JSON-Patch deltas; param router maps hierarchical addresses to flat canonical ids.
+- **2026-06-05** — Phase 6 (GUI). Non-replacing egui tabs (Mixer, Deck, Effects, Modulation, MIDI, Stage, Outputs, Sequencer, Inspector) each with sidebar button. Mixer/Deck/Effects drive live params via canonical ids.
+- **2026-06-05** — Phase 7 (Surfaces & projection). Surface model (polygon/circle + source enum); corner-pin/mesh warp wired to projector via `VardaWarpStage`+`WarpSync` bridge; StageTab 2D canvas + warp editor + SVG/DXF import.
+- **2026-06-06** — Phases 11–13 (Persistence, Transitions, Dome/Edge-blend). `.varda/` workspace with scene/stage/keymap; `EffectPlugin` preset hooks; `TimedCrossfade`/`TimedHold` sequencer steps; `VardaDomeStage` + `VardaEdgeBlendStage` wired into projector chain.
+- **2026-06-06** — Phase 8 (Multi-output). `VardaStage.projectors` + `headless_outputs` config model; `main.rs` registers multiple projectors from saved stage; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; runtime headless output add from `prepare()`; OutputsTab UI for add/remove/edit.
+- **2026-06-06** — Phase 14 (Parity audit). Tracker walked to 100%; gaps documented as follow-ups; perf pass confirms no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature) noted as alloc-heavy; docs updated.
