@@ -21,6 +21,9 @@ use rustjay_render::EffectNode;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "mixer")]
+use crate::graph::{Deck, DeckCompositor};
+
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
@@ -134,32 +137,44 @@ impl EffectPlugin for VardaRootPlugin {
             let dummy_engine = EngineState::new();
             let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
 
-            // Channel A: ColorCycle ISF
-            let path_a = shaders_dir.join("ColorCycle.fs");
-            match rustjay_isf::IsfEffect::from_path(&path_a) {
-                Ok(isf) => {
-                    let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-                    if let Err(e) =
-                        mixer.add_channel(Channel::new("a", "Channel A", Box::new(node)))
-                    {
-                        log::warn!("Failed to add channel A: {}", e);
-                    }
-                }
-                Err(e) => log::warn!("Failed to load ColorCycle.fs: {}", e),
+            // Channel A: ColorCycle + ConcentricRings
+            let mut comp_a = DeckCompositor::new();
+            let path_a1 = shaders_dir.join("ColorCycle.fs");
+            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
+                let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
+                comp_a.decks.push(Deck::new("a1", "ColorCycle", Box::new(node)));
+            } else {
+                log::warn!("Failed to load ColorCycle.fs");
+            }
+            let path_a2 = shaders_dir.join("ConcentricRings.fs");
+            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a2) {
+                let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
+                comp_a.decks.push(Deck::new("a2", "ConcentricRings", Box::new(node)));
+            } else {
+                log::warn!("Failed to load ConcentricRings.fs");
+            }
+            if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
+                log::warn!("Failed to add channel A: {}", e);
             }
 
-            // Channel B: AuroraWaves ISF
-            let path_b = shaders_dir.join("AuroraWaves.fs");
-            match rustjay_isf::IsfEffect::from_path(&path_b) {
-                Ok(isf) => {
-                    let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-                    if let Err(e) =
-                        mixer.add_channel(Channel::new("b", "Channel B", Box::new(node)))
-                    {
-                        log::warn!("Failed to add channel B: {}", e);
-                    }
-                }
-                Err(e) => log::warn!("Failed to load AuroraWaves.fs: {}", e),
+            // Channel B: AuroraWaves + ColorCycle
+            let mut comp_b = DeckCompositor::new();
+            let path_b1 = shaders_dir.join("AuroraWaves.fs");
+            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
+                let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
+                comp_b.decks.push(Deck::new("b1", "AuroraWaves", Box::new(node)));
+            } else {
+                log::warn!("Failed to load AuroraWaves.fs");
+            }
+            let path_b2 = shaders_dir.join("ColorCycle.fs");
+            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b2) {
+                let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
+                comp_b.decks.push(Deck::new("b2", "ColorCycle", Box::new(node)));
+            } else {
+                log::warn!("Failed to load ColorCycle.fs");
+            }
+            if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
+                log::warn!("Failed to add channel B: {}", e);
             }
 
             drop(mixer);

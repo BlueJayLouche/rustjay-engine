@@ -124,9 +124,10 @@ impl Channel {
     /// Create a channel from an effect instance with default mix settings.
     ///
     /// GPU textures are allocated on first render when the target size is known.
-    pub fn new(uuid: impl Into<String>, name: impl Into<String>, effect: Box<dyn EffectInstance>) -> Self {
+    pub fn new(uuid: impl Into<String>, name: impl Into<String>, mut effect: Box<dyn EffectInstance>) -> Self {
         let uuid = uuid.into();
         let name = name.into();
+        effect.set_param_prefix(&format!("ch_{}_", &uuid));
         Self {
             opacity_key: format!("ch_{}_opacity", &uuid),
             blend_key: format!("ch_{}_blend", &uuid),
