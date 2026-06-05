@@ -13,6 +13,9 @@ pub mod config;
 #[cfg(feature = "gles2")]
 pub mod gles2;
 
+#[cfg(feature = "projection")]
+pub use app::projection::ProjectionSubsystem;
+
 // Re-export the most useful types so app authors only need `rustjay_engine::*`
 pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, ParameterDescriptor, ParamCategory, ParamType, RenderHookCtx};
 #[cfg(feature = "link")]
@@ -90,6 +93,36 @@ pub fn run_with_tabs<P: EffectPlugin>(
     apply_cli_args(&mut state);
     let shared_state = Arc::new(Mutex::new(state));
     app::run_app(shared_state, plugin, tabs, false)
+}
+
+/// Run the engine with projection mapping enabled.
+///
+/// The `setup` closure receives a [`ProjectionSubsystem`] where you can
+/// register extra projector windows and their post-processing stage chains.
+///
+/// ```ignore
+/// use rustjay_engine::{run_with_projection, ProjectionSubsystem};
+/// use rustjay_projection::IdentityStage;
+///
+/// fn main() -> anyhow::Result<()> {
+///     run_with_projection(MyEffect, vec![], |sub| {
+///         sub.add_projector(
+///             WindowAttributes::default().with_title("Projector 1"),
+///             vec![Box::new(IdentityStage::new(&device, format))],
+///         );
+///     })
+/// }
+/// ```
+#[cfg(feature = "projection")]
+pub fn run_with_projection<P: EffectPlugin, F: FnOnce(&mut ProjectionSubsystem)>(
+    plugin: P,
+    tabs: Vec<Box<dyn AnyGuiTab>>,
+    setup: F,
+) -> Result<()> {
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
+    app::run_app_with_projection(shared_state, plugin, tabs, false, setup)
 }
 
 /// Run the engine in headless mode (no control window).

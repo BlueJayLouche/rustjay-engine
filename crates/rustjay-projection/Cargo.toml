@@ -1,0 +1,35 @@
+[package]
+name = "rustjay-projection"
+version = "0.1.0"
+edition = "2021"
+description = "Output post-processor for projection mapping — dome, warp, edge-blend, slicer"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["vj", "video", "projection", "warp", "dome"]
+categories = ["graphics", "multimedia::video"]
+
+[dependencies]
+rustjay-core = { workspace = true }
+wgpu         = { workspace = true }
+bytemuck     = { workspace = true }
+log          = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+anyhow       = { workspace = true }
+
+# Optional deps for surface import / auto edge-blend
+image        = { workspace = true, optional = true }
+imageproc    = { workspace = true, optional = true }
+earcutr      = { workspace = true, optional = true }
+geo          = { version = "0.29", optional = true }
+usvg         = { version = "0.45", optional = true }
+dxf          = { version = "0.6", optional = true }
+thiserror    = { version = "2", optional = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
+
+[features]
+default = []
+surface-import = ["dep:image", "dep:imageproc", "dep:earcutr", "dep:usvg", "dep:dxf", "dep:thiserror"]
+auto-edge-blend = ["dep:geo"]

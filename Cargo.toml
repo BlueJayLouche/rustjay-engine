@@ -12,6 +12,7 @@ members = [
     "crates/rustjay-sync",
     "crates/rustjay-isf",
     "crates/rustjay-api",
+    "crates/rustjay-projection",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -21,6 +22,7 @@ members = [
     "examples/isf-example",
     "examples/delta-egui",
     "examples/mixer",
+    "examples/projection",
     "examples/varda",
 ]
 resolver = "2"
@@ -41,6 +43,8 @@ pollster    = "0.4"
 bytemuck    = { version = "1.21", features = ["derive"] }
 glam        = { version = "0.32", features = ["bytemuck", "serde"] }
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc   = { version = "0.27", default-features = false }
+earcutr     = "0.5"
 glow        = "0.17"
 khronos-egl = { version = "6", features = ["dynamic"] }
 
@@ -91,6 +95,7 @@ rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-
 rustjay-isf     = { path = "crates/rustjay-isf",     version = "0.1.0" }
 rustjay-api     = { path = "crates/rustjay-api",     version = "0.1.0" }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
+rustjay-projection = { path = "crates/rustjay-projection", version = "0.1.0" }
 syphon-core     = "0.1.1"
 syphon-metal    = "0.1.1"
 syphon-wgpu     = "0.1.1"

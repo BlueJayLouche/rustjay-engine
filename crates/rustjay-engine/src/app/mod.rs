@@ -29,11 +29,56 @@ pub(crate) enum WindowAction {
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(feature = "projection")]
+pub mod projection;
+
 pub(crate) fn run_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
     nogui: bool,
+) -> Result<()> {
+    run_app_with_projection(shared_state, plugin, tabs, nogui, |_| {})
+}
+
+#[cfg(feature = "projection")]
+pub(crate) fn run_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection::ProjectionSubsystem)>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    tabs: Vec<Box<dyn AnyGuiTab>>,
+    nogui: bool,
+    projection_setup: F,
+) -> Result<()> {
+    let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+
+    #[cfg(target_os = "macos")]
+    let proxy = event_loop.create_proxy();
+
+    let mut app = App::new(shared_state, plugin, false, tabs, nogui);
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_proxy(proxy);
+        macos::setup_macos_app_delegate();
+    }
+
+    if let Some(ref mut sub) = app.projection_subsystem {
+        projection_setup(sub);
+    }
+
+    event_loop.run_app(&mut app)?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "projection"))]
+pub(crate) fn run_app_with_projection<P: EffectPlugin>(
+    shared_state: Arc<std::sync::Mutex<EngineState>>,
+    plugin: P,
+    tabs: Vec<Box<dyn AnyGuiTab>>,
+    nogui: bool,
+    _projection_setup: impl FnOnce(&mut ()),
 ) -> Result<()> {
     let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -188,6 +233,10 @@ pub(crate) struct App<P: EffectPlugin> {
     /// When true, use DRM/GBM directly — skip window creation and weston entirely.
     #[cfg(feature = "drm-gles2")]
     pub(crate) drm_gles2: bool,
+
+    /// Optional projection-mapping subsystem (extra projector windows + stage chains).
+    #[cfg(feature = "projection")]
+    pub(crate) projection_subsystem: Option<projection::ProjectionSubsystem>,
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -392,6 +441,8 @@ impl<P: EffectPlugin> App<P> {
             gles2_state: None,
             #[cfg(feature = "drm-gles2")]
             drm_gles2: false,
+            #[cfg(feature = "projection")]
+            projection_subsystem: Some(projection::ProjectionSubsystem::new()),
         }
     }
 
