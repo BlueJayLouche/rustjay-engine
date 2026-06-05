@@ -57,10 +57,10 @@ pub struct Registry {
 
 impl Registry {
     /// Scan the given directories for sources.
-    pub fn scan(shaders_dir: &Path, _assets_dir: &Path) -> Self {
+    pub fn scan(shaders_dir: &Path, assets_dir: &Path) -> Self {
         let mut shaders = Vec::new();
-        let images = Vec::new();
-        let videos = Vec::new();
+        let mut images = Vec::new();
+        let mut videos = Vec::new();
 
         // Scan ISF shaders
         if let Ok(entries) = std::fs::read_dir(shaders_dir) {
@@ -85,6 +85,43 @@ impl Registry {
 
         // Sort for deterministic ordering.
         shaders.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Scan images and videos in assets_dir
+        if let Ok(entries) = std::fs::read_dir(assets_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_lowercase();
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let id = name.to_lowercase().replace(' ', "_");
+                    match ext_lower.as_str() {
+                        "png" | "jpg" | "jpeg" => {
+                            images.push(SourceEntry {
+                                id,
+                                name,
+                                kind: SourceKind::Image,
+                                path: Some(path),
+                            });
+                        }
+                        "mp4" | "mov" | "avi" | "mkv" | "webm" => {
+                            videos.push(SourceEntry {
+                                id,
+                                name,
+                                kind: SourceKind::Video,
+                                path: Some(path),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        images.sort_by(|a, b| a.name.cmp(&b.name));
+        videos.sort_by(|a, b| a.name.cmp(&b.name));
 
         Self {
             shaders,
