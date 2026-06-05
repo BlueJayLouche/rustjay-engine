@@ -3,7 +3,7 @@
 //! Implements REQ-04.1–04.4 (auto-crossfade + beat-synced crossfade).
 
 /// Easing curve for auto-crossfades.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Easing {
     /// Linear interpolation.
     Linear,
@@ -38,7 +38,7 @@ impl Easing {
 /// Created via [`AutoCrossfade::new`]; tick every frame with [`AutoCrossfade::tick`].
 /// When `tick` returns `None` the crossfade is finished and the caller should
 /// snap the crossfader exactly to the target value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AutoCrossfade {
     from: f32,
     to: f32,

@@ -40,7 +40,7 @@ use rustjay_render::Texture;
 use std::sync::{Arc, Mutex};
 
 /// Which engine input slot a channel samples from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum InputSelect {
     /// Sample from the engine's primary input (slot 1).
     #[default]

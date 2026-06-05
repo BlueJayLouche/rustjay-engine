@@ -104,6 +104,11 @@ mod egui_impl {
                 .downcast_ref::<VardaAppState>()
                 .expect("MixerTab expects VardaAppState");
 
+            // Cmd+S manual save
+            if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+                state.save_workspace();
+            }
+
             ui.heading("Mixer");
             ui.separator();
             param_slider(ui, engine, "crossfader", "Crossfader", 0.0, 1.0);
@@ -654,6 +659,75 @@ mod egui_impl {
                                 });
                             }
                         }
+
+                        // Dome config when this surface is routed to Domemaster
+                        if surf.source == crate::stage::SurfaceSource::Domemaster {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Dome").strong());
+                            let mut dome_enabled = false;
+                            let mut dome_config = rustjay_projection::DomemasterConfig::default();
+                            let mut dome_rotation = [0.0f32; 3];
+                            if let Some(sync) = &state.stage.dome_sync {
+                                if let Ok(g) = sync.lock() {
+                                    dome_enabled = g.enabled;
+                                    dome_config = g.config.clone();
+                                    dome_rotation = g.content_rotation;
+                                }
+                            }
+                            let mut dirty = false;
+                            if ui.checkbox(&mut dome_enabled, "Enabled").changed() {
+                                dirty = true;
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label("Resolution:");
+                                let mut res_idx = match dome_config.resolution {
+                                    rustjay_projection::DomemasterResolution::R1K => 0,
+                                    rustjay_projection::DomemasterResolution::R2K => 1,
+                                    rustjay_projection::DomemasterResolution::R4K => 2,
+                                };
+                                let prev = res_idx;
+                                egui::ComboBox::from_id_salt("dome_res")
+                                    .selected_text(["1K", "2K", "4K"][res_idx])
+                                    .show_ui(ui, |ui| {
+                                        for (i, name) in ["1K", "2K", "4K"].iter().enumerate() {
+                                            if ui.selectable_label(res_idx == i, *name).clicked() {
+                                                res_idx = i;
+                                            }
+                                        }
+                                    });
+                                if res_idx != prev {
+                                    dome_config.resolution = match res_idx {
+                                        0 => rustjay_projection::DomemasterResolution::R1K,
+                                        1 => rustjay_projection::DomemasterResolution::R2K,
+                                        _ => rustjay_projection::DomemasterResolution::R4K,
+                                    };
+                                    dirty = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("FOV°:");
+                                if ui.add(egui::DragValue::new(&mut dome_config.fov_degrees).speed(1.0).range(90.0..=220.0)).changed() {
+                                    dirty = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Tilt°:");
+                                if ui.add(egui::DragValue::new(&mut dome_config.tilt_degrees).speed(1.0).range(-90.0..=90.0)).changed() {
+                                    dirty = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Az:");
+                                if ui.add(egui::DragValue::new(&mut dome_rotation[0]).speed(0.01)).changed() { dirty = true; }
+                                ui.label("El:");
+                                if ui.add(egui::DragValue::new(&mut dome_rotation[1]).speed(0.01)).changed() { dirty = true; }
+                                ui.label("Roll:");
+                                if ui.add(egui::DragValue::new(&mut dome_rotation[2]).speed(0.01)).changed() { dirty = true; }
+                            });
+                            if dirty {
+                                state.stage.publish_dome(dome_enabled, dome_config, dome_rotation);
+                            }
+                        }
                     } else {
                         ui.label("No surfaces. Add one from the list.");
                     }
@@ -679,13 +753,56 @@ mod egui_impl {
         fn draw(
             &mut self,
             ui: &mut egui::Ui,
-            _app_state: &mut dyn std::any::Any,
+            app_state: &mut dyn std::any::Any,
             _engine: &mut EngineState,
         ) {
+            #[cfg_attr(not(feature = "projection"), allow(unused_variables))]
+            let state = app_state
+                .downcast_mut::<VardaAppState>()
+                .expect("OutputsTab expects VardaAppState");
+
             ui.heading("Outputs");
             ui.separator();
             ui.label("Multi-output window/display assignment, NDI, streaming, and recording.");
             ui.label("Coming in Phase 8+.");
+
+            #[cfg(feature = "projection")]
+            {
+                ui.separator();
+                // Edge-blend controls (single-output manual config)
+                ui.label(egui::RichText::new("Edge Blend").strong());
+                let mut config = rustjay_projection::EdgeBlendConfig::default();
+                if let Some(sync) = &state.stage.edge_blend_sync {
+                    if let Ok(g) = sync.lock() {
+                        config = g.config;
+                    }
+                }
+                let mut dirty = false;
+                let mut edge_ui = |ui: &mut egui::Ui, edge: &mut rustjay_projection::EdgeBlendEdge, label: &str| {
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut edge.enabled, label).changed() {
+                            dirty = true;
+                        }
+                        if edge.enabled {
+                            ui.label("width:");
+                            if ui.add(egui::DragValue::new(&mut edge.width).speed(0.001).range(0.0..=0.5)).changed() {
+                                dirty = true;
+                            }
+                            ui.label("γ:");
+                            if ui.add(egui::DragValue::new(&mut edge.gamma).speed(0.1).range(0.5..=4.0)).changed() {
+                                dirty = true;
+                            }
+                        }
+                    });
+                };
+                edge_ui(ui, &mut config.left, "Left");
+                edge_ui(ui, &mut config.right, "Right");
+                edge_ui(ui, &mut config.top, "Top");
+                edge_ui(ui, &mut config.bottom, "Bottom");
+                if dirty {
+                    state.stage.publish_edge_blend(config);
+                }
+            }
         }
     }
 
@@ -696,13 +813,112 @@ mod egui_impl {
         fn draw(
             &mut self,
             ui: &mut egui::Ui,
-            _app_state: &mut dyn std::any::Any,
+            app_state: &mut dyn std::any::Any,
             _engine: &mut EngineState,
         ) {
+            let state = app_state
+                .downcast_mut::<VardaAppState>()
+                .expect("SequencerTab expects VardaAppState");
+
             ui.heading("Sequencer");
             ui.separator();
-            ui.label("Transition sequences and beat-synced scene changes.");
-            ui.label("Coming in Phase 12.");
+
+            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            let seq = &mut mixer.sequencer;
+
+            // Playback controls
+            ui.horizontal(|ui| {
+                if ui.button("▶ Play").clicked() {
+                    seq.play();
+                }
+                if ui.button("⏸ Pause").clicked() {
+                    seq.pause();
+                }
+                if ui.button("⏹ Stop").clicked() {
+                    seq.stop();
+                }
+                ui.checkbox(&mut seq.looping, "Loop");
+            });
+
+            ui.separator();
+
+            // Step list
+            ui.label(egui::RichText::new("Steps").strong());
+            let mut remove_idx: Option<usize> = None;
+            for (i, step) in seq.steps.iter().enumerate() {
+                ui.push_id(i, |ui| {
+                    ui.horizontal(|ui| {
+                        let label = match &step.kind {
+                            rustjay_mixer::StepKind::Crossfade { target, beats } => {
+                                format!("Crossfade → {:.0}% over {:.1} beats", target * 100.0, beats)
+                            }
+                            rustjay_mixer::StepKind::Hold { beats } => {
+                                format!("Hold {:.1} beats", beats)
+                            }
+                            rustjay_mixer::StepKind::TimedCrossfade { target, seconds } => {
+                                format!("Timed Crossfade → {:.0}% over {:.1}s", target * 100.0, seconds)
+                            }
+                            rustjay_mixer::StepKind::TimedHold { seconds } => {
+                                format!("Timed Hold {:.1}s", seconds)
+                            }
+                            rustjay_mixer::StepKind::Effect(_) => "Effect".to_string(),
+                        };
+                        let marker = if seq.playing && seq.index == i { "▶ " } else { "  " };
+                        ui.label(format!("{}{}", marker, label));
+                        if ui.small_button("✖").clicked() {
+                            remove_idx = Some(i);
+                        }
+                    });
+                });
+            }
+            if let Some(i) = remove_idx {
+                seq.steps.remove(i);
+                if seq.index >= seq.steps.len() && !seq.steps.is_empty() {
+                    seq.index = seq.steps.len() - 1;
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Add Step").strong());
+
+            // Add step controls
+            ui.horizontal(|ui| {
+                if ui.button("+ Crossfade (beats)").clicked() {
+                    seq.steps.push(rustjay_mixer::TransitionStep::crossfade(1.0, 4.0));
+                }
+                if ui.button("+ Hold (beats)").clicked() {
+                    seq.steps.push(rustjay_mixer::TransitionStep::hold(4.0));
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("+ Crossfade (timed)").clicked() {
+                    seq.steps.push(rustjay_mixer::TransitionStep::timed_crossfade(1.0, 2.0));
+                }
+                if ui.button("+ Hold (timed)").clicked() {
+                    seq.steps.push(rustjay_mixer::TransitionStep::timed_hold(3.0));
+                }
+            });
+
+            ui.separator();
+            ui.label(egui::RichText::new("Quick Transitions").strong());
+            ui.horizontal(|ui| {
+                if ui.button("Auto → A").clicked() {
+                    mixer.auto = Some(rustjay_mixer::AutoCrossfade::new(
+                        mixer.crossfader, 0.0, 1.0, rustjay_mixer::Easing::EaseInOut,
+                    ));
+                }
+                if ui.button("Auto → B").clicked() {
+                    mixer.auto = Some(rustjay_mixer::AutoCrossfade::new(
+                        mixer.crossfader, 1.0, 1.0, rustjay_mixer::Easing::EaseInOut,
+                    ));
+                }
+                if ui.button("Beat-Sync → A").clicked() {
+                    mixer.beat_sync = Some(rustjay_mixer::BeatSyncCrossfade::new(0.0, 4.0));
+                }
+                if ui.button("Beat-Sync → B").clicked() {
+                    mixer.beat_sync = Some(rustjay_mixer::BeatSyncCrossfade::new(1.0, 4.0));
+                }
+            });
         }
     }
 

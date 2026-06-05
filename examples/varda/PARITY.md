@@ -24,12 +24,12 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images; videos enumerated as stub unloadable entries — decode absent from `rustjay-io`)* |
 | 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
-| 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | todo |
-| 16 | **Transitions** — multi-channel sequencer (beat-synced or timed s/min/hr) | T12.2 | todo |
+| 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | done *(mixer `AutoCrossfade` / `BeatSyncCrossfade` triggered from SequencerTab; timer-based via `timed_crossfade` / `timed_hold` sequencer steps)* |
+| 16 | **Transitions** — multi-channel sequencer (beat-synced or timed s/min/hr) | T12.2 | done *(SequencerTab drives `Mixer::sequencer`; beat-synced and timed step kinds both implemented in `rustjay-mixer`; pre-loaded demo sequence)* |
 | 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | done *(stable FX UUID prefixes `fx<uuid>_` on deck FX; `reorder_fx`/`move_fx` APIs; per-effect enable on all 3 levels; GUI wiring is a follow-up)* |
 | 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(mixer `ModulationEngine` wired to crossfader, channel opacity, and deck opacity; `DeckCompositor` reads mixer modulation via shared `Arc<Mutex<ModulationEngine>>`)* |
 | 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT + `AudioBand` `ModulationSource`; demo assigns audio band to crossfader)* |
-| 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | todo *(engine gap)* |
+| 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | done *(engine `ModulationSource::ADSR` / `StepSequencer`; demo assigns both to crossfader)* |
 | 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | todo *(engine gap)* |
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
 | 23 | **Control** — MIDI (learn/unlearn, APC-mini profile, auto-map) | T05.1 | done *(engine `rustjay-control/midi`)* |
@@ -38,19 +38,19 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 26 | **Control** — param router (`deck/<uuid>/param/<name>` → `set_param_base`) | T05.4 | done *(structurally maps any hierarchical `deck\|channel/<uuid>/param/<name>` to flat canonical ids; wired into engine `WebCommand::Set` + MIDI param-path fallback via `EngineState::param_resolver`; OSC resolves to canonical ids directly. Router output cross-checked against real mixer registration in a test)* |
 | 27 | **Projection mapping** — 2D stage editor, polygon/circle surfaces, source selector | T07.1, T07.3 | done *(StageTab: 2D canvas, surface list add/remove, SVG/DXF import via `rustjay-projection/surface_import`, properties panel. Source combo models Master/Channel/Deck/Domemaster but only **Master** renders to the projector; properties edit surface 0 only — per-surface selection + non-Master source routing are Phase 8)* |
 | 28 | **Projection mapping** — corner-pin + mesh warp, calibration cards | T07.2 | done *(per-surface `WarpMode::CornerPin`/`Mesh`; **warp reaches the projector**: `VardaWarpStage` in the projector stage chain reads a shared `WarpSync` and applies StageTab edits to the Master surface live via `WarpStage::set_homography`/rebuild. Calibration cards not yet added)* |
-| 29 | **Projection mapping** — edge blending (auto-detect overlap + manual per-edge) | T13.2 | done *(engine `rustjay-projection` `edge_blend.rs`, `auto_blend.rs`)* |
+| 29 | **Projection mapping** — edge blending (auto-detect overlap + manual per-edge) | T13.2 | done *(engine `rustjay-projection` `edge_blend.rs`; `VardaEdgeBlendStage` wired into projector chain; manual per-edge controls in OutputsTab; auto-detect via `compute_auto_edge_blend` ready for multi-output)* |
 | 30 | **Multi-output** — multiple windows / fullscreen on any display | T08.1 | todo |
 | 31 | **Multi-output** — headless outputs with surface assignments + async readback | T08.2 | done *(engine `run_headless*` + `projection/headless.rs`)* |
 | 32 | **Network I/O — NDI** send/receive | T09.1 | done *(engine `rustjay-io/ndi_runtime`)* |
 | 33 | **Network I/O — SRT / HLS / LL-HLS / DASH / RTMP(S)** send + receive | T09.2 | todo *(see rustjay-io probe below)* |
 | 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(see rustjay-io probe below)* |
-| 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | todo *(engine preset bank + `serialize_preset_state` hooks)* |
-| 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | todo |
+| 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
+| 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.varda/scene.json` = `MixerState` + sequencer; `.varda/stage.json` = `VardaStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.varda/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
 | 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
 | 38 | **Notifications** — toast overlay | T06.x | todo |
 | 39 | **Sysmon** — CPU/GPU/mem readout for status bar | (adhoc) | todo |
-| 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(engine `rustjay-projection/dome.rs`)* 🧪 |
-| 41 | **Surface overlap zones** — manual and auto-detect for edge blending | T13.2 | done *(engine `rustjay-projection/auto_blend.rs`)* 🧪 |
+| 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(`VardaDomeStage` wired into projector chain; StageTab shows dome config when surface source = Domemaster; drives `DomeSync` → projector)* 🧪 |
+| 41 | **Surface overlap zones** — manual and auto-detect for edge blending | T13.2 | done *(`compute_auto_edge_blend` available for multi-output overlap detection; manual edge blend controls wired)* 🧪 |
 
 > **🧪 Experimental** — shipped by engine but not required for parity gate.
 

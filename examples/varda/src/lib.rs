@@ -8,6 +8,7 @@
 pub mod api_state;
 pub mod control;
 pub mod graph;
+pub mod keymap;
 pub mod persistence;
 pub mod scene;
 pub mod sources;
@@ -40,6 +41,8 @@ use crate::graph::{Deck, DeckCompositor};
 use crate::sources::{Registry, ShaderWatcher};
 #[cfg(feature = "mixer")]
 use crate::sources::{CameraSource, SolidColorSource};
+#[cfg(feature = "mixer")]
+use crate::scene::Scene;
 
 // ---------------------------------------------------------------------------
 // App state
@@ -57,6 +60,44 @@ pub struct VardaAppState {
     pub shader_watcher: Option<ShaderWatcher>,
     #[cfg(feature = "projection")]
     pub stage: VardaStage,
+    /// Pending scene to apply on next `prepare()` (runtime preset/workspace load).
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_scene: Option<Scene>,
+    /// Workspace handle for save/load.
+    #[serde(skip)]
+    pub workspace: crate::persistence::Workspace,
+    /// Frame counter for periodic auto-save.
+    #[serde(skip)]
+    pub auto_save_frame_counter: u32,
+    /// Keymap bindings.
+    #[serde(skip)]
+    pub keymap: crate::keymap::Keymap,
+}
+
+impl VardaAppState {
+    /// Manually save the current workspace (scene + stage).
+    #[cfg(feature = "mixer")]
+    pub fn save_workspace(&self) {
+        if let Ok(mixer) = self.mixer.lock() {
+            let scene = Scene::from_mixer(&mixer);
+            match self.workspace.save_scene(&scene) {
+                Ok(_) => log::info!("[Workspace] scene saved"),
+                Err(e) => log::warn!("[Workspace] scene save failed: {}", e),
+            }
+        }
+        #[cfg(feature = "projection")]
+        {
+            match self.workspace.save_stage(&self.stage) {
+                Ok(_) => log::info!("[Workspace] stage saved"),
+                Err(e) => log::warn!("[Workspace] stage save failed: {}", e),
+            }
+        }
+        match self.workspace.save_keymap(&self.keymap) {
+            Ok(_) => log::info!("[Workspace] keymap saved"),
+            Err(e) => log::warn!("[Workspace] keymap save failed: {}", e),
+        }
+    }
 }
 
 impl Default for VardaAppState {
@@ -74,6 +115,11 @@ impl Default for VardaAppState {
             shader_watcher: None,
             #[cfg(feature = "projection")]
             stage: VardaStage::with_default_surface(),
+            #[cfg(feature = "mixer")]
+            pending_scene: None,
+            workspace: crate::persistence::default_workspace(),
+            auto_save_frame_counter: 0,
+            keymap: crate::keymap::Keymap::default_bindings(),
         }
     }
 }
@@ -90,6 +136,12 @@ pub struct VardaRootPlugin {
     /// projector's `VardaWarpStage` (reader). See `stage::WarpSync`.
     #[cfg(feature = "projection")]
     warp_sync: std::sync::Arc<std::sync::Mutex<stage::WarpSync>>,
+    /// Canonical live dome state, shared with the app state and projector.
+    #[cfg(feature = "projection")]
+    dome_sync: std::sync::Arc<std::sync::Mutex<stage::DomeSync>>,
+    /// Canonical live edge-blend state, shared with the app state and projector.
+    #[cfg(feature = "projection")]
+    edge_blend_sync: std::sync::Arc<std::sync::Mutex<stage::EdgeBlendSync>>,
 }
 
 impl VardaRootPlugin {
@@ -100,20 +152,192 @@ impl VardaRootPlugin {
             params_dirty: false,
             #[cfg(feature = "projection")]
             warp_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::WarpSync::default())),
+            #[cfg(feature = "projection")]
+            dome_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::DomeSync::default())),
+            #[cfg(feature = "projection")]
+            edge_blend_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::EdgeBlendSync::default())),
         }
     }
 
-    /// Shared warp state for the projector stage (clone into the
-    /// `run_with_projection_egui_tabs` setup closure).
+    /// Shared warp state for the projector stage.
     #[cfg(feature = "projection")]
     pub fn warp_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::WarpSync>> {
         self.warp_sync.clone()
+    }
+
+    /// Shared dome state for the projector stage.
+    #[cfg(feature = "projection")]
+    pub fn dome_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::DomeSync>> {
+        self.dome_sync.clone()
+    }
+
+    /// Shared edge-blend state for the projector stage.
+    #[cfg(feature = "projection")]
+    pub fn edge_blend_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::EdgeBlendSync>> {
+        self.edge_blend_sync.clone()
     }
 }
 
 impl Default for VardaRootPlugin {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "mixer")]
+impl VardaRootPlugin {
+    fn build_default_graph(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        let dummy_engine = EngineState::new();
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let shaders_dir = manifest_dir.join("shaders");
+
+        // Channel A: ColorCycle (ISF) + Solid Color (red)
+        let mut comp_a = DeckCompositor::new();
+        let path_a1 = shaders_dir.join("ColorCycle.fs");
+        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
+            let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
+            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node));
+            deck.source_path = Some(path_a1);
+            comp_a.decks.push(deck);
+        } else {
+            log::warn!("Failed to load ColorCycle.fs");
+        }
+        let solid = SolidColorSource::new(device, wgpu::TextureFormat::Bgra8Unorm, [1.0, 0.0, 0.0, 1.0]);
+        comp_a.decks.push(Deck::new("a2", "Solid Red", Box::new(solid)));
+        if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
+            log::warn!("Failed to add channel A: {}", e);
+        }
+
+        // Channel B: AuroraWaves (ISF) + Camera
+        let mut comp_b = DeckCompositor::new();
+        let path_b1 = shaders_dir.join("AuroraWaves.fs");
+        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
+            let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
+            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node));
+            deck.source_path = Some(path_b1);
+            comp_b.decks.push(deck);
+        } else {
+            log::warn!("Failed to load AuroraWaves.fs");
+        }
+        let camera = CameraSource::new(device, 0);
+        comp_b.decks.push(Deck::new("b2", "Camera", Box::new(camera)));
+        if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
+            log::warn!("Failed to add channel B: {}", e);
+        }
+
+        // Exercise a deck FX in the demo assembly (T03.1b)
+        let fx_path = shaders_dir.join("ConcentricRings.fs");
+        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&fx_path) {
+            let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
+            if let Some(ch) = mixer.channels.first_mut() {
+                if let Some(compositor) = ch.effect.as_any_mut() {
+                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                        if let Some(deck) = compositor.decks.first_mut() {
+                            deck.add_effect(Box::new(node));
+                            log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 12 demo: pre-populate sequencer with a beat-synced sequence
+        mixer.sequencer.steps = vec![
+            rustjay_mixer::TransitionStep::crossfade(1.0, 4.0),
+            rustjay_mixer::TransitionStep::hold(4.0),
+            rustjay_mixer::TransitionStep::crossfade(0.0, 4.0),
+            rustjay_mixer::TransitionStep::hold(4.0),
+        ];
+        mixer.sequencer.looping = true;
+        log::info!("Sequencer pre-loaded with {} beat-synced steps", mixer.sequencer.steps.len());
+
+        // FX demo exercise: add a channel FX to Channel B (end-to-end)
+        let ch_fx_path = shaders_dir.join("brightness_contrast.fs");
+        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&ch_fx_path) {
+            let node = EffectNode::new(isf, "BrightnessContrast", device, queue, &dummy_engine);
+            if let Some(ch_b) = mixer.channels.get_mut(1) {
+                ch_b.add_effect(Box::new(node));
+                log::info!("Added channel FX BrightnessContrast to Channel B");
+            }
+        }
+
+        // Phase 4 modulation demo: LFO + audio-band sources on crossfader
+        let mod_arc = mixer.modulation.clone();
+        {
+            let mut mod_eng = mod_arc.lock().unwrap();
+            let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
+                waveform: rustjay_core::modulation::LFOWaveform::Sine,
+                frequency: 0.25,
+                phase: 0.0,
+                amplitude: 0.5,
+                bipolar: true,
+            });
+            mod_eng.assign("crossfader", &lfo, 1.0, None);
+
+            let audio = mod_eng.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
+                source_id: None,
+                freq_low: 20.0,
+                freq_high: 250.0,
+                gain: 2.0,
+                smoothing: 0.6,
+                mode: rustjay_core::modulation::AudioReactMode::Direct,
+                noise_gate: 0.1,
+            });
+            mod_eng.assign("crossfader", &audio, 1.0, None);
+        }
+
+        // Collect deck opacity keys and inject the shared modulation engine
+        let mut deck_keys: Vec<String> = Vec::new();
+        for ch in &mut mixer.channels {
+            if let Some(compositor) = ch.effect.as_any_mut() {
+                if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                    for deck in &compositor.decks {
+                        deck_keys.push(deck.opacity_key.clone());
+                    }
+                    compositor.set_modulation_engine(mod_arc.clone());
+                }
+            }
+        }
+
+        // Demo: modulate every deck opacity with a slow triangle LFO.
+        {
+            let mut mod_eng = mod_arc.lock().unwrap();
+            let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
+                waveform: rustjay_core::modulation::LFOWaveform::Triangle,
+                frequency: 0.2,
+                phase: 0.0,
+                amplitude: 1.0,
+                bipolar: true,
+            });
+            for key in &deck_keys {
+                mod_eng.assign(key, &deck_lfo, 0.4, None);
+            }
+
+            // T04.3 carry-over: ADSR envelope + step sequencer demo sources
+            let adsr = mod_eng.add_source(rustjay_core::modulation::ModulationSource::ADSR {
+                attack: 0.5,
+                decay: 0.3,
+                sustain: 0.6,
+                release: 1.0,
+                stage: rustjay_core::modulation::ADSRStage::Idle,
+                stage_time: 0.0,
+                gate: true,
+                current_level: 0.0,
+            });
+            mod_eng.assign("crossfader", &adsr, 0.3, None);
+
+            let step_seq = mod_eng.add_source(rustjay_core::modulation::ModulationSource::StepSequencer {
+                steps: vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25],
+                rate: 4.0,
+                interpolation: rustjay_core::modulation::StepInterpolation::Linear,
+                bipolar: false,
+            });
+            mod_eng.assign("crossfader", &step_seq, 0.2, None);
+        }
+
+        drop(mixer);
+        self.params_dirty = true;
     }
 }
 
@@ -150,6 +374,8 @@ impl EffectPlugin for VardaRootPlugin {
         #[cfg(feature = "projection")]
         {
             s.stage.warp_sync = Some(self.warp_sync.clone());
+            s.stage.dome_sync = Some(self.dome_sync.clone());
+            s.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
         }
         s
     }
@@ -171,34 +397,76 @@ impl EffectPlugin for VardaRootPlugin {
             if state.shader_watcher.is_some() {
                 log::info!("[ShaderWatcher] started");
             }
+
+            // First-frame workspace load: stage, keymap (scene is loaded in `init`).
+            #[cfg(feature = "projection")]
+            {
+                let stage_path = state.workspace.stage_path();
+                if stage_path.exists() {
+                    match state.workspace.load_stage() {
+                        Ok(loaded_stage) => {
+                            state.stage = loaded_stage;
+                            state.stage.publish_warp();
+                            state.stage.publish_dome(false, rustjay_projection::DomemasterConfig::default(), [0.0; 3]);
+                            state.stage.publish_edge_blend(rustjay_projection::EdgeBlendConfig::default());
+                            log::info!("[Workspace] loaded stage with {} surfaces", state.stage.surfaces.len());
+                        }
+                        Err(e) => {
+                            log::warn!("[Workspace] failed to load stage: {}", e);
+                        }
+                    }
+                }
+            }
+            let keymap_path = state.workspace.keymap_path();
+            if keymap_path.exists() {
+                match state.workspace.load_keymap() {
+                    Ok(km) => {
+                        state.keymap = km;
+                        log::info!("[Workspace] loaded keymap with {} bindings", state.keymap.bindings.len());
+                    }
+                    Err(e) => {
+                        log::warn!("[Workspace] failed to load keymap: {}", e);
+                    }
+                }
+            }
         }
 
         #[cfg(feature = "mixer")]
-        if let Some(ref watcher) = state.shader_watcher {
-            let events = watcher.poll();
-            for event in events {
-                for path in &event.paths {
-                    log::info!("[ShaderWatcher] changed: {}", path.display());
-                    if let Ok(mut mixer) = state.mixer.lock() {
-                        for ch in mixer.channels.iter_mut() {
-                            if let Some(compositor) = ch.effect.as_any_mut() {
-                                if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                                    for deck in compositor.decks.iter_mut() {
-                                        if deck.source_path.as_ref() == Some(path) {
-                                            let name = path.file_stem()
-                                                .and_then(|s| s.to_str())
-                                                .unwrap_or("ISF Shader")
-                                                .to_string();
-                                            match rustjay_isf::IsfEffect::from_path(path) {
-                                                Ok(isf) => {
-                                                    let node = EffectNode::new(isf, &name, device, queue, engine);
-                                                    deck.source = Box::new(node);
-                                                    deck.source.set_param_prefix(&deck.full_prefix);
-                                                    self.params_dirty = true;
-                                                    log::info!("[HotReload] Reloaded {} for deck {}", path.display(), deck.uuid);
-                                                }
-                                                Err(e) => {
-                                                    log::warn!("[HotReload] Failed to reload {}: {}", path.display(), e);
+        {
+            // Apply pending scene from preset load or runtime restore.
+            if let Some(scene) = state.pending_scene.take() {
+                if let Ok(mut mixer) = state.mixer.lock() {
+                    scene.apply_to_mixer(&mut mixer);
+                    log::info!("[Scene] applied pending scene snapshot");
+                }
+            }
+
+            if let Some(ref watcher) = state.shader_watcher {
+                let events = watcher.poll();
+                for event in events {
+                    for path in &event.paths {
+                        log::info!("[ShaderWatcher] changed: {}", path.display());
+                        if let Ok(mut mixer) = state.mixer.lock() {
+                            for ch in mixer.channels.iter_mut() {
+                                if let Some(compositor) = ch.effect.as_any_mut() {
+                                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                                        for deck in compositor.decks.iter_mut() {
+                                            if deck.source_path.as_ref() == Some(path) {
+                                                let name = path.file_stem()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or("ISF Shader")
+                                                    .to_string();
+                                                match rustjay_isf::IsfEffect::from_path(path) {
+                                                    Ok(isf) => {
+                                                        let node = EffectNode::new(isf, &name, device, queue, engine);
+                                                        deck.source = Box::new(node);
+                                                        deck.source.set_param_prefix(&deck.full_prefix);
+                                                        self.params_dirty = true;
+                                                        log::info!("[HotReload] Reloaded {} for deck {}", path.display(), deck.uuid);
+                                                    }
+                                                    Err(e) => {
+                                                        log::warn!("[HotReload] Failed to reload {}: {}", path.display(), e);
+                                                    }
                                                 }
                                             }
                                         }
@@ -223,6 +491,30 @@ impl EffectPlugin for VardaRootPlugin {
                 if let Ok(mut guard) = engine.app_state.lock() {
                     *guard = Some(serde_json::to_value(&snapshot).unwrap_or_default());
                 }
+            }
+        }
+
+        // Auto-save workspace every ~30 seconds (1800 frames @ 60fps)
+        state.auto_save_frame_counter += 1;
+        if state.auto_save_frame_counter >= 1800 {
+            state.auto_save_frame_counter = 0;
+            #[cfg(feature = "mixer")]
+            {
+                if let Ok(mixer) = state.mixer.lock() {
+                    let scene = Scene::from_mixer(&mixer);
+                    if let Err(e) = state.workspace.save_scene(&scene) {
+                        log::warn!("[AutoSave] scene failed: {}", e);
+                    }
+                }
+            }
+            #[cfg(feature = "projection")]
+            {
+                if let Err(e) = state.workspace.save_stage(&state.stage) {
+                    log::warn!("[AutoSave] stage failed: {}", e);
+                }
+            }
+            if let Err(e) = state.workspace.save_keymap(&state.keymap) {
+                log::warn!("[AutoSave] keymap failed: {}", e);
             }
         }
     }
@@ -283,121 +575,59 @@ impl EffectPlugin for VardaRootPlugin {
         }
     }
 
+    fn serialize_preset_state(&self, _state: &Self::State) -> Option<String> {
+        #[cfg(feature = "mixer")]
+        {
+            if let Ok(mixer) = self.mixer.lock() {
+                let scene = Scene::from_mixer(&mixer);
+                return serde_json::to_string(&scene).ok();
+            }
+        }
+        None
+    }
+
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
+    fn deserialize_preset_state(&self, data: &str, state: &mut Self::State) {
+        #[cfg(feature = "mixer")]
+        {
+            match serde_json::from_str::<Scene>(data) {
+                Ok(scene) => {
+                    state.pending_scene = Some(scene);
+                    log::info!("[Preset] deserialized scene snapshot");
+                }
+                Err(e) => {
+                    log::warn!("[Preset] failed to deserialize scene: {}", e);
+                }
+            }
+        }
+    }
+
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
+    fn on_preset_applied(&self, _state: &mut Self::State, _engine: &mut EngineState) {
+        // Scene is applied in `prepare()` where we have device/queue access.
+        // Stage is not part of presets (scene/stage separation).
+    }
+
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn init(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(feature = "mixer")]
         {
-            let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-            let dummy_engine = EngineState::new();
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let shaders_dir = manifest_dir.join("shaders");
+            self.build_default_graph(device, queue);
 
-            // Channel A: ColorCycle (ISF) + Solid Color (red)
-            let mut comp_a = DeckCompositor::new();
-            let path_a1 = shaders_dir.join("ColorCycle.fs");
-            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
-                let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-                let mut deck = Deck::new("a1", "ColorCycle", Box::new(node));
-                deck.source_path = Some(path_a1);
-                comp_a.decks.push(deck);
-            } else {
-                log::warn!("Failed to load ColorCycle.fs");
-            }
-            let solid = SolidColorSource::new(device, wgpu::TextureFormat::Bgra8Unorm, [1.0, 0.0, 0.0, 1.0]);
-            comp_a.decks.push(Deck::new("a2", "Solid Red", Box::new(solid)));
-            if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
-                log::warn!("Failed to add channel A: {}", e);
-            }
-
-            // Channel B: AuroraWaves (ISF) + Camera
-            let mut comp_b = DeckCompositor::new();
-            let path_b1 = shaders_dir.join("AuroraWaves.fs");
-            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
-                let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-                let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node));
-                deck.source_path = Some(path_b1);
-                comp_b.decks.push(deck);
-            } else {
-                log::warn!("Failed to load AuroraWaves.fs");
-            }
-            let camera = CameraSource::new(device, 0);
-            comp_b.decks.push(Deck::new("b2", "Camera", Box::new(camera)));
-            if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
-                log::warn!("Failed to add channel B: {}", e);
-            }
-
-            // Exercise a deck FX in the demo assembly (T03.1b)
-            let fx_path = shaders_dir.join("ConcentricRings.fs");
-            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&fx_path) {
-                let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
-                if let Some(ch) = mixer.channels.first_mut() {
-                    if let Some(compositor) = ch.effect.as_any_mut() {
-                        if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                            if let Some(deck) = compositor.decks.first_mut() {
-                                deck.add_effect(Box::new(node));
-                                log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
-                            }
-                        }
+            // Try to restore saved scene knobs onto the default graph.
+            let workspace = crate::persistence::default_workspace();
+            if workspace.exists() {
+                match workspace.load_scene() {
+                    Ok(scene) => {
+                        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                        scene.apply_to_mixer(&mut mixer);
+                        log::info!("[Workspace] restored scene onto default graph");
+                    }
+                    Err(e) => {
+                        log::warn!("[Workspace] failed to load scene: {}", e);
                     }
                 }
             }
-
-            // Phase 4 modulation demo: LFO + audio-band sources on crossfader
-            let mod_arc = mixer.modulation.clone();
-            {
-                let mut mod_eng = mod_arc.lock().unwrap();
-                let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                    waveform: rustjay_core::modulation::LFOWaveform::Sine,
-                    frequency: 0.25,
-                    phase: 0.0,
-                    amplitude: 0.5,
-                    bipolar: true,
-                });
-                mod_eng.assign("crossfader", &lfo, 1.0, None);
-
-                let audio = mod_eng.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
-                    source_id: None,
-                    freq_low: 20.0,
-                    freq_high: 250.0,
-                    gain: 2.0,
-                    smoothing: 0.6,
-                    mode: rustjay_core::modulation::AudioReactMode::Direct,
-                    noise_gate: 0.1,
-                });
-                mod_eng.assign("crossfader", &audio, 1.0, None);
-            }
-
-            // Collect deck opacity keys and inject the shared modulation engine
-            // into every DeckCompositor so deck-level params can be modulated.
-            let mut deck_keys: Vec<String> = Vec::new();
-            for ch in &mut mixer.channels {
-                if let Some(compositor) = ch.effect.as_any_mut() {
-                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                        for deck in &compositor.decks {
-                            deck_keys.push(deck.opacity_key.clone());
-                        }
-                        compositor.set_modulation_engine(mod_arc.clone());
-                    }
-                }
-            }
-
-            // Demo: modulate every deck opacity with a slow triangle LFO.
-            {
-                let mut mod_eng = mod_arc.lock().unwrap();
-                let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                    waveform: rustjay_core::modulation::LFOWaveform::Triangle,
-                    frequency: 0.2,
-                    phase: 0.0,
-                    amplitude: 1.0,
-                    bipolar: true,
-                });
-                for key in &deck_keys {
-                    mod_eng.assign(key, &deck_lfo, 0.4, None);
-                }
-            }
-
-            drop(mixer);
-            self.params_dirty = true;
         }
     }
 

@@ -23,20 +23,28 @@ fn main() -> anyhow::Result<()> {
             Box::new(varda::ui::InspectorTab),
         ];
         let plugin = varda::VardaRootPlugin::new();
-        // Share the live warp state with the projector's warp stage so Stage-tab
-        // edits actually warp the projector output.
+        // Share the live sync states with the projector stages so GUI edits
+        // actually reach the render output.
         let warp_sync = plugin.warp_sync();
+        let dome_sync = plugin.dome_sync();
+        let edge_blend_sync = plugin.edge_blend_sync();
         rustjay_engine::run_with_projection_egui_tabs(
             plugin,
             tabs,
             move |sub| {
-                use varda::stage::VardaWarpStage;
+                use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
                 use winit::window::WindowAttributes;
                 sub.add_projector(
                     WindowAttributes::default()
                         .with_title("Varda Projector 1")
                         .with_inner_size(winit::dpi::LogicalSize::new(640u32, 480u32)),
-                    move |device, format| vec![Box::new(VardaWarpStage::new(device, format, warp_sync))],
+                    move |device, format| {
+                        vec![
+                            Box::new(VardaDomeStage::new(device, format, dome_sync.clone())),
+                            Box::new(VardaEdgeBlendStage::new(device, format, edge_blend_sync.clone())),
+                            Box::new(VardaWarpStage::new(device, format, warp_sync.clone())),
+                        ]
+                    },
                 );
                 log::info!("Queued {} projector window(s)", sub.pending_len());
             },
