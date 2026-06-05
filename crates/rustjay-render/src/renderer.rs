@@ -142,8 +142,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
         let blit_bind_group = blit_pipeline.create_bind_group(&device, &render_target.view);
 
-        let engine_state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
+        let mut engine_state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
+        plugin_renderer.on_engine_ready(&mut engine_state);
         drop(engine_state);
 
         let previous_frame = if plugin_renderer.cached_graph.as_ref().map(|g| g.feedback).unwrap_or(false) {

@@ -34,8 +34,8 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
 | 23 | **Control** — MIDI (learn/unlearn, APC-mini profile, auto-map) | T05.1 | done *(engine `rustjay-control/midi`)* |
 | 24 | **Control** — OSC | T05.2 | done *(engine `rustjay-control/osc`)* |
-| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | todo *(engine `rustjay-api` base exists; needs Varda routes)* |
-| 26 | **Control** — param router (`deck/<uuid>/param/<name>` hierarchy) | T05.4 | todo |
+| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | todo *(engine `rustjay-api` base exists; needs Varda route groups)* |
+| 26 | **Control** — param router (`deck/<uuid>/param/<name>` → `set_param_base`) | T05.4 | done *(structurally maps any hierarchical `deck\|channel/<uuid>/param/<name>` to flat canonical ids; wired into engine `WebCommand::Set` + MIDI param-path fallback via `EngineState::param_resolver`; OSC resolves to canonical ids directly. Router output cross-checked against real mixer registration in a test)* |
 | 27 | **Projection mapping** — 2D stage editor, polygon/circle surfaces, source selector | T07.1, T07.3 | todo *(engine `rustjay-projection` warp + import)* |
 | 28 | **Projection mapping** — corner-pin + mesh warp, calibration cards | T07.2 | done *(engine `rustjay-projection` `warp.rs`)* |
 | 29 | **Projection mapping** — edge blending (auto-detect overlap + manual per-edge) | T13.2 | done *(engine `rustjay-projection` `edge_blend.rs`, `auto_blend.rs`)* |

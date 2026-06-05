@@ -23,6 +23,8 @@ use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
 
+use crate::control::param_router::ParamRouter;
+
 #[cfg(feature = "mixer")]
 use crate::graph::{Deck, DeckCompositor};
 use crate::sources::{Registry, ShaderWatcher};
@@ -203,6 +205,30 @@ impl EffectPlugin for VardaRootPlugin {
 
     fn clear_parameters_dirty(&mut self) {
         self.params_dirty = false;
+    }
+
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
+    fn on_engine_ready(&mut self, engine: &mut EngineState) {
+        #[cfg(feature = "mixer")]
+        {
+            let mut router = ParamRouter::new();
+            if let Ok(mut mixer) = self.mixer.lock() {
+                for ch in mixer.channels.iter_mut() {
+                    router.register_channel(&ch.uuid, &ch.name);
+                    if let Some(compositor) = ch.effect.as_any_mut() {
+                        if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                            for deck in &compositor.decks {
+                                router.register_deck(&ch.uuid, &deck.uuid, &deck.name);
+                            }
+                        }
+                    }
+                }
+                // `crossfader` and other bare ids resolve via pass-through — no
+                // explicit registration needed.
+                log::info!("[ParamRouter] populated with {} mappings", router.len());
+            }
+            engine.param_resolver = Some(rustjay_core::ParamResolver(std::sync::Arc::new(move |path| router.resolve(path))));
+        }
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]

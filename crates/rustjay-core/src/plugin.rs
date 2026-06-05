@@ -218,6 +218,12 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// Use this to create extra textures, bind groups, pipelines, etc.
     fn init(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
 
+    /// Lifecycle hook: called once after the engine is fully initialized
+    /// and before the first frame. Use this to set up engine-state callbacks
+    /// (e.g. a param resolver) or perform late initialization that requires
+    /// access to the running engine.
+    fn on_engine_ready(&mut self, _engine: &mut EngineState) {}
+
     /// Lifecycle hook: called every frame before rendering.
     /// Use this to update GPU resources that aren't uniforms (e.g. ping-pong textures).
     fn prepare(

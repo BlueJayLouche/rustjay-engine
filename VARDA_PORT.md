@@ -14,6 +14,19 @@ assembled as `examples/varda`.
 Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
 this is the phase-level rollup.
 
+**Phases 0–4 reviewed and verified (2026-06-05).** Phase 5 partial:
+T05.1/05.2 — MIDI and OSC reach the canonical engine params (OSC via the
+auto-registered OSC address on each `param_descriptor`; MIDI via learned maps).
+T05.4 — `param_router` maps the hierarchical `deck|channel/<uuid>/param/<name>`
+namespace **structurally** (any param name, not an allowlist) to flat canonical
+ids, wired into the engine's `WebCommand::Set` and MIDI param-path fallback via
+`EngineState::param_resolver`. (OSC already resolves to canonical ids directly,
+so it does **not** route through the resolver.) Router output is cross-checked
+against real `rustjay_mixer` registration in a test. Current gate state:
+`cargo build -p varda` (default / `--no-default-features` / `--all-features`)
+green and warning-clean, `cargo clippy -p varda` clean,
+`cargo test -p rustjay-mixer` green (21), `cargo test -p varda` green.
+
 | Phase | State | Notes |
 |-------|-------|-------|
 | **0 — Scaffolding & parity harness** | ✅ done (T00.4 golden-image harness deferred) | Module tree, feature flags, parity tracker, rustjay-io coverage probe all in place. Golden-image diff harness (T00.4) not yet wired. |
@@ -21,11 +34,15 @@ this is the phase-level rollup.
 | **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader. Engine `AudioState` → `AudioValues` bridge feeds FFT into `ModulationEngine::update`. ADSR + step-sequencer + mod-on-mod are engine-present but not yet demoed. |
-| **5–14** | ⬜ not started | Control, GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
+| **5 — Control** | 🔄 in-progress | T05.1/05.2 MIDI/OSC reach canonical params (OSC via auto-registered addresses, MIDI via learned maps); T05.4 param_router (structural, all params, cross-checked vs real registration) wired into `WebCommand::Set` + MIDI fallback; T05.3 HTTP API route groups pending. |
+| **6–14** | ⬜ not started | GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
-### Carry-over backlog (must be cleared before the relevant phase is "done")
+### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
 - **T00.4** Golden-image harness for headless render diffs (Phase-0 acceptance gate, deferred).
+- **T04.3 / T04.4** ADSR envelope, step-sequencer, and mod-on-mod chaining are present in the engine/mixer modulation but **not yet demoed or wired into the Varda graph** — the Phase-4 demo only exercises LFO + audio-band on crossfader/deck opacity.
+- **FX demo exercise** — deck & channel FX chains have working `add_effect`/`set_effect_enabled`/`reorder_fx` APIs but are **not exercised** in the demo assembly; add a deck/channel FX to prove the path end-to-end (blocked on, or pairs with, Phase 6 GUI).
+- **Camera mixed-resolution** — the shared `CameraSession` hardcodes 1280×720 until the first frame; two decks requesting the *same* device at *different* sizes can mismatch the upload stride. Fine for single-size use; revisit if multi-resolution camera decks appear.
 
 ### Conventions established (do not regress)
 

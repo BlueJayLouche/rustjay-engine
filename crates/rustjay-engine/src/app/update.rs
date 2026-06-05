@@ -338,10 +338,13 @@ impl<P: EffectPlugin> App<P> {
                         "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
                         "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
                         _ => {
-                            if let Some(id) = path.split('/').next_back() {
-                                if shared.param_descriptors.iter().any(|d| d.id == id) {
-                                    shared.set_param_base(id, *value);
-                                }
+                            // Try app-specific param resolver first (hierarchical paths).
+                            let resolved = shared.param_resolver.as_ref()
+                                .and_then(|r| r.resolve(path))
+                                .unwrap_or_else(|| path.clone());
+                            let id = resolved.split('/').next_back().unwrap_or(&resolved);
+                            if shared.param_descriptors.iter().any(|d| d.id == id) {
+                                shared.set_param_base(id, *value);
                             }
                         }
                     }

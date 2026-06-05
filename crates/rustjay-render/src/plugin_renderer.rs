@@ -450,6 +450,11 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         renderer
     }
 
+    /// Forward the engine-ready hook to the plugin.
+    pub fn on_engine_ready(&mut self, engine: &mut EngineState) {
+        self.plugin.on_engine_ready(engine);
+    }
+
     fn rebuild_single_pass_pipeline(&mut self, device: &wgpu::Device) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Plugin Shader"),

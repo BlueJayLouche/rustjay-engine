@@ -6,8 +6,7 @@
 //!
 //! See VARDA_PORT.md Phase 5.
 
-/// Parameter router — maps control inputs to parameter paths.
-pub struct ParamRouter;
+pub mod param_router;
 
 /// Keyboard bindings layer.
 pub struct Keymap;

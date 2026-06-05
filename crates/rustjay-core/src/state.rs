@@ -753,6 +753,27 @@ impl GuiTab {
 
 // ── EngineState ────────────────────────────────────────────────────────────
 
+/// Type alias for the param resolver closure.
+pub type ParamResolverFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// App-specific parameter resolver: maps hierarchical control paths to flat
+/// engine parameter ids. Stored in [`EngineState::param_resolver`].
+#[derive(Clone)]
+pub struct ParamResolver(pub ParamResolverFn);
+
+impl std::fmt::Debug for ParamResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParamResolver").finish_non_exhaustive()
+    }
+}
+
+impl ParamResolver {
+    /// Resolve a hierarchical parameter path to a flat engine id.
+    pub fn resolve(&self, path: &str) -> Option<String> {
+        (self.0)(path)
+    }
+}
+
 /// Central mutable state managed by the engine.
 ///
 /// App plugins receive an `&EngineState` in
@@ -937,6 +958,12 @@ pub struct EngineState {
     /// can look up its bare parameter IDs while the engine stores them under
     /// a fully-qualified name like `ch_a_red`.
     pub param_lookup_prefix: RefCell<Option<String>>,
+
+    /// Optional callback for resolving hierarchical parameter paths to flat
+    /// engine ids. Used by app-specific param routers (e.g. Varda's
+    /// `deck/<uuid>/param/<name>` → `ch_<uuid>_deck_<uuid>_<name>`) without
+    /// forking the core parameter system.
+    pub param_resolver: Option<ParamResolver>,
 }
 
 impl EngineState {
@@ -1016,9 +1043,12 @@ impl EngineState {
             param_osc_addresses: Vec::new(),
             hidden_tabs: Vec::new(),
             param_lookup_prefix: RefCell::new(None),
+            param_resolver: None,
         }
     }
+}
 
+impl EngineState {
     /// Toggle fullscreen mode on the output window.
     pub fn toggle_fullscreen(&mut self) {
         self.output_fullscreen = !self.output_fullscreen;

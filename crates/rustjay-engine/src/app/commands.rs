@@ -643,9 +643,15 @@ impl<P: EffectPlugin> App<P> {
                                 "audio/pink_noise" => state.audio.pink_noise_shaping = value > 0.5,
                                 "output/fullscreen" => state.output_fullscreen = value > 0.5,
                                 _ => {
-                                    // Fallback: check if this is an effect-declared custom param
+                                    // App-specific param resolver (e.g. Varda's hierarchical paths).
+                                    let resolved = state.param_resolver.as_ref()
+                                        .and_then(|r| r.resolve(&id))
+                                        .unwrap_or(id);
+                                    // Fallback: check if this is an effect-declared custom param.
+                                    // Accept either category/id (web UI) or raw canonical id (API/OSC/MIDI).
                                     if let Some(desc) = state.param_descriptors.iter().find(|d| {
-                                        format!("{}/{}", d.category.name().to_lowercase(), d.id) == id
+                                        format!("{}/{}", d.category.name().to_lowercase(), d.id) == resolved
+                                            || d.id == resolved
                                     }) {
                                         let (desc_id, desc_min, desc_max) = (desc.id.clone(), desc.min, desc.max);
                                         state.set_param_base(&desc_id, value.clamp(desc_min, desc_max));
