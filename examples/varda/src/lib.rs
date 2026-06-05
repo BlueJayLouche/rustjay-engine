@@ -121,25 +121,59 @@ impl EffectPlugin for VardaRootPlugin {
         s
     }
 
-    fn prepare(&mut self, state: &mut VardaAppState, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
+    fn prepare(&mut self, state: &mut VardaAppState, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         if !state.ready {
             state.ready = true;
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let shaders_dir = manifest_dir.join("shaders");
             state.registry = Registry::scan(&shaders_dir, &manifest_dir.join("assets"));
-            log::info!("[Registry] scanned {} shaders", state.registry.shaders.len());
+            log::info!(
+                "[Registry] scanned {} shaders, {} images, {} videos",
+                state.registry.shaders.len(),
+                state.registry.images.len(),
+                state.registry.videos.len(),
+            );
             state.shader_watcher = ShaderWatcher::new(&shaders_dir).ok();
             if state.shader_watcher.is_some() {
                 log::info!("[ShaderWatcher] started");
             }
         }
 
+        #[cfg(feature = "mixer")]
         if let Some(ref watcher) = state.shader_watcher {
             let events = watcher.poll();
             for event in events {
                 for path in &event.paths {
                     log::info!("[ShaderWatcher] changed: {}", path.display());
-                    // TODO: wire hot-reload — recreate EffectNode for affected deck.
+                    if let Ok(mut mixer) = state.mixer.lock() {
+                        for ch in mixer.channels.iter_mut() {
+                            if let Some(compositor) = ch.effect.as_any_mut() {
+                                if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                                    for deck in compositor.decks.iter_mut() {
+                                        if deck.source_path.as_ref() == Some(path) {
+                                            let name = path.file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("ISF Shader")
+                                                .to_string();
+                                            match rustjay_isf::IsfEffect::from_path(path) {
+                                                Ok(isf) => {
+                                                    let node = EffectNode::new(isf, &name, device, queue, engine);
+                                                    deck.source = Box::new(node);
+                                                    deck.source.set_param_prefix(&deck.full_prefix);
+                                                    self.params_dirty = true;
+                                                    log::info!("[HotReload] Reloaded {} for deck {}", path.display(), deck.uuid);
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("[HotReload] Failed to reload {}: {}", path.display(), e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -185,7 +219,9 @@ impl EffectPlugin for VardaRootPlugin {
             let path_a1 = shaders_dir.join("ColorCycle.fs");
             if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
                 let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-                comp_a.decks.push(Deck::new("a1", "ColorCycle", Box::new(node)));
+                let mut deck = Deck::new("a1", "ColorCycle", Box::new(node));
+                deck.source_path = Some(path_a1);
+                comp_a.decks.push(deck);
             } else {
                 log::warn!("Failed to load ColorCycle.fs");
             }
@@ -200,7 +236,9 @@ impl EffectPlugin for VardaRootPlugin {
             let path_b1 = shaders_dir.join("AuroraWaves.fs");
             if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
                 let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-                comp_b.decks.push(Deck::new("b1", "AuroraWaves", Box::new(node)));
+                let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node));
+                deck.source_path = Some(path_b1);
+                comp_b.decks.push(deck);
             } else {
                 log::warn!("Failed to load AuroraWaves.fs");
             }
@@ -209,6 +247,43 @@ impl EffectPlugin for VardaRootPlugin {
             if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
                 log::warn!("Failed to add channel B: {}", e);
             }
+
+            // Exercise a deck FX in the demo assembly (T03.1b)
+            let fx_path = shaders_dir.join("ConcentricRings.fs");
+            if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&fx_path) {
+                let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
+                if let Some(ch) = mixer.channels.first_mut() {
+                    if let Some(compositor) = ch.effect.as_any_mut() {
+                        if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                            if let Some(deck) = compositor.decks.first_mut() {
+                                deck.add_effect(Box::new(node));
+                                log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Phase 4 modulation demo: LFO + audio-band sources on crossfader
+            let lfo = mixer.modulation.add_source(rustjay_core::modulation::ModulationSource::LFO {
+                waveform: rustjay_core::modulation::LFOWaveform::Sine,
+                frequency: 0.25,
+                phase: 0.0,
+                amplitude: 0.5,
+                bipolar: true,
+            });
+            mixer.modulation.assign("crossfader", &lfo, 1.0, None);
+
+            let audio = mixer.modulation.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
+                source_id: None,
+                freq_low: 20.0,
+                freq_high: 250.0,
+                gain: 2.0,
+                smoothing: 0.6,
+                mode: rustjay_core::modulation::AudioReactMode::Direct,
+                noise_gate: 0.1,
+            });
+            mixer.modulation.assign("crossfader", &audio, 1.0, None);
 
             drop(mixer);
             self.params_dirty = true;
