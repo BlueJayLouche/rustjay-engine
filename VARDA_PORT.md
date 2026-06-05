@@ -20,12 +20,11 @@ this is the phase-level rollup.
 | **1 — Routing graph core** | ✅ done | Deck → DeckCompositor → `rustjay_mixer::Channel` → Mixer spine runs. Zero-opacity culling **verified to skip the GPU pass** (`compositor.rs`, not multiply-by-zero). Deck opacity/blend now read through `engine.get_param` (post-review fix). |
 | **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
-| **4 — Modulation** | 🟡 in-progress | `rustjay-core` `LfoBank` + `ModulationEngine` and `rustjay-audio` 2048-bin FFT are present in engine. Need to wire mixer `ModulationEngine` to canonical Varda param paths (`deck_<uuid>_opacity`, `ch_<uuid>_opacity`, `crossfader`, etc.) and add demo LFO/audio-band assignments. |
+| **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader. Engine `AudioState` → `AudioValues` bridge feeds FFT into `ModulationEngine::update`. ADSR + step-sequencer + mod-on-mod are engine-present but not yet demoed. |
 | **5–14** | ⬜ not started | Control, GUI, surfaces, multi-output, streaming, recording, persistence, transitions, dome/edge-blend, parity audit. |
 
 ### Carry-over backlog (must be cleared before the relevant phase is "done")
 
-- **T04.1/4.2** Wire mixer `ModulationEngine` to Varda canonical param paths. Reuse `LfoBank` from `rustjay-core` and engine `AudioState` for audio-band routing.
 - **T00.4** Golden-image harness for headless render diffs (Phase-0 acceptance gate, deferred).
 
 ### Conventions established (do not regress)
