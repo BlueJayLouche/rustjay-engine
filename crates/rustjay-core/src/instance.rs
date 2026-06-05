@@ -119,6 +119,13 @@ pub trait EffectInstance: Send + 'static {
         "effect"
     }
 
+    /// Downcast helper for concrete-type access (e.g. hot-reload wiring).
+    /// Default returns `None`; override with `Some(self)` when downcasting
+    /// is needed.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
     /// Declare the parameters this effect exposes (LFO / audio / OSC / MIDI / Web
     /// targets). Erased equivalent of [`EffectPlugin::parameters`](crate::EffectPlugin::parameters).
     /// Default: none.

@@ -29,7 +29,7 @@ pub struct Deck {
 
     /// Fully-qualified parameter prefix (`<channel>deck_<uuid>_`). Set once the
     /// enclosing channel's prefix is known; defaults to the bare deck prefix.
-    full_prefix: String,
+    pub(crate) full_prefix: String,
     /// Cached lookup key for the deck opacity param (`<full_prefix>opacity`).
     pub(crate) opacity_key: String,
     /// Cached lookup key for the deck blend param (`<full_prefix>blend`).
@@ -42,6 +42,8 @@ pub struct Deck {
     last_output: LastOutput,
     /// Last-seen count of enabled FX; bumps compositor generation on parity change.
     pub(crate) last_enabled_count: usize,
+    /// Path to the source shader (ISF), if applicable — used for hot-reload.
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 impl Deck {
@@ -68,6 +70,7 @@ impl Deck {
             size: [0, 0],
             last_output: LastOutput::Texture,
             last_enabled_count: 0,
+            source_path: None,
         }
     }
 
@@ -82,17 +85,18 @@ impl Deck {
         self.opacity_key = format!("{}opacity", self.full_prefix);
         self.blend_key = format!("{}blend", self.full_prefix);
         self.source.set_param_prefix(&self.full_prefix);
-        for (i, slot) in self.chain.iter_mut().enumerate() {
-            slot.effect.set_param_prefix(&format!("{}fx{}_", self.full_prefix, i));
+        for slot in self.chain.iter_mut() {
+            slot.effect.set_param_prefix(&format!("{}fx{}_", self.full_prefix, slot.uuid));
         }
     }
 
     /// Append an FX to this deck's chain, assigning its parameter prefix
     /// (`<full_prefix>fx<index>_`) so its params are reachable by control/modulation.
-    pub fn add_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
-        let prefix = format!("{}fx{}_", self.full_prefix, self.chain.len());
-        effect.set_param_prefix(&prefix);
+    pub fn add_effect(&mut self, effect: Box<dyn EffectInstance>) {
         self.chain.push(EffectSlot::new(effect));
+        let slot = self.chain.last_mut().unwrap();
+        let prefix = format!("{}fx{}_", self.full_prefix, &slot.uuid);
+        slot.effect.set_param_prefix(&prefix);
     }
 
     /// Enable or disable the FX at `index` without removing it. Out-of-range
@@ -101,6 +105,17 @@ impl Deck {
         if let Some(slot) = self.chain.get_mut(index) {
             slot.enabled = enabled;
         }
+    }
+
+    /// Reorder the FX chain: move the effect at `from` to `to`.
+    /// Stable UUID-based prefixes mean parameter values stay wired.
+    pub fn reorder_effect(&mut self, from: usize, to: usize) {
+        if from >= self.chain.len() || from == to {
+            return;
+        }
+        let to = to.min(self.chain.len() - 1);
+        let slot = self.chain.remove(from);
+        self.chain.insert(to, slot);
     }
 
     /// Ensure render-target textures match `size`.

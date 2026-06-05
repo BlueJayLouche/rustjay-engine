@@ -84,18 +84,24 @@ enum LastOutput {
     Ping,
 }
 
-/// An effect in a chain with an on/off toggle.
+/// An effect in a chain with an on/off toggle and a stable UUID.
 pub struct EffectSlot {
     /// The actual effect instance to render.
     pub effect: Box<dyn EffectInstance>,
     /// Whether this slot is currently active in the chain.
     pub enabled: bool,
+    /// Stable identifier for this effect slot (used in param prefixes).
+    pub uuid: String,
 }
 
 impl EffectSlot {
-    /// Create a new slot, enabled by default.
+    /// Create a new slot, enabled by default, with a generated UUID.
     pub fn new(effect: Box<dyn EffectInstance>) -> Self {
-        Self { effect, enabled: true }
+        Self {
+            effect,
+            enabled: true,
+            uuid: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+        }
     }
 }
 
@@ -165,12 +171,13 @@ impl Channel {
     }
 
     /// Append an effect to this channel's post-chain, assigning its parameter
-    /// prefix (`ch_<uuid>_fx<index>_`) so its params are reachable by GUI/MIDI/
+    /// prefix (`ch_<uuid>_fx<uuid>_`) so its params are reachable by GUI/MIDI/
     /// OSC/LFO — mirrors [`Mixer::add_master_effect`].
-    pub fn add_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
-        let prefix = format!("ch_{}_fx{}_", self.uuid, self.chain.len());
-        effect.set_param_prefix(&prefix);
+    pub fn add_effect(&mut self, effect: Box<dyn EffectInstance>) {
         self.chain.push(EffectSlot::new(effect));
+        let slot = self.chain.last_mut().unwrap();
+        let prefix = format!("ch_{}_fx{}_", self.uuid, &slot.uuid);
+        slot.effect.set_param_prefix(&prefix);
     }
 
     /// Enable or disable the effect at `index` without removing it (per-effect
@@ -179,6 +186,17 @@ impl Channel {
         if let Some(slot) = self.chain.get_mut(index) {
             slot.enabled = enabled;
         }
+    }
+
+    /// Reorder the channel's post-chain: move the effect at `from` to `to`.
+    /// UUID-stable prefixes mean existing param values stay wired.
+    pub fn reorder_effect(&mut self, from: usize, to: usize) {
+        if from >= self.chain.len() || from == to {
+            return;
+        }
+        let to = to.min(self.chain.len() - 1);
+        let slot = self.chain.remove(from);
+        self.chain.insert(to, slot);
     }
 
     /// Ensure the channel's render-target textures match `size`.
@@ -357,12 +375,24 @@ impl Mixer {
 
     /// Add an effect to the master chain.
     ///
-    /// Automatically assigns the prefix `master_fx{k}_` where `k` is the
-    /// effect's index in the master chain (ARCH-3).
-    pub fn add_master_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
-        let prefix = format!("master_fx{}_", self.master.len());
-        effect.set_param_prefix(&prefix);
+    /// Automatically assigns the prefix `master_fx{uuid}_` where `uuid` is the
+    /// effect slot's stable identifier (ARCH-3).
+    pub fn add_master_effect(&mut self, effect: Box<dyn EffectInstance>) {
         self.master.push(EffectSlot::new(effect));
+        let slot = self.master.last_mut().unwrap();
+        let prefix = format!("master_fx{}_", &slot.uuid);
+        slot.effect.set_param_prefix(&prefix);
+    }
+
+    /// Reorder the master effect chain: move the effect at `from` to `to`.
+    /// UUID-stable prefixes mean existing param values stay wired.
+    pub fn reorder_master_effect(&mut self, from: usize, to: usize) {
+        if from >= self.master.len() || from == to {
+            return;
+        }
+        let to = to.min(self.master.len() - 1);
+        let slot = self.master.remove(from);
+        self.master.insert(to, slot);
     }
 
     /// Effective per-channel opacity for the current frame (REQ-02.4).
@@ -511,8 +541,8 @@ impl EffectInstance for Mixer {
             }
 
             // Channel chain effect params
-            for (k, slot) in ch.chain.iter().enumerate() {
-                let chain_prefix = format!("{prefix}fx{k}_");
+            for slot in ch.chain.iter() {
+                let chain_prefix = format!("{prefix}fx{}_", slot.uuid);
                 for p in slot.effect.parameters() {
                     out.push(prefix_descriptor(&chain_prefix, &p));
                 }
@@ -520,8 +550,8 @@ impl EffectInstance for Mixer {
         }
 
         // Master chain params
-        for (k, slot) in self.master.iter().enumerate() {
-            let prefix = format!("master_fx{k}_");
+        for slot in self.master.iter() {
+            let prefix = format!("master_fx{}_", slot.uuid);
             for p in slot.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
             }

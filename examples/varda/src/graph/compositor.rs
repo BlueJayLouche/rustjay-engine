@@ -88,6 +88,10 @@ impl Default for DeckCompositor {
 }
 
 impl EffectInstance for DeckCompositor {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_param_prefix(&mut self, prefix: &str) {
         self.param_prefix = prefix.to_string();
         // Propagate the channel prefix down so each deck's source, FX, and
@@ -136,8 +140,8 @@ impl EffectInstance for DeckCompositor {
             }
 
             // Deck FX chain params
-            for (k, slot) in deck.chain.iter().enumerate() {
-                let chain_prefix = format!("{prefix}fx{k}_");
+            for slot in deck.chain.iter() {
+                let chain_prefix = format!("{prefix}fx{}_", slot.uuid);
                 for p in slot.effect.parameters() {
                     out.push(prefix_descriptor(&chain_prefix, &p));
                 }
