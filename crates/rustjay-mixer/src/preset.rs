@@ -44,7 +44,7 @@ pub const MAX_MOD_SOURCES: usize = 64;
 pub const MAX_MOD_ASSIGNMENTS: usize = 256;
 
 /// Current [`MixerState`] schema version. Bump on breaking format changes.
-pub const MIXER_STATE_VERSION: u32 = 1;
+pub const MIXER_STATE_VERSION: u32 = 2;
 
 /// Serialized mix settings for one channel, keyed by stable UUID.
 #[derive(Clone, Debug, Serialize, Deserialize)]

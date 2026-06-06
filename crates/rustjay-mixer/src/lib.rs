@@ -33,7 +33,6 @@ pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
 pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
 pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
-// use rustjay_core::modulation::ModulationEngine; // removed in Phase 4
 use rustjay_core::params::{ParamCategory, ParameterDescriptor};
 use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
 use rustjay_render::Texture;

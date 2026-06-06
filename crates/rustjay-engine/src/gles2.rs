@@ -824,47 +824,44 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
         // Update LFO phases and apply modulations to params (post-MIDI so LFO adds on top)
         {
-            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let bpm = state.effective_bpm().max(1.0);
-            let beat_phase = state.effective_beat_phase();
-
-            let audio = {
-                let mut values = rustjay_core::modulation::AudioValues::default();
-                if state.audio.enabled {
-                    values.sources.insert(
-                        0,
-                        rustjay_core::modulation::AudioSourceValues {
-                            fft: state.audio.fft.to_vec(),
-                            level: state.audio.volume,
-                            sample_rate: 48000.0,
-                        },
-                    );
-                }
-                values
+            let (mod_arc, bpm, stable_beat_phase, audio) = {
+                let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let mod_arc = state.modulation.clone();
+                let bpm = state.effective_bpm().max(1.0);
+                let stable_beat_phase = state.stable_beat_phase();
+                let audio = {
+                    let mut values = rustjay_core::modulation::AudioValues::default();
+                    if state.audio.enabled {
+                        values.sources.insert(
+                            0,
+                            rustjay_core::modulation::AudioSourceValues {
+                                fft: state.audio.fft.to_vec(),
+                                level: state.audio.volume,
+                                sample_rate: 48000.0,
+                            },
+                        );
+                    }
+                    values
+                };
+                (mod_arc, bpm, stable_beat_phase, audio)
             };
 
-            {
-                let mod_arc = state.modulation.clone();
-                let mut mod_eng = mod_arc.lock().unwrap();
-                mod_eng.update(elapsed, bpm, beat_phase, &audio);
-                state.modulation_offsets.clear();
+            let offsets = {
+                let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.update(elapsed, bpm, stable_beat_phase, &audio);
+                let mut offsets = std::collections::HashMap::new();
                 for param_id in mod_eng.assignments.keys() {
                     let offset = mod_eng.get_modulation(param_id);
-                    state.modulation_offsets.insert(param_id.clone(), offset);
+                    offsets.insert(param_id.clone(), offset);
                 }
-            }
+                offsets
+            };
 
-            // Apply HSB modulation from the unified engine
-            let base_hue = state.hsb_param_bases.hue_shift;
-            let base_sat = state.hsb_param_bases.saturation;
-            let base_bri = state.hsb_param_bases.brightness;
-            let d_hue = state.modulation_offsets.get("hue_shift").copied().unwrap_or(0.0) * 180.0;
-            let d_sat = state.modulation_offsets.get("saturation").copied().unwrap_or(0.0);
-            let d_bri = state.modulation_offsets.get("brightness").copied().unwrap_or(0.0);
-            state.hsb_params.hue_shift = (base_hue + d_hue).clamp(-180.0, 180.0);
-            state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
-            state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
+            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.modulation_offsets = offsets;
 
+            // HSB params are read modulated on demand via get_param();
+            // pre-computing them here would double-modulate (F4).
             let (h, s, b) = (
                 state.hsb_params.hue_shift,
                 state.hsb_params.saturation,

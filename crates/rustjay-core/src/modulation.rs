@@ -11,6 +11,8 @@ use crate::lfo::{beat_division_to_hz, BEAT_DIVISIONS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_true() -> bool { true }
+
 // ─── UUID helper ───────────────────────────────────────────────────────────
 
 fn generate_short_uuid() -> String {
@@ -224,6 +226,9 @@ pub enum ModulationSource {
         division: usize,
         /// Phase offset in degrees (0-360).
         phase_offset_degrees: f32,
+        /// Whether this LFO is active.
+        #[serde(default = "default_true")]
+        enabled: bool,
         /// Previous beat_phase sample — used to detect quantum-boundary crossings.
         #[serde(skip)]
         last_beat_phase: f32,
@@ -386,6 +391,7 @@ impl ModulationSource {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         }
     }
@@ -474,8 +480,12 @@ impl ModulationSource {
                 tempo_sync,
                 division,
                 phase_offset_degrees,
+                enabled,
                 last_beat_phase,
             } => {
+                if !*enabled {
+                    return 0.0;
+                }
                 let effective_freq = if *tempo_sync {
                     let div = (*division).min(BEAT_DIVISIONS.len() - 1);
                     beat_division_to_hz(div, bpm)
@@ -1160,6 +1170,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1184,6 +1195,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1204,6 +1216,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1227,6 +1240,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1247,6 +1261,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1281,6 +1296,7 @@ mod tests {
             tempo_sync: true,
             division: 4, // 1 beat
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1304,6 +1320,7 @@ mod tests {
             tempo_sync: true,
             division: 2, // ≤ 1 beat, so snap applies
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.9,
         };
         let audio = empty_audio();
@@ -1323,6 +1340,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -1982,6 +2000,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -2002,6 +2021,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -2021,6 +2041,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -2039,6 +2060,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -2057,6 +2079,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
         };
         let audio = empty_audio();
@@ -2086,6 +2109,7 @@ mod tests {
             tempo_sync: false,
             division: 2,
             phase_offset_degrees: 0.0,
+            enabled: true,
             last_beat_phase: 0.0,
             };
             let val = lfo.calculate(1e10, 0.01, 120.0, 0.0, &audio, 0.0);

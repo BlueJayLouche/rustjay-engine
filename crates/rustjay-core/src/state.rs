@@ -890,6 +890,7 @@ pub struct EngineState {
     /// `engine.lfo.bank.lfos[i].output` for visualization (e.g. waaaves). The engine
     /// tick populates `.output` from the unified [`modulation`] engine; the actual
     /// modulation logic no longer reads this field. Will be removed in a follow-up release.
+    #[deprecated(note = "Use EngineState.modulation instead. LfoState is a backward-compat shim.")]
     pub lfo: LfoState,
 
     /// NDI output state (NDI feature only).
@@ -1147,6 +1148,7 @@ impl EngineState {
                         tempo_sync: true,
                         division: 2,
                         phase_offset_degrees: 0.0,
+                        enabled: true,
                         last_beat_phase: 0.0,
                     };
                     let uuid = format!("lfo_{}", i);

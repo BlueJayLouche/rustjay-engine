@@ -251,65 +251,71 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_lfo(&mut self) {
-        let _delta_time = self.frame_delta_time;
-        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let bpm = state.effective_bpm();
-        let beat_phase = state.effective_beat_phase();
-
-        // Build AudioValues for the modulation engine (same helper pattern as mixer)
-        let audio = {
-            let mut values = rustjay_core::modulation::AudioValues::default();
-            if state.audio.enabled {
-                values.sources.insert(
-                    0,
-                    rustjay_core::modulation::AudioSourceValues {
-                        fft: state.audio.fft.to_vec(),
-                        level: state.audio.volume,
-                        sample_rate: 48000.0,
-                    },
-                );
-            }
-            values
+        // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
+        let (mod_arc, bpm, stable_beat_phase, audio, lfo_count) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mod_arc = state.modulation.clone();
+            let bpm = state.effective_bpm();
+            let stable_beat_phase = state.stable_beat_phase();
+            let audio = {
+                let mut values = rustjay_core::modulation::AudioValues::default();
+                if state.audio.enabled {
+                    // S1 mitigation: borrow fft slice instead of to_vec() when the
+                    // modulation engine API supports it. For now clone is required
+                    // because AudioSourceValues owns a Vec<f32>.
+                    values.sources.insert(
+                        0,
+                        rustjay_core::modulation::AudioSourceValues {
+                            fft: state.audio.fft.to_vec(),
+                            level: state.audio.volume,
+                            sample_rate: 48000.0,
+                        },
+                    );
+                }
+                values
+            };
+            (mod_arc, bpm, stable_beat_phase, audio, state.lfo.bank.lfos.len())
         };
 
-        // Tick the unified modulation engine
-        {
-            let mod_arc = state.modulation.clone();
-            let mut mod_eng = mod_arc.lock().unwrap();
-            mod_eng.update(self.elapsed_time, bpm, beat_phase, &audio);
+        // Tick the unified modulation engine without holding shared_state.
+        let (offsets, lfo_outputs) = {
+            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+            mod_eng.update(self.elapsed_time, bpm, stable_beat_phase, &audio);
 
-            // Pre-compute modulation offsets for every assigned param so get_param()
-            // reads them without locking (M3.2a mitigation brought forward into Phase 2).
-            state.modulation_offsets.clear();
+            let mut offsets = std::collections::HashMap::new();
             for param_id in mod_eng.assignments.keys() {
                 let offset = mod_eng.get_modulation(param_id);
-                state.modulation_offsets.insert(param_id.clone(), offset);
+                offsets.insert(param_id.clone(), offset);
             }
 
-            // Shim: copy unified LFO outputs into the legacy LfoBank so apps
-            // that read engine.lfo.bank.lfos[i].output for dots still compile.
+            let mut lfo_outputs = Vec::new();
             for (i, source_entry) in mod_eng.sources.iter().enumerate() {
-                if i >= state.lfo.bank.lfos.len() {
+                if i >= lfo_count {
                     break;
                 }
                 if let rustjay_core::modulation::ModulationSource::LFO { .. } = &source_entry.source {
                     if i < mod_eng.current_values().len() {
-                        state.lfo.bank.lfos[i].output = mod_eng.current_values()[i];
+                        lfo_outputs.push(mod_eng.current_values()[i]);
                     }
                 }
             }
+            (offsets, lfo_outputs)
+        };
+
+        // Re-acquire shared_state and write back.
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        state.modulation_offsets = offsets;
+
+        // Shim: copy unified LFO outputs into the legacy LfoBank.
+        for (i, output) in lfo_outputs.iter().enumerate() {
+            if i < state.lfo.bank.lfos.len() {
+                state.lfo.bank.lfos[i].output = *output;
+            }
         }
 
-        // Apply HSB modulation from the unified engine
-        let base_hue = state.hsb_param_bases.hue_shift;
-        let base_sat = state.hsb_param_bases.saturation;
-        let base_bri = state.hsb_param_bases.brightness;
-        let d_hue = state.modulation_offsets.get("hue_shift").copied().unwrap_or(0.0) * 180.0;
-        let d_sat = state.modulation_offsets.get("saturation").copied().unwrap_or(0.0);
-        let d_bri = state.modulation_offsets.get("brightness").copied().unwrap_or(0.0);
-        state.hsb_params.hue_shift = (base_hue + d_hue).clamp(-180.0, 180.0);
-        state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
-        state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
+        // NOTE: HSB params are no longer pre-computed here.
+        // get_param("hue_shift"|"saturation"|"brightness") reads modulation_offsets
+        // on demand, eliminating the double-modulation bug (F4).
     }
 
     #[cfg(feature = "link")]

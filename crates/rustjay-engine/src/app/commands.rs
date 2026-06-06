@@ -885,20 +885,53 @@ impl<P: EffectPlugin> App<P> {
                     WebServerCommand::Modulation(mod_cmd) => match mod_cmd {
                         rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
                             if let Ok(mut state) = self.shared_state.lock() {
-                                if slot < state.lfo.bank.lfos.len() {
-                                    let existing = state.lfo.bank.lfos[slot].clone();
-                                    let mut new_config = config;
-                                    new_config.phase = existing.phase;
-                                    new_config.output = existing.output;
-                                    new_config.last_beat_phase = existing.last_beat_phase;
-                                    state.lfo.bank.lfos[slot] = new_config;
+                                let uuid = format!("lfo_{slot}");
+                                let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                // Find existing source to preserve runtime state (phase, last_beat_phase).
+                                let existing_phase = mod_eng.sources.iter()
+                                    .find(|s| s.uuid == uuid)
+                                    .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { phase, .. } = s.source { Some(phase) } else { None })
+                                    .unwrap_or(0.0);
+                                let existing_last_beat = mod_eng.sources.iter()
+                                    .find(|s| s.uuid == uuid)
+                                    .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { last_beat_phase, .. } = s.source { Some(last_beat_phase) } else { None })
+                                    .unwrap_or(0.0);
+
+                                let waveform = match config.waveform {
+                                    rustjay_core::lfo::Waveform::Sine => rustjay_core::modulation::LFOWaveform::Sine,
+                                    rustjay_core::lfo::Waveform::Triangle => rustjay_core::modulation::LFOWaveform::Triangle,
+                                    rustjay_core::lfo::Waveform::Square => rustjay_core::modulation::LFOWaveform::Square,
+                                    rustjay_core::lfo::Waveform::Ramp | rustjay_core::lfo::Waveform::Saw => rustjay_core::modulation::LFOWaveform::Sawtooth,
+                                };
+                                let new_source = rustjay_core::modulation::ModulationSource::LFO {
+                                    waveform,
+                                    frequency: config.rate,
+                                    phase: existing_phase,
+                                    amplitude: config.amplitude,
+                                    bipolar: true,
+                                    tempo_sync: config.tempo_sync,
+                                    division: config.division,
+                                    phase_offset_degrees: config.phase_offset,
+                                    enabled: config.enabled,
+                                    last_beat_phase: existing_last_beat,
+                                };
+                                // Replace or insert
+                                if let Some(idx) = mod_eng.sources.iter().position(|s| s.uuid == uuid) {
+                                    mod_eng.sources[idx].source = new_source;
+                                } else {
+                                    mod_eng.add_source_with_uuid(uuid, new_source);
                                 }
+                                mod_eng.ensure_index();
                             }
                         }
                         rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
                             if let Ok(mut state) = self.shared_state.lock() {
-                                if slot < state.lfo.bank.lfos.len() {
-                                    state.lfo.bank.lfos[slot].enabled = enabled;
+                                let uuid = format!("lfo_{slot}");
+                                let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(entry) = mod_eng.sources.iter_mut().find(|s| s.uuid == uuid) {
+                                    if let rustjay_core::modulation::ModulationSource::LFO { enabled: ref mut e, .. } = entry.source {
+                                        *e = enabled;
+                                    }
                                 }
                             }
                         }
@@ -956,7 +989,13 @@ impl<P: EffectPlugin> App<P> {
                                 let is_first_tap = now - state.audio.last_tap_time > 2.0;
                                 if is_first_tap {
                                     state.audio.tap_times.clear();
-                                    state.lfo.bank.reset_all();
+                                    // Reset phases of all LFO sources in the unified engine.
+                                    let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                    for entry in &mut mod_eng.sources {
+                                        if let rustjay_core::modulation::ModulationSource::LFO { ref mut phase, .. } = entry.source {
+                                            *phase = 0.0;
+                                        }
+                                    }
                                 }
                                 state.audio.tap_times.push(now);
                                 state.audio.last_tap_time = now;

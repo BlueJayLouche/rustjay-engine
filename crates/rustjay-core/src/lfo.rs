@@ -434,6 +434,7 @@ impl LfoBank {
                     tempo_sync: lfo.tempo_sync,
                     division: lfo.division,
                     phase_offset_degrees: lfo.phase_offset,
+                    enabled: lfo.enabled,
                     last_beat_phase: 0.0,
                 };
                 ModulationSourceEntry::with_uuid(format!("lfo_{}", lfo.index), source)
@@ -469,6 +470,7 @@ impl LfoBank {
                 tempo_sync: lfo.tempo_sync,
                 division: lfo.division,
                 phase_offset_degrees: lfo.phase_offset,
+                enabled: lfo.enabled,
                 last_beat_phase: 0.0,
             };
             let uuid = engine.add_source_with_uuid(format!("lfo_{}", lfo.index), source);
