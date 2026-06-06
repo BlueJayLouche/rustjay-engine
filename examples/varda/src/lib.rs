@@ -510,88 +510,10 @@ impl VardaRootPlugin {
             }
         }
 
-        // Phase 4 modulation demo: LFO + audio-band sources on crossfader
-        let mod_arc = mixer.modulation.clone();
-        {
-            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                waveform: rustjay_core::modulation::LFOWaveform::Sine,
-                frequency: 0.25,
-                phase: 0.0,
-                amplitude: 0.5,
-                bipolar: true,
-                tempo_sync: false,
-                division: 2,
-                phase_offset_degrees: 0.0,
-                last_beat_phase: 0.0,
-            });
-            mod_eng.assign("crossfader", &lfo, 1.0, None);
-
-            let audio = mod_eng.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
-                source_id: None,
-                freq_low: 20.0,
-                freq_high: 250.0,
-                gain: 2.0,
-                smoothing: 0.6,
-                mode: rustjay_core::modulation::AudioReactMode::Direct,
-                noise_gate: 0.1,
-            });
-            mod_eng.assign("crossfader", &audio, 1.0, None);
-        }
-
-        // Collect deck opacity keys and inject the shared modulation engine
-        let mut deck_keys: Vec<String> = Vec::new();
-        for ch in &mut mixer.channels {
-            if let Some(compositor) = ch.effect.as_any_mut() {
-                if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                    for deck in &compositor.decks {
-                        deck_keys.push(deck.opacity_key.clone());
-                    }
-                    compositor.set_modulation_engine(mod_arc.clone());
-                }
-            }
-        }
-
-        // Demo: modulate every deck opacity with a slow triangle LFO.
-        {
-            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                waveform: rustjay_core::modulation::LFOWaveform::Triangle,
-                frequency: 0.2,
-                phase: 0.0,
-                amplitude: 1.0,
-                bipolar: true,
-                tempo_sync: false,
-                division: 2,
-                phase_offset_degrees: 0.0,
-                last_beat_phase: 0.0,
-            });
-            for key in &deck_keys {
-                mod_eng.assign(key, &deck_lfo, 0.4, None);
-            }
-
-            // T04.3 carry-over: ADSR envelope + step sequencer demo sources
-            let adsr = mod_eng.add_source(rustjay_core::modulation::ModulationSource::ADSR {
-                attack: 0.5,
-                decay: 0.3,
-                sustain: 0.6,
-                release: 1.0,
-                stage: rustjay_core::modulation::ADSRStage::Idle,
-                stage_time: 0.0,
-                gate: true,
-                current_level: 0.0,
-            });
-            mod_eng.assign("crossfader", &adsr, 0.3, None);
-
-            let step_seq =
-                mod_eng.add_source(rustjay_core::modulation::ModulationSource::StepSequencer {
-                    steps: vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25],
-                    rate: 4.0,
-                    interpolation: rustjay_core::modulation::StepInterpolation::Linear,
-                    bipolar: false,
-                });
-            mod_eng.assign("crossfader", &step_seq, 0.2, None);
-        }
+        // NOTE: Phase 4 removed mixer-owned modulation. Demo sources that were
+        // previously added to mixer.modulation are now omitted; varda will ship
+        // a default preset that loads into the unified EngineState.modulation
+        // instead (M6.3). DeckCompositor no longer needs set_modulation_engine().
 
         drop(mixer);
         self.params_dirty = true;

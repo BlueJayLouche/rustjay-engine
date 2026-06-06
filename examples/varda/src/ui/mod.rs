@@ -38,7 +38,9 @@ impl Default for EffectsTab {
     }
 }
 
-/// Modulation tab — LFO/audio/ADSR/step assignment + chaining graph.
+/// Modulation tab — stubbed during Phase 4; will be re-implemented in Phase 6
+/// using the unified engine (EngineState.modulation).
+#[allow(dead_code)]
 pub struct ModulationTab {
     /// Target source UUID for mod-on-mod assignment.
     mom_target_uuid: String,
@@ -498,218 +500,19 @@ mod egui_impl {
             &mut self,
             ui: &mut egui::Ui,
             app_state: &mut dyn std::any::Any,
-            engine: &mut EngineState,
+            _engine: &mut EngineState,
         ) {
-            let state = app_state
+            let _state = app_state
                 .downcast_mut::<VardaAppState>()
                 .expect("ModulationTab expects VardaAppState");
 
             ui.heading("Modulation");
             ui.separator();
 
-            // Snapshot source list so we can release the immutable lock before mutation.
-            let sources: Vec<(String, rustjay_core::modulation::ModulationSource)> = {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                mod_eng
-                    .sources
-                    .iter()
-                    .map(|s| (s.uuid.clone(), s.source.clone()))
-                    .collect()
-            };
-
-            if sources.is_empty() {
-                ui.label("No modulation sources active.");
-                return;
-            }
-
-            ui.label(egui::RichText::new("Sources").strong());
-            for (uuid, src) in &sources {
-                let kind = match src {
-                    rustjay_core::modulation::ModulationSource::LFO {
-                        waveform,
-                        frequency,
-                        ..
-                    } => {
-                        format!("LFO ({:?}) @ {:.2} Hz", waveform, frequency)
-                    }
-                    rustjay_core::modulation::ModulationSource::AudioBand {
-                        freq_low,
-                        freq_high,
-                        ..
-                    } => {
-                        format!("Audio [{:.0}–{:.0} Hz]", freq_low, freq_high)
-                    }
-                    rustjay_core::modulation::ModulationSource::ADSR { .. } => "ADSR".to_string(),
-                    rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                        "Step Seq".to_string()
-                    }
-                };
-                ui.label(format!("{} — {}", &uuid[..8.min(uuid.len())], kind));
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new("Mod-on-Mod").strong());
-
-            // Ensure defaults track the first available source.
-            if self.mom_target_uuid.is_empty() {
-                if let Some((uuid, _)) = sources.first() {
-                    self.mom_target_uuid = uuid.clone();
-                }
-            }
-            if self.mom_modulator_uuid.is_empty() {
-                if let Some((uuid, _)) = sources.first() {
-                    self.mom_modulator_uuid = uuid.clone();
-                }
-            }
-
-            // Determine available params for the selected target source.
-            let target_params: Vec<&'static str> = sources
-                .iter()
-                .find(|(u, _)| u == &self.mom_target_uuid)
-                .map(|(_, src)| match src {
-                    rustjay_core::modulation::ModulationSource::LFO { .. } => {
-                        vec!["frequency", "phase", "amplitude"]
-                    }
-                    rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
-                        vec!["gain", "smoothing"]
-                    }
-                    rustjay_core::modulation::ModulationSource::ADSR { .. } => {
-                        vec!["attack", "decay", "sustain", "release"]
-                    }
-                    rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                        vec!["rate"]
-                    }
-                })
-                .unwrap_or_default();
-
-            if self.mom_param.is_empty()
-                || !target_params.iter().any(|p| *p == self.mom_param.as_str())
-            {
-                if let Some(p) = target_params.first() {
-                    self.mom_param = p.to_string();
-                }
-            }
-
-            let source_labels: Vec<(String, String)> = sources
-                .iter()
-                .map(|(u, src)| {
-                    let label = match src {
-                        rustjay_core::modulation::ModulationSource::LFO { .. } => {
-                            format!("{} — LFO", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
-                            format!("{} — Audio", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::ADSR { .. } => {
-                            format!("{} — ADSR", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                            format!("{} — Seq", &u[..8.min(u.len())])
-                        }
-                    };
-                    (u.clone(), label)
-                })
-                .collect();
-
-            ui.horizontal(|ui| {
-                ui.label("Target:");
-                egui::ComboBox::from_id_salt("mom_target")
-                    .selected_text(
-                        source_labels
-                            .iter()
-                            .find(|(u, _)| u == &self.mom_target_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &source_labels {
-                            ui.selectable_value(&mut self.mom_target_uuid, uuid.clone(), name);
-                        }
-                    });
-
-                ui.label("Param:");
-                egui::ComboBox::from_id_salt("mom_param")
-                    .selected_text(self.mom_param.clone())
-                    .show_ui(ui, |ui| {
-                        for p in &target_params {
-                            ui.selectable_value(&mut self.mom_param, p.to_string(), *p);
-                        }
-                    });
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Modulator:");
-                egui::ComboBox::from_id_salt("mom_modulator")
-                    .selected_text(
-                        source_labels
-                            .iter()
-                            .find(|(u, _)| u == &self.mom_modulator_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &source_labels {
-                            ui.selectable_value(&mut self.mom_modulator_uuid, uuid.clone(), name);
-                        }
-                    });
-
-                ui.label("Amount:");
-                ui.add(
-                    egui::DragValue::new(&mut self.mom_amount)
-                        .speed(0.01)
-                        .range(-1.0..=1.0),
-                );
-            });
-
-            let can_assign = !self.mom_target_uuid.is_empty()
-                && !self.mom_modulator_uuid.is_empty()
-                && !self.mom_param.is_empty()
-                && self.mom_target_uuid != self.mom_modulator_uuid;
-
-            if ui.button("Assign").clicked() && can_assign {
-                let target = self.mom_target_uuid.clone();
-                let param = self.mom_param.clone();
-                let modulator = self.mom_modulator_uuid.clone();
-                let amount = self.mom_amount;
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mut mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                mod_eng.assign_mod_on_mod(&target, &param, &modulator, amount);
-                drop(mod_eng);
-                drop(mixer);
-                engine.notify(
-                    format!(
-                        "Mod-on-mod: {}.{} ← {} @ {:.2}",
-                        &target[..8.min(target.len())],
-                        param,
-                        &modulator[..8.min(modulator.len())],
-                        amount
-                    ),
-                    rustjay_core::NotificationLevel::Success,
-                    std::time::Duration::from_secs(3),
-                );
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new("Assignments").strong());
-            {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                if mod_eng.assignments.is_empty() {
-                    ui.label("No active assignments.");
-                } else {
-                    for (param, mods) in &mod_eng.assignments {
-                        for m in mods {
-                            ui.label(format!(
-                                "{} ← {} @ {:.2}",
-                                param,
-                                &m.source_id[..8.min(m.source_id.len())],
-                                m.amount
-                            ));
-                        }
-                    }
-                }
-            }
+            ui.label(
+                "Modulation has moved to the unified engine. \
+                 Use the built-in Modulation tab (M5) or create assignments via the API."
+            );
         }
     }
 

@@ -128,7 +128,7 @@ impl Mixer {
                     mute: ch.mute,
                 })
                 .collect(),
-            modulation: self.modulation.lock().unwrap().clone(),
+            modulation: ModulationEngine::default(),
         }
     }
 
@@ -151,12 +151,11 @@ impl Mixer {
             }
         }
 
-        // Restore modulation state (T13).
-        {
-            let mut mod_eng = self.modulation.lock().unwrap();
-            *mod_eng = state.modulation.clone();
-            mod_eng.ensure_index();
-        }
+        // NOTE: Modulation state is no longer restored into the mixer.
+        // Mixer-level modulation assignments live in the unified engine
+        // (EngineState.modulation). Callers should merge state.modulation
+        // into the engine if they need backward-compat preset migration.
+        // See UNIFIED_MODULATION_ROADMAP.md M4.4–M4.5.
 
         matched
     }
@@ -252,48 +251,25 @@ mod tests {
 
     #[test]
     fn round_trip_modulation_state() {
+        // Since the mixer no longer owns a ModulationEngine (Phase 4),
+        // serialize_state writes an empty engine. The MixerState wire format
+        // still carries a `modulation` field for backward compat, so old
+        // presets deserialize without error, but the mixer ignores it on load.
         let m = mixer_ab();
-        let lfo = m
-            .modulation
-            .lock()
-            .unwrap()
-            .add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("crossfader", &lfo, 0.5, None);
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("ch_a_opacity", &lfo, 0.25, None);
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("ch_b_opacity", &lfo, 0.25, None);
-
         let json = m.serialize_state().to_json().unwrap();
 
-        // Restore onto a fresh mixer.
-        let mut restored = mixer_ab();
         let state = MixerState::from_json(&json).unwrap();
-        restored.apply_state(&state);
+        // Field is present but empty because mixer no longer stores modulation.
+        assert_eq!(state.modulation.source_count(), 0);
 
-        assert_eq!(restored.modulation.lock().unwrap().source_count(), 1);
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("crossfader"));
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("ch_a_opacity"));
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("ch_b_opacity"));
+        // Old presets with modulation still parse.
+        let json_with_mod = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false},
+            {"uuid":"b","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ],"modulation":{"sources":[{"uuid":"lfo_1","source":{"LFO":{"waveform":"Sine","frequency":1.0,"phase":0.0,"amplitude":1.0,"bipolar":true,"tempo_sync":false,"division":2,"phase_offset_degrees":0.0,"last_beat_phase":0.0}}}],"assignments":{"crossfader":[{"source_id":"lfo_1","amount":0.5,"component":null}]}}}"#;
+        let state_old = MixerState::from_json(json_with_mod).unwrap();
+        assert_eq!(state_old.modulation.source_count(), 1);
+        assert!(state_old.modulation.has_modulation("crossfader"));
     }
 
     #[test]
