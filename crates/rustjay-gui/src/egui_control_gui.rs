@@ -80,6 +80,12 @@ pub struct EguiControlGui {
 
     // QR code cache: (url that was encoded, matrix of dark/light modules)
     pub(crate) qr_cache: Option<(String, Vec<Vec<bool>>)>,
+
+    // ── Modulation tab state (M5.2) ──────────────────────────────────────────
+    /// UUID of the currently-expanded source in the Modulation tab.
+    pub(crate) modulation_expanded_source: Option<String>,
+    /// Param id selected in the "Add assignment" dropdown.
+    pub(crate) modulation_new_assignment_param: Option<String>,
 }
 
 impl EguiControlGui {
@@ -159,6 +165,8 @@ impl EguiControlGui {
             saving_preset: false,
             active_tab: GuiTab::Input,
             qr_cache: None,
+            modulation_expanded_source: None,
+            modulation_new_assignment_param: None,
         })
     }
 
@@ -579,7 +587,7 @@ impl EguiControlGui {
                 self.sidebar_button(ui, GuiTab::Color, "COLOR", vis(GuiTab::Color));
                 self.sidebar_button(ui, GuiTab::Motion, "MOTION", vis(GuiTab::Motion));
                 self.sidebar_button(ui, GuiTab::Audio, "AUDIO", vis(GuiTab::Audio));
-                self.sidebar_button(ui, GuiTab::Lfo, "LFO", vis(GuiTab::Lfo));
+                self.sidebar_button(ui, GuiTab::Modulation, "Modulation", vis(GuiTab::Modulation));
 
                 hud_section_header(ui, "CONTROL", Some("03 CH"));
                 self.sidebar_button(ui, GuiTab::Midi, "MIDI", vis(GuiTab::Midi));
@@ -730,7 +738,7 @@ impl EguiControlGui {
                         GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
                         GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
                         GuiTab::Audio => self.build_audio_tab(ui),
-                        GuiTab::Lfo => self.build_lfo_tab(ui),
+                        GuiTab::Modulation => self.build_modulation_tab(ui),
                         GuiTab::Midi => self.build_midi_tab(ui),
                         GuiTab::Osc => self.build_osc_tab(ui),
                         GuiTab::Web => self.build_web_tab(ui),

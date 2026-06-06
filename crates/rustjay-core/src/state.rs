@@ -808,8 +808,8 @@ pub enum GuiTab {
     Settings,
     /// Tempo sync (Ableton Link + ProDJ).
     Sync,
-    /// LFO modulation control.
-    Lfo,
+    /// Unified modulation control (LFO, ADSR, step sequencer, audio band).
+    Modulation,
 }
 
 impl GuiTab {
@@ -827,7 +827,7 @@ impl GuiTab {
             GuiTab::Web => "Web",
             GuiTab::Settings => "Settings",
             GuiTab::Sync => "Sync",
-            GuiTab::Lfo => "LFO",
+            GuiTab::Modulation => "Modulation",
         }
     }
 
@@ -843,7 +843,7 @@ impl GuiTab {
             GuiTab::Midi,
             GuiTab::Osc,
             GuiTab::Web,
-            GuiTab::Lfo,
+            GuiTab::Modulation,
             // Settings lives in View > Preferences (menu bar), not a tab.
             // Sync is folded into the Audio tab.
             // Both variants are kept for serialization / hidden_tabs filtering.

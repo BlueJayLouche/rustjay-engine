@@ -87,7 +87,7 @@ pub fn lfo_context_menu(
             .selected(false)
             .build()
         {
-            engine_state.current_tab = GuiTab::Lfo;
+            engine_state.current_tab = GuiTab::Modulation;
         }
     }
 }

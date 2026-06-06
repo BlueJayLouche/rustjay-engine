@@ -429,7 +429,7 @@ impl ControlGui {
 
         // Group membership — tabs that belong to each section.
         const SIGNAL: &[GuiTab] = &[GuiTab::Input, GuiTab::Output];
-        const PARAMETERS: &[GuiTab] = &[GuiTab::Color, GuiTab::Motion, GuiTab::Audio, GuiTab::Lfo];
+        const PARAMETERS: &[GuiTab] = &[GuiTab::Color, GuiTab::Motion, GuiTab::Audio, GuiTab::Modulation];
         const CONTROL: &[GuiTab] = &[GuiTab::Midi, GuiTab::Osc, GuiTab::Web];
         const MANAGE: &[GuiTab] = &[GuiTab::Presets];
 
@@ -584,7 +584,7 @@ impl ControlGui {
                 GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
                 GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
                 GuiTab::Audio => self.build_audio_tab(ui),
-                GuiTab::Lfo => self.build_lfo_tab(ui),
+                GuiTab::Modulation => self.build_modulation_tab(ui),
                 GuiTab::Midi => self.build_midi_tab(ui),
                 GuiTab::Osc => self.build_osc_tab(ui),
                 GuiTab::Web => self.build_web_tab(ui),

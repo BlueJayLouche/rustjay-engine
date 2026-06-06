@@ -6,6 +6,8 @@ use egui::{Color32, Stroke};
 use rustjay_core::lfo::{beat_division_to_hz, LfoTarget, Waveform};
 
 impl EguiControlGui {
+    /// Legacy LFO bank tab (deprecated — replaced by `build_modulation_tab` in M5.2).
+    /// Kept for backward compatibility until M7.3.
     pub(crate) fn build_lfo_tab(&mut self, ui: &mut egui::Ui) {
         let (target_list, hsb_count, param_names) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
