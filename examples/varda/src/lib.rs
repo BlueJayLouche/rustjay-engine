@@ -43,6 +43,8 @@ use crate::sources::{Registry, ShaderWatcher};
 use crate::sources::{CameraSource, SolidColorSource};
 #[cfg(all(feature = "mixer", feature = "hap"))]
 use crate::sources::HapSource;
+#[cfg(all(feature = "mixer", feature = "ffmpeg"))]
+use crate::sources::FfmpegSource;
 #[cfg(feature = "mixer")]
 use crate::scene::Scene;
 
@@ -264,6 +266,39 @@ impl VardaRootPlugin {
         }
         let camera = CameraSource::new(device, 0);
         comp_b.decks.push(Deck::new("b2", "Camera", Box::new(camera)));
+
+        #[cfg(feature = "ffmpeg")]
+        {
+            let assets_dir = manifest_dir.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(ext) = path.extension() {
+                        if ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" {
+                            match FfmpegSource::new(device, queue, &path) {
+                                Ok(src) => {
+                                    let name = path.file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("Video")
+                                        .to_string();
+                                    comp_b.decks.push(Deck::new(
+                                        format!("b_vid_{}", comp_b.decks.len()),
+                                        &name,
+                                        Box::new(src),
+                                    ));
+                                    log::info!("Loaded video source: {}", path.display());
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to open video file {}: {}", path.display(), e);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
             log::warn!("Failed to add channel B: {}", e);
         }

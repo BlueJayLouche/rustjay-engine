@@ -14,6 +14,7 @@ syphon = []
 streaming = []
 recording = []
 hap = ["dep:hap-wgpu"]
+ffmpeg = ["rustjay-io/ffmpeg"]
 
 [dependencies]
 rustjay-engine = { workspace = true }

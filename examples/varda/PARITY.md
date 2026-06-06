@@ -12,7 +12,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 |---|-----------|---------|--------|
 | 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
 | 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher + hot-reload recreates `EffectNode` on `.fs` change in `lib.rs::prepare`)* |
-| 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
+| 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | done *(Phase 16: `FfmpegSource` wraps `rustjay-io::FfmpegDecoder`; RGBA frames uploaded to GPU; playback params `speed`/`playing`/`loop`/`position`/`in_point`/`out_point` exposed via engine. Hardware decode is a future optimization.)* |
 | 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | done *(Phase 15: `HapSource` wraps `hap-wgpu::HapPlayer`; BC-compressed textures uploaded directly to GPU; playback params `speed`/`playing`/`loop`/`position` exposed via engine. YCoCg→RGB conversion shader is a future polish item.)* |
 | 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; `CameraSource` uses a global `Arc<Mutex<CameraSession>>` cache keyed by device index, preventing double-open)* |
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
@@ -21,7 +21,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 9 | **Sources — SRT** receive | T02.2, T09.2 | todo |
 | 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | todo |
 | 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | todo |
-| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images; videos enumerated as stub unloadable entries — decode absent from `rustjay-io`)* |
+| 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images and `.mp4`/`.mov`/`.mkv`/`.avi`/`.webm` videos; HAP decode + ffmpeg decode both wired)* |
 | 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
 | 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | done *(mixer `AutoCrossfade` / `BeatSyncCrossfade` triggered from SequencerTab; timer-based via `timed_crossfade` / `timed_hold` sequencer steps)* |
@@ -64,7 +64,7 @@ do not block core VJ functionality.
 
 | # | Gap | Blocking? | Recommended path |
 |---|-----|-----------|------------------|
-| 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | Add `ffmpeg` feature to `rustjay-io` with `input/ffmpeg.rs` (~400 LOC). Reuse `ffmpeg-next` or `rust-ffmpeg`. |
+| 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | ✅ **Done** — Phase 16. `FfmpegDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` uses `ffmpeg-next` 8.1; `FfmpegSource` in Varda exposes 6 playback params. Hardware decode and background decode thread are future optimizations. |
 | 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | ✅ **Done** — Phase 15. `HapSource` in `examples/varda/src/sources/hap_source.rs` wraps `hap-wgpu::HapPlayer`. YCoCg→RGB shader and background decode thread are future optimizations. |
 | 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | Wrap `ffmpeg` subprocess for protocol ingest (same architecture Varda uses today). |
 | 21 | **Mod-on-mod chaining** (4-deep) | Low | Engine `rustjay-core` gap — `ModulationEngine` needs depth-budgeted recursion in `get_modulation()`. |

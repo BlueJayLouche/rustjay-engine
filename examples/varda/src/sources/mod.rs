@@ -15,6 +15,8 @@ mod watcher;
 
 #[cfg(feature = "hap")]
 mod hap_source;
+#[cfg(feature = "ffmpeg")]
+mod ffmpeg_source;
 
 pub use camera_source::CameraSource;
 pub use image_source::ImageSource;
@@ -23,3 +25,5 @@ pub use solid_color_source::SolidColorSource;
 pub use watcher::ShaderWatcher;
 #[cfg(feature = "hap")]
 pub use hap_source::HapSource;
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg_source::FfmpegSource;

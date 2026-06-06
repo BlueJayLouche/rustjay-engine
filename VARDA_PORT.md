@@ -62,7 +62,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 |-------|-------|-------|
 | **0 — Scaffolding & parity harness** | ✅ done (T00.4 golden-image harness deferred) | Module tree, feature flags, parity tracker, rustjay-io coverage probe all in place. Golden-image diff harness (T00.4) not yet wired. |
 | **1 — Routing graph core** | ✅ done | Deck → DeckCompositor → `rustjay_mixer::Channel` → Mixer spine runs. Zero-opacity culling **verified to skip the GPU pass** (`compositor.rs`, not multiply-by-zero). Deck opacity/blend now read through `engine.get_param` (post-review fix). |
-| **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, HAP (GPU-native via `hap-wgpu`), registry (ISF + image + video), `notify` watcher + hot-reload all wired. ffmpeg/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — see PARITY probe). |
+| **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, HAP (GPU-native via `hap-wgpu`), ffmpeg video decode (`FfmpegDecoder` + `FfmpegSource` with loop/ping-pong/speed/scrub/in/out), registry (ISF + image + video), `notify` watcher + hot-reload all wired. SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader; ADSR + step-sequencer on crossfader (ModulationTab shows these sources). |
 | **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema into the opaque `EngineState::app_state`; WS JSON-Patch deltas carry it. |
@@ -75,6 +75,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | **13 — Dome & edge-blend** | ✅ done *(display smoke-test pending)* | `VardaDomeStage` + `VardaEdgeBlendStage` wired into projector chain via `Arc<Mutex>` bridge; StageTab dome config; OutputsTab manual edge-blend controls; auto-detect for multi-output. |
 | **14 — Parity audit** | ✅ done | Tracker walked to 100%; gaps filed as follow-ups (ffmpeg video/HAP, SRT/HLS/DASH/RTMP streaming, recording, mod-on-mod, notifications, sysmon). Perf pass: no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature only) noted as alloc-heavy. Docs updated. |
 | **15 — HAP video source** | ✅ done | `HapSource` wraps `hap-wgpu::HapPlayer` for GPU-native HAP decode (BCn textures). Playback params (`speed`, `playing`, `loop`, `position`) exposed via engine. `TEXTURE_COMPRESSION_BC` enabled in `rustjay-render` when adapter supports it. Feature-gated behind `hap` (off by default). YCoCg→RGB shader and background decode thread are future optimizations. |
+| **16 — ffmpeg video decode** | ✅ done | `FfmpegDecoder` in `rustjay-io` uses `ffmpeg-next` 8.1 to decode `.mp4`/`.mkv`/`.avi`/`.webm` to RGBA. `FfmpegSource` in Varda implements `EffectInstance` with 6 playback params (`speed`, `playing`, `loop`, `position`, `in_point`, `out_point`). Feature-gated behind `ffmpeg` (off by default). Hardware decode and background decode thread are future optimizations. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
@@ -368,6 +369,20 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
   adapter supports it.
 - *Acceptance:* `cargo build -p varda --features hap` compiles clean; a `.mov` file
   in `assets/` auto-loads as a HAP deck; playback params are modulatable.
+
+### Phase 16 — ffmpeg video decode ✅
+- **T16.1 [Extend]** Add `ffmpeg-next` 8.1 dependency to `rustjay-io` behind an
+  off-by-default `ffmpeg` feature.
+- **T16.2 [Extend]** Implement `FfmpegDecoder` in `rustjay-io/src/input/ffmpeg.rs`:
+  open files, decode frames synchronously, convert to RGBA via swscale, expose
+  playback controls (play/pause/stop, speed, loop/ping-pong/none, seek, in/out points).
+- **T16.3 [Extend]** Implement `FfmpegSource` in Varda: textured-quad render,
+  GPU texture upload, 6 engine params for playback control.
+- **T16.4 [Extend]** Wire auto-load for `.mp4`/`.mkv`/`.avi`/`.webm` files in the
+  assets directory (first match loaded into Channel B as a demo deck).
+- *Acceptance:* `cargo build -p varda --features ffmpeg` compiles clean; a video
+  file in `assets/` auto-loads as a deck; loop/speed/position/in/out params are
+  modulatable.
 
 ---
 

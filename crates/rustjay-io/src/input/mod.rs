@@ -75,6 +75,30 @@ pub mod webcam;
 #[cfg(feature = "webcam")]
 pub use webcam::{list_cameras, WebcamCapture, WebcamFrame};
 
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg;
+#[cfg(feature = "ffmpeg")]
+#[allow(unused_imports)]
+pub use ffmpeg::{FfmpegDecoder, LoopMode, VideoFrame};
+
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub struct FfmpegDecoder;
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub enum LoopMode {
+    None,
+    Loop,
+    PingPong,
+}
+
 #[cfg(target_os = "macos")]
 pub mod syphon_input;
 #[cfg(target_os = "macos")]
