@@ -43,7 +43,10 @@ impl LinkManager {
         if state.enabled != self.last_enabled {
             self.link.enable(state.enabled);
             self.last_enabled = state.enabled;
-            log::info!("[Link] {}", if state.enabled { "enabled" } else { "disabled" });
+            log::info!(
+                "[Link] {}",
+                if state.enabled { "enabled" } else { "disabled" }
+            );
         }
 
         if state.quantum != self.quantum {
@@ -61,8 +64,8 @@ impl LinkManager {
         let mut session = rusty_link::SessionState::new();
         self.link.capture_app_session_state(&mut session);
 
-        let time  = self.link.clock_micros();
-        let bpm   = session.tempo();
+        let time = self.link.clock_micros();
+        let bpm = session.tempo();
         let phase = session.phase_at_time(time, self.quantum);
 
         let normalized_phase = if self.quantum > 0.0 {
@@ -71,9 +74,9 @@ impl LinkManager {
             0.0
         };
 
-        state.bpm        = bpm as f32;
+        state.bpm = bpm as f32;
         state.beat_phase = normalized_phase;
-        state.num_peers  = self.link.num_peers() as usize;
+        state.num_peers = self.link.num_peers() as usize;
         state.is_playing = session.is_playing();
     }
 }
