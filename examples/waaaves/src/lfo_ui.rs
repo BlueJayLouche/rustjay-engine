@@ -17,7 +17,11 @@ pub const LFO_COLORS: [[f32; 4]; 8] = [
 /// Draw inline coloured dots for every enabled LFO targeting this param.
 pub fn draw_lfo_dots(ui: &imgui::Ui, param_id: &str, bank: &LfoBank) {
     // Fast path: skip the per-LFO string comparisons when nothing is active.
-    if !bank.lfos.iter().any(|lfo| lfo.enabled && matches!(lfo.target, LfoTarget::Custom(_))) {
+    if !bank
+        .lfos
+        .iter()
+        .any(|lfo| lfo.enabled && matches!(lfo.target, LfoTarget::Custom(_)))
+    {
         return;
     }
     for (i, lfo) in bank.lfos.iter().enumerate() {
@@ -51,10 +55,7 @@ pub fn lfo_context_menu(
         ui.open_popup(&popup_id);
     }
 
-    if ui
-        .begin_popup(&popup_id)
-        .is_some()
-    {
+    if ui.begin_popup(&popup_id).is_some() {
         ui.text_disabled(param_label);
         ui.separator();
 
@@ -75,14 +76,17 @@ pub fn lfo_context_menu(
                 if is_targeting_us {
                     engine_state.lfo.bank.lfos[i].target = LfoTarget::None;
                 } else {
-                    engine_state.lfo.bank.lfos[i].target =
-                        LfoTarget::Custom(param_id.to_string());
+                    engine_state.lfo.bank.lfos[i].target = LfoTarget::Custom(param_id.to_string());
                 }
             }
         }
 
         ui.separator();
-        if ui.selectable_config("Jump to LFO tab").selected(false).build() {
+        if ui
+            .selectable_config("Jump to LFO tab")
+            .selected(false)
+            .build()
+        {
             engine_state.current_tab = GuiTab::Lfo;
         }
     }

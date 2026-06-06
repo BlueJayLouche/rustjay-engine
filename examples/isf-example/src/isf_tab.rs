@@ -1,6 +1,9 @@
 //! Auto-generated ImGui tab built from the ISF input declarations.
 
-use std::{path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use rustjay_engine::prelude::*;
 
@@ -18,7 +21,9 @@ pub struct IsfTab {
 }
 
 impl AnyGuiTab for IsfTab {
-    fn name(&self) -> &str { &self.cached_name }
+    fn name(&self) -> &str {
+        &self.cached_name
+    }
 
     fn draw(
         &mut self,
@@ -68,7 +73,10 @@ impl AnyGuiTab for IsfTab {
             match &desc.param_type {
                 ParamType::Float => {
                     let mut val = engine.get_param(&desc.id).unwrap_or(desc.default);
-                    if ui.slider_config(&desc.name, desc.min, desc.max).build(&mut val) {
+                    if ui
+                        .slider_config(&desc.name, desc.min, desc.max)
+                        .build(&mut val)
+                    {
                         state.values.insert(desc.id.clone(), val);
                         engine.set_param_base(&desc.id, val);
                     }
@@ -85,7 +93,10 @@ impl AnyGuiTab for IsfTab {
                 ParamType::Int => {
                     let current = engine.get_param(&desc.id).unwrap_or(desc.default);
                     let mut val = current as i32;
-                    if ui.slider_config(&desc.name, desc.min as i32, desc.max as i32).build(&mut val) {
+                    if ui
+                        .slider_config(&desc.name, desc.min as i32, desc.max as i32)
+                        .build(&mut val)
+                    {
                         state.values.insert(desc.id.clone(), val as f32);
                         engine.set_param_base(&desc.id, val as f32);
                     }

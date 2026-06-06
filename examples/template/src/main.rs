@@ -25,26 +25,48 @@ impl EffectPlugin for HsbEffect {
     type State = HsbState;
     type Uniforms = HsbUniforms;
 
-    fn app_name(&self) -> &str { "template" }
+    fn app_name(&self) -> &str {
+        "template"
+    }
 
     fn default_state(&self) -> HsbState {
-        HsbState { saturation: 1.0, brightness: 1.0, enabled: true, ..Default::default() }
+        HsbState {
+            saturation: 1.0,
+            brightness: 1.0,
+            enabled: true,
+            ..Default::default()
+        }
     }
 
     /// Declare HSB parameters for dynamic UI, LFO targets, and control mapping.
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
             ParameterDescriptor::float(
-                "hue_shift", "Hue Shift", ParamCategory::Color,
-                -180.0, 180.0, 0.0, 1.0,
+                "hue_shift",
+                "Hue Shift",
+                ParamCategory::Color,
+                -180.0,
+                180.0,
+                0.0,
+                1.0,
             ),
             ParameterDescriptor::float(
-                "saturation", "Saturation", ParamCategory::Color,
-                0.0, 2.0, 1.0, 0.01,
+                "saturation",
+                "Saturation",
+                ParamCategory::Color,
+                0.0,
+                2.0,
+                1.0,
+                0.01,
             ),
             ParameterDescriptor::float(
-                "brightness", "Brightness", ParamCategory::Color,
-                0.0, 2.0, 1.0, 0.01,
+                "brightness",
+                "Brightness",
+                ParamCategory::Color,
+                0.0,
+                2.0,
+                1.0,
+                0.01,
             ),
         ]
     }
@@ -55,14 +77,18 @@ impl EffectPlugin for HsbEffect {
 
     fn build_uniforms(&self, s: &HsbState, engine: &EngineState) -> HsbUniforms {
         if !s.enabled {
-            return HsbUniforms { values: [0.0, 1.0, 1.0, 0.0] };
+            return HsbUniforms {
+                values: [0.0, 1.0, 1.0, 0.0],
+            };
         }
         // Audio routing + LFO modulations are applied by the engine each frame
         // and available via get_param (base + modulation, clamped to descriptor range).
-        let hue   = engine.get_param("hue_shift").unwrap_or(s.hue_shift);
-        let sat   = engine.get_param("saturation").unwrap_or(s.saturation);
+        let hue = engine.get_param("hue_shift").unwrap_or(s.hue_shift);
+        let sat = engine.get_param("saturation").unwrap_or(s.saturation);
         let bright = engine.get_param("brightness").unwrap_or(s.brightness);
-        HsbUniforms { values: [hue, sat, bright, 0.0] }
+        HsbUniforms {
+            values: [hue, sat, bright, 0.0],
+        }
     }
 }
 

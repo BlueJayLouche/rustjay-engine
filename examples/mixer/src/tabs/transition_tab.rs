@@ -48,8 +48,10 @@ impl AnyGuiTab for TransitionTab {
         if ui.collapsing_header("Auto Crossfade", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             ui.indent_by(8.0);
 
-            ui.slider_config("Target", 0.0f32, 1.0f32).build(&mut self.auto_target);
-            ui.slider_config("Duration (s)", 0.1f32, 10.0f32).build(&mut self.auto_duration);
+            ui.slider_config("Target", 0.0f32, 1.0f32)
+                .build(&mut self.auto_target);
+            ui.slider_config("Duration (s)", 0.1f32, 10.0f32)
+                .build(&mut self.auto_duration);
 
             let easing_names = ["Linear", "EaseIn", "EaseOut", "EaseInOut"];
             let mut easing_idx = self.auto_easing as usize;
@@ -90,13 +92,16 @@ impl AnyGuiTab for TransitionTab {
         if ui.collapsing_header("Beat Sync", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             ui.indent_by(8.0);
 
-            ui.slider_config("Target", 0.0f32, 1.0f32).build(&mut self.beat_target);
-            ui.slider_config("Beats", 0.5f32, 16.0f32).build(&mut self.beat_beats);
+            ui.slider_config("Target", 0.0f32, 1.0f32)
+                .build(&mut self.beat_target);
+            ui.slider_config("Beats", 0.5f32, 16.0f32)
+                .build(&mut self.beat_beats);
 
             if ui.button("Start Beat Sync") {
                 if let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
-                    mixer.beat_sync = Some(BeatSyncCrossfade::new(self.beat_target, self.beat_beats));
+                    mixer.beat_sync =
+                        Some(BeatSyncCrossfade::new(self.beat_target, self.beat_beats));
                 }
             }
             ui.same_line();
@@ -115,19 +120,27 @@ impl AnyGuiTab for TransitionTab {
         if ui.collapsing_header("Sequencer", imgui::TreeNodeFlags::DEFAULT_OPEN) {
             ui.indent_by(8.0);
 
-            ui.slider_config("Step Target", 0.0f32, 1.0f32).build(&mut self.seq_target);
-            ui.slider_config("Step Beats", 0.5f32, 8.0f32).build(&mut self.seq_beats);
+            ui.slider_config("Step Target", 0.0f32, 1.0f32)
+                .build(&mut self.seq_target);
+            ui.slider_config("Step Beats", 0.5f32, 8.0f32)
+                .build(&mut self.seq_beats);
 
             if ui.button("Add Crossfade Step") {
                 if let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
-                    mixer.sequencer.steps.push(TransitionStep::crossfade(self.seq_target, self.seq_beats));
+                    mixer
+                        .sequencer
+                        .steps
+                        .push(TransitionStep::crossfade(self.seq_target, self.seq_beats));
                 }
             }
             if ui.button("Add Hold Step") {
                 if let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
-                    mixer.sequencer.steps.push(TransitionStep::hold(self.seq_beats));
+                    mixer
+                        .sequencer
+                        .steps
+                        .push(TransitionStep::hold(self.seq_beats));
                 }
             }
 

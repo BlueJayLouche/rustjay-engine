@@ -4,9 +4,7 @@
 //! - Projector 1: identity passthrough
 //! - Projector 2: edge-blend + warp (demonstrates chained stages)
 
-use rustjay_core::{
-    EffectPlugin, EngineState, ParameterDescriptor, ParamCategory,
-};
+use rustjay_core::{EffectPlugin, EngineState, ParamCategory, ParameterDescriptor};
 
 // ---------------------------------------------------------------------------
 // Simple solid-color effect
@@ -60,9 +58,33 @@ impl EffectPlugin for SolidEffect {
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
-            ParameterDescriptor::float("red",   "Red",   ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.5, 0.01),
-            ParameterDescriptor::float("green", "Green", ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.2, 0.01),
-            ParameterDescriptor::float("blue",  "Blue",  ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.8, 0.01),
+            ParameterDescriptor::float(
+                "red",
+                "Red",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.5,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "green",
+                "Green",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.2,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "blue",
+                "Blue",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.8,
+                0.01,
+            ),
         ]
     }
 }
@@ -79,10 +101,13 @@ fn main() -> anyhow::Result<()> {
         .filter_module("winit", log::LevelFilter::Warn)
         .init();
 
-    log::info!("Starting RustJay Projection example v{}", env!("CARGO_PKG_VERSION"));
+    log::info!(
+        "Starting RustJay Projection example v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     use rustjay_engine::run_with_projection;
-    use rustjay_projection::{IdentityStage, EdgeBlendStage};
+    use rustjay_projection::{EdgeBlendStage, IdentityStage};
     use winit::window::WindowAttributes;
 
     run_with_projection(SolidEffect, vec![], |sub| {

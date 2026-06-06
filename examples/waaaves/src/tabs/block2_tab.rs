@@ -5,15 +5,24 @@ use super::*;
 pub struct Block2Tab;
 
 impl AnyGuiTab for Block2Tab {
-    fn name(&self) -> &str { "Block 2" }
+    fn name(&self) -> &str {
+        "Block 2"
+    }
 
-    fn draw(&mut self, ui: &imgui::Ui, app_state: &mut dyn std::any::Any, engine: &mut EngineState) {
+    fn draw(
+        &mut self,
+        ui: &imgui::Ui,
+        app_state: &mut dyn std::any::Any,
+        engine: &mut EngineState,
+    ) {
         let state = app_state
             .downcast_mut::<WaaavesState>()
             .expect("Block2Tab expects WaaavesState");
 
         apply_pending_pick(state, engine);
-        if ui.is_key_pressed(imgui::Key::Escape) && matches!(state.pick_state, PickState::Armed { .. }) {
+        if ui.is_key_pressed(imgui::Key::Escape)
+            && matches!(state.pick_state, PickState::Armed { .. })
+        {
             state.pick_state = PickState::Idle;
         }
         engine.pixel_pick_armed = matches!(state.pick_state, PickState::Armed { .. });
@@ -28,7 +37,9 @@ impl AnyGuiTab for Block2Tab {
                 BLOCK2_INPUT_SELECT_OPTS,
             );
             geometry_section(
-                ui, engine, "block2_input",
+                ui,
+                engine,
+                "block2_input",
                 &mut state.block2.block2_input_x_displace,
                 &mut state.block2.block2_input_y_displace,
                 &mut state.block2.block2_input_z_displace,
@@ -53,7 +64,9 @@ impl AnyGuiTab for Block2Tab {
         // ── Block 2 Input Color ─────────────────────────────────────────────
         if ui.collapsing_header("Block 2 Input Color", imgui::TreeNodeFlags::empty()) {
             color_section(
-                ui, engine, "block2_input",
+                ui,
+                engine,
+                "block2_input",
                 &mut state.block2.block2_input_hsb_attenuate_h,
                 &mut state.block2.block2_input_hsb_attenuate_s,
                 &mut state.block2.block2_input_hsb_attenuate_b,
@@ -65,7 +78,9 @@ impl AnyGuiTab for Block2Tab {
                 &mut state.block2.block2_input_posterize_switch,
             );
             filter_section(
-                ui, engine, "block2_input",
+                ui,
+                engine,
+                "block2_input",
                 &mut state.block2.block2_input_blur_amount,
                 &mut state.block2.block2_input_sharpen_amount,
                 &mut state.block2.block2_input_filters_boost,
@@ -75,7 +90,10 @@ impl AnyGuiTab for Block2Tab {
         // ── FB2 Mix & Key ───────────────────────────────────────────────────
         if ui.collapsing_header("FB2 Mix & Key", imgui::TreeNodeFlags::empty()) {
             mix_key_section(
-                ui, &mut state.pick_state, engine, "fb2",
+                ui,
+                &mut state.pick_state,
+                engine,
+                "fb2",
                 &mut state.block2.fb2_mix_amount,
                 &mut state.block2.fb2_mix_type,
                 &mut state.block2.fb2_mix_overflow,
@@ -93,7 +111,9 @@ impl AnyGuiTab for Block2Tab {
         // ── FB2 Geometry ────────────────────────────────────────────────────
         if ui.collapsing_header("FB2 Geometry", imgui::TreeNodeFlags::empty()) {
             geometry_section(
-                ui, engine, "fb2",
+                ui,
+                engine,
+                "fb2",
                 &mut state.block2.fb2_x_displace,
                 &mut state.block2.fb2_y_displace,
                 &mut state.block2.fb2_z_displace,
@@ -106,18 +126,80 @@ impl AnyGuiTab for Block2Tab {
                 &mut state.block2.fb2_v_flip,
                 &mut state.block2.fb2_geo_overflow,
             );
-            co(ui, engine, "Rotate Mode##fb2", &mut state.block2.fb2_rotate_mode, ROTATE_MODE_OPTS);
-            sf(ui, engine, "Shear XX##fb2", "fb2_shear_xx", &mut state.block2.fb2_shear_xx, -2.0, 2.0);
-            sf(ui, engine, "Shear XY##fb2", "fb2_shear_xy", &mut state.block2.fb2_shear_xy, -2.0, 2.0);
-            sf(ui, engine, "Shear YX##fb2", "fb2_shear_yx", &mut state.block2.fb2_shear_yx, -2.0, 2.0);
-            sf(ui, engine, "Shear YY##fb2", "fb2_shear_yy", &mut state.block2.fb2_shear_yy, -2.0, 2.0);
+            co(
+                ui,
+                engine,
+                "Rotate Mode##fb2",
+                &mut state.block2.fb2_rotate_mode,
+                ROTATE_MODE_OPTS,
+            );
+            sf(
+                ui,
+                engine,
+                "Shear XX##fb2",
+                "fb2_shear_xx",
+                &mut state.block2.fb2_shear_xx,
+                -2.0,
+                2.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Shear XY##fb2",
+                "fb2_shear_xy",
+                &mut state.block2.fb2_shear_xy,
+                -2.0,
+                2.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Shear YX##fb2",
+                "fb2_shear_yx",
+                &mut state.block2.fb2_shear_yx,
+                -2.0,
+                2.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Shear YY##fb2",
+                "fb2_shear_yy",
+                &mut state.block2.fb2_shear_yy,
+                -2.0,
+                2.0,
+            );
         }
 
         // ── FB2 Color ───────────────────────────────────────────────────────
         if ui.collapsing_header("FB2 Color", imgui::TreeNodeFlags::empty()) {
-            sf(ui, engine, "Hue Offset##fb2", "fb2_hsb_offset_h", &mut state.block2.fb2_hsb_offset_h, -1.0, 1.0);
-            sf(ui, engine, "Sat Offset##fb2", "fb2_hsb_offset_s", &mut state.block2.fb2_hsb_offset_s, -1.0, 1.0);
-            sf(ui, engine, "Bri Offset##fb2", "fb2_hsb_offset_b", &mut state.block2.fb2_hsb_offset_b, -1.0, 1.0);
+            sf(
+                ui,
+                engine,
+                "Hue Offset##fb2",
+                "fb2_hsb_offset_h",
+                &mut state.block2.fb2_hsb_offset_h,
+                -1.0,
+                1.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Sat Offset##fb2",
+                "fb2_hsb_offset_s",
+                &mut state.block2.fb2_hsb_offset_s,
+                -1.0,
+                1.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Bri Offset##fb2",
+                "fb2_hsb_offset_b",
+                &mut state.block2.fb2_hsb_offset_b,
+                -1.0,
+                1.0,
+            );
             sf(
                 ui,
                 engine,
@@ -145,11 +227,49 @@ impl AnyGuiTab for Block2Tab {
                 0.0,
                 2.0,
             );
-            sf(ui, engine, "Hue PowMap##fb2", "fb2_hsb_powmap_h", &mut state.block2.fb2_hsb_powmap_h, 0.0, 4.0);
-            sf(ui, engine, "Sat PowMap##fb2", "fb2_hsb_powmap_s", &mut state.block2.fb2_hsb_powmap_s, 0.0, 4.0);
-            sf(ui, engine, "Bri PowMap##fb2", "fb2_hsb_powmap_b", &mut state.block2.fb2_hsb_powmap_b, 0.0, 4.0);
-            sf(ui, engine, "Hue Shaper##fb2", "fb2_hue_shaper", &mut state.block2.fb2_hue_shaper, 0.0, 2.0);
-            cb(ui, engine, "Hue Invert##fb2", "fb2_hue_invert", &mut state.block2.fb2_hue_invert);
+            sf(
+                ui,
+                engine,
+                "Hue PowMap##fb2",
+                "fb2_hsb_powmap_h",
+                &mut state.block2.fb2_hsb_powmap_h,
+                0.0,
+                4.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Sat PowMap##fb2",
+                "fb2_hsb_powmap_s",
+                &mut state.block2.fb2_hsb_powmap_s,
+                0.0,
+                4.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Bri PowMap##fb2",
+                "fb2_hsb_powmap_b",
+                &mut state.block2.fb2_hsb_powmap_b,
+                0.0,
+                4.0,
+            );
+            sf(
+                ui,
+                engine,
+                "Hue Shaper##fb2",
+                "fb2_hue_shaper",
+                &mut state.block2.fb2_hue_shaper,
+                0.0,
+                2.0,
+            );
+            cb(
+                ui,
+                engine,
+                "Hue Invert##fb2",
+                "fb2_hue_invert",
+                &mut state.block2.fb2_hue_invert,
+            );
             cb(
                 ui,
                 engine,
@@ -176,7 +296,9 @@ impl AnyGuiTab for Block2Tab {
         // ── FB2 Filters ─────────────────────────────────────────────────────
         if ui.collapsing_header("FB2 Filters", imgui::TreeNodeFlags::empty()) {
             filter_section(
-                ui, engine, "fb2",
+                ui,
+                engine,
+                "fb2",
                 &mut state.block2.fb2_blur_amount,
                 &mut state.block2.fb2_sharpen_amount,
                 &mut state.block2.fb2_filters_boost,

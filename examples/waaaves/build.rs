@@ -2,13 +2,12 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         // ===== Syphon Framework =====
-        let syphon_framework_dir = find_syphon_framework()
-            .expect(
-                "Syphon.framework not found. Either:\n  \
+        let syphon_framework_dir = find_syphon_framework().expect(
+            "Syphon.framework not found. Either:\n  \
                  - Set SYPHON_FRAMEWORK_DIR to the directory containing Syphon.framework\n  \
                  - Clone https://github.com/BlueJayLouche/syphon-rs next to this repo\n  \
                  - Run `cargo fetch` to populate the git dep cache",
-            );
+        );
 
         let syphon_dir = syphon_framework_dir.to_string_lossy().into_owned();
 
@@ -22,10 +21,7 @@ fn main() {
 
         // ===== NDI Library =====
         // NDI rpath: always add if installed (propagates to downstream test binaries)
-        let ndi_lib_paths = [
-            "/usr/local/lib",
-            "/Library/NDI SDK for Apple/lib/macOS",
-        ];
+        let ndi_lib_paths = ["/usr/local/lib", "/Library/NDI SDK for Apple/lib/macOS"];
 
         for path in &ndi_lib_paths {
             if std::path::Path::new(path).exists() {
@@ -71,7 +67,11 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
     let cargo_home = std::env::var("CARGO_HOME")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".cargo")));
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".cargo"))
+        });
 
     if let Some(cargo_home) = cargo_home {
         let checkouts = cargo_home.join("git/checkouts");

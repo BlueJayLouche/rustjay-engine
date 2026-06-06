@@ -5,7 +5,7 @@
 //! per-channel opacity/blend, and transition state machines.
 
 use rustjay_core::{
-    EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, ParamCategory,
+    EffectInput, EffectInstance, EffectPlugin, EngineState, ParamCategory, ParameterDescriptor,
     RenderCtx, RenderHookCtx, RenderTarget,
 };
 use rustjay_mixer::{Channel, Mixer};
@@ -66,9 +66,33 @@ impl EffectPlugin for SolidEffect {
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
-            ParameterDescriptor::float("red",   "Red",   ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.5, 0.01),
-            ParameterDescriptor::float("green", "Green", ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.2, 0.01),
-            ParameterDescriptor::float("blue",  "Blue",  ParamCategory::Custom("Solid".into()), 0.0, 1.0, 0.8, 0.01),
+            ParameterDescriptor::float(
+                "red",
+                "Red",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.5,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "green",
+                "Green",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.2,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "blue",
+                "Blue",
+                ParamCategory::Custom("Solid".into()),
+                0.0,
+                1.0,
+                0.8,
+                0.01,
+            ),
         ]
     }
 }
@@ -137,9 +161,33 @@ impl EffectPlugin for TintEffect {
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
-            ParameterDescriptor::float("tint_r", "Tint R", ParamCategory::Custom("Tint".into()), 0.0, 1.0, 1.0, 0.01),
-            ParameterDescriptor::float("tint_g", "Tint G", ParamCategory::Custom("Tint".into()), 0.0, 1.0, 1.0, 0.01),
-            ParameterDescriptor::float("tint_b", "Tint B", ParamCategory::Custom("Tint".into()), 0.0, 1.0, 1.0, 0.01),
+            ParameterDescriptor::float(
+                "tint_r",
+                "Tint R",
+                ParamCategory::Custom("Tint".into()),
+                0.0,
+                1.0,
+                1.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "tint_g",
+                "Tint G",
+                ParamCategory::Custom("Tint".into()),
+                0.0,
+                1.0,
+                1.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "tint_b",
+                "Tint B",
+                ParamCategory::Custom("Tint".into()),
+                0.0,
+                1.0,
+                1.0,
+                0.01,
+            ),
         ]
     }
 }
@@ -226,7 +274,10 @@ impl EffectPlugin for MixerRootPlugin {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        self.mixer.lock().unwrap_or_else(|e| e.into_inner()).parameters()
+        self.mixer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .parameters()
     }
 
     fn parameters_dirty(&self) -> bool {
@@ -242,20 +293,20 @@ impl EffectPlugin for MixerRootPlugin {
         let dummy_engine = EngineState::new();
 
         let solid = EffectNode::new(SolidEffect, "Solid", device, queue, &dummy_engine);
-        mixer.add_channel(Channel::new("a", "Channel A", Box::new(solid))).unwrap();
+        mixer
+            .add_channel(Channel::new("a", "Channel A", Box::new(solid)))
+            .unwrap();
 
         let tint = EffectNode::new(TintEffect, "Tint", device, queue, &dummy_engine);
-        mixer.add_channel(Channel::new("b", "Channel B", Box::new(tint))).unwrap();
+        mixer
+            .add_channel(Channel::new("b", "Channel B", Box::new(tint)))
+            .unwrap();
 
         drop(mixer);
         self.params_dirty = true;
     }
 
-    fn render(
-        &mut self,
-        ctx: &mut RenderHookCtx<'_>,
-        _app_state: &mut MixerAppState,
-    ) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _app_state: &mut MixerAppState) -> bool {
         let mut render_ctx = RenderCtx {
             device: ctx.device,
             queue: ctx.queue,
@@ -269,7 +320,12 @@ impl EffectPlugin for MixerRootPlugin {
         ];
 
         let primary = match ctx.input {
-            Some(rustjay_core::EffectInput { view, sampler, generation, texture }) => Some(EffectInput {
+            Some(rustjay_core::EffectInput {
+                view,
+                sampler,
+                generation,
+                texture,
+            }) => Some(EffectInput {
                 view,
                 sampler,
                 generation,
@@ -277,7 +333,10 @@ impl EffectPlugin for MixerRootPlugin {
             }),
             _ => None,
         };
-        let second = match (ctx.engine_state.second_input_view.as_ref(), ctx.engine_state.second_input_sampler.as_ref()) {
+        let second = match (
+            ctx.engine_state.second_input_view.as_ref(),
+            ctx.engine_state.second_input_sampler.as_ref(),
+        ) {
             (Some(view), Some(sampler)) => Some(EffectInput {
                 view,
                 sampler,

@@ -33,8 +33,12 @@ fn default_max_delay_frames() -> u32 {
 pub enum PickState {
     #[default]
     Idle,
-    Armed { target: KeyTarget },
-    Pending { target: KeyTarget },
+    Armed {
+        target: KeyTarget,
+    },
+    Pending {
+        target: KeyTarget,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -291,8 +291,8 @@ pub struct BlockCUniforms {
 
     // Final mix  (offset 400)
     pub final_mix_amount: f32,
-    pub _pad_final_key: [f32; 3],  // pad to align next Align16 to offset 416
-    pub final_key_value: Align16,  // offset 416
+    pub _pad_final_key: [f32; 3], // pad to align next Align16 to offset 416
+    pub final_key_value: Align16, // offset 416
     pub final_key_threshold: f32,
     pub final_key_soft: f32,
     pub final_mix_type: i32,
@@ -300,15 +300,14 @@ pub struct BlockCUniforms {
     pub final_key_order: i32,
     pub final_dither: f32,
     pub final_dither_type: i32,
-    pub _pad17: f32,               // tail pad to reach 464 bytes total
+    pub _pad17: f32, // tail pad to reach 464 bytes total
 }
 
 // ---------------------------------------------------------------------------
 // Mega-struct
 // ---------------------------------------------------------------------------
 #[repr(C, align(16))]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable, Default)]
 pub struct WaaavesUniforms {
     pub block_a: BlockAUniforms,
     pub block_b: BlockBUniforms,
@@ -354,16 +353,36 @@ fn pack_switches(
     posterize: bool,
 ) -> u32 {
     let mut result = 0u32;
-    if h_mirror { result |= 1 << 0; }
-    if v_mirror { result |= 1 << 1; }
-    if h_flip { result |= 1 << 2; }
-    if v_flip { result |= 1 << 3; }
-    if hue_inv { result |= 1 << 4; }
-    if sat_inv { result |= 1 << 5; }
-    if bright_inv { result |= 1 << 6; }
-    if rgb_inv { result |= 1 << 7; }
-    if solarize { result |= 1 << 8; }
-    if posterize { result |= 1 << 9; }
+    if h_mirror {
+        result |= 1 << 0;
+    }
+    if v_mirror {
+        result |= 1 << 1;
+    }
+    if h_flip {
+        result |= 1 << 2;
+    }
+    if v_flip {
+        result |= 1 << 3;
+    }
+    if hue_inv {
+        result |= 1 << 4;
+    }
+    if sat_inv {
+        result |= 1 << 5;
+    }
+    if bright_inv {
+        result |= 1 << 6;
+    }
+    if rgb_inv {
+        result |= 1 << 7;
+    }
+    if solarize {
+        result |= 1 << 8;
+    }
+    if posterize {
+        result |= 1 << 9;
+    }
     result
 }
 
@@ -622,21 +641,66 @@ fn build_block_b(state: &WaaavesState, engine: &EngineState) -> BlockBUniforms {
         input_z_displace: param("block2_input_z_displace", p.block2_input_z_displace, engine),
         input_rotate: param("block2_input_rotate", p.block2_input_rotate, engine),
         input_hsb_attenuate: Align16::new(
-            param("block2_input_hsb_attenuate_h", p.block2_input_hsb_attenuate_h, engine),
-            param("block2_input_hsb_attenuate_s", p.block2_input_hsb_attenuate_s, engine),
-            param("block2_input_hsb_attenuate_b", p.block2_input_hsb_attenuate_b, engine),
+            param(
+                "block2_input_hsb_attenuate_h",
+                p.block2_input_hsb_attenuate_h,
+                engine,
+            ),
+            param(
+                "block2_input_hsb_attenuate_s",
+                p.block2_input_hsb_attenuate_s,
+                engine,
+            ),
+            param(
+                "block2_input_hsb_attenuate_b",
+                p.block2_input_hsb_attenuate_b,
+                engine,
+            ),
         ),
         input_posterize: param("block2_input_posterize", p.block2_input_posterize, engine),
-        input_posterize_inv: 1.0 / param("block2_input_posterize", p.block2_input_posterize, engine).max(1.0),
-        input_kaleidoscope: param("block2_input_kaleidoscope_amount", p.block2_input_kaleidoscope_amount, engine),
-        input_kaleidoscope_slice: param("block2_input_kaleidoscope_slice", p.block2_input_kaleidoscope_slice, engine),
-        input_blur_amount: param("block2_input_blur_amount", p.block2_input_blur_amount, engine),
-        input_blur_radius: param("block2_input_blur_radius", p.block2_input_blur_radius, engine),
-        input_sharpen_amount: param("block2_input_sharpen_amount", p.block2_input_sharpen_amount, engine),
-        input_sharpen_radius: param("block2_input_sharpen_radius", p.block2_input_sharpen_radius, engine),
-        input_filters_boost: param("block2_input_filters_boost", p.block2_input_filters_boost, engine),
+        input_posterize_inv: 1.0
+            / param("block2_input_posterize", p.block2_input_posterize, engine).max(1.0),
+        input_kaleidoscope: param(
+            "block2_input_kaleidoscope_amount",
+            p.block2_input_kaleidoscope_amount,
+            engine,
+        ),
+        input_kaleidoscope_slice: param(
+            "block2_input_kaleidoscope_slice",
+            p.block2_input_kaleidoscope_slice,
+            engine,
+        ),
+        input_blur_amount: param(
+            "block2_input_blur_amount",
+            p.block2_input_blur_amount,
+            engine,
+        ),
+        input_blur_radius: param(
+            "block2_input_blur_radius",
+            p.block2_input_blur_radius,
+            engine,
+        ),
+        input_sharpen_amount: param(
+            "block2_input_sharpen_amount",
+            p.block2_input_sharpen_amount,
+            engine,
+        ),
+        input_sharpen_radius: param(
+            "block2_input_sharpen_radius",
+            p.block2_input_sharpen_radius,
+            engine,
+        ),
+        input_filters_boost: param(
+            "block2_input_filters_boost",
+            p.block2_input_filters_boost,
+            engine,
+        ),
         input_switches,
-        input_posterize_switch: if p.block2_input_posterize_switch { 1 } else { 0 },
+        input_posterize_switch: if p.block2_input_posterize_switch {
+            1
+        } else {
+            0
+        },
         input_solarize: if p.block2_input_solarize { 1 } else { 0 },
         input_geo_overflow: p.block2_input_geo_overflow,
         input_hd_aspect_on: if p.block2_input_hd_aspect_on { 1 } else { 0 },
@@ -734,8 +798,16 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
             param("block1_shear_yx", p.block1_shear_yx, engine),
             param("block1_shear_yy", p.block1_shear_yy, engine),
         ],
-        block1_kaleidoscope: param("block1_kaleidoscope_amount", p.block1_kaleidoscope_amount, engine),
-        block1_kaleidoscope_slice: param("block1_kaleidoscope_slice", p.block1_kaleidoscope_slice, engine),
+        block1_kaleidoscope: param(
+            "block1_kaleidoscope_amount",
+            p.block1_kaleidoscope_amount,
+            engine,
+        ),
+        block1_kaleidoscope_slice: param(
+            "block1_kaleidoscope_slice",
+            p.block1_kaleidoscope_slice,
+            engine,
+        ),
         block1_blur_amount: param("block1_blur_amount", p.block1_blur_amount, engine),
         block1_blur_radius: param("block1_blur_radius", p.block1_blur_radius, engine),
         block1_sharpen_amount: param("block1_sharpen_amount", p.block1_sharpen_amount, engine),
@@ -751,11 +823,31 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block1_dither_type: p.block1_dither_type,
         _pad1: 0.0,
 
-        block1_colorize_band1: Align16::new(p.block1_colorize_band1_h, p.block1_colorize_band1_s, p.block1_colorize_band1_b),
-        block1_colorize_band2: Align16::new(p.block1_colorize_band2_h, p.block1_colorize_band2_s, p.block1_colorize_band2_b),
-        block1_colorize_band3: Align16::new(p.block1_colorize_band3_h, p.block1_colorize_band3_s, p.block1_colorize_band3_b),
-        block1_colorize_band4: Align16::new(p.block1_colorize_band4_h, p.block1_colorize_band4_s, p.block1_colorize_band4_b),
-        block1_colorize_band5: Align16::new(p.block1_colorize_band5_h, p.block1_colorize_band5_s, p.block1_colorize_band5_b),
+        block1_colorize_band1: Align16::new(
+            p.block1_colorize_band1_h,
+            p.block1_colorize_band1_s,
+            p.block1_colorize_band1_b,
+        ),
+        block1_colorize_band2: Align16::new(
+            p.block1_colorize_band2_h,
+            p.block1_colorize_band2_s,
+            p.block1_colorize_band2_b,
+        ),
+        block1_colorize_band3: Align16::new(
+            p.block1_colorize_band3_h,
+            p.block1_colorize_band3_s,
+            p.block1_colorize_band3_b,
+        ),
+        block1_colorize_band4: Align16::new(
+            p.block1_colorize_band4_h,
+            p.block1_colorize_band4_s,
+            p.block1_colorize_band4_b,
+        ),
+        block1_colorize_band5: Align16::new(
+            p.block1_colorize_band5_h,
+            p.block1_colorize_band5_s,
+            p.block1_colorize_band5_b,
+        ),
 
         block2_xy_displace: [
             param("block2_x_displace", p.block2_x_displace, engine),
@@ -769,8 +861,16 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
             param("block2_shear_yx", p.block2_shear_yx, engine),
             param("block2_shear_yy", p.block2_shear_yy, engine),
         ],
-        block2_kaleidoscope: param("block2_kaleidoscope_amount", p.block2_kaleidoscope_amount, engine),
-        block2_kaleidoscope_slice: param("block2_kaleidoscope_slice", p.block2_kaleidoscope_slice, engine),
+        block2_kaleidoscope: param(
+            "block2_kaleidoscope_amount",
+            p.block2_kaleidoscope_amount,
+            engine,
+        ),
+        block2_kaleidoscope_slice: param(
+            "block2_kaleidoscope_slice",
+            p.block2_kaleidoscope_slice,
+            engine,
+        ),
         block2_blur_amount: param("block2_blur_amount", p.block2_blur_amount, engine),
         block2_blur_radius: param("block2_blur_radius", p.block2_blur_radius, engine),
         block2_sharpen_amount: param("block2_sharpen_amount", p.block2_sharpen_amount, engine),
@@ -786,11 +886,31 @@ fn build_block_c(state: &WaaavesState, engine: &EngineState) -> BlockCUniforms {
         block2_dither_type: p.block2_dither_type,
         _pad7: 0.0,
 
-        block2_colorize_band1: Align16::new(p.block2_colorize_band1_h, p.block2_colorize_band1_s, p.block2_colorize_band1_b),
-        block2_colorize_band2: Align16::new(p.block2_colorize_band2_h, p.block2_colorize_band2_s, p.block2_colorize_band2_b),
-        block2_colorize_band3: Align16::new(p.block2_colorize_band3_h, p.block2_colorize_band3_s, p.block2_colorize_band3_b),
-        block2_colorize_band4: Align16::new(p.block2_colorize_band4_h, p.block2_colorize_band4_s, p.block2_colorize_band4_b),
-        block2_colorize_band5: Align16::new(p.block2_colorize_band5_h, p.block2_colorize_band5_s, p.block2_colorize_band5_b),
+        block2_colorize_band1: Align16::new(
+            p.block2_colorize_band1_h,
+            p.block2_colorize_band1_s,
+            p.block2_colorize_band1_b,
+        ),
+        block2_colorize_band2: Align16::new(
+            p.block2_colorize_band2_h,
+            p.block2_colorize_band2_s,
+            p.block2_colorize_band2_b,
+        ),
+        block2_colorize_band3: Align16::new(
+            p.block2_colorize_band3_h,
+            p.block2_colorize_band3_s,
+            p.block2_colorize_band3_b,
+        ),
+        block2_colorize_band4: Align16::new(
+            p.block2_colorize_band4_h,
+            p.block2_colorize_band4_s,
+            p.block2_colorize_band4_b,
+        ),
+        block2_colorize_band5: Align16::new(
+            p.block2_colorize_band5_h,
+            p.block2_colorize_band5_s,
+            p.block2_colorize_band5_b,
+        ),
 
         matrix_mix_type: p.matrix_mix_type,
         matrix_mix_overflow: p.matrix_mix_overflow,
@@ -1089,7 +1209,6 @@ impl Default for BlockCUniforms {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

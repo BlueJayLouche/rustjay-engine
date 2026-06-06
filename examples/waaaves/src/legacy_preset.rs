@@ -36,7 +36,11 @@ impl<'de> Deserialize<'de> for GlamVec3 {
             z: f32,
         }
         let f = Fields::deserialize(value).map_err(serde::de::Error::custom)?;
-        Ok(GlamVec3 { x: f.x, y: f.y, z: f.z })
+        Ok(GlamVec3 {
+            x: f.x,
+            y: f.y,
+            z: f.z,
+        })
     }
 }
 
@@ -222,7 +226,11 @@ impl Default for LegacyBlock1 {
             ch1_y_displace: 0.0,
             ch1_z_displace: 1.0,
             ch1_rotate: 0.0,
-            ch1_hsb_attenuate: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
+            ch1_hsb_attenuate: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
             ch1_posterize: 16.0,
             ch1_kaleidoscope_amount: 0.0,
             ch1_kaleidoscope_slice: 0.0,
@@ -260,7 +268,11 @@ impl Default for LegacyBlock1 {
             ch2_y_displace: 0.0,
             ch2_z_displace: 1.0,
             ch2_rotate: 0.0,
-            ch2_hsb_attenuate: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
+            ch2_hsb_attenuate: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
             ch2_posterize: 16.0,
             ch2_kaleidoscope_amount: 0.0,
             ch2_kaleidoscope_slice: 0.0,
@@ -298,7 +310,12 @@ impl Default for LegacyBlock1 {
             fb1_y_displace: 0.0,
             fb1_z_displace: 1.0,
             fb1_rotate: 0.0,
-            fb1_shear_matrix: GlamVec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
+            fb1_shear_matrix: GlamVec4 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
             fb1_kaleidoscope_amount: 0.0,
             fb1_kaleidoscope_slice: 0.0,
             fb1_h_mirror: false,
@@ -308,9 +325,21 @@ impl Default for LegacyBlock1 {
             fb1_rotate_mode: 0,
             fb1_geo_overflow: 0,
 
-            fb1_hsb_offset: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            fb1_hsb_attenuate: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
-            fb1_hsb_powmap: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
+            fb1_hsb_offset: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            fb1_hsb_attenuate: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            fb1_hsb_powmap: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
             fb1_hue_shaper: 1.0,
             fb1_posterize: 16.0,
             fb1_posterize_invert: 1.0 / 16.0,
@@ -427,7 +456,11 @@ impl Default for LegacyBlock2 {
             block2_input_y_displace: 0.0,
             block2_input_z_displace: 1.0,
             block2_input_rotate: 0.0,
-            block2_input_hsb_attenuate: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
+            block2_input_hsb_attenuate: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
             block2_input_posterize: 16.0,
             block2_input_kaleidoscope_amount: 0.0,
             block2_input_kaleidoscope_slice: 0.0,
@@ -465,7 +498,12 @@ impl Default for LegacyBlock2 {
             fb2_y_displace: 0.0,
             fb2_z_displace: 1.0,
             fb2_rotate: 0.0,
-            fb2_shear_matrix: GlamVec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
+            fb2_shear_matrix: GlamVec4 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
             fb2_kaleidoscope_amount: 0.0,
             fb2_kaleidoscope_slice: 0.0,
             fb2_h_mirror: false,
@@ -475,9 +513,21 @@ impl Default for LegacyBlock2 {
             fb2_rotate_mode: 0,
             fb2_geo_overflow: 0,
 
-            fb2_hsb_offset: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            fb2_hsb_attenuate: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
-            fb2_hsb_powmap: GlamVec3 { x: 1.0, y: 1.0, z: 1.0 },
+            fb2_hsb_offset: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            fb2_hsb_attenuate: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            fb2_hsb_powmap: GlamVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
             fb2_hue_shaper: 1.0,
             fb2_posterize: 16.0,
             fb2_posterize_invert: 1.0 / 16.0,
@@ -598,7 +648,12 @@ impl Default for LegacyBlock3 {
             block1_y_displace: 0.0,
             block1_z_displace: 1.0,
             block1_rotate: 0.0,
-            block1_shear_matrix: GlamVec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
+            block1_shear_matrix: GlamVec4 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
             block1_kaleidoscope_amount: 0.0,
             block1_kaleidoscope_slice: 0.0,
             block1_h_mirror: false,
@@ -610,11 +665,31 @@ impl Default for LegacyBlock3 {
 
             block1_colorize_switch: false,
             block1_colorize_hsb_rgb: 0,
-            block1_colorize_band1: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block1_colorize_band2: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block1_colorize_band3: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block1_colorize_band4: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block1_colorize_band5: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
+            block1_colorize_band1: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block1_colorize_band2: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block1_colorize_band3: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block1_colorize_band4: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block1_colorize_band5: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
 
             block1_blur_amount: 0.0,
             block1_blur_radius: 1.0,
@@ -629,7 +704,12 @@ impl Default for LegacyBlock3 {
             block2_y_displace: 0.0,
             block2_z_displace: 1.0,
             block2_rotate: 0.0,
-            block2_shear_matrix: GlamVec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
+            block2_shear_matrix: GlamVec4 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
             block2_kaleidoscope_amount: 0.0,
             block2_kaleidoscope_slice: 0.0,
             block2_h_mirror: false,
@@ -641,11 +721,31 @@ impl Default for LegacyBlock3 {
 
             block2_colorize_switch: false,
             block2_colorize_hsb_rgb: 0,
-            block2_colorize_band1: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block2_colorize_band2: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block2_colorize_band3: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block2_colorize_band4: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            block2_colorize_band5: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
+            block2_colorize_band1: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block2_colorize_band2: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block2_colorize_band3: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block2_colorize_band4: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            block2_colorize_band5: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
 
             block2_blur_amount: 0.0,
             block2_blur_radius: 1.0,
@@ -658,12 +758,28 @@ impl Default for LegacyBlock3 {
 
             matrix_mix_type: 0,
             matrix_mix_overflow: 0,
-            bg_rgb_into_fg_red: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            bg_rgb_into_fg_green: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            bg_rgb_into_fg_blue: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
+            bg_rgb_into_fg_red: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            bg_rgb_into_fg_green: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            bg_rgb_into_fg_blue: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
 
             final_mix_amount: 0.0,
-            final_key_value: GlamVec3 { x: 0.0, y: 0.0, z: 0.0 },
+            final_key_value: GlamVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             final_key_threshold: 1.0,
             final_key_soft: 0.0,
             final_mix_type: 0,
@@ -826,7 +942,11 @@ impl From<LegacyBlock2> for Block2Params {
         let (fb2_kr, fb2_kg, fb2_kb) = if let Some(v) = l.fb2_key_value {
             (v.x, v.y, v.z)
         } else {
-            (l.fb2_key_value_red, l.fb2_key_value_green, l.fb2_key_value_blue)
+            (
+                l.fb2_key_value_red,
+                l.fb2_key_value_green,
+                l.fb2_key_value_blue,
+            )
         };
         Self {
             block2_input_x_displace: l.block2_input_x_displace,
