@@ -355,6 +355,7 @@ impl<P: EffectPlugin> App<P> {
                 state.custom_param_bases[i] = d.default;
                 state.custom_params[i] = d.default;
             }
+            state.registered_param_ids = descriptors.iter().map(|d| d.id.clone()).collect();
             state.param_osc_addresses = descriptors
                 .iter()
                 .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))

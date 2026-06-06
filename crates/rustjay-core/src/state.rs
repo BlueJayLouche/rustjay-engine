@@ -880,6 +880,10 @@ pub struct EngineState {
     /// `ModulationEngine::update()`. `get_param()` reads this without locking.
     pub modulation_offsets: HashMap<String, f32>,
 
+    /// Flat list of plugin-declared parameter ids; updated on plugin load/reload.
+    /// Used by the Modulation tab (M5.2) to populate the target picker.
+    pub registered_param_ids: Vec<String>,
+
     /// LFO bank state.
     ///
     /// **Deprecated shim** — kept for backward compatibility with apps that read
@@ -1158,6 +1162,7 @@ impl EngineState {
                 Arc::new(Mutex::new(eng))
             },
             modulation_offsets: HashMap::new(),
+            registered_param_ids: Vec::new(),
             lfo: LfoState::new(),
             link: LinkState::default(),
             link_command: LinkCommand::None,
@@ -1305,14 +1310,17 @@ impl EngineState {
         // Custom effect params
         let i = self.param_index(&resolved)?;
         let desc = self.param_descriptors.get(i)?;
-        let base = self.custom_param_bases.get(i).copied()?;
+        let routed = self.custom_params.get(i).copied()?;
         let range = desc.max - desc.min;
         let offset = self.modulation_offsets.get(&resolved).copied().unwrap_or(0.0);
         if offset != 0.0 {
-            Some((base + offset * range).clamp(desc.min, desc.max))
+            // Sum audio-routing value (in `custom_params`) + modulation offset.
+            // When audio routing is inactive, `routed == base`, so this reduces
+            // to the base + modulation path.
+            Some((routed + offset * range).clamp(desc.min, desc.max))
         } else {
-            // Fallback to pre-computed custom_params so audio routing remains visible
-            self.custom_params.get(i).copied()
+            // No modulation — return the audio-routed (or plain base) value.
+            Some(routed)
         }
     }
 
@@ -1370,6 +1378,78 @@ impl EngineState {
             .iter()
             .filter(|d| d.is_modulatable())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_descriptor(id: &str) -> ParameterDescriptor {
+        ParameterDescriptor::float(id, id, ParamCategory::Motion, 0.0, 1.0, 0.5, 1.0)
+    }
+
+    #[test]
+    fn get_param_returns_modulated_value() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.5];
+        state.modulation_offsets.insert("spin".to_string(), 0.1);
+
+        assert_eq!(state.get_param("spin"), Some(0.6));
+    }
+
+    #[test]
+    fn get_param_composes_audio_routing_and_modulation() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        // Audio routing pushed the value to 0.8
+        state.custom_params = vec![0.8];
+        state.modulation_offsets.insert("spin".to_string(), 0.1);
+
+        // 0.8 (routed) + 0.1 * 1.0 (range) = 0.9
+        assert!((state.get_param("spin").unwrap() - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn get_param_returns_routed_value_when_no_modulation() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.8];
+
+        assert_eq!(state.get_param("spin"), Some(0.8));
+    }
+
+    #[test]
+    fn get_param_clamps_to_descriptor_max() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.5];
+        state.modulation_offsets.insert("spin".to_string(), 0.6);
+
+        // 0.5 + 0.6 * 1.0 = 1.1 → clamped to 1.0
+        assert_eq!(state.get_param("spin"), Some(1.0));
+    }
+
+    #[test]
+    fn get_param_base_returns_unmodulated_value() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.8];
+        state.modulation_offsets.insert("spin".to_string(), 0.1);
+
+        assert_eq!(state.get_param_base("spin"), Some(0.5));
+    }
+
+    #[test]
+    fn registered_param_ids_empty_by_default() {
+        let state = EngineState::new();
+        assert!(state.registered_param_ids.is_empty());
     }
 }
 
