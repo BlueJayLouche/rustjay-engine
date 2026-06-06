@@ -17,14 +17,18 @@ pub mod gles2;
 pub use app::projection::ProjectionSubsystem;
 
 // Re-export the most useful types so app authors only need `rustjay_engine::*`
-pub use rustjay_core::{EffectPlugin, EngineState, HsbParams, GuiTab, InputCommand, OutputCommand, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, ParameterDescriptor, ParamCategory, ParamType, RenderHookCtx};
-#[cfg(feature = "link")]
-pub use rustjay_core::{LinkState, LinkCommand};
 #[cfg(feature = "prodj")]
-pub use rustjay_core::{ProDjState, CdjDevice, ProDjCommand};
-pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+pub use rustjay_core::{CdjDevice, ProDjCommand, ProDjState};
+pub use rustjay_core::{
+    EffectPlugin, EngineState, GuiTab, HsbParams, InputCommand, MeshDescriptor, MeshTopology,
+    OutputCommand, ParamCategory, ParamType, ParameterDescriptor, Pass, PassInput, RenderGraph,
+    RenderHookCtx,
+};
+#[cfg(feature = "link")]
+pub use rustjay_core::{LinkCommand, LinkState};
 #[cfg(feature = "egui")]
 pub use rustjay_gui::AnyEguiTab;
+pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
 pub use rustjay_render::PreviousFrameTexture;
 
 use anyhow::Result;
@@ -85,10 +89,7 @@ fn apply_cli_args(state: &mut EngineState) {
 ///     rustjay_engine::run_with_tabs(MyEffect, vec![Box::new(MyTab)])
 /// }
 /// ```
-pub fn run_with_tabs<P: EffectPlugin>(
-    plugin: P,
-    tabs: Vec<Box<dyn AnyGuiTab>>,
-) -> Result<()> {
+pub fn run_with_tabs<P: EffectPlugin>(plugin: P, tabs: Vec<Box<dyn AnyGuiTab>>) -> Result<()> {
     let mut state = EngineState::new();
     apply_cli_args(&mut state);
     let shared_state = Arc::new(Mutex::new(state));
@@ -214,7 +215,9 @@ pub fn run_with_projection_egui_tabs<P: EffectPlugin, F: FnOnce(&mut ProjectionS
 /// Run using a Wayland-backed GLES 2.0 context (compositor required).
 #[cfg(feature = "gles2")]
 pub fn run_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
-where P: EffectPlugin, G: gles2::Gles2Effect,
+where
+    P: EffectPlugin,
+    G: gles2::Gles2Effect,
 {
     gles2::run_gles2_headless_with_tabs(plugin, gles2)
 }
@@ -225,33 +228,33 @@ where P: EffectPlugin, G: gles2::Gles2Effect,
 /// DRM device (user in `video` group, or run under a seat session).
 #[cfg(feature = "drm-gles2")]
 pub fn run_drm_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
-where P: EffectPlugin, G: gles2::Gles2Effect,
+where
+    P: EffectPlugin,
+    G: gles2::Gles2Effect,
 {
     gles2::run_drm_gles2_headless_with_tabs(plugin, gles2)
 }
 
 /// Prelude module for convenient imports.
 pub mod prelude {
-    pub use rustjay_core::{
-        EffectPlugin, EngineState, Vertex, HsbParams,
-        LfoState, LfoBank, Lfo, Waveform, LfoTarget, beat_division_to_hz, BEAT_DIVISIONS, BEAT_DIVISION_NAMES,
-        InputCommand, OutputCommand, AudioCommand, MidiCommand, OscCommand, PresetCommand, WebCommand,
-        LinkCommand, ProDjCommand,
-        GuiTab, InputType,
-        RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology,
-        ParameterDescriptor, ParamCategory, ParamType, RenderHookCtx,
-    };
-    pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
-    #[cfg(feature = "egui")]
-    pub use rustjay_gui::{AnyEguiTab, param_slider, param_slider_int};
-    pub use rustjay_render::{WgpuEngine, Texture, InputTexture, PreviousFrameTexture};
-    pub use crate::{run, run_with_tabs, run_headless, run_headless_with_tabs};
+    #[cfg(feature = "gles2")]
+    pub use crate::gles2::{run_gles2_headless_with_tabs, Gles2Effect};
+    #[cfg(feature = "drm-gles2")]
+    pub use crate::run_drm_gles2_headless_with_tabs;
     #[cfg(feature = "egui")]
     pub use crate::run_with_egui_tabs;
     #[cfg(all(feature = "projection", feature = "egui"))]
     pub use crate::run_with_projection_egui_tabs;
-    #[cfg(feature = "gles2")]
-    pub use crate::gles2::{Gles2Effect, run_gles2_headless_with_tabs};
-    #[cfg(feature = "drm-gles2")]
-    pub use crate::run_drm_gles2_headless_with_tabs;
+    pub use crate::{run, run_headless, run_headless_with_tabs, run_with_tabs};
+    pub use rustjay_core::{
+        beat_division_to_hz, AudioCommand, EffectPlugin, EngineState, GuiTab, HsbParams,
+        InputCommand, InputType, Lfo, LfoBank, LfoState, LfoTarget, LinkCommand, MeshDescriptor,
+        MeshTopology, MidiCommand, OscCommand, OutputCommand, ParamCategory, ParamType,
+        ParameterDescriptor, Pass, PassInput, PresetCommand, ProDjCommand, RenderGraph,
+        RenderHookCtx, Vertex, Waveform, WebCommand, BEAT_DIVISIONS, BEAT_DIVISION_NAMES,
+    };
+    #[cfg(feature = "egui")]
+    pub use rustjay_gui::{param_slider, param_slider_int, AnyEguiTab};
+    pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+    pub use rustjay_render::{InputTexture, PreviousFrameTexture, Texture, WgpuEngine};
 }

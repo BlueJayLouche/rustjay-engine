@@ -48,7 +48,9 @@ impl ProjectorOutput {
             .formats
             .iter()
             .copied()
-            .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
+            .find(|f| {
+                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            })
             .or_else(|| caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available for projector"))?;
 
@@ -171,16 +173,30 @@ impl ProjectorOutput {
             return;
         }
 
-        let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let views = &self.views;
 
         for (i, stage) in self.stages.iter_mut().enumerate() {
             let is_first = i == 0;
             let is_last = i == n - 1;
 
-            let in_view: &wgpu::TextureView = if is_first { input_view } else { &views[(i - 1) % views.len()] };
-            let in_tex: Option<&wgpu::Texture> = if is_first { input_texture } else { Some(&self.textures[(i - 1) % views.len()]) };
-            let out_view: &wgpu::TextureView = if is_last { &surface_view } else { &views[i % views.len()] };
+            let in_view: &wgpu::TextureView = if is_first {
+                input_view
+            } else {
+                &views[(i - 1) % views.len()]
+            };
+            let in_tex: Option<&wgpu::Texture> = if is_first {
+                input_texture
+            } else {
+                Some(&self.textures[(i - 1) % views.len()])
+            };
+            let out_view: &wgpu::TextureView = if is_last {
+                &surface_view
+            } else {
+                &views[i % views.len()]
+            };
 
             let mut ctx = rustjay_core::RenderCtx {
                 device,
@@ -189,7 +205,13 @@ impl ProjectorOutput {
                 vertex_buffer: &self._dummy_vb,
             };
 
-            stage.render(&mut ctx, in_view, in_tex, out_view, [self.width, self.height]);
+            stage.render(
+                &mut ctx,
+                in_view,
+                in_tex,
+                out_view,
+                [self.width, self.height],
+            );
         }
 
         queue.submit(std::iter::once(encoder.finish()));
@@ -202,15 +224,26 @@ impl ProjectorOutput {
     }
 }
 
-fn create_intermediate(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
+fn create_intermediate(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Projector Intermediate"),
-        size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
 }
@@ -229,7 +262,8 @@ pub struct ProjectionSubsystem {
     device: Option<Arc<wgpu::Device>>,
 }
 
-type StageFactory = Box<dyn FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>> + Send>;
+type StageFactory =
+    Box<dyn FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>> + Send>;
 
 struct PendingProjector {
     window_attrs: winit::window::WindowAttributes,
@@ -262,7 +296,9 @@ impl ProjectionSubsystem {
     pub fn add_projector(
         &mut self,
         window_attrs: winit::window::WindowAttributes,
-        stage_factory: impl FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>> + Send + 'static,
+        stage_factory: impl FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>>
+            + Send
+            + 'static,
     ) {
         self.pending.push(PendingProjector {
             window_attrs,
@@ -307,7 +343,10 @@ impl ProjectionSubsystem {
                 .formats
                 .iter()
                 .copied()
-                .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
+                .find(|f| {
+                    *f == wgpu::TextureFormat::Bgra8UnormSrgb
+                        || *f == wgpu::TextureFormat::Bgra8Unorm
+                })
                 .or_else(|| caps.formats.first().copied())
                 .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
             drop(temp_surface);
@@ -315,11 +354,7 @@ impl ProjectionSubsystem {
             let stages = (pending.stage_factory)(&device, format);
             match ProjectorOutput::new(window, instance, &device, adapter, stages) {
                 Ok(proj) => {
-                    log::info!(
-                        "Projector window created ({}x{})",
-                        proj.width,
-                        proj.height
-                    );
+                    log::info!("Projector window created ({}x{})", proj.width, proj.height);
                     self.projectors.push(proj);
                 }
                 Err(e) => {
@@ -370,7 +405,9 @@ impl ProjectionSubsystem {
         stages: Vec<Box<dyn ProjectionStage>>,
     ) {
         let Some(device) = self.device.as_ref() else {
-            log::error!("add_headless_output called before create_pending — no GPU device available");
+            log::error!(
+                "add_headless_output called before create_pending — no GPU device available"
+            );
             return;
         };
         self.headless_outputs

@@ -1,20 +1,20 @@
 //! Dual-window application handler implementing winit's ApplicationHandler.
 
+use crate::config::{AppSettings, ConfigManager};
 use rustjay_audio::AudioAnalyzer;
-use rustjay_control::{MidiManager, MidiState};
 #[cfg(feature = "mtc")]
 use rustjay_control::MtcReceiver;
 use rustjay_control::OscServer;
-use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
+use rustjay_control::{MidiManager, MidiState};
+use rustjay_control::{WebCommand as WebServerCommand, WebConfig, WebServer};
+use rustjay_core::EffectPlugin;
 use rustjay_core::EngineState;
-use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
 #[cfg(feature = "egui")]
 use rustjay_gui::{AnyEguiTab, EguiControlGui, EguiRenderer};
+use rustjay_gui::{AnyGuiTab, ControlGui, ImGuiRenderer};
 use rustjay_io::InputManager;
-use rustjay_presets::{PresetBank, presets_dir_for};
+use rustjay_presets::{presets_dir_for, PresetBank};
 use rustjay_render::WgpuEngine;
-use crate::config::{AppSettings, ConfigManager};
-use rustjay_core::EffectPlugin;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -42,7 +42,10 @@ pub(crate) fn run_app<P: EffectPlugin>(
 }
 
 #[cfg(feature = "projection")]
-pub(crate) fn run_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection::ProjectionSubsystem)>(
+pub(crate) fn run_app_with_projection<
+    P: EffectPlugin,
+    F: FnOnce(&mut projection::ProjectionSubsystem),
+>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyGuiTab>>,
@@ -126,7 +129,10 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
 }
 
 #[cfg(all(feature = "egui", feature = "projection"))]
-pub(crate) fn run_egui_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection::ProjectionSubsystem)>(
+pub(crate) fn run_egui_app_with_projection<
+    P: EffectPlugin,
+    F: FnOnce(&mut projection::ProjectionSubsystem),
+>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyEguiTab>>,
@@ -170,7 +176,9 @@ pub(crate) fn run_gles2_app<P: EffectPlugin>(
     let mut app = App::new(shared_state, plugin, false, vec![], true);
     app.gles2_effect = Some(gles2);
     #[cfg(feature = "drm-gles2")]
-    { app.drm_gles2 = drm_mode; }
+    {
+        app.drm_gles2 = drm_mode;
+    }
 
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -344,7 +352,8 @@ impl<P: EffectPlugin> App<P> {
                 state.custom_param_bases[i] = d.default;
                 state.custom_params[i] = d.default;
             }
-            state.param_osc_addresses = descriptors.iter()
+            state.param_osc_addresses = descriptors
+                .iter()
                 .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
                 .collect();
         }
@@ -369,9 +378,8 @@ impl<P: EffectPlugin> App<P> {
                 let bank = PresetBank::new(presets_dir);
                 {
                     let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
-                    let slot_names: [Option<String>; 8] = std::array::from_fn(|i| {
-                        bank.get_slot_name(i + 1).map(|s| s.to_string())
-                    });
+                    let slot_names: [Option<String>; 8] =
+                        std::array::from_fn(|i| bank.get_slot_name(i + 1).map(|s| s.to_string()));
                     let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.preset_names = names;
                     state.preset_quick_slot_names = slot_names;
@@ -386,7 +394,12 @@ impl<P: EffectPlugin> App<P> {
 
         let (web_host, web_port, web_lan_trust, web_token) = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.web_host.clone(), state.web_port, state.web_lan_trust, state.web_token.clone())
+            (
+                state.web_host.clone(),
+                state.web_port,
+                state.web_lan_trust,
+                state.web_token.clone(),
+            )
         };
         let (web_server, web_command_tx) = {
             let config = WebConfig {
@@ -395,7 +408,11 @@ impl<P: EffectPlugin> App<P> {
                 app_name: app_name.clone(),
                 enabled: false,
                 lan_trust: web_lan_trust,
-                token: if web_token.is_empty() { None } else { Some(web_token) },
+                token: if web_token.is_empty() {
+                    None
+                } else {
+                    Some(web_token)
+                },
             };
             let (mut server, cmd_tx) = WebServer::new(config);
             server.register_default_parameters();
@@ -481,7 +498,8 @@ impl<P: EffectPlugin> App<P> {
             projection_subsystem: {
                 let sub = Arc::new(std::sync::Mutex::new(projection::ProjectionSubsystem::new()));
                 if let Ok(mut state) = shared_state_for_projection.lock() {
-                    state.projection_handle = Some(Arc::clone(&sub) as Arc<std::sync::Mutex<dyn std::any::Any + Send>>);
+                    state.projection_handle =
+                        Some(Arc::clone(&sub) as Arc<std::sync::Mutex<dyn std::any::Any + Send>>);
                 }
                 Some(sub)
             },

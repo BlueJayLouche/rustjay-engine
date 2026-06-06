@@ -26,7 +26,7 @@ pub fn set_proxy(proxy: EventLoopProxy<WindowAction>) {
 }
 
 pub fn setup_macos_app_delegate() {
-    use objc::runtime::{Class, Object, Sel, BOOL, NO, YES, class_addMethod};
+    use objc::runtime::{class_addMethod, Class, Object, Sel, BOOL, NO, YES};
     use objc::{sel, sel_impl};
     use std::mem;
     use std::os::raw::c_char;

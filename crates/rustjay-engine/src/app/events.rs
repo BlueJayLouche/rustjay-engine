@@ -1,4 +1,5 @@
 use super::{App, WindowAction};
+use rustjay_core::EffectPlugin;
 use rustjay_gui::{ControlGui, ImGuiRenderer};
 #[cfg(feature = "egui")]
 use rustjay_gui::{EguiControlGui, EguiRenderer};
@@ -8,7 +9,6 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowAttributes;
-use rustjay_core::EffectPlugin;
 
 /// Minimum interval between control-window UI rebuilds (~30 Hz). Independent of
 /// the output `target_fps`: the output keeps rendering at full rate, only the
@@ -94,12 +94,18 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
 
             self.wgpu_instance = Some(instance);
         }
-        let Some(instance) = self.wgpu_instance.as_ref() else { return };
+        let Some(instance) = self.wgpu_instance.as_ref() else {
+            return;
+        };
 
         if self.output_window.is_none() {
             let (output_width, output_height, fullscreen) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.output_width, state.output_height, state.output_fullscreen)
+                (
+                    state.output_width,
+                    state.output_height,
+                    state.output_fullscreen,
+                )
             };
 
             let window_attrs = WindowAttributes::default()
@@ -130,10 +136,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
                 let (wayland_display, wayland_surface) = {
-                    let dh = event_loop.display_handle().ok()
-                        .map(|h| h.as_raw());
-                    let wh = window.window_handle().ok()
-                        .map(|h| h.as_raw());
+                    let dh = event_loop.display_handle().ok().map(|h| h.as_raw());
+                    let wh = window.window_handle().ok().map(|h| h.as_raw());
                     match (dh, wh) {
                         (Some(RawDisplayHandle::Wayland(d)), Some(RawWindowHandle::Wayland(w))) => {
                             (d.display.as_ptr(), w.surface.as_ptr())
@@ -196,9 +200,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     self.wgpu_queue = Some(Arc::clone(&engine.queue));
                     self.output_engine = Some(engine);
 
-                    if let (Some(ref mut manager), Some(device), Some(queue)) =
-                        (self.input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
-                    {
+                    if let (Some(ref mut manager), Some(device), Some(queue)) = (
+                        self.input_manager.as_mut(),
+                        self.wgpu_device.as_ref(),
+                        self.wgpu_queue.as_ref(),
+                    ) {
                         manager.initialize(device, queue);
                         log::info!("InputManager initialized with GPU resources");
 
@@ -207,7 +213,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         // the first engine.render() can block for many seconds, so
                         // queuing a two-step RefreshDevices → StartWebcam sequence would
                         // never dispatch before the user's process is killed.
-                        let idx = self.shared_state
+                        let idx = self
+                            .shared_state
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .startup_webcam_device
@@ -216,19 +223,26 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                             #[cfg(feature = "webcam")]
                             match manager.start_webcam(idx, 1280, 720, 30) {
                                 Ok(()) => {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    let mut state =
+                                        self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                     state.input.is_active = true;
                                     state.input.input_type = rustjay_core::InputType::Webcam;
                                     state.input.source_name = format!("Webcam {}", idx);
                                     state.input.device_index = Some(idx);
                                 }
-                                Err(e) => log::error!("startup_webcam_device: failed to start webcam {}: {:?}", idx, e),
+                                Err(e) => log::error!(
+                                    "startup_webcam_device: failed to start webcam {}: {:?}",
+                                    idx,
+                                    e
+                                ),
                             }
                         }
                     }
-                    if let (Some(ref mut manager), Some(device), Some(queue)) =
-                        (self.second_input_manager.as_mut(), self.wgpu_device.as_ref(), self.wgpu_queue.as_ref())
-                    {
+                    if let (Some(ref mut manager), Some(device), Some(queue)) = (
+                        self.second_input_manager.as_mut(),
+                        self.wgpu_device.as_ref(),
+                        self.wgpu_queue.as_ref(),
+                    ) {
                         manager.initialize(device, queue);
                         log::info!("Second InputManager initialized with GPU resources");
                     }
@@ -286,14 +300,22 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 if self.use_egui {
                     #[cfg(feature = "egui")]
                     match pollster::block_on(EguiRenderer::new(
-                        instance, adapter, device, queue, window, scale_factor,
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        window,
+                        scale_factor,
                     )) {
                         Ok(mut renderer) => {
                             match EguiControlGui::new(Arc::clone(&self.shared_state)) {
                                 Ok(mut gui) => {
-                                    let input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                    let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                    let output_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let input_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
+                                    let second_input_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
+                                    let output_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
                                     gui.set_input_preview_texture(input_preview_id);
                                     gui.set_second_input_preview_texture(second_input_preview_id);
                                     gui.set_output_preview_texture(output_preview_id);
@@ -304,26 +326,40 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
 
                                     self.egui_control_gui = Some(gui);
                                     {
-                                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                        state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        state.input_command =
+                                            rustjay_core::InputCommand::RefreshDevices;
                                     }
                                     self.egui_renderer = Some(renderer);
                                 }
-                                Err(err) => log::error!("Failed to create egui control GUI: {}", err),
+                                Err(err) => {
+                                    log::error!("Failed to create egui control GUI: {}", err)
+                                }
                             }
                         }
                         Err(err) => log::error!("Failed to create egui renderer: {}", err),
                     }
                 } else {
                     match pollster::block_on(ImGuiRenderer::new(
-                        instance, adapter, device, queue, window, scale_factor,
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        window,
+                        scale_factor,
                     )) {
                         Ok(mut renderer) => {
                             match ControlGui::new(Arc::clone(&self.shared_state)) {
                                 Ok(mut gui) => {
-                                    let input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                    let second_input_preview_id = renderer.create_preview_texture(1920, 1080);
-                                    let output_preview_id = renderer.create_preview_texture(1920, 1080);
+                                    let input_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
+                                    let second_input_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
+                                    let output_preview_id =
+                                        renderer.create_preview_texture(1920, 1080);
                                     gui.set_input_preview_texture(input_preview_id);
                                     gui.set_second_input_preview_texture(second_input_preview_id);
                                     gui.set_output_preview_texture(output_preview_id);
@@ -334,8 +370,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
 
                                     self.control_gui = Some(gui);
                                     {
-                                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                        state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        state.input_command =
+                                            rustjay_core::InputCommand::RefreshDevices;
                                     }
                                     self.imgui_renderer = Some(renderer);
                                 }
@@ -394,7 +434,9 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         output_window.set_cursor_visible(false);
                     }
                     WindowEvent::KeyboardInput { ref event, .. } => {
-                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
+                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) =
+                            &event.logical_key
+                        {
                             self.shift_pressed = event.state == winit::event::ElementState::Pressed;
                         }
                         if event.state == winit::event::ElementState::Pressed {
@@ -412,26 +454,28 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                         self.trigger_tap_tempo();
                                     }
                                 }
-                                winit::keyboard::Key::Named(named)
-                                    if self.shift_pressed => {
-                                        let slot = match named {
-                                            winit::keyboard::NamedKey::F1 => Some(1),
-                                            winit::keyboard::NamedKey::F2 => Some(2),
-                                            winit::keyboard::NamedKey::F3 => Some(3),
-                                            winit::keyboard::NamedKey::F4 => Some(4),
-                                            winit::keyboard::NamedKey::F5 => Some(5),
-                                            winit::keyboard::NamedKey::F6 => Some(6),
-                                            winit::keyboard::NamedKey::F7 => Some(7),
-                                            winit::keyboard::NamedKey::F8 => Some(8),
-                                            _ => None,
-                                        };
-                                        if let Some(s) = slot {
-                                            if let Some(ref mut bank) = self.preset_bank {
-                                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                                let _ = bank.apply_slot(s, &mut state);
-                                            }
+                                winit::keyboard::Key::Named(named) if self.shift_pressed => {
+                                    let slot = match named {
+                                        winit::keyboard::NamedKey::F1 => Some(1),
+                                        winit::keyboard::NamedKey::F2 => Some(2),
+                                        winit::keyboard::NamedKey::F3 => Some(3),
+                                        winit::keyboard::NamedKey::F4 => Some(4),
+                                        winit::keyboard::NamedKey::F5 => Some(5),
+                                        winit::keyboard::NamedKey::F6 => Some(6),
+                                        winit::keyboard::NamedKey::F7 => Some(7),
+                                        winit::keyboard::NamedKey::F8 => Some(8),
+                                        _ => None,
+                                    };
+                                    if let Some(s) = slot {
+                                        if let Some(ref mut bank) = self.preset_bank {
+                                            let mut state = self
+                                                .shared_state
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner());
+                                            let _ = bank.apply_slot(s, &mut state);
                                         }
                                     }
+                                }
                                 _ => {}
                             }
                         }
@@ -439,12 +483,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     WindowEvent::Occluded(occluded) => {
                         self.output_occluded = occluded;
                     }
-                    WindowEvent::Resized(size)
-                        if !self.output_occluded => {
-                            if let Some(ref mut engine) = self.output_engine {
-                                engine.resize(size.width, size.height);
-                            }
+                    WindowEvent::Resized(size) if !self.output_occluded => {
+                        if let Some(ref mut engine) = self.output_engine {
+                            engine.resize(size.width, size.height);
                         }
+                    }
                     _ => {}
                 }
                 return;
@@ -456,11 +499,17 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 if self.use_egui {
                     #[cfg(feature = "egui")]
                     if let Some(ref mut renderer) = self.egui_renderer {
-                        let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
+                        let winit_event = winit::event::Event::WindowEvent {
+                            window_id,
+                            event: event.clone(),
+                        };
                         renderer.handle_event(&winit_event);
                     }
                 } else if let Some(ref mut renderer) = self.imgui_renderer {
-                    let winit_event = winit::event::Event::WindowEvent { window_id, event: event.clone() };
+                    let winit_event = winit::event::Event::WindowEvent {
+                        window_id,
+                        event: event.clone(),
+                    };
                     renderer.handle_event(&winit_event);
                 }
                 // A control-window event arrived — rebuild the UI next frame
@@ -477,7 +526,9 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         log::info!("Control window hidden");
                     }
                     WindowEvent::KeyboardInput { ref event, .. } => {
-                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
+                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) =
+                            &event.logical_key
+                        {
                             self.shift_pressed = event.state == winit::event::ElementState::Pressed;
                         }
                         if event.state == winit::event::ElementState::Pressed {
@@ -496,36 +547,37 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                             }
                         }
                     }
-                    WindowEvent::Resized(size)
-                        if self.control_visible => {
-                            if self.use_egui {
-                                #[cfg(feature = "egui")]
-                                if let Some(ref mut renderer) = self.egui_renderer {
-                                    renderer.resize(size.width, size.height);
-                                }
-                            } else if let Some(ref mut renderer) = self.imgui_renderer {
+                    WindowEvent::Resized(size) if self.control_visible => {
+                        if self.use_egui {
+                            #[cfg(feature = "egui")]
+                            if let Some(ref mut renderer) = self.egui_renderer {
                                 renderer.resize(size.width, size.height);
                             }
+                        } else if let Some(ref mut renderer) = self.imgui_renderer {
+                            renderer.resize(size.width, size.height);
                         }
+                    }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. }
-                        if self.control_visible => {
-                            if self.use_egui {
-                                #[cfg(feature = "egui")]
-                                if let Some(ref mut renderer) = self.egui_renderer {
-                                    renderer.set_scale_factor(scale_factor);
-                                    let window_size = control_window.inner_size();
-                                    let logical_width = window_size.width as f32 / scale_factor as f32;
-                                    let logical_height = window_size.height as f32 / scale_factor as f32;
-                                    renderer.set_display_size(logical_width, logical_height);
-                                }
-                            } else if let Some(ref mut renderer) = self.imgui_renderer {
+                        if self.control_visible =>
+                    {
+                        if self.use_egui {
+                            #[cfg(feature = "egui")]
+                            if let Some(ref mut renderer) = self.egui_renderer {
                                 renderer.set_scale_factor(scale_factor);
                                 let window_size = control_window.inner_size();
                                 let logical_width = window_size.width as f32 / scale_factor as f32;
-                                let logical_height = window_size.height as f32 / scale_factor as f32;
+                                let logical_height =
+                                    window_size.height as f32 / scale_factor as f32;
                                 renderer.set_display_size(logical_width, logical_height);
                             }
+                        } else if let Some(ref mut renderer) = self.imgui_renderer {
+                            renderer.set_scale_factor(scale_factor);
+                            let window_size = control_window.inner_size();
+                            let logical_width = window_size.width as f32 / scale_factor as f32;
+                            let logical_height = window_size.height as f32 / scale_factor as f32;
+                            renderer.set_display_size(logical_width, logical_height);
                         }
+                    }
                     _ => {}
                 }
             }
@@ -578,9 +630,17 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         let gles2_rendered = if self.gles2_effect.is_some() && self.gles2_state.is_some() {
             let gl = self.gles2_state.as_ref().unwrap().gl.clone();
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let keep_running = match self.gles2_effect.as_mut().unwrap().render_frame(&gl, &state) {
-                Ok(v)  => v,
-                Err(e) => { log::error!("GLES 2.0 render error: {e}"); true }
+            let keep_running = match self
+                .gles2_effect
+                .as_mut()
+                .unwrap()
+                .render_frame(&gl, &state)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("GLES 2.0 render error: {e}");
+                    true
+                }
             };
             drop(state);
             if keep_running {
@@ -591,7 +651,9 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 event_loop.exit();
             }
             true
-        } else { false };
+        } else {
+            false
+        };
         #[cfg(not(feature = "gles2"))]
         let gles2_rendered = false;
 
@@ -622,16 +684,18 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         // Throttle the control-window UI rebuild/render to ~30 Hz (or sooner if a
         // window event arrived since the last render), independent of the output
         // `target_fps`. The output `engine.render(...)` above is unaffected.
-        let ui_due = self.ui_needs_redraw
-            || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
+        let ui_due =
+            self.ui_needs_redraw || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
         if self.control_visible && ui_due {
             self.last_ui_render = now;
             self.ui_needs_redraw = false;
             if self.use_egui {
                 #[cfg(feature = "egui")]
-                if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) =
-                    (self.control_window.as_ref(), self.egui_renderer.as_mut(), self.egui_control_gui.as_mut())
-                {
+                if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) = (
+                    self.control_window.as_ref(),
+                    self.egui_renderer.as_mut(),
+                    self.egui_control_gui.as_mut(),
+                ) {
                     let scale_factor = window.scale_factor();
                     let window_size = window.inner_size();
                     let logical_width = window_size.width as f32 / scale_factor as f32;
@@ -643,9 +707,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         log::error!("egui render error: {}", err);
                     }
                 }
-            } else if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) =
-                (self.control_window.as_ref(), self.imgui_renderer.as_mut(), self.control_gui.as_mut())
-            {
+            } else if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) = (
+                self.control_window.as_ref(),
+                self.imgui_renderer.as_mut(),
+                self.control_gui.as_mut(),
+            ) {
                 let scale_factor = window.scale_factor();
                 let window_size = window.inner_size();
                 let logical_width = window_size.width as f32 / scale_factor as f32;
@@ -659,7 +725,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        let target_fps = self.shared_state.lock().unwrap_or_else(|e| e.into_inner()).target_fps;
+        let target_fps = self
+            .shared_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .target_fps;
         let target_frame_dur = std::time::Duration::from_micros(1_000_000 / target_fps as u64);
         let elapsed = now.elapsed();
         if elapsed < target_frame_dur {
