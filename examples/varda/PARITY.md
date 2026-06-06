@@ -30,7 +30,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(mixer `ModulationEngine` wired to crossfader, channel opacity, and deck opacity; `DeckCompositor` reads mixer modulation via shared `Arc<Mutex<ModulationEngine>>`)* |
 | 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT + `AudioBand` `ModulationSource`; demo assigns audio band to crossfader)* |
 | 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | done *(engine `ModulationSource::ADSR` / `StepSequencer`; demo assigns both to crossfader)* |
-| 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | todo *(engine gap)* |
+| 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | done *(engine `ModulationEngine::assign_mod_on_mod` supports 4-deep; Varda ModulationTab UI wired)* |
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
 | 23 | **Control** — MIDI (learn/unlearn, APC-mini profile, auto-map) | T05.1 | done *(engine `rustjay-control/midi`)* |
 | 24 | **Control** — OSC | T05.2 | done *(engine `rustjay-control/osc`)* |
@@ -47,8 +47,8 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
 | 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.varda/scene.json` = `MixerState` + sequencer; `.varda/stage.json` = `VardaStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.varda/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
 | 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
-| 38 | **Notifications** — toast overlay | T06.x | todo |
-| 39 | **Sysmon** — CPU/GPU/mem readout for status bar | (adhoc) | todo |
+| 38 | **Notifications** — toast overlay | T06.x | done *(generic `EngineState::notifications` queue + `rustjay-gui` toast overlay; Varda posts toasts from deck creation and mod-on-mod assignment)* |
+| 39 | **Sysmon** — CPU/mem readout for status bar | (adhoc) | done *(`sysinfo` feature; `VardaRootPlugin::prepare()` refreshes every 60 frames; CPU % and MEM used/total GB in top bar)* |
 | 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(`VardaDomeStage` wired into projector chain; StageTab shows dome config when surface source = Domemaster; drives `DomeSync` → projector)* 🧪 |
 | 41 | **Surface overlap zones** — manual and auto-detect for edge blending | T13.2 | done *(`compute_auto_edge_blend` available for multi-output overlap detection; manual edge blend controls wired)* 🧪 |
 
@@ -67,11 +67,11 @@ do not block core VJ functionality.
 | 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | ✅ **Done** — Phase 16. `FfmpegDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` uses `ffmpeg-next` 8.1; `FfmpegSource` in Varda exposes 6 playback params. Hardware decode and background decode thread are future optimizations. |
 | 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | ✅ **Done** — Phase 15. `HapSource` in `examples/varda/src/sources/hap_source.rs` wraps `hap-wgpu::HapPlayer`. YCoCg→RGB shader and background decode thread are future optimizations. |
 | 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | Wrap `ffmpeg` subprocess for protocol ingest (same architecture Varda uses today). |
-| 21 | **Mod-on-mod chaining** (4-deep) | Low | Engine `rustjay-core` gap — `ModulationEngine` needs depth-budgeted recursion in `get_modulation()`. |
+| 21 | **Mod-on-mod chaining** (4-deep) | Low | ✅ **Done** — engine supports 4-deep evaluation; Varda `ModulationTab` provides target/param/modulator/amount UI calling `assign_mod_on_mod()`. |
 | 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Extend `rustjay-io/output` with ffmpeg muxer subprocesses, or build per-output recorder. |
 | 34 | **Recording** (H.264/H.265/AV1/ProRes/HAP Q) | Low | Greenfield over `rustjay-io/output` + ffmpeg. Varda's existing recorder is a 5-LOC stub. |
-| 38 | **Notifications toast overlay** | No | Pure UI — add an egui overlay layer in Varda, or reuse engine notification system if one is added. |
-| 39 | **Sysmon readout** (CPU/GPU/mem) | No | Adhoc — poll `sysinfo` or `nvml-wrapper` in a background thread, display in a status bar. |
+| 38 | **Notifications toast overlay** | No | ✅ **Done** — generic `EngineState::notify()` + `rustjay-gui` toast overlay; Varda posts success/error/info toasts. |
+| 39 | **Sysmon readout** (CPU/GPU/mem) | No | ✅ **Done** — `sysinfo` polled in `VardaRootPlugin::prepare()` every 60 frames; CPU % and memory used/total GB rendered in top bar. GPU readout not yet implemented. |
 | — | **Calibration cards** for warp | No | Generate checkerboard / grid texture in StageTab for projector alignment. |
 | — | **Per-projector render graphs** (different content per output) | No | Requires decoupling `WgpuEngine` from singleton output surface — major engine refactor. |
 | — | **Per-projector warp/dome/edge-blend overrides** | No | Data model exists (`VardaProjector.use_global_*` flags); needs per-projector sync objects + stage factory plumbing. |
