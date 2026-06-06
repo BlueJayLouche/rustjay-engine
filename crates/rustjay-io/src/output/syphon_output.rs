@@ -46,9 +46,20 @@ impl SyphonOutput {
         self.height = height;
 
         if let (Some(ref device), Some(ref queue)) = (&self.wgpu_device, &self.wgpu_queue) {
-            match syphon_wgpu::SyphonWgpuOutput::new(&self.server_name, device, queue, width, height) {
+            match syphon_wgpu::SyphonWgpuOutput::new(
+                &self.server_name,
+                device,
+                queue,
+                width,
+                height,
+            ) {
                 Ok(output) => {
-                    log::info!("Syphon server '{}' created ({}x{})", self.server_name, width, height);
+                    log::info!(
+                        "Syphon server '{}' created ({}x{})",
+                        self.server_name,
+                        width,
+                        height
+                    );
                     self.inner = Some(output);
                     self.initialized = true;
                     Ok(())

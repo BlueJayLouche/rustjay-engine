@@ -63,7 +63,9 @@ fn scan_video_devices(required: Flags) -> Vec<V4l2DeviceInfo> {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("video") && n["video".len()..].chars().all(|c| c.is_ascii_digit()))
+                .map(|n| {
+                    n.starts_with("video") && n["video".len()..].chars().all(|c| c.is_ascii_digit())
+                })
                 .unwrap_or(false)
         })
         .collect();

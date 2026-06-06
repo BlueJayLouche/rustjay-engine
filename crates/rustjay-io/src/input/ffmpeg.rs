@@ -15,11 +15,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
+use ffmpeg_next as ffmpeg;
 
 /// One decoded RGBA frame.
 #[derive(Debug, Clone)]
@@ -65,9 +65,9 @@ pub struct FfmpegDecoder {
     playing: bool,
     speed: f32,
     loop_mode: LoopMode,
-    position: f64,        // seconds
-    in_point: f64,        // seconds
-    out_point: f64,       // seconds
+    position: f64,  // seconds
+    in_point: f64,  // seconds
+    out_point: f64, // seconds
     ping_pong_dir: PingPongDir,
 
     // Active decode context (lazy-initialized)
@@ -230,25 +230,45 @@ impl FfmpegDecoder {
     // ------------------------------------------------------------------
 
     /// Video width in pixels.
-    pub fn width(&self) -> u32 { self.width }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
     /// Video height in pixels.
-    pub fn height(&self) -> u32 { self.height }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
     /// Frame rate in frames per second.
-    pub fn fps(&self) -> f32 { self.fps }
+    pub fn fps(&self) -> f32 {
+        self.fps
+    }
     /// Total duration in seconds.
-    pub fn duration(&self) -> f64 { self.duration }
+    pub fn duration(&self) -> f64 {
+        self.duration
+    }
     /// Estimated total frame count.
-    pub fn frame_count(&self) -> u32 { self.frame_count }
+    pub fn frame_count(&self) -> u32 {
+        self.frame_count
+    }
     /// Whether playback is currently active.
-    pub fn is_playing(&self) -> bool { self.playing }
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
     /// Current playback position in seconds.
-    pub fn position(&self) -> f64 { self.position }
+    pub fn position(&self) -> f64 {
+        self.position
+    }
     /// Current loop mode.
-    pub fn loop_mode(&self) -> LoopMode { self.loop_mode }
+    pub fn loop_mode(&self) -> LoopMode {
+        self.loop_mode
+    }
     /// In point of the playback region in seconds.
-    pub fn in_point(&self) -> f64 { self.in_point }
+    pub fn in_point(&self) -> f64 {
+        self.in_point
+    }
     /// Out point of the playback region in seconds.
-    pub fn out_point(&self) -> f64 { self.out_point }
+    pub fn out_point(&self) -> f64 {
+        self.out_point
+    }
 
     // ------------------------------------------------------------------
     // Decode
@@ -261,7 +281,11 @@ impl FfmpegDecoder {
     pub fn decode_frame(&mut self) -> Option<VideoFrame> {
         if self.context.is_none() {
             if let Err(e) = self.init_context() {
-                log::warn!("FfmpegDecoder failed to init context for {}: {}", self.path.display(), e);
+                log::warn!(
+                    "FfmpegDecoder failed to init context for {}: {}",
+                    self.path.display(),
+                    e
+                );
                 return self.last_frame.clone();
             }
         }
@@ -353,13 +377,18 @@ impl FfmpegDecoder {
     }
 
     fn decode_at_position(&mut self, position_secs: f64) -> anyhow::Result<VideoFrame> {
-        let ctx = self.context.as_mut().ok_or_else(|| anyhow::anyhow!("Decoder not initialized"))?;
+        let ctx = self
+            .context
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Decoder not initialized"))?;
 
         // Convert target position to stream timestamp units.
         let target_ts = (position_secs / ctx.time_base) as i64;
 
         // Seek if we're before the last decoded frame or far ahead.
-        let needs_seek = self.last_pts < 0 || target_ts < self.last_pts || target_ts > self.last_pts + (1.0 / ctx.time_base) as i64 * 2;
+        let needs_seek = self.last_pts < 0
+            || target_ts < self.last_pts
+            || target_ts > self.last_pts + (1.0 / ctx.time_base) as i64 * 2;
 
         if needs_seek {
             // Seek to a keyframe at or before the target.

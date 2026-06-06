@@ -67,10 +67,7 @@ fn init_internal() -> Result<(), String> {
     for path_str in SEARCH_DIRS {
         let path = Path::new(path_str);
         if path.join(NDI_DLL).exists() {
-            let wide_path: Vec<u16> = path_str
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_path: Vec<u16> = path_str.encode_utf16().chain(std::iter::once(0)).collect();
 
             unsafe {
                 if SetDllDirectoryW(windows::core::PCWSTR(wide_path.as_ptr())).is_ok() {

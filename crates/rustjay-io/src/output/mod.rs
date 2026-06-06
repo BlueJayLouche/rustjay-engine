@@ -28,11 +28,15 @@ pub enum OutputCommand {
     #[cfg(target_os = "macos")]
     StopSyphon,
     #[cfg(target_os = "windows")]
-    StartSpout { sender_name: String },
+    StartSpout {
+        sender_name: String,
+    },
     #[cfg(target_os = "windows")]
     StopSpout,
     #[cfg(target_os = "linux")]
-    StartV4l2 { device_path: String },
+    StartV4l2 {
+        device_path: String,
+    },
     #[cfg(target_os = "linux")]
     StopV4l2,
     ResizeOutput,
@@ -40,10 +44,10 @@ pub enum OutputCommand {
 
 #[cfg(feature = "ndi")]
 pub mod ndi_output;
-#[cfg(target_os = "macos")]
-pub mod syphon_output;
 #[cfg(target_os = "windows")]
 pub mod spout_output;
+#[cfg(target_os = "macos")]
+pub mod syphon_output;
 #[cfg(target_os = "linux")]
 pub mod v4l2_output;
 
@@ -96,7 +100,12 @@ impl ReadbackPool {
         let slot = &mut self.slots[prev];
 
         match slot {
-            SlotState::Pending { buffer, width, height, ready } => {
+            SlotState::Pending {
+                buffer,
+                width,
+                height,
+                ready,
+            } => {
                 // Non-blocking check — is the map complete?
                 match ready.try_recv() {
                     Ok(true) => {
@@ -107,14 +116,19 @@ impl ReadbackPool {
                         // Return the unmapped buffer to the slot cache so submit_copy
                         // can reuse it next frame without a GPU allocator call.
                         let buf_size = (w as u64) * 4 * (h as u64);
-                        let buf = match std::mem::replace(slot, SlotState::Available { cached: None }) {
-                            SlotState::Pending { buffer, .. } => buffer,
-                            _ => {
-                                log::error!("[ReadbackPool] Expected Pending slot but found another state");
-                                return None;
-                            }
+                        let buf =
+                            match std::mem::replace(slot, SlotState::Available { cached: None }) {
+                                SlotState::Pending { buffer, .. } => buffer,
+                                _ => {
+                                    log::error!(
+                                    "[ReadbackPool] Expected Pending slot but found another state"
+                                );
+                                    return None;
+                                }
+                            };
+                        *slot = SlotState::Available {
+                            cached: Some((buf, buf_size)),
                         };
-                        *slot = SlotState::Available { cached: Some((buf, buf_size)) };
                         Some((data, w, h))
                     }
                     _ => None,
@@ -126,19 +140,17 @@ impl ReadbackPool {
 
     /// Submit a non-blocking copy from `texture` into the current staging
     /// slot and request an async map.
-    fn submit_copy(
-        &mut self,
-        texture: &wgpu::Texture,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
+    fn submit_copy(&mut self, texture: &wgpu::Texture, device: &wgpu::Device, queue: &wgpu::Queue) {
         let width = texture.width();
         let height = texture.height();
         let bytes_per_row = width * 4;
         let buffer_size = (bytes_per_row * height) as u64;
 
         // Extract any cached buffer from this slot (discarding Pending if GPU is too slow).
-        let cached = match std::mem::replace(&mut self.slots[self.current], SlotState::Available { cached: None }) {
+        let cached = match std::mem::replace(
+            &mut self.slots[self.current],
+            SlotState::Available { cached: None },
+        ) {
             SlotState::Available { cached } => cached,
             SlotState::Pending { .. } => {
                 log::debug!("Readback slot {} overwritten (GPU too slow)", self.current);
@@ -289,7 +301,9 @@ impl OutputManager {
         _height: u32,
         _include_alpha: bool,
     ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
+        Err(anyhow::anyhow!(
+            "NDI support not compiled. Enable the 'ndi' feature."
+        ))
     }
 
     /// Stop NDI output
@@ -328,10 +342,7 @@ impl OutputManager {
 
     /// Start Spout output (Windows only)
     #[cfg(target_os = "windows")]
-    pub fn start_spout(
-        &mut self,
-        sender_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn start_spout(&mut self, sender_name: &str) -> anyhow::Result<()> {
         let spout = spout_output::SpoutOutput::new(sender_name)?;
         self.spout_output = Some(spout);
         log::info!("Spout output started: {}", sender_name);
@@ -409,7 +420,12 @@ impl OutputManager {
     /// GPU-path outputs (Syphon, Spout) receive the texture directly.
     /// CPU-path outputs (NDI, V4L2) use the async readback pool — the
     /// render thread never blocks waiting for a GPU→CPU copy.
-    pub fn submit_frame(&mut self, texture: &wgpu::Texture, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn submit_frame(
+        &mut self,
+        texture: &wgpu::Texture,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
         self.frame_count += 1;
 
         // CPU-path outputs: harvest previous frame's readback, then submit

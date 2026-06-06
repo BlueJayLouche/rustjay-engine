@@ -26,14 +26,15 @@ use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, INVALID_HANDLE_VALUE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
-    D3D11_CREATE_DEVICE_FLAG, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_FLAG,
+    D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use windows::Win32::System::Memory::{
-    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MapViewOfFile, PAGE_READWRITE, UnmapViewOfFile,
+    CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
 };
 
 // ---------------------------------------------------------------------------
@@ -107,9 +108,8 @@ impl SpoutOutput {
 
             let d3d_device = d3d_device
                 .ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no device"))?;
-            let d3d_context = d3d_context.ok_or_else(|| {
-                anyhow::anyhow!("[Spout] D3D11CreateDevice returned no context")
-            })?;
+            let d3d_context = d3d_context
+                .ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no context"))?;
 
             log::info!("[Spout] D3D11 device created for sender '{}'", name);
 
@@ -129,7 +129,10 @@ impl SpoutOutput {
             // the sender name immediately. This eliminates the race condition where
             // receivers don't see the sender until the first frame.
             output.create_shared_texture(64, 64)?;
-            log::info!("[Spout] Sender '{}' registered early (placeholder 64x64)", name);
+            log::info!(
+                "[Spout] Sender '{}' registered early (placeholder 64x64)",
+                name
+            );
 
             Ok(output)
         }
@@ -139,12 +142,7 @@ impl SpoutOutput {
     ///
     /// Called by `OutputManager` with bytes harvested from the async
     /// `ReadbackPool` — no synchronous GPU readback happens here.
-    pub fn submit_bytes(
-        &mut self,
-        bytes: &[u8],
-        width: u32,
-        height: u32,
-    ) -> anyhow::Result<()> {
+    pub fn submit_bytes(&mut self, bytes: &[u8], width: u32, height: u32) -> anyhow::Result<()> {
         // (Re-)create the shared D3D11 texture when dimensions change
         if self.shared_texture.is_none() || self.width != width || self.height != height {
             self.shared_texture = None;
@@ -152,8 +150,9 @@ impl SpoutOutput {
         }
 
         unsafe {
-            let d3d_tex = self.shared_texture.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("[Spout] submit_bytes called before texture creation"))?;
+            let d3d_tex = self.shared_texture.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("[Spout] submit_bytes called before texture creation")
+            })?;
             let keyed_mutex: IDXGIKeyedMutex = d3d_tex.cast()?;
 
             keyed_mutex.AcquireSync(0, 0xFFFFFFFF)?;
@@ -197,7 +196,8 @@ impl SpoutOutput {
             };
 
             let mut tex = None;
-            self.d3d_device.CreateTexture2D(&desc, None, Some(&mut tex))?;
+            self.d3d_device
+                .CreateTexture2D(&desc, None, Some(&mut tex))?;
             let tex: ID3D11Texture2D =
                 tex.ok_or_else(|| anyhow::anyhow!("[Spout] CreateTexture2D returned None"))?;
 
@@ -211,7 +211,11 @@ impl SpoutOutput {
                 Ok(keyed_mutex) => {
                     keyed_mutex.AcquireSync(0, 0xFFFFFFFF)?;
                     keyed_mutex.ReleaseSync(0)?;
-                    log::debug!("[Spout] Keyed mutex initialized for texture {}x{}", width, height);
+                    log::debug!(
+                        "[Spout] Keyed mutex initialized for texture {}x{}",
+                        width,
+                        height
+                    );
                 }
                 Err(e) => {
                     log::warn!("[Spout] Failed to cast to keyed mutex: {:?}", e);
@@ -281,7 +285,11 @@ impl SpoutOutput {
             let mut mbi = MEMORY_BASIC_INFORMATION::default();
             let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
             let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
-            let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+            let mapped_size: usize = if queried == mbi_size {
+                mbi.RegionSize
+            } else {
+                0
+            };
             let expected_size = SPOUT_MAX_SENDERS * SPOUT_MAX_NAME_LEN;
             if mapped_size < expected_size {
                 UnmapViewOfFile(view).ok();
@@ -310,9 +318,7 @@ impl SpoutOutput {
                     }
                     len += 1;
                 }
-                if len == name_bytes.len()
-                    && std::slice::from_raw_parts(slot, len) == name_bytes
-                {
+                if len == name_bytes.len() && std::slice::from_raw_parts(slot, len) == name_bytes {
                     already_present = true;
                     break;
                 }
@@ -326,7 +332,7 @@ impl SpoutOutput {
                         let copy_len = name_bytes.len().min(SPOUT_MAX_NAME_LEN - 1);
                         std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), slot, copy_len);
                         *slot.add(copy_len) = 0; // null-terminate
-                        // Mark the next slot as end-of-list if within bounds
+                                                 // Mark the next slot as end-of-list if within bounds
                         if i + 1 < SPOUT_MAX_SENDERS {
                             *base.add((i + 1) * SPOUT_MAX_NAME_LEN) = 0;
                         }
@@ -423,7 +429,11 @@ impl SpoutOutput {
             let mut mbi = MEMORY_BASIC_INFORMATION::default();
             let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
             let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
-            let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+            let mapped_size: usize = if queried == mbi_size {
+                mbi.RegionSize
+            } else {
+                0
+            };
             let expected_size = SPOUT_MAX_SENDERS * SPOUT_MAX_NAME_LEN;
             if mapped_size < expected_size {
                 UnmapViewOfFile(view).ok();
@@ -473,11 +483,7 @@ impl SpoutOutput {
                 }
                 // Zero the vacated last slot (or the removed slot if it was last)
                 let last = if total_count > 0 { total_count - 1 } else { 0 };
-                std::ptr::write_bytes(
-                    base.add(last * SPOUT_MAX_NAME_LEN),
-                    0,
-                    SPOUT_MAX_NAME_LEN,
-                );
+                std::ptr::write_bytes(base.add(last * SPOUT_MAX_NAME_LEN), 0, SPOUT_MAX_NAME_LEN);
                 log::info!(
                     "[Spout] Unregistered '{}' from SpoutSenderNames",
                     self.sender_name
@@ -488,7 +494,6 @@ impl SpoutOutput {
         }
         CloseHandle(hmap).ok();
     }
-
 }
 
 impl Drop for SpoutOutput {

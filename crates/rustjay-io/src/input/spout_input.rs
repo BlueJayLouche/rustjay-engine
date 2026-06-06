@@ -23,15 +23,15 @@ use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_FLAG, D3D11_MAP_READ,
-    D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
-    ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_FLAG, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIKeyedMutex;
 use windows::Win32::System::Memory::{
-    FILE_MAP_READ, MEMORY_BASIC_INFORMATION, MapViewOfFile, OpenFileMappingA, UnmapViewOfFile,
-    VirtualQuery,
+    MapViewOfFile, OpenFileMappingA, UnmapViewOfFile, VirtualQuery, FILE_MAP_READ,
+    MEMORY_BASIC_INFORMATION,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,20 +122,26 @@ impl SpoutDiscovery {
                 if slot_offset + SPOUT_MAX_NAME_LEN > mapped_size {
                     break;
                 }
-                let slot =
-                    std::slice::from_raw_parts(base.add(slot_offset), SPOUT_MAX_NAME_LEN);
+                let slot = std::slice::from_raw_parts(base.add(slot_offset), SPOUT_MAX_NAME_LEN);
                 // First byte == 0 means end of list
                 if slot[0] == 0 {
                     break;
                 }
-                let null_pos = slot.iter().position(|&b| b == 0).unwrap_or(SPOUT_MAX_NAME_LEN);
+                let null_pos = slot
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(SPOUT_MAX_NAME_LEN);
                 let name = String::from_utf8_lossy(&slot[..null_pos]).into_owned();
                 if name.is_empty() {
                     continue;
                 }
                 let (width, height) = read_sender_dimensions(&name);
                 log::debug!("[Spout]   sender[{}]: '{}' {}x{}", i, name, width, height);
-                senders.push(SpoutSenderInfo { name, width, height });
+                senders.push(SpoutSenderInfo {
+                    name,
+                    width,
+                    height,
+                });
             }
 
             log::debug!(
@@ -171,7 +177,11 @@ unsafe fn read_sender_dimensions(name: &str) -> (u32, u32) {
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
         let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
         let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
-        let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+        let mapped_size: usize = if queried == mbi_size {
+            mbi.RegionSize
+        } else {
+            0
+        };
         if mapped_size >= std::mem::size_of::<SharedTextureInfo>() {
             let info = &*(view.Value as *const SharedTextureInfo);
             let dims = (info.width, info.height);
@@ -217,7 +227,11 @@ unsafe fn read_sender_info(name: &str) -> anyhow::Result<(HANDLE, u32, u32)> {
     let mut mbi = MEMORY_BASIC_INFORMATION::default();
     let mbi_size = std::mem::size_of::<MEMORY_BASIC_INFORMATION>();
     let queried = VirtualQuery(Some(view.Value), &mut mbi, mbi_size);
-    let mapped_size: usize = if queried == mbi_size { mbi.RegionSize } else { 0 };
+    let mapped_size: usize = if queried == mbi_size {
+        mbi.RegionSize
+    } else {
+        0
+    };
     if mapped_size < std::mem::size_of::<SharedTextureInfo>() {
         UnmapViewOfFile(view).ok();
         CloseHandle(hmap).ok();
@@ -287,10 +301,17 @@ impl SpoutInputReceiver {
                 None,
                 Some(&mut context),
             )
-            .map_err(|e| anyhow::anyhow!("[Spout] SpoutInputReceiver: D3D11CreateDevice failed: {}", e))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "[Spout] SpoutInputReceiver: D3D11CreateDevice failed: {}",
+                    e
+                )
+            })?;
 
-            let d3d_device = device.ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no device"))?;
-            let d3d_context = context.ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no context"))?;
+            let d3d_device = device
+                .ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no device"))?;
+            let d3d_context = context
+                .ok_or_else(|| anyhow::anyhow!("[Spout] D3D11CreateDevice returned no context"))?;
 
             log::info!("[Spout] SpoutInputReceiver: D3D11 device created");
             Ok(Self {
@@ -354,9 +375,8 @@ impl SpoutInputReceiver {
             let mut shared_tex: Option<ID3D11Texture2D> = None;
             self.d3d_device
                 .OpenSharedResource(handle, &mut shared_tex)?;
-            let shared_tex = shared_tex.ok_or_else(|| {
-                anyhow::anyhow!("[Spout] OpenSharedResource returned None")
-            })?;
+            let shared_tex = shared_tex
+                .ok_or_else(|| anyhow::anyhow!("[Spout] OpenSharedResource returned None"))?;
 
             // Create a CPU-readable staging texture of the same size
             let staging_desc = D3D11_TEXTURE2D_DESC {
@@ -412,9 +432,12 @@ impl SpoutInputReceiver {
                 log::error!("[Spout Input] Failed to open texture: {}", e);
                 return false;
             }
-            log::info!("[Spout Input] Opened {}x{} texture from '{}'",
-                self.resolution.0, self.resolution.1,
-                self.sender_name.as_deref().unwrap_or("?"));
+            log::info!(
+                "[Spout Input] Opened {}x{} texture from '{}'",
+                self.resolution.0,
+                self.resolution.1,
+                self.sender_name.as_deref().unwrap_or("?")
+            );
         }
 
         let (w, h) = self.resolution;
@@ -434,20 +457,18 @@ impl SpoutInputReceiver {
 
             // Copy under keyed mutex if present (sender uses key=0)
             let use_keyed_mutex = match shared_tex.cast::<IDXGIKeyedMutex>() {
-                Ok(keyed_mutex) => {
-                    match keyed_mutex.AcquireSync(0, 1000) {
-                        Ok(_) => {
-                            self.d3d_context.CopyResource(staging_tex, shared_tex);
-                            self.d3d_context.Flush();
-                            keyed_mutex.ReleaseSync(0).ok();
-                            true
-                        }
-                        Err(e) => {
-                            log::warn!("[Spout Input] AcquireSync failed: {:?}", e);
-                            false
-                        }
+                Ok(keyed_mutex) => match keyed_mutex.AcquireSync(0, 1000) {
+                    Ok(_) => {
+                        self.d3d_context.CopyResource(staging_tex, shared_tex);
+                        self.d3d_context.Flush();
+                        keyed_mutex.ReleaseSync(0).ok();
+                        true
                     }
-                }
+                    Err(e) => {
+                        log::warn!("[Spout Input] AcquireSync failed: {:?}", e);
+                        false
+                    }
+                },
                 Err(_) => false,
             };
 
@@ -458,7 +479,10 @@ impl SpoutInputReceiver {
 
             // Map staging texture and read BGRA bytes
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            if let Err(e) = self.d3d_context.Map(staging_tex, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) {
+            if let Err(e) =
+                self.d3d_context
+                    .Map(staging_tex, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            {
                 log::error!("[Spout Input] Map failed: {:?}", e);
                 return false;
             }
@@ -484,11 +508,7 @@ impl SpoutInputReceiver {
             let dst_row_bytes = (w * 4) as usize;
 
             if row_pitch == dst_row_bytes {
-                std::ptr::copy_nonoverlapping(
-                    src,
-                    self.pixel_buffer.as_mut_ptr(),
-                    needed
-                );
+                std::ptr::copy_nonoverlapping(src, self.pixel_buffer.as_mut_ptr(), needed);
             } else {
                 for row in 0..h as usize {
                     let src_row =

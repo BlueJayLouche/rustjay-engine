@@ -6,9 +6,14 @@
 // are consumed yet; keep them available without warning.
 #![allow(dead_code)]
 
-use grafton_ndi::{NDI, Finder, FinderOptions, Receiver, ReceiverOptions, ReceiverColorFormat, ReceiverBandwidth};
-use crossbeam::channel::{self, Sender, Receiver as CrossbeamReceiver};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use crossbeam::channel::{self, Receiver as CrossbeamReceiver, Sender};
+use grafton_ndi::{
+    Finder, FinderOptions, Receiver, ReceiverBandwidth, ReceiverColorFormat, ReceiverOptions, NDI,
+};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -67,9 +72,7 @@ impl NdiReceiver {
             return Err(anyhow::anyhow!("NDI receiver already started"));
         }
 
-        let ndi = NDI::new().map_err(|e| {
-            anyhow::anyhow!("Failed to initialize NDI: {:?}", e)
-        })?;
+        let ndi = NDI::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {:?}", e))?;
 
         let source_name = self.source_name.clone();
         let frame_tx = self.frame_tx.clone();
@@ -80,9 +83,7 @@ impl NdiReceiver {
 
         let thread_handle = thread::spawn(move || {
             // Find the source
-            let options = FinderOptions::builder()
-                .show_local_sources(true)
-                .build();
+            let options = FinderOptions::builder().show_local_sources(true).build();
 
             let finder = match Finder::new(&ndi, &options) {
                 Ok(f) => f,
@@ -95,7 +96,7 @@ impl NdiReceiver {
             // Wait for the specific source
             let mut found_source = None;
             let search_start = Instant::now();
-            
+
             while running.load(Ordering::SeqCst) && search_start.elapsed().as_secs() < 10 {
                 match finder.find_sources(Duration::from_millis(100)) {
                     Ok(sources) => {
@@ -110,18 +111,21 @@ impl NdiReceiver {
                         log::debug!("[NDI] Error finding sources: {:?}", e);
                     }
                 }
-                
+
                 if found_source.is_some() {
                     break;
                 }
-                
+
                 thread::sleep(Duration::from_millis(50));
             }
 
             let source = match found_source {
                 Some(s) => s,
                 None => {
-                    log::error!("[NDI] Could not find source '{}' within timeout", source_name);
+                    log::error!(
+                        "[NDI] Could not find source '{}' within timeout",
+                        source_name
+                    );
                     source_lost.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -167,10 +171,17 @@ impl NdiReceiver {
                     Ok(None) => {}
                     Err(e) => {
                         consecutive_errors += 1;
-                        log::error!("[NDI] Frame capture error ({}/50): {:?}", consecutive_errors, e);
+                        log::error!(
+                            "[NDI] Frame capture error ({}/50): {:?}",
+                            consecutive_errors,
+                            e
+                        );
                         // After ~5s of continuous errors, declare the source lost
                         if consecutive_errors >= 50 {
-                            log::warn!("[NDI] Source '{}' considered lost after repeated errors", source_name);
+                            log::warn!(
+                                "[NDI] Source '{}' considered lost after repeated errors",
+                                source_name
+                            );
                             source_lost.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -187,7 +198,7 @@ impl NdiReceiver {
     /// Stop receiving frames
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
-        
+
         if let Some(handle) = self.receiver_thread.take() {
             let _ = handle.join();
         }
@@ -269,9 +280,7 @@ pub fn list_ndi_sources(timeout_ms: u32) -> Vec<String> {
         }
     };
 
-    let options = FinderOptions::builder()
-        .show_local_sources(true)
-        .build();
+    let options = FinderOptions::builder().show_local_sources(true).build();
 
     let finder = match Finder::new(&ndi, &options) {
         Ok(f) => f,
