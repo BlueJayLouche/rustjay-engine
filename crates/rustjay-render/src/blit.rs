@@ -126,18 +126,20 @@ impl BlitPipeline {
         });
 
         // Initialise with identity (enabled=0 → passthrough).
-        let identity = HsbUniform { values: [0.0, 1.0, 1.0, 0.0] };
+        let identity = HsbUniform {
+            values: [0.0, 1.0, 1.0, 0.0],
+        };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("Blit HSB Uniform"),
+            label: Some("Blit HSB Uniform"),
             contents: bytemuck::bytes_of(&identity),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("Blit HSB BG"),
-            layout:  &uniform_bgl,
+            label: Some("Blit HSB BG"),
+            layout: &uniform_bgl,
             entries: &[wgpu::BindGroupEntry {
-                binding:  0,
+                binding: 0,
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
@@ -200,7 +202,14 @@ impl BlitPipeline {
             cache: None,
         });
 
-        Self { pipeline, pipeline_bgra8unorm, bind_group_layout, sampler, uniform_buffer, uniform_bind_group }
+        Self {
+            pipeline,
+            pipeline_bgra8unorm,
+            bind_group_layout,
+            sampler,
+            uniform_buffer,
+            uniform_bind_group,
+        }
     }
 
     /// Write HSB values to the uniform buffer.  Call once per frame before `blit()`.
@@ -216,12 +225,21 @@ impl BlitPipeline {
     ) {
         let active = enabled && (hue_shift != 0.0 || saturation != 1.0 || brightness != 1.0);
         let u = HsbUniform {
-            values: [hue_shift, saturation, brightness, if active { 1.0 } else { 0.0 }],
+            values: [
+                hue_shift,
+                saturation,
+                brightness,
+                if active { 1.0 } else { 0.0 },
+            ],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&u));
     }
 
-    pub fn create_bind_group(&self, device: &wgpu::Device, source_view: &wgpu::TextureView) -> wgpu::BindGroup {
+    pub fn create_bind_group(
+        &self,
+        device: &wgpu::Device,
+        source_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blit Bind Group"),
             layout: &self.bind_group_layout,

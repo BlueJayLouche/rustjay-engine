@@ -3,8 +3,8 @@
 //! Helper types for wgpu texture management.
 //! All textures use BGRA8 format for native macOS compatibility.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 static TEXTURE_GEN: AtomicU64 = AtomicU64::new(1);
 
@@ -42,7 +42,14 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
+        Self {
+            texture,
+            view,
+            sampler,
+            width,
+            height,
+            generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// Create a texture from raw BGRA pixel data.
@@ -54,7 +61,11 @@ impl Texture {
         label: &str,
         data: &[u8],
     ) -> Self {
-        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -92,12 +103,28 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
+        Self {
+            texture,
+            view,
+            sampler,
+            width,
+            height,
+            generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// Create a render-target texture with the given dimensions.
-    pub fn create_render_target(device: &wgpu::Device, width: u32, height: u32, label: &str) -> Self {
-        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    pub fn create_render_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        label: &str,
+    ) -> Self {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -121,7 +148,14 @@ impl Texture {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        Self { texture, view, sampler, width, height, generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed) }
+        Self {
+            texture,
+            view,
+            sampler,
+            width,
+            height,
+            generation: TEXTURE_GEN.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// Update the texture contents from raw pixel data.
@@ -130,7 +164,10 @@ impl Texture {
         if data.len() != expected {
             log::warn!(
                 "Texture update data size mismatch: got {} bytes, expected {} for {}x{}",
-                data.len(), expected, self.width, self.height
+                data.len(),
+                expected,
+                self.width,
+                self.height
             );
             return;
         }
@@ -147,7 +184,11 @@ impl Texture {
                 bytes_per_row: Some(self.width * 4),
                 rows_per_image: Some(self.height),
             },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -212,7 +253,10 @@ impl InputTexture {
         if data.len() != expected {
             log::warn!(
                 "InputTexture update data size mismatch: got {} bytes, expected {} for {}x{}",
-                data.len(), expected, width, height
+                data.len(),
+                expected,
+                width,
+                height
             );
             return;
         }
@@ -231,7 +275,12 @@ impl InputTexture {
     pub fn swap_texture(&mut self, source: wgpu::Texture) {
         let width = source.width();
         let height = source.height();
-        self.texture = Some(Texture::from_wgpu_texture(source, &self.device, width, height));
+        self.texture = Some(Texture::from_wgpu_texture(
+            source,
+            &self.device,
+            width,
+            height,
+        ));
         self.has_data = true;
         self.texture_generation = TEXTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
@@ -242,9 +291,11 @@ impl InputTexture {
         let height = source.height();
         self.ensure_size(width, height);
         if let Some(ref dest) = self.texture {
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Input Texture Copy"),
-            });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Input Texture Copy"),
+                });
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: source,
@@ -258,7 +309,11 @@ impl InputTexture {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
             );
             self.queue.submit(std::iter::once(encoder.finish()));
             self.has_data = true;
@@ -300,13 +355,15 @@ impl InputTexture {
 
     /// Return the texture view to bind in shaders.
     pub fn binding_view(&self) -> Option<&wgpu::TextureView> {
-        self.ext_view.as_ref()
+        self.ext_view
+            .as_ref()
             .or_else(|| self.texture.as_ref().map(|t| &t.view))
     }
 
     /// Return the sampler to bind in shaders.
     pub fn binding_sampler(&self) -> Option<&wgpu::Sampler> {
-        self.ext_sampler.as_ref()
+        self.ext_sampler
+            .as_ref()
             .or_else(|| self.texture.as_ref().map(|t| &t.sampler))
     }
 
@@ -370,7 +427,11 @@ impl PreviousFrameTexture {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 }

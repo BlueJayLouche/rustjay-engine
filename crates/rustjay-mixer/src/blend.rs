@@ -93,8 +93,8 @@ impl BlendMode {
     pub fn all() -> &'static [BlendMode] {
         use BlendMode::*;
         &[
-            Normal, Add, Subtract, Multiply, Screen, Overlay, SoftLight, HardLight,
-            ColorDodge, ColorBurn, Difference, Exclusion, Darken, Lighten, LinearBurn,
+            Normal, Add, Subtract, Multiply, Screen, Overlay, SoftLight, HardLight, ColorDodge,
+            ColorBurn, Difference, Exclusion, Darken, Lighten, LinearBurn,
         ]
     }
 

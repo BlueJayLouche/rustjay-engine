@@ -182,8 +182,10 @@ mod tests {
 
     fn mixer_ab() -> Mixer {
         let mut m = Mixer::new();
-        m.add_channel(Channel::new("a", "A", Box::new(Stub))).unwrap();
-        m.add_channel(Channel::new("b", "B", Box::new(Stub))).unwrap();
+        m.add_channel(Channel::new("a", "A", Box::new(Stub)))
+            .unwrap();
+        m.add_channel(Channel::new("b", "B", Box::new(Stub)))
+            .unwrap();
         m
     }
 
@@ -251,10 +253,23 @@ mod tests {
     #[test]
     fn round_trip_modulation_state() {
         let m = mixer_ab();
-        let lfo = m.modulation.lock().unwrap().add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
-        m.modulation.lock().unwrap().assign("crossfader", &lfo, 0.5, None);
-        m.modulation.lock().unwrap().assign("ch_a_opacity", &lfo, 0.25, None);
-        m.modulation.lock().unwrap().assign("ch_b_opacity", &lfo, 0.25, None);
+        let lfo = m
+            .modulation
+            .lock()
+            .unwrap()
+            .add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
+        m.modulation
+            .lock()
+            .unwrap()
+            .assign("crossfader", &lfo, 0.5, None);
+        m.modulation
+            .lock()
+            .unwrap()
+            .assign("ch_a_opacity", &lfo, 0.25, None);
+        m.modulation
+            .lock()
+            .unwrap()
+            .assign("ch_b_opacity", &lfo, 0.25, None);
 
         let json = m.serialize_state().to_json().unwrap();
 
@@ -264,9 +279,21 @@ mod tests {
         restored.apply_state(&state);
 
         assert_eq!(restored.modulation.lock().unwrap().source_count(), 1);
-        assert!(restored.modulation.lock().unwrap().has_modulation("crossfader"));
-        assert!(restored.modulation.lock().unwrap().has_modulation("ch_a_opacity"));
-        assert!(restored.modulation.lock().unwrap().has_modulation("ch_b_opacity"));
+        assert!(restored
+            .modulation
+            .lock()
+            .unwrap()
+            .has_modulation("crossfader"));
+        assert!(restored
+            .modulation
+            .lock()
+            .unwrap()
+            .has_modulation("ch_a_opacity"));
+        assert!(restored
+            .modulation
+            .lock()
+            .unwrap()
+            .has_modulation("ch_b_opacity"));
     }
 
     #[test]

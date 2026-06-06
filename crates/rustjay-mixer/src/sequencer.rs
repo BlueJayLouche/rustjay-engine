@@ -139,12 +139,7 @@ impl SequencerState {
     /// `crossfader` is the current mixer crossfader value. `bpm` is the
     /// effective BPM from the engine (used to convert beat durations to
     /// seconds). Returns `Some(value)` when the crossfader should be updated.
-    pub fn tick(
-        &mut self,
-        crossfader: f32,
-        dt: f32,
-        bpm: Option<f32>,
-    ) -> Option<f32> {
+    pub fn tick(&mut self, crossfader: f32, dt: f32, bpm: Option<f32>) -> Option<f32> {
         if !self.playing || self.steps.is_empty() {
             return None;
         }
