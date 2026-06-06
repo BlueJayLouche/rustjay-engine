@@ -20,23 +20,23 @@ pub fn apply_professional_theme(ctx: &Context) {
     let mut style = Style::default();
 
     // ── Palette (mirrors the web --css variables) ────────────────────────────
-    let bg          = Color32::from_rgb(0x07, 0x09, 0x0b); // --bg
-    let surface     = Color32::from_rgb(0x0c, 0x10, 0x14); // --surface
-    let surface_2   = Color32::from_rgb(0x11, 0x16, 0x1c); // --surface-2
-    let hair        = Color32::from_rgba_premultiplied(15, 15, 16, 16);  // ~rgba(255,255,255,0.06)
-    let hair_2      = Color32::from_rgba_premultiplied(30, 30, 32, 32);  // ~rgba(255,255,255,0.12)
-    let hair_3      = Color32::from_rgba_premultiplied(56, 56, 60, 56);  // ~rgba(255,255,255,0.22)
+    let bg = Color32::from_rgb(0x07, 0x09, 0x0b); // --bg
+    let surface = Color32::from_rgb(0x0c, 0x10, 0x14); // --surface
+    let surface_2 = Color32::from_rgb(0x11, 0x16, 0x1c); // --surface-2
+    let hair = Color32::from_rgba_premultiplied(15, 15, 16, 16); // ~rgba(255,255,255,0.06)
+    let hair_2 = Color32::from_rgba_premultiplied(30, 30, 32, 32); // ~rgba(255,255,255,0.12)
+    let hair_3 = Color32::from_rgba_premultiplied(56, 56, 60, 56); // ~rgba(255,255,255,0.22)
 
-    let ink         = Color32::from_rgb(0xe8, 0xeb, 0xee); // --ink
-    let ink_2       = Color32::from_rgb(0xaa, 0xb1, 0xb9); // --ink-2
-    let _ink_3      = Color32::from_rgb(0x6a, 0x72, 0x80); // --ink-3
-    let _ink_4      = Color32::from_rgb(0x3a, 0x40, 0x48); // --ink-4
+    let ink = Color32::from_rgb(0xe8, 0xeb, 0xee); // --ink
+    let ink_2 = Color32::from_rgb(0xaa, 0xb1, 0xb9); // --ink-2
+    let _ink_3 = Color32::from_rgb(0x6a, 0x72, 0x80); // --ink-3
+    let _ink_4 = Color32::from_rgb(0x3a, 0x40, 0x48); // --ink-4
 
-    let amber       = Color32::from_rgb(0xe8, 0xa0, 0x4a); // primary signal
-    let amber_dim   = Color32::from_rgb(0x8a, 0x5e, 0x2b);
-    let _signal     = Color32::from_rgb(0x46, 0xd4, 0x86); // online
-    let _alert      = Color32::from_rgb(0xe8, 0x63, 0x4a); // alert
-    let _cool       = Color32::from_rgb(0x7e, 0xc6, 0xd6); // secondary
+    let amber = Color32::from_rgb(0xe8, 0xa0, 0x4a); // primary signal
+    let amber_dim = Color32::from_rgb(0x8a, 0x5e, 0x2b);
+    let _signal = Color32::from_rgb(0x46, 0xd4, 0x86); // online
+    let _alert = Color32::from_rgb(0xe8, 0x63, 0x4a); // alert
+    let _cool = Color32::from_rgb(0x7e, 0xc6, 0xd6); // secondary
 
     // ── Global visuals ───────────────────────────────────────────────────────
     style.visuals = Visuals::dark();
@@ -102,12 +102,16 @@ pub fn apply_professional_theme(ctx: &Context) {
     // ── Typography ───────────────────────────────────────────────────────────
     // Monospace as the default everywhere — gives the instrument feel.
     style.text_styles = [
-        (TextStyle::Heading,  FontId::new(15.0, FontFamily::Monospace)),
-        (TextStyle::Body,     FontId::new(12.5, FontFamily::Monospace)),
-        (TextStyle::Monospace,FontId::new(12.5, FontFamily::Monospace)),
-        (TextStyle::Button,   FontId::new(12.0, FontFamily::Monospace)),
-        (TextStyle::Small,    FontId::new(10.5, FontFamily::Monospace)),
-    ].into();
+        (TextStyle::Heading, FontId::new(15.0, FontFamily::Monospace)),
+        (TextStyle::Body, FontId::new(12.5, FontFamily::Monospace)),
+        (
+            TextStyle::Monospace,
+            FontId::new(12.5, FontFamily::Monospace),
+        ),
+        (TextStyle::Button, FontId::new(12.0, FontFamily::Monospace)),
+        (TextStyle::Small, FontId::new(10.5, FontFamily::Monospace)),
+    ]
+    .into();
 
     // ── Spacing ──────────────────────────────────────────────────────────────
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
@@ -128,37 +132,37 @@ pub mod colors {
     use egui::Color32;
 
     // ── Primary palette ──────────────────────────────────────────────────────
-    pub const BG:          Color32 = Color32::from_rgb(0x07, 0x09, 0x0b);
-    pub const SURFACE:     Color32 = Color32::from_rgb(0x0c, 0x10, 0x14);
-    pub const SURFACE_2:   Color32 = Color32::from_rgb(0x11, 0x16, 0x1c);
-    pub const HAIR:        Color32 = Color32::from_rgba_premultiplied(15, 15, 16, 16);
-    pub const HAIR_2:      Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
-    pub const HAIR_3:      Color32 = Color32::from_rgba_premultiplied(56, 56, 60, 56);
+    pub const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0b);
+    pub const SURFACE: Color32 = Color32::from_rgb(0x0c, 0x10, 0x14);
+    pub const SURFACE_2: Color32 = Color32::from_rgb(0x11, 0x16, 0x1c);
+    pub const HAIR: Color32 = Color32::from_rgba_premultiplied(15, 15, 16, 16);
+    pub const HAIR_2: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
+    pub const HAIR_3: Color32 = Color32::from_rgba_premultiplied(56, 56, 60, 56);
 
-    pub const INK:         Color32 = Color32::from_rgb(0xe8, 0xeb, 0xee);
-    pub const INK_2:       Color32 = Color32::from_rgb(0xaa, 0xb1, 0xb9);
-    pub const INK_3:       Color32 = Color32::from_rgb(0x6a, 0x72, 0x80);
-    pub const INK_4:       Color32 = Color32::from_rgb(0x3a, 0x40, 0x48);
+    pub const INK: Color32 = Color32::from_rgb(0xe8, 0xeb, 0xee);
+    pub const INK_2: Color32 = Color32::from_rgb(0xaa, 0xb1, 0xb9);
+    pub const INK_3: Color32 = Color32::from_rgb(0x6a, 0x72, 0x80);
+    pub const INK_4: Color32 = Color32::from_rgb(0x3a, 0x40, 0x48);
 
-    pub const AMBER:       Color32 = Color32::from_rgb(0xe8, 0xa0, 0x4a);
-    pub const AMBER_DIM:   Color32 = Color32::from_rgb(0x8a, 0x5e, 0x2b);
-    pub const SIGNAL:      Color32 = Color32::from_rgb(0x46, 0xd4, 0x86);
-    pub const ALERT:       Color32 = Color32::from_rgb(0xe8, 0x63, 0x4a);
-    pub const COOL:        Color32 = Color32::from_rgb(0x7e, 0xc6, 0xd6);
+    pub const AMBER: Color32 = Color32::from_rgb(0xe8, 0xa0, 0x4a);
+    pub const AMBER_DIM: Color32 = Color32::from_rgb(0x8a, 0x5e, 0x2b);
+    pub const SIGNAL: Color32 = Color32::from_rgb(0x46, 0xd4, 0x86);
+    pub const ALERT: Color32 = Color32::from_rgb(0xe8, 0x63, 0x4a);
+    pub const COOL: Color32 = Color32::from_rgb(0x7e, 0xc6, 0xd6);
 
     // ── Back-compat aliases ──────────────────────────────────────────────────
     // Existing tabs reference these names — remap them all onto the HUD palette
     // so the rest of the codebase doesn't need to change.
-    pub const ACCENT_CYAN:    Color32 = AMBER;       // primary highlight = amber now
-    pub const ACCENT_AMBER:   Color32 = AMBER;
-    pub const ACCENT_GREEN:   Color32 = SIGNAL;
-    pub const ACCENT_RED:     Color32 = ALERT;
-    pub const TEXT_PRIMARY:   Color32 = INK;
+    pub const ACCENT_CYAN: Color32 = AMBER; // primary highlight = amber now
+    pub const ACCENT_AMBER: Color32 = AMBER;
+    pub const ACCENT_GREEN: Color32 = SIGNAL;
+    pub const ACCENT_RED: Color32 = ALERT;
+    pub const TEXT_PRIMARY: Color32 = INK;
     pub const TEXT_SECONDARY: Color32 = INK_3;
-    pub const BG_WIDGET:      Color32 = SURFACE_2;
-    pub const BG_HOVER:       Color32 = Color32::from_rgb(0x18, 0x1f, 0x27);
-    pub const BG_ACTIVE:      Color32 = Color32::from_rgb(0x22, 0x2c, 0x37);
-    pub const BORDER:         Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
+    pub const BG_WIDGET: Color32 = SURFACE_2;
+    pub const BG_HOVER: Color32 = Color32::from_rgb(0x18, 0x1f, 0x27);
+    pub const BG_ACTIVE: Color32 = Color32::from_rgb(0x22, 0x2c, 0x37);
+    pub const BORDER: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
 
     /// FFT band colours — restained to harmonise with the HUD palette
     /// (warmer overall, narrower hue range, keep them distinguishable).

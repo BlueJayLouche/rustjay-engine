@@ -60,7 +60,10 @@ impl ControlGui {
                 ui.text_colored([0.0, 1.0, 1.0, 1.0], "Ableton Link");
                 ui.text(format!("Peers: {}", link_peers));
                 ui.text(format!("BPM: {:.2}", link_bpm));
-                ui.text(format!("Playing: {}", if link_playing { "Yes" } else { "No" }));
+                ui.text(format!(
+                    "Playing: {}",
+                    if link_playing { "Yes" } else { "No" }
+                ));
 
                 ui.text("Beat phase");
                 imgui::ProgressBar::new(link_phase)
@@ -73,7 +76,8 @@ impl ControlGui {
                     state.link.quantum = quantum_f32 as f64;
                     #[cfg(feature = "link")]
                     {
-                        state.link_command = rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
+                        state.link_command =
+                            rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
                     }
                 }
             }
@@ -155,7 +159,11 @@ impl ControlGui {
             if !source.is_empty() {
                 ui.text(format!("Source:    {}", source));
             }
-            ui.text(format!("Position:  {}  [{}]", position, position.frame_rate.name()));
+            ui.text(format!(
+                "Position:  {}  [{}]",
+                position,
+                position.frame_rate.name()
+            ));
             ui.text(format!("Elapsed:   {:.3}s", position.as_seconds_f64()));
             ui.text_disabled("Listening on all MIDI ports automatically.");
         }

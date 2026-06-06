@@ -26,7 +26,8 @@ impl ControlGui {
             ui.spacing();
 
             if !self.audio_devices.is_empty() {
-                let device_names: Vec<&str> = self.audio_devices.iter().map(|s| s.as_str()).collect();
+                let device_names: Vec<&str> =
+                    self.audio_devices.iter().map(|s| s.as_str()).collect();
 
                 if let Some(ref current) = selected_device {
                     if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
@@ -34,10 +35,15 @@ impl ControlGui {
                     }
                 }
 
-                if ui.combo_simple_string("Select Audio Device", &mut self.selected_audio_device, &device_names) {
+                if ui.combo_simple_string(
+                    "Select Audio Device",
+                    &mut self.selected_audio_device,
+                    &device_names,
+                ) {
                     let device_name = self.audio_devices.get(self.selected_audio_device).cloned();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio_command = AudioCommand::SelectDevice(device_name.unwrap_or_default());
+                    state.audio_command =
+                        AudioCommand::SelectDevice(device_name.unwrap_or_default());
                 }
 
                 if let Some(ref device) = selected_device {
@@ -62,10 +68,15 @@ impl ControlGui {
 
         // ── Analysis Settings ─────────────────────────────────────────────────
         // Only relevant when audio analysis is running.
-        if enabled && ui.collapsing_header("Analysis Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+        if enabled && ui.collapsing_header("Analysis Settings", imgui::TreeNodeFlags::DEFAULT_OPEN)
+        {
             let (mut normalize, mut pink_noise, current_fft_size) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.audio.normalize, state.audio.pink_noise_shaping, state.audio.fft_size)
+                (
+                    state.audio.normalize,
+                    state.audio.pink_noise_shaping,
+                    state.audio.fft_size,
+                )
             };
             ui.text("Amplitude");
             if ui.slider("Amplitude", 0.1, 5.0, &mut amplitude) {
@@ -83,13 +94,17 @@ impl ControlGui {
 
             {
                 use rustjay_audio::{FFT_SIZES, FFT_SIZE_LABELS};
-                let mut selected_idx = FFT_SIZES.iter().position(|&s| s == current_fft_size).unwrap_or(2);
+                let mut selected_idx = FFT_SIZES
+                    .iter()
+                    .position(|&s| s == current_fft_size)
+                    .unwrap_or(2);
                 let labels: Vec<&str> = FFT_SIZE_LABELS.to_vec();
                 ui.text("FFT Size");
                 if ui.combo_simple_string("FFT Size##combo", &mut selected_idx, &labels) {
                     if let Some(&new_size) = FFT_SIZES.get(selected_idx) {
                         if new_size != current_fft_size {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.audio.fft_size = new_size;
                             state.audio_command = AudioCommand::SetFftSize(new_size);
                         }
@@ -116,7 +131,6 @@ impl ControlGui {
 
         // ── Tempo & Sync ───────────────────────────────────────────────────────
         if ui.collapsing_header("Tempo & Sync", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-
             let mut sync_source = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.sync_source
@@ -170,9 +184,12 @@ impl ControlGui {
                     };
                     ui.text(format!("BPM: {:.1}", bpm));
 
-                    let _btn_color = ui.push_style_color(imgui::StyleColor::Button, [0.8, 0.3, 0.3, 1.0]);
-                    let _btn_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.9, 0.4, 0.4, 1.0]);
-                    let _btn_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [1.0, 0.5, 0.5, 1.0]);
+                    let _btn_color =
+                        ui.push_style_color(imgui::StyleColor::Button, [0.8, 0.3, 0.3, 1.0]);
+                    let _btn_hover =
+                        ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.9, 0.4, 0.4, 1.0]);
+                    let _btn_active =
+                        ui.push_style_color(imgui::StyleColor::ButtonActive, [1.0, 0.5, 0.5, 1.0]);
 
                     if ui.button_with_size("TAP", [60.0, 30.0]) {
                         self.handle_tap_tempo();
@@ -194,7 +211,12 @@ impl ControlGui {
                         )
                     };
 
-                    ui.text(format!("BPM: {:.2}  |  Peers: {}  |  Playing: {}", link_bpm, link_peers, if link_playing { "Yes" } else { "No" }));
+                    ui.text(format!(
+                        "BPM: {:.2}  |  Peers: {}  |  Playing: {}",
+                        link_bpm,
+                        link_peers,
+                        if link_playing { "Yes" } else { "No" }
+                    ));
                     ui.text("Beat phase");
                     imgui::ProgressBar::new(link_phase)
                         .overlay_text(format!("{:.0}%", link_phase * 100.0))
@@ -204,7 +226,8 @@ impl ControlGui {
                     if ui.slider("Quantum", 1.0_f32, 16.0_f32, &mut quantum_f32) {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.link.quantum = quantum_f32 as f64;
-                        state.link_command = rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
+                        state.link_command =
+                            rustjay_core::LinkCommand::SetQuantum(quantum_f32 as f64);
                     }
                 }
 
@@ -230,7 +253,10 @@ impl ControlGui {
                             let playing_tag = if device.is_playing { "▶" } else { "⏸" };
                             ui.text(format!(
                                 "{} Deck {}: {}{} | BPM: {:.2}",
-                                playing_tag, device.device_id, device.name, master_tag,
+                                playing_tag,
+                                device.device_id,
+                                device.name,
+                                master_tag,
                                 device.bpm.unwrap_or(0.0)
                             ));
                         }
@@ -240,7 +266,9 @@ impl ControlGui {
                 }
 
                 #[allow(unreachable_patterns)]
-                _ => { ui.text_disabled("Selected source is not compiled in."); }
+                _ => {
+                    ui.text_disabled("Selected source is not compiled in.");
+                }
             }
 
             // MTC — always shown as passive info regardless of sync source
@@ -250,7 +278,12 @@ impl ControlGui {
                 ui.text_colored([0.0, 1.0, 1.0, 1.0], "MIDI Timecode (MTC)");
                 let (running, playing, position, source) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    (state.mtc.running, state.mtc.playing, state.mtc.position, state.mtc.source_device.clone())
+                    (
+                        state.mtc.running,
+                        state.mtc.playing,
+                        state.mtc.position,
+                        state.mtc.source_device.clone(),
+                    )
                 };
                 let (status_color, status_text) = if playing {
                     ([0.0_f32, 1.0, 0.0, 1.0], "Playing")
@@ -265,7 +298,11 @@ impl ControlGui {
                 if !source.is_empty() {
                     ui.text(format!("Source:  {}", source));
                 }
-                ui.text(format!("Position: {}  [{}]", position, position.frame_rate.name()));
+                ui.text(format!(
+                    "Position: {}  [{}]",
+                    position,
+                    position.frame_rate.name()
+                ));
                 ui.text_disabled("Listening on all MIDI ports automatically.");
             }
 
@@ -274,8 +311,10 @@ impl ControlGui {
 
         // ── Frequency Monitor ─────────────────────────────────────────────────
         if enabled && ui.collapsing_header("Frequency Monitor", imgui::TreeNodeFlags::empty()) {
-            const BAND_NAMES:   [&str; 8]       = ["Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres"];
-            const BAND_COLORS:  [[f32; 4]; 8]   = [
+            const BAND_NAMES: [&str; 8] = [
+                "Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres",
+            ];
+            const BAND_COLORS: [[f32; 4]; 8] = [
                 [0.80, 0.10, 0.10, 1.0], // Sub     — deep red
                 [0.90, 0.45, 0.05, 1.0], // Bass    — orange
                 [0.85, 0.75, 0.05, 1.0], // Lo Mid  — amber
@@ -288,14 +327,14 @@ impl ControlGui {
 
             // Fixed three-column layout: [label | bar | value]
             // row_start_x anchors all rows to the same x regardless of label length.
-            let avail_w     = ui.content_region_avail()[0];
+            let avail_w = ui.content_region_avail()[0];
             let row_start_x = ui.cursor_pos()[0];
-            let label_col   = 50.0_f32; // wide enough for "V.High"
-            let val_col     = 34.0_f32; // wide enough for "0.00"
-            let gap         = 6.0_f32;
-            let bar_w       = (avail_w - label_col - val_col - gap).max(20.0);
-            let bar_x       = row_start_x + label_col;
-            let val_x       = bar_x + bar_w + gap;
+            let label_col = 50.0_f32; // wide enough for "V.High"
+            let val_col = 34.0_f32; // wide enough for "0.00"
+            let gap = 6.0_f32;
+            let bar_w = (avail_w - label_col - val_col - gap).max(20.0);
+            let bar_x = row_start_x + label_col;
+            let val_x = bar_x + bar_w + gap;
 
             for (i, (&value, &name)) in fft.iter().zip(BAND_NAMES.iter()).enumerate() {
                 let color = BAND_COLORS[i];
@@ -309,7 +348,8 @@ impl ControlGui {
                 ui.set_cursor_pos([bar_x, row_y]);
                 {
                     let _fill = ui.push_style_color(imgui::StyleColor::PlotHistogram, color);
-                    let _bg   = ui.push_style_color(imgui::StyleColor::FrameBg, [0.10, 0.10, 0.10, 1.0]);
+                    let _bg =
+                        ui.push_style_color(imgui::StyleColor::FrameBg, [0.10, 0.10, 0.10, 1.0]);
                     imgui::ProgressBar::new(value)
                         .size([bar_w, 11.0])
                         .overlay_text("")
@@ -341,7 +381,11 @@ impl ControlGui {
         let (routing_enabled, show_window, _can_add_route) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let routing = &state.audio_routing;
-            (routing.enabled, routing.show_window, routing.matrix.can_add_route())
+            (
+                routing.enabled,
+                routing.show_window,
+                routing.matrix.can_add_route(),
+            )
         };
 
         let mut enabled = routing_enabled;
@@ -374,8 +418,11 @@ impl ControlGui {
 
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             for (i, route) in state.audio_routing.matrix.routes().iter().enumerate() {
-                if !route.enabled { continue; }
-                ui.text(format!("  {} → {} ({:.0}%)",
+                if !route.enabled {
+                    continue;
+                }
+                ui.text(format!(
+                    "  {} → {} ({:.0}%)",
                     route.band.short_name(),
                     route.target.name(),
                     route.amount * 100.0
@@ -418,7 +465,11 @@ impl ControlGui {
                 let (can_add, route_count, max_routes) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     let routing = &state.audio_routing;
-                    (routing.matrix.can_add_route(), routing.matrix.len(), routing.matrix.max_routes())
+                    (
+                        routing.matrix.can_add_route(),
+                        routing.matrix.len(),
+                        routing.matrix.max_routes(),
+                    )
                 };
 
                 ui.text(format!("Routes: {}/{}", route_count, max_routes));
@@ -434,7 +485,10 @@ impl ControlGui {
 
                 let (mut band_idx, mut target_idx) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    (state.audio_routing.selected_band, state.audio_routing.selected_target)
+                    (
+                        state.audio_routing.selected_band,
+                        state.audio_routing.selected_target,
+                    )
                 };
 
                 if target_idx >= target_list.len() && !target_list.is_empty() {
@@ -453,12 +507,14 @@ impl ControlGui {
 
                 ui.same_line();
 
-                let can_add = can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
+                let can_add =
+                    can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
                     if ui.button("Add Route") {
                         if let Some(band) = FftBand::from_index(band_idx) {
                             if let Some(target) = target_list.get(target_idx) {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio_routing.matrix.add_route(band, target.clone());
                             }
                         }
@@ -472,9 +528,24 @@ impl ControlGui {
 
                 let routes_data: Vec<_> = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio_routing.matrix.routes().iter().map(|r| {
-                        (r.id, r.band, r.target.clone(), r.amount, r.attack, r.release, r.enabled, r.current_value)
-                    }).collect()
+                    state
+                        .audio_routing
+                        .matrix
+                        .routes()
+                        .iter()
+                        .map(|r| {
+                            (
+                                r.id,
+                                r.band,
+                                r.target.clone(),
+                                r.amount,
+                                r.attack,
+                                r.release,
+                                r.enabled,
+                                r.current_value,
+                            )
+                        })
+                        .collect()
                 };
 
                 for (id, band, target, amount, attack, release, enabled, current) in &routes_data {
@@ -556,7 +627,8 @@ impl ControlGui {
             state.audio.tap_tempo_info = "Reset: new tempo sequence".to_string();
             state.lfo.bank.reset_all();
         } else {
-            state.audio.tap_tempo_info = format!("{} taps recorded", state.audio.tap_times.len() + 1);
+            state.audio.tap_tempo_info =
+                format!("{} taps recorded", state.audio.tap_times.len() + 1);
         }
 
         state.audio.tap_times.push(now);
@@ -571,7 +643,7 @@ impl ControlGui {
         if state.audio.tap_times.len() >= 4 {
             let mut intervals = Vec::new();
             for i in 1..state.audio.tap_times.len() {
-                intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i-1]);
+                intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
             }
 
             let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;

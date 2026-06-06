@@ -29,7 +29,8 @@ impl EguiControlGui {
                 ui.add_space(8.0);
 
                 if !self.audio_devices.is_empty() {
-                    let device_names: Vec<&str> = self.audio_devices.iter().map(|s| s.as_str()).collect();
+                    let device_names: Vec<&str> =
+                        self.audio_devices.iter().map(|s| s.as_str()).collect();
                     if let Some(ref current) = selected_device {
                         if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
                             self.selected_audio_device = idx;
@@ -37,14 +38,24 @@ impl EguiControlGui {
                     }
                     egui::ComboBox::from_id_salt("audio_dev")
                         .width(240.0)
-                        .selected_text(device_names.get(self.selected_audio_device).copied().unwrap_or("?"))
+                        .selected_text(
+                            device_names
+                                .get(self.selected_audio_device)
+                                .copied()
+                                .unwrap_or("?"),
+                        )
                         .show_ui(ui, |ui| {
                             for (i, name) in device_names.iter().enumerate() {
-                                if ui.selectable_label(self.selected_audio_device == i, *name).clicked() {
+                                if ui
+                                    .selectable_label(self.selected_audio_device == i, *name)
+                                    .clicked()
+                                {
                                     self.selected_audio_device = i;
                                     let device_name = self.audio_devices.get(i).cloned();
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    state.audio_command = AudioCommand::SelectDevice(device_name.unwrap_or_default());
+                                    let mut state =
+                                        self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    state.audio_command =
+                                        AudioCommand::SelectDevice(device_name.unwrap_or_default());
                                 }
                             }
                         });
@@ -52,14 +63,21 @@ impl EguiControlGui {
                         ui.label(format!("Active: {}", device));
                     }
                 } else {
-                    ui.label(egui::RichText::new("No audio devices found. Click Refresh.").color(TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new("No audio devices found. Click Refresh.")
+                            .color(TEXT_SECONDARY),
+                    );
                 }
 
                 ui.add_space(8.0);
                 if ui.checkbox(&mut enabled, "Enable Audio Analysis").changed() {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio.enabled = enabled;
-                    state.audio_command = if enabled { AudioCommand::Start } else { AudioCommand::Stop };
+                    state.audio_command = if enabled {
+                        AudioCommand::Start
+                    } else {
+                        AudioCommand::Stop
+                    };
                 }
             });
 
@@ -72,27 +90,44 @@ impl EguiControlGui {
                 .show(ui, |ui| {
                     let (mut normalize, mut pink_noise, current_fft_size) = {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        (state.audio.normalize, state.audio.pink_noise_shaping, state.audio.fft_size)
+                        (
+                            state.audio.normalize,
+                            state.audio.pink_noise_shaping,
+                            state.audio.fft_size,
+                        )
                     };
 
                     ui.label("Amplitude");
-                    if ui.add(egui::Slider::new(&mut amplitude, 0.1..=5.0).trailing_fill(true)).changed() {
+                    if ui
+                        .add(egui::Slider::new(&mut amplitude, 0.1..=5.0).trailing_fill(true))
+                        .changed()
+                    {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.audio.amplitude = amplitude;
                     }
 
                     ui.horizontal(|ui| {
                         ui.label("Smoothing");
-                        ui.label(egui::RichText::new("(0 = instant, 0.99 = very slow)").size(11.0).color(TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new("(0 = instant, 0.99 = very slow)")
+                                .size(11.0)
+                                .color(TEXT_SECONDARY),
+                        );
                     });
-                    if ui.add(egui::Slider::new(&mut smoothing, 0.0..=0.95).trailing_fill(true)).changed() {
+                    if ui
+                        .add(egui::Slider::new(&mut smoothing, 0.0..=0.95).trailing_fill(true))
+                        .changed()
+                    {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.audio.smoothing = smoothing.clamp(0.0, 0.99);
                     }
 
                     {
                         use rustjay_audio::{FFT_SIZES, FFT_SIZE_LABELS};
-                        let mut selected_idx = FFT_SIZES.iter().position(|&s| s == current_fft_size).unwrap_or(2);
+                        let mut selected_idx = FFT_SIZES
+                            .iter()
+                            .position(|&s| s == current_fft_size)
+                            .unwrap_or(2);
                         ui.label("FFT Size");
                         egui::ComboBox::from_id_salt("fft_size")
                             .width(120.0)
@@ -106,7 +141,8 @@ impl EguiControlGui {
                             });
                         if let Some(&new_size) = FFT_SIZES.get(selected_idx) {
                             if new_size != current_fft_size {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio.fft_size = new_size;
                                 state.audio_command = AudioCommand::SetFftSize(new_size);
                             }
@@ -118,15 +154,26 @@ impl EguiControlGui {
                         state.audio.normalize = normalize;
                     }
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("(Auto-gain across all bands)").size(11.0).color(TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new("(Auto-gain across all bands)")
+                                .size(11.0)
+                                .color(TEXT_SECONDARY),
+                        );
                     });
 
-                    if ui.checkbox(&mut pink_noise, "+3dB/Octave Shaping").changed() {
+                    if ui
+                        .checkbox(&mut pink_noise, "+3dB/Octave Shaping")
+                        .changed()
+                    {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.audio.pink_noise_shaping = pink_noise;
                     }
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("(Compensates for pink noise spectrum)").size(11.0).color(TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new("(Compensates for pink noise spectrum)")
+                                .size(11.0)
+                                .color(TEXT_SECONDARY),
+                        );
                     });
                 });
 
@@ -286,7 +333,9 @@ impl EguiControlGui {
             egui::CollapsingHeader::new("📊 Frequency Monitor")
                 .default_open(true)
                 .show(ui, |ui| {
-                    const BAND_NAMES: [&str; 8] = ["Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres"];
+                    const BAND_NAMES: [&str; 8] = [
+                        "Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres",
+                    ];
                     let avail_w = ui.available_width();
                     let label_col = 50.0;
                     let val_col = 34.0;
@@ -334,12 +383,20 @@ impl EguiControlGui {
     }
 
     fn build_audio_routing_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Audio Reactivity Routing").color(ACCENT_CYAN).strong());
+        ui.label(
+            egui::RichText::new("Audio Reactivity Routing")
+                .color(ACCENT_CYAN)
+                .strong(),
+        );
 
         let (routing_enabled, _show_window, _can_add) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let routing = &state.audio_routing;
-            (routing.enabled, routing.show_window, routing.matrix.can_add_route())
+            (
+                routing.enabled,
+                routing.show_window,
+                routing.matrix.can_add_route(),
+            )
         };
 
         let mut enabled = routing_enabled;
@@ -370,8 +427,11 @@ impl EguiControlGui {
             ui.label(format!("Active routes: {}", route_count));
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             for (i, route) in state.audio_routing.matrix.routes().iter().enumerate() {
-                if !route.enabled { continue; }
-                ui.label(format!("  {} → {} ({:.0}%)",
+                if !route.enabled {
+                    continue;
+                }
+                ui.label(format!(
+                    "  {} → {} ({:.0}%)",
                     route.band.short_name(),
                     route.target.name(),
                     route.amount * 100.0
@@ -379,13 +439,19 @@ impl EguiControlGui {
                 if i >= 3 {
                     let remaining = route_count.saturating_sub(4);
                     if remaining > 0 {
-                        ui.label(egui::RichText::new(format!("  ... and {} more", remaining)).color(TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new(format!("  ... and {} more", remaining))
+                                .color(TEXT_SECONDARY),
+                        );
                     }
                     break;
                 }
             }
         } else {
-            ui.label(egui::RichText::new("No active routes. Click 'Open Routing Matrix' to add.").color(TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new("No active routes. Click 'Open Routing Matrix' to add.")
+                    .color(TEXT_SECONDARY),
+            );
         }
     }
 }

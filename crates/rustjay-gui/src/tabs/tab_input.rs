@@ -23,8 +23,10 @@ impl ControlGui {
             ui.text_colored([1.0, 0.8, 0.2, 1.0], "Discovering sources...");
         } else {
             let _btn_color = ui.push_style_color(imgui::StyleColor::Button, [0.2, 0.6, 0.8, 1.0]);
-            let _btn_hover = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.3, 0.7, 0.9, 1.0]);
-            let _btn_active = ui.push_style_color(imgui::StyleColor::ButtonActive, [0.1, 0.5, 0.7, 1.0]);
+            let _btn_hover =
+                ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.3, 0.7, 0.9, 1.0]);
+            let _btn_active =
+                ui.push_style_color(imgui::StyleColor::ButtonActive, [0.1, 0.5, 0.7, 1.0]);
             if ui.button_with_size("Refresh Sources", [ui.content_region_avail()[0], 30.0]) {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.input_command = InputCommand::RefreshDevices;
@@ -77,7 +79,8 @@ impl ControlGui {
         {
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "Webcam");
             if !self.webcam_devices.is_empty() {
-                let device_names: Vec<&str> = self.webcam_devices.iter().map(|s| s.as_str()).collect();
+                let device_names: Vec<&str> =
+                    self.webcam_devices.iter().map(|s| s.as_str()).collect();
                 ui.combo_simple_string("Select Webcam", &mut self.selected_webcam, &device_names);
 
                 if ui.button("Start Input 1##webcam") {
@@ -117,7 +120,9 @@ impl ControlGui {
                 ui.combo_simple_string("Select NDI Source", &mut self.selected_ndi, &source_names);
 
                 if ui.button("Start Input 1##ndi") {
-                    let source_name = self.ndi_sources.get(self.selected_ndi)
+                    let source_name = self
+                        .ndi_sources
+                        .get(self.selected_ndi)
                         .cloned()
                         .unwrap_or_default();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,7 +130,9 @@ impl ControlGui {
                 }
                 ui.same_line();
                 if ui.button("Start Input 2##ndi") {
-                    let source_name = self.ndi_sources.get(self.selected_ndi)
+                    let source_name = self
+                        .ndi_sources
+                        .get(self.selected_ndi)
                         .cloned()
                         .unwrap_or_default();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,11 +152,17 @@ impl ControlGui {
 
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "Syphon (macOS)");
             if !self.syphon_servers.is_empty() {
-                let server_names: Vec<String> = self.syphon_servers.iter()
+                let server_names: Vec<String> = self
+                    .syphon_servers
+                    .iter()
                     .map(|s| format!("{} - {}", s.app_name, s.name))
                     .collect();
                 let server_name_refs: Vec<&str> = server_names.iter().map(|s| s.as_str()).collect();
-                ui.combo_simple_string("Select Syphon Server", &mut self.selected_syphon, &server_name_refs);
+                ui.combo_simple_string(
+                    "Select Syphon Server",
+                    &mut self.selected_syphon,
+                    &server_name_refs,
+                );
 
                 if ui.button("Start Input 1##syphon") {
                     let server_info = self.syphon_servers.get(self.selected_syphon).cloned();
@@ -230,13 +243,17 @@ impl ControlGui {
 
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "Spout (Windows)");
             if !self.spout_senders.is_empty() {
-                let sender_names: Vec<&str> = self.spout_senders.iter()
-                    .map(|s| s.name.as_str())
-                    .collect();
-                ui.combo_simple_string("Select Spout Sender", &mut self.selected_spout, &sender_names);
+                let sender_names: Vec<&str> =
+                    self.spout_senders.iter().map(|s| s.name.as_str()).collect();
+                ui.combo_simple_string(
+                    "Select Spout Sender",
+                    &mut self.selected_spout,
+                    &sender_names,
+                );
 
                 if ui.button("Start Input 1##spout") {
-                    let sender_name = self.spout_senders
+                    let sender_name = self
+                        .spout_senders
                         .get(self.selected_spout)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
@@ -245,7 +262,8 @@ impl ControlGui {
                 }
                 ui.same_line();
                 if ui.button("Start Input 2##spout") {
-                    let sender_name = self.spout_senders
+                    let sender_name = self
+                        .spout_senders
                         .get(self.selected_spout)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
@@ -272,8 +290,16 @@ impl ControlGui {
             }
 
             // UV extent of actual content within the fixed 1920×1080 preview texture
-            let content_u = if input_width > 0 { (input_width as f32 / 1920.0).min(1.0) } else { 1.0 };
-            let content_v = if input_height > 0 { (input_height as f32 / 1080.0).min(1.0) } else { 1.0 };
+            let content_u = if input_width > 0 {
+                (input_width as f32 / 1920.0).min(1.0)
+            } else {
+                1.0
+            };
+            let content_v = if input_height > 0 {
+                (input_height as f32 / 1080.0).min(1.0)
+            } else {
+                1.0
+            };
 
             let content_aspect = if input_width > 0 && input_height > 0 {
                 input_width as f32 / input_height as f32
@@ -317,8 +343,16 @@ impl ControlGui {
                 return;
             }
 
-            let content_u = if input_width > 0 { (input_width as f32 / 1920.0).min(1.0) } else { 1.0 };
-            let content_v = if input_height > 0 { (input_height as f32 / 1080.0).min(1.0) } else { 1.0 };
+            let content_u = if input_width > 0 {
+                (input_width as f32 / 1920.0).min(1.0)
+            } else {
+                1.0
+            };
+            let content_v = if input_height > 0 {
+                (input_height as f32 / 1080.0).min(1.0)
+            } else {
+                1.0
+            };
 
             let content_aspect = if input_width > 0 && input_height > 0 {
                 input_width as f32 / input_height as f32
@@ -351,7 +385,11 @@ impl ControlGui {
         if let Some(texture_id) = self.output_preview_texture_id {
             let (internal_width, internal_height, pixel_pick_armed) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                (state.resolution.internal_width, state.resolution.internal_height, state.pixel_pick_armed)
+                (
+                    state.resolution.internal_width,
+                    state.resolution.internal_height,
+                    state.pixel_pick_armed,
+                )
             };
 
             let avail = ui.content_region_avail();

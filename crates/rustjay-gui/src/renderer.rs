@@ -40,7 +40,9 @@ impl ImGuiRenderer {
             .formats
             .iter()
             .copied()
-            .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
+            .find(|f| {
+                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            })
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
@@ -62,7 +64,11 @@ impl ImGuiRenderer {
 
         // Set up platform
         let mut platform = imgui_winit_support::WinitPlatform::new(&mut context);
-        platform.attach_window(context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
+        platform.attach_window(
+            context.io_mut(),
+            &window,
+            imgui_winit_support::HiDpiMode::Rounded,
+        );
 
         // Set display size (in logical points, not physical pixels) and scale
         let logical_width = size.width as f32 / scale_factor as f32;
@@ -123,21 +129,22 @@ impl ImGuiRenderer {
                 return;
             }
         }
-        self.platform.handle_event(self.context.io_mut(), &self.window, event);
+        self.platform
+            .handle_event(self.context.io_mut(), &self.window, event);
     }
 
     /// Set display size (in logical points)
     pub fn set_display_size(&mut self, width: f32, height: f32) {
         self.context.io_mut().display_size = [width, height];
     }
-    
+
     /// Update scale factor (call when window moves to a different display)
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         self.scale_factor = scale_factor;
         let sf = scale_factor as f32;
         self.context.io_mut().display_framebuffer_scale = [sf, sf];
     }
-    
+
     /// Get current scale factor
     pub fn scale_factor(&self) -> f64 {
         self.scale_factor
@@ -161,7 +168,9 @@ impl ImGuiRenderer {
                 depth_or_array_layers: 1,
             },
             format: Some(wgpu::TextureFormat::Bgra8Unorm),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             ..Default::default()
         };
 
@@ -228,7 +237,8 @@ impl ImGuiRenderer {
 
         // Get surface texture
         let surface_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
                 self.surface.configure(&self.device, &self.surface_config);
                 return Ok(());

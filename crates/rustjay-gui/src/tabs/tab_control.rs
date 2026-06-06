@@ -3,7 +3,7 @@
 //! Dynamically generates parameter controls from effect-declared descriptors.
 
 use crate::control_gui::ControlGui;
-use rustjay_core::{MidiCommand, MidiMsgKind, OscCommand, WebCommand, ParamCategory};
+use rustjay_core::{MidiCommand, MidiMsgKind, OscCommand, ParamCategory, WebCommand};
 
 /// Return a sort order for standard categories (lower = earlier).
 /// Custom categories always sort after standard ones.
@@ -21,13 +21,16 @@ fn category_order(cat: &ParamCategory) -> u8 {
 /// Collect unique categories from descriptors and sort them: standard first,
 /// then custom ones alphabetically.
 fn sorted_categories(descriptors: &[rustjay_core::ParameterDescriptor]) -> Vec<ParamCategory> {
-    let mut cats: Vec<_> = descriptors.iter()
+    let mut cats: Vec<_> = descriptors
+        .iter()
         .map(|d| d.category.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
     cats.sort_by(|a, b| {
-        category_order(a).cmp(&category_order(b)).then_with(|| a.name().cmp(&b.name()))
+        category_order(a)
+            .cmp(&category_order(b))
+            .then_with(|| a.name().cmp(&b.name()))
     });
     cats
 }
@@ -41,10 +44,18 @@ impl ControlGui {
         // ── Device selection ────────────────────────────────────────────────────
         let (enabled, selected_device, available_devices) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.midi_enabled, state.midi_selected_device.clone(), state.midi_available_devices.clone())
+            (
+                state.midi_enabled,
+                state.midi_selected_device.clone(),
+                state.midi_available_devices.clone(),
+            )
         };
 
-        let status_color = if enabled { [0.0, 1.0, 0.0, 1.0] } else { [1.0, 0.5, 0.0, 1.0] };
+        let status_color = if enabled {
+            [0.0, 1.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.5, 0.0, 1.0]
+        };
         let status_text = if let Some(ref name) = selected_device {
             format!("Connected: {}", name)
         } else {
@@ -127,8 +138,11 @@ impl ControlGui {
             ui.text_disabled("No effect-declared parameters.");
         } else {
             for cat in &sorted_categories(&descriptors) {
-                let cat_params: Vec<_> = descriptors.iter().filter(|d| d.category == *cat).collect();
-                if cat_params.is_empty() { continue; }
+                let cat_params: Vec<_> =
+                    descriptors.iter().filter(|d| d.category == *cat).collect();
+                if cat_params.is_empty() {
+                    continue;
+                }
 
                 let flags = if *cat == ParamCategory::Color || *cat == ParamCategory::Motion {
                     imgui::TreeNodeFlags::DEFAULT_OPEN
@@ -144,7 +158,8 @@ impl ControlGui {
 
                         let label = format!("Learn: {}##{}", desc.name, desc.id);
                         if ui.button(&label) {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.midi_command = MidiCommand::StartLearn {
                                 param_path: path,
                                 param_name: desc.name.clone(),
@@ -155,8 +170,8 @@ impl ControlGui {
                         ui.same_line();
                         if let Some(m) = mapping {
                             let label = match m.kind {
-                                MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
-                                MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                                MidiMsgKind::Cc => format!("CC {} ch{}", m.selector, m.channel),
+                                MidiMsgKind::Note => format!("Note {} ch{}", m.selector, m.channel),
                                 MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                             };
                             ui.text_colored([0.0, 1.0, 0.5, 1.0], &label);
@@ -176,8 +191,8 @@ impl ControlGui {
         } else {
             for m in &midi_mappings {
                 let binding = match m.kind {
-                    MidiMsgKind::Cc         => format!("CC {} ch{}", m.selector, m.channel),
-                    MidiMsgKind::Note       => format!("Note {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Cc => format!("CC {} ch{}", m.selector, m.channel),
+                    MidiMsgKind::Note => format!("Note {} ch{}", m.selector, m.channel),
                     MidiMsgKind::Aftertouch => format!("AT ch{}", m.channel),
                 };
                 ui.text(format!("  {} -> {}", m.name, binding));
@@ -192,10 +207,18 @@ impl ControlGui {
 
         let (running, port, _app_name) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.osc_enabled, state.osc_port, state.web_app_name.clone())
+            (
+                state.osc_enabled,
+                state.osc_port,
+                state.web_app_name.clone(),
+            )
         };
 
-        let status_color = if running { [0.0, 1.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0, 1.0] };
+        let status_color = if running {
+            [0.0, 1.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0, 1.0]
+        };
         let status_text = if running { "Running" } else { "Stopped" };
 
         ui.text("Server Status: ");
@@ -245,8 +268,11 @@ impl ControlGui {
             ui.text_disabled("No effect-declared parameters.");
         } else {
             for cat in &sorted_categories(&descriptors) {
-                let cat_params: Vec<_> = descriptors.iter().filter(|d| d.category == *cat).collect();
-                if cat_params.is_empty() { continue; }
+                let cat_params: Vec<_> =
+                    descriptors.iter().filter(|d| d.category == *cat).collect();
+                if cat_params.is_empty() {
+                    continue;
+                }
 
                 let flags = if *cat == ParamCategory::Color || *cat == ParamCategory::Motion {
                     imgui::TreeNodeFlags::DEFAULT_OPEN
@@ -259,7 +285,10 @@ impl ControlGui {
                     for desc in &cat_params {
                         let addr = format!("/rustjay/{}/{}", cat.name().to_lowercase(), desc.id);
                         ui.text(&addr);
-                        ui.text_disabled(format!("  Range: {} to {} (step: {})", desc.min, desc.max, desc.step));
+                        ui.text_disabled(format!(
+                            "  Range: {} to {} (step: {})",
+                            desc.min, desc.max, desc.step
+                        ));
                     }
                     ui.unindent();
                 }
@@ -319,10 +348,18 @@ impl ControlGui {
 
         let (enabled, port, app_name) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.web_enabled, state.web_port, state.web_app_name.clone())
+            (
+                state.web_enabled,
+                state.web_port,
+                state.web_app_name.clone(),
+            )
         };
 
-        let status_color = if enabled { [0.0, 1.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0, 1.0] };
+        let status_color = if enabled {
+            [0.0, 1.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0, 1.0]
+        };
         let status_text = if enabled { "Running" } else { "Stopped" };
 
         ui.text("Server Status: ");
@@ -360,7 +397,8 @@ impl ControlGui {
         if enabled {
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "Access URL:");
 
-            let local_ip = crate::control_gui::get_local_ip().unwrap_or_else(|| "localhost".to_string());
+            let local_ip =
+                crate::control_gui::get_local_ip().unwrap_or_else(|| "localhost".to_string());
             let url = format!("http://{}:{}/{}", local_ip, port, app_name);
 
             ui.text(&url);
