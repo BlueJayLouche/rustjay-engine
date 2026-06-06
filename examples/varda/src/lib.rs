@@ -520,6 +520,10 @@ impl VardaRootPlugin {
                 phase: 0.0,
                 amplitude: 0.5,
                 bipolar: true,
+                tempo_sync: false,
+                division: 2,
+                phase_offset_degrees: 0.0,
+                last_beat_phase: 0.0,
             });
             mod_eng.assign("crossfader", &lfo, 1.0, None);
 
@@ -557,6 +561,10 @@ impl VardaRootPlugin {
                 phase: 0.0,
                 amplitude: 1.0,
                 bipolar: true,
+                tempo_sync: false,
+                division: 2,
+                phase_offset_degrees: 0.0,
+                last_beat_phase: 0.0,
             });
             for key in &deck_keys {
                 mod_eng.assign(key, &deck_lfo, 0.4, None);

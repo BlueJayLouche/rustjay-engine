@@ -7,6 +7,7 @@
 //! `RoutingMatrix` model in [`crate::lfo`] and [`crate::routing`].
 //! Adapters on those legacy types let you convert into this richer model.
 
+use crate::lfo::{beat_division_to_hz, BEAT_DIVISIONS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -209,7 +210,7 @@ pub enum ModulationSource {
     LFO {
         /// Waveform shape.
         waveform: LFOWaveform,
-        /// Frequency in Hz.
+        /// Frequency in Hz (used when tempo_sync is false).
         frequency: f32,
         /// Phase offset (0–1).
         phase: f32,
@@ -217,6 +218,15 @@ pub enum ModulationSource {
         amplitude: f32,
         /// Whether output is bipolar (-1..1) or unipolar (0..1).
         bipolar: bool,
+        /// Whether tempo sync is enabled.
+        tempo_sync: bool,
+        /// Beat division index (0-7, mapped to BEAT_DIVISIONS).
+        division: usize,
+        /// Phase offset in degrees (0-360).
+        phase_offset_degrees: f32,
+        /// Previous beat_phase sample — used to detect quantum-boundary crossings.
+        #[serde(skip)]
+        last_beat_phase: f32,
     },
     /// Audio FFT reactivity with custom frequency range.
     AudioBand {
@@ -286,6 +296,10 @@ impl ModulationSource {
                     phase: p1,
                     amplitude: a1,
                     bipolar: b1,
+                    tempo_sync: t1,
+                    division: d1,
+                    phase_offset_degrees: po1,
+                    ..
                 },
                 ModulationSource::LFO {
                     waveform: w2,
@@ -293,8 +307,12 @@ impl ModulationSource {
                     phase: p2,
                     amplitude: a2,
                     bipolar: b2,
+                    tempo_sync: t2,
+                    division: d2,
+                    phase_offset_degrees: po2,
+                    ..
                 },
-            ) => w1 == w2 && f1 == f2 && p1 == p2 && a1 == a2 && b1 == b2,
+            ) => w1 == w2 && f1 == f2 && p1 == p2 && a1 == a2 && b1 == b2 && t1 == t2 && d1 == d2 && po1 == po2,
             (
                 ModulationSource::AudioBand {
                     source_id: s1,
@@ -365,6 +383,10 @@ impl ModulationSource {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: false,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         }
     }
 
@@ -441,7 +463,7 @@ impl ModulationSource {
     /// Calculate current value of this modulation source.
     ///
     /// Returns value in range `[-1, 1]` for bipolar or `[0, 1]` for unipolar.
-    pub fn calculate(&mut self, time: f32, dt: f32, audio: &AudioValues, prev_value: f32) -> f32 {
+    pub fn calculate(&mut self, time: f32, dt: f32, bpm: f32, beat_phase: f32, audio: &AudioValues, prev_value: f32) -> f32 {
         match self {
             ModulationSource::LFO {
                 waveform,
@@ -449,8 +471,39 @@ impl ModulationSource {
                 phase,
                 amplitude,
                 bipolar,
+                tempo_sync,
+                division,
+                phase_offset_degrees,
+                last_beat_phase,
             } => {
-                let t = (time * *frequency + *phase) % 1.0;
+                let effective_freq = if *tempo_sync {
+                    let div = (*division).min(BEAT_DIVISIONS.len() - 1);
+                    beat_division_to_hz(div, bpm)
+                } else {
+                    *frequency
+                }
+                .clamp(0.01, 20.0);
+
+                // Quantum-boundary phase snap: when beat_phase wraps from ~1 back to ~0,
+                // reset phase for sub-beat/single-beat divisions so the LFO stays musically in phase.
+                if *tempo_sync && beat_phase < *last_beat_phase - 0.5 {
+                    let div = (*division).min(BEAT_DIVISIONS.len() - 1);
+                    if BEAT_DIVISIONS[div] <= 1.0 {
+                        *phase = 0.0;
+                    }
+                }
+                *last_beat_phase = beat_phase;
+
+                // Accumulate phase at the effective rate
+                *phase = (*phase + effective_freq * dt) % 1.0;
+                if !phase.is_finite() {
+                    *phase = 0.0;
+                }
+
+                // Apply static phase offset (degrees → 0-1)
+                let offset_normalized = *phase_offset_degrees / 360.0;
+                let t = (*phase + offset_normalized) % 1.0;
+
                 let raw = match waveform {
                     LFOWaveform::Sine => (t * std::f32::consts::TAU).sin(),
                     LFOWaveform::Square => {
@@ -463,7 +516,7 @@ impl ModulationSource {
                     LFOWaveform::Triangle => 1.0 - 4.0 * (t - 0.5).abs(),
                     LFOWaveform::Sawtooth => 2.0 * t - 1.0,
                     LFOWaveform::Random => {
-                        let seed = (time * *frequency).floor() as u32;
+                        let seed = (time * effective_freq).floor() as u32;
                         let hash = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                         (hash as f32 / u32::MAX as f32) * 2.0 - 1.0
                     }
@@ -952,7 +1005,7 @@ impl ModulationEngine {
     }
 
     /// Update all source values for the current frame.
-    pub fn update(&mut self, time: f32, audio: &AudioValues) {
+    pub fn update(&mut self, time: f32, bpm: f32, beat_phase: f32, audio: &AudioValues) {
         self.ensure_index();
         let dt = self.prev_time.map_or(0.016, |prev| time - prev);
         self.prev_time = Some(time);
@@ -975,7 +1028,7 @@ impl ModulationEngine {
             } else {
                 self.sources[i].source.clone()
             };
-            let value = effective.calculate(time, dt, audio, self.prev_values[i]);
+            let value = effective.calculate(time, dt, bpm, beat_phase, audio, self.prev_values[i]);
 
             // Copy back mutable state changes (ADSR stage progression)
             if let (
@@ -1088,7 +1141,7 @@ mod tests {
         let audio = empty_audio();
         for i in 0..100 {
             let t = i as f32 / 100.0;
-            let val = lfo.calculate(t, 0.01, &audio, 0.0);
+            let val = lfo.calculate(t, 0.01, 120.0, 0.0, &audio, 0.0);
             assert!(
                 (0.0..=1.0).contains(&val),
                 "Sine unipolar out of range: {val} at t={t}"
@@ -1104,11 +1157,15 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
         for i in 0..100 {
             let t = i as f32 / 100.0;
-            let val = lfo.calculate(t, 0.01, &audio, 0.0);
+            let val = lfo.calculate(t, 0.01, 120.0, 0.0, &audio, 0.0);
             assert!(
                 (-1.0..=1.0).contains(&val),
                 "Sine bipolar out of range: {val}"
@@ -1124,10 +1181,14 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val_first = lfo.calculate(0.1, 0.01, &audio, 0.0);
-        let val_second = lfo.calculate(0.6, 0.01, &audio, 0.0);
+        let val_first = lfo.calculate(0.0, 0.1, 120.0, 0.0, &audio, 0.0);
+        let val_second = lfo.calculate(0.0, 0.5, 120.0, 0.0, &audio, 0.0);
         assert!((val_first - 1.0).abs() < 1e-5);
         assert!((val_second - (-1.0)).abs() < 1e-5);
     }
@@ -1140,10 +1201,14 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val_start = lfo.calculate(0.0, 0.01, &audio, 0.0);
-        let val_mid = lfo.calculate(0.5, 0.01, &audio, 0.0);
+        let val_start = lfo.calculate(0.0, 0.0, 120.0, 0.0, &audio, 0.0);
+        let val_mid = lfo.calculate(0.0, 0.5, 120.0, 0.0, &audio, 0.0);
         assert!(
             (val_start - (-1.0)).abs() < 1e-5,
             "Triangle at 0: {val_start}"
@@ -1159,10 +1224,14 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val_0 = lfo.calculate(0.0, 0.01, &audio, 0.0);
-        let val_half = lfo.calculate(0.5, 0.01, &audio, 0.0);
+        let val_0 = lfo.calculate(0.0, 0.0, 120.0, 0.0, &audio, 0.0);
+        let val_half = lfo.calculate(0.0, 0.5, 120.0, 0.0, &audio, 0.0);
         assert!((val_0 - (-1.0)).abs() < 1e-5);
         assert!((val_half - 0.0).abs() < 1e-5);
     }
@@ -1175,11 +1244,15 @@ mod tests {
             phase: 0.0,
             amplitude: 0.5,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
         for i in 0..100 {
             let t = i as f32 / 100.0;
-            let val = lfo.calculate(t, 0.01, &audio, 0.0);
+            let val = lfo.calculate(t, 0.01, 120.0, 0.0, &audio, 0.0);
             assert!((-0.5..=0.5).contains(&val), "Amplitude scaling off: {val}");
         }
     }
@@ -1189,9 +1262,54 @@ mod tests {
         let mut lfo_slow = ModulationSource::sine_lfo(1.0);
         let mut lfo_fast = ModulationSource::sine_lfo(2.0);
         let audio = empty_audio();
-        let slow = lfo_slow.calculate(0.25, 0.01, &audio, 0.0);
-        let fast = lfo_fast.calculate(0.25, 0.01, &audio, 0.0);
+        let slow = lfo_slow.calculate(0.0, 0.25, 120.0, 0.0, &audio, 0.0);
+        let fast = lfo_fast.calculate(0.0, 0.25, 120.0, 0.0, &audio, 0.0);
         assert!((slow - fast).abs() > 0.1);
+    }
+
+    #[test]
+    fn tempo_sync_lfo_frequency() {
+        // Direct helper check: 1 beat at 120 BPM = 2 Hz
+        assert!((beat_division_to_hz(4, 120.0) - 2.0).abs() < 0.001);
+
+        let mut lfo = ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.0,
+            amplitude: 1.0,
+            bipolar: true,
+            tempo_sync: true,
+            division: 4, // 1 beat
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
+        };
+        let audio = empty_audio();
+        // At 120 BPM, 1 beat = 0.5 s cycle → 2 Hz.
+        // After 0.25 s, phase = 0.5 → sin(π) = 0.
+        let val = lfo.calculate(0.0, 0.25, 120.0, 0.0, &audio, 0.0);
+        assert!(
+            (val - 0.0).abs() < 0.01,
+            "Tempo-sync LFO at 120 BPM/1 beat should be at zero crossing at 0.25s, got {val}"
+        );
+    }
+
+    #[test]
+    fn quantum_snap_resets_phase() {
+        let mut lfo = ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.25,
+            amplitude: 1.0,
+            bipolar: true,
+            tempo_sync: true,
+            division: 2, // ≤ 1 beat, so snap applies
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.9,
+        };
+        let audio = empty_audio();
+        // beat_phase wraps from 0.9 to 0.1 → snap should reset phase to 0.0
+        let val = lfo.calculate(0.0, 0.0, 120.0, 0.1, &audio, 0.0);
+        assert!((val - 0.0).abs() < 0.01, "Phase should snap to 0 on quantum boundary, got {val}");
     }
 
     #[test]
@@ -1202,10 +1320,14 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val1 = lfo.calculate(0.3, 0.01, &audio, 0.0);
-        let val2 = lfo.calculate(0.3, 0.01, &audio, 0.0);
+        let val1 = lfo.calculate(0.3, 0.01, 120.0, 0.0, &audio, 0.0);
+        let val2 = lfo.calculate(0.3, 0.01, 120.0, 0.0, &audio, 0.0);
         assert_eq!(
             val1, val2,
             "Random LFO should be deterministic for same time"
@@ -1218,7 +1340,7 @@ mod tests {
     fn adsr_idle_is_zero() {
         let mut adsr = ModulationSource::adsr(0.1, 0.1, 0.5, 0.1);
         let audio = empty_audio();
-        let val = adsr.calculate(0.0, 0.016, &audio, 0.0);
+        let val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0);
     }
 
@@ -1229,7 +1351,7 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..20 {
-            val = adsr.calculate(0.0, 0.01, &audio, val);
+            val = adsr.calculate(0.0, 0.01, 120.0, 0.0, &audio, val);
         }
         assert!(
             val > 0.4,
@@ -1244,7 +1366,7 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..100 {
-            val = adsr.calculate(0.0, 0.01, &audio, val);
+            val = adsr.calculate(0.0, 0.01, 120.0, 0.0, &audio, val);
         }
         assert!(
             (val - 0.7).abs() < 0.05,
@@ -1259,11 +1381,11 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.01, &audio, val);
+            val = adsr.calculate(0.0, 0.01, 120.0, 0.0, &audio, val);
         }
         adsr.gate_off();
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.01, &audio, val);
+            val = adsr.calculate(0.0, 0.01, 120.0, 0.0, &audio, val);
         }
         assert!(val < 0.05, "ADSR should release to near zero: {val}");
     }
@@ -1273,7 +1395,7 @@ mod tests {
         let mut adsr = ModulationSource::adsr(0.1, 0.1, 0.5, 0.1);
         adsr.gate_off();
         let audio = empty_audio();
-        let val = adsr.calculate(0.0, 0.016, &audio, 0.0);
+        let val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0);
     }
 
@@ -1288,9 +1410,9 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!((val - 0.0).abs() < 1e-5);
-        let val = seq.calculate(0.25, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.25, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!((val - 0.5).abs() < 1e-5);
     }
 
@@ -1303,7 +1425,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.5, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.5, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!((val - 0.5).abs() < 0.01, "Linear interp mid: {val}");
     }
 
@@ -1316,9 +1438,9 @@ mod tests {
             bipolar: true,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!((val - (-1.0)).abs() < 1e-5);
-        let val = seq.calculate(1.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!((val - 1.0).abs() < 1e-5);
     }
 
@@ -1331,7 +1453,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.5, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.5, 0.01, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0);
     }
 
@@ -1344,7 +1466,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.5, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.5, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!(val > 0.0 && val < 1.0, "Smooth interp: {val}");
         assert!(
             (val - 0.5).abs() < 0.01,
@@ -1453,7 +1575,7 @@ mod tests {
     fn engine_assign_and_get_modulation() {
         let mut engine = ModulationEngine::new();
         let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
-        engine.update(0.25, &empty_audio());
+        engine.update(0.25, 120.0, 0.0, &empty_audio());
         engine.assign("brightness", &uuid, 1.0, None);
         let _mod_val = engine.get_modulation("brightness");
     }
@@ -1472,7 +1594,7 @@ mod tests {
     fn engine_update_computes_values() {
         let mut engine = ModulationEngine::new();
         engine.add_source(ModulationSource::sine_lfo(1.0));
-        engine.update(0.0, &empty_audio());
+        engine.update(0.0, 120.0, 0.0, &empty_audio());
         let values = engine.current_values();
         assert_eq!(values.len(), 1);
     }
@@ -1483,7 +1605,7 @@ mod tests {
         let lfo0 = engine.add_source(ModulationSource::sine_lfo(1.0));
         let lfo1 = engine.add_source(ModulationSource::sine_lfo(2.0));
         engine.assign_mod_on_mod(&lfo0, "frequency", &lfo1, 0.5);
-        engine.update(1.0, &empty_audio());
+        engine.update(1.0, 120.0, 0.0, &empty_audio());
         assert!(engine.current_values().len() == 2);
     }
 
@@ -1504,7 +1626,7 @@ mod tests {
         let uuid = engine.add_source(ModulationSource::adsr(0.01, 0.01, 0.5, 0.01));
         engine.trigger_adsr(&uuid);
         for i in 0..20 {
-            engine.update(i as f32 * 0.01, &empty_audio());
+            engine.update(i as f32 * 0.01, 120.0, 0.0, &empty_audio());
         }
         let val = engine.current_value_for(&uuid);
         assert!(val > 0.0, "ADSR should produce non-zero after trigger");
@@ -1516,11 +1638,11 @@ mod tests {
         let uuid = engine.add_source(ModulationSource::adsr(0.01, 0.01, 0.5, 0.01));
         engine.trigger_adsr(&uuid);
         for i in 0..30 {
-            engine.update(i as f32 * 0.01, &empty_audio());
+            engine.update(i as f32 * 0.01, 120.0, 0.0, &empty_audio());
         }
         engine.release_adsr(&uuid);
         for i in 30..80 {
-            engine.update(i as f32 * 0.01, &empty_audio());
+            engine.update(i as f32 * 0.01, 120.0, 0.0, &empty_audio());
         }
         let val = engine.current_value_for(&uuid);
         assert!(val < 0.1, "ADSR should be near zero after release: {}", val);
@@ -1545,7 +1667,7 @@ mod tests {
     fn engine_component_modulation() {
         let mut engine = ModulationEngine::new();
         let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
-        engine.update(0.25, &empty_audio());
+        engine.update(0.25, 120.0, 0.0, &empty_audio());
         engine.assign("color", &uuid, 1.0, Some(0));
         engine.assign("color", &uuid, 0.5, Some(1));
         let r_mod = engine.get_modulation_for_component("color", Some(0));
@@ -1642,7 +1764,7 @@ mod tests {
                 sample_rate: 48000.0,
             },
         );
-        let val = source.calculate(0.0, 0.01, &audio, 0.0);
+        let val = source.calculate(0.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0, "Below noise gate should be silent");
     }
 
@@ -1732,7 +1854,7 @@ mod tests {
         engine.assign_mod_on_mod(&a, "frequency", &c, 0.5);
         // Must complete without hanging, values must be finite
         let audio = AudioValues::default();
-        engine.update(1.0, &audio);
+        engine.update(1.0, 120.0, 0.0, &audio);
         for v in engine.current_values() {
             assert!(v.is_finite(), "circular chain produced non-finite value");
         }
@@ -1750,7 +1872,7 @@ mod tests {
             engine.assign_mod_on_mod(&uuids[i + 1], "frequency", &uuids[i], 0.1);
         }
         let audio = AudioValues::default();
-        engine.update(1.0, &audio);
+        engine.update(1.0, 120.0, 0.0, &audio);
         // All 5 sources should have been evaluated
         assert_eq!(engine.current_values().len(), 5);
         for v in engine.current_values() {
@@ -1793,7 +1915,7 @@ mod tests {
         assert_eq!(engine.source_count(), 2);
         // Should still update without panic
         let audio = AudioValues::default();
-        engine.update(1.0, &audio);
+        engine.update(1.0, 120.0, 0.0, &audio);
         assert!(engine.has_source(&a));
         assert!(engine.has_source(&c));
     }
@@ -1816,7 +1938,7 @@ mod tests {
         let mut engine = ModulationEngine::new();
         let audio = AudioValues::default();
         // Update with 0 sources → no crash
-        engine.update(0.0, &audio);
+        engine.update(0.0, 120.0, 0.0, &audio);
         assert_eq!(engine.source_count(), 0);
         assert!(engine.current_values().is_empty());
     }
@@ -1857,10 +1979,14 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
         for i in 0..100 {
-            let val = lfo.calculate(i as f32 * 0.01, 0.01, &audio, 0.0);
+            let val = lfo.calculate(i as f32 * 0.01, 0.01, 120.0, 0.0, &audio, 0.0);
             assert!(val.is_finite(), "LFO freq=0 produced non-finite: {val}");
         }
     }
@@ -1873,9 +1999,13 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val = lfo.calculate(1.0, 0.01, &audio, 0.0);
+        let val = lfo.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         // (Inf * 1.0 + 0.0) % 1.0 = NaN — document this
         let _ = val; // must not panic
     }
@@ -1888,9 +2018,13 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val = lfo.calculate(1.0, 0.01, &audio, 0.0);
+        let val = lfo.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         let _ = val; // must not panic
     }
 
@@ -1902,9 +2036,13 @@ mod tests {
             phase: 0.0,
             amplitude: f32::NAN,
             bipolar: false,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val = lfo.calculate(0.5, 0.01, &audio, 0.0);
+        let val = lfo.calculate(0.5, 0.01, 120.0, 0.0, &audio, 0.0);
         let _ = val; // must not panic
     }
 
@@ -1916,9 +2054,13 @@ mod tests {
             phase: 0.0,
             amplitude: 1.0,
             bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
         };
         let audio = empty_audio();
-        let val = lfo.calculate(1.0, 0.01, &audio, 0.0);
+        let val = lfo.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!(
             val.is_finite(),
             "negative freq should produce finite: {val}"
@@ -1941,8 +2083,12 @@ mod tests {
                 phase: 0.0,
                 amplitude: 1.0,
                 bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            last_beat_phase: 0.0,
             };
-            let val = lfo.calculate(1e10, 0.01, &audio, 0.0);
+            let val = lfo.calculate(1e10, 0.01, 120.0, 0.0, &audio, 0.0);
             let _ = val; // must not panic
         }
     }
@@ -1958,7 +2104,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(0.5, 0.01, &audio, 0.0);
+        let val = seq.calculate(0.5, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!(val.is_finite(), "single step produced non-finite: {val}");
     }
 
@@ -1971,7 +2117,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(1.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         let _ = val; // must not panic
     }
 
@@ -1984,7 +2130,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(1.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         let _ = val; // must not panic
     }
 
@@ -1997,7 +2143,7 @@ mod tests {
             bipolar: false,
         };
         let audio = empty_audio();
-        let val = seq.calculate(1.0, 0.01, &audio, 0.0);
+        let val = seq.calculate(1.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert!(val.is_finite(), "zero rate produced non-finite: {val}");
     }
 
@@ -2011,7 +2157,7 @@ mod tests {
         };
         let audio = empty_audio();
         for i in 0..20 {
-            let val = seq.calculate(i as f32 * 0.25, 0.01, &audio, 0.0);
+            let val = seq.calculate(i as f32 * 0.25, 0.01, 120.0, 0.0, &audio, 0.0);
             let _ = val; // must not panic
         }
     }
@@ -2025,12 +2171,12 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
             assert!(val.is_finite(), "zero-time ADSR produced non-finite: {val}");
         }
         adsr.gate_off();
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
             assert!(val.is_finite(), "zero-time ADSR release non-finite: {val}");
         }
     }
@@ -2051,7 +2197,7 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..20 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
         }
         // must not panic
     }
@@ -2063,7 +2209,7 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..100 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
         }
         // Sustain = -1.0 may produce negative values — document, must not panic
     }
@@ -2075,11 +2221,11 @@ mod tests {
         let audio = empty_audio();
         let mut val = 0.0;
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
         }
         adsr.gate_off();
         for _ in 0..50 {
-            val = adsr.calculate(0.0, 0.016, &audio, val);
+            val = adsr.calculate(0.0, 0.016, 120.0, 0.0, &audio, val);
             // progress = stage_time / INFINITY = 0 — never completes release
         }
         // must not panic
@@ -2134,13 +2280,13 @@ mod tests {
             engine.add_source(ModulationSource::sine_lfo(i as f32 + 1.0));
         }
         // First tick may grow vectors
-        engine.update(0.0, &empty_audio());
+        engine.update(0.0, 120.0, 0.0, &empty_audio());
         let prev_len = engine.current_values().len();
         assert_eq!(prev_len, 16);
 
         // Subsequent ticks must not change length (no push calls)
         for i in 1..100 {
-            engine.update(i as f32 * 0.016, &empty_audio());
+            engine.update(i as f32 * 0.016, 120.0, 0.0, &empty_audio());
             assert_eq!(
                 engine.current_values().len(),
                 prev_len,

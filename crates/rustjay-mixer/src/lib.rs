@@ -638,10 +638,12 @@ impl EffectInstance for Mixer {
 
         // Tick UUID-stable modulation engine (T13).
         self.elapsed_time += dt;
+        let bpm = engine.effective_bpm();
+        let beat_phase = engine.effective_beat_phase();
         let audio = build_audio_values(&engine.audio);
         {
             let mut mod_eng = self.modulation.lock().unwrap();
-            mod_eng.update(self.elapsed_time, &audio);
+            mod_eng.update(self.elapsed_time, bpm, beat_phase, &audio);
         }
 
         // Read mixer-level params from the engine, then apply mixer modulation.

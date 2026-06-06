@@ -432,6 +432,10 @@ impl LfoBank {
                     phase,
                     amplitude: lfo.amplitude,
                     bipolar: true,
+                    tempo_sync: lfo.tempo_sync,
+                    division: lfo.division,
+                    phase_offset_degrees: lfo.phase_offset,
+                    last_beat_phase: 0.0,
                 };
                 ModulationSourceEntry::with_uuid(format!("lfo_{}", lfo.index), source)
             })
@@ -464,6 +468,10 @@ impl LfoBank {
                 phase,
                 amplitude: lfo.amplitude,
                 bipolar: true,
+                tempo_sync: lfo.tempo_sync,
+                division: lfo.division,
+                phase_offset_degrees: lfo.phase_offset,
+                last_beat_phase: 0.0,
             };
             let uuid = engine.add_source_with_uuid(format!("lfo_{}", lfo.index), source);
             if let Some(param_id) = lfo.target.param_id() {
