@@ -13,7 +13,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
 | 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher + hot-reload recreates `EffectNode` on `.fs` change in `lib.rs::prepare`)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
-| 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo |
+| 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo *(local `hap-rs` workspace at `~/developer/rust/hap-rs` provides `hap-parser` + `hap-qt` + `hap-wgpu`; integrates with wgpu for direct DXT1/DXT5/YCoCg/BC4/BC7/BC6H GPU upload)* |
 | 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; `CameraSource` uses a global `Arc<Mutex<CameraSession>>` cache keyed by device index, preventing double-open)* |
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
 | 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
@@ -43,7 +43,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 31 | **Multi-output** — headless outputs with surface assignments + async readback | T08.2 | done *(engine `HeadlessOutput` + async readback; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; Varda `prepare()` adds enabled headless configs at runtime; OutputsTab add/remove/edit)* |
 | 32 | **Network I/O — NDI** send/receive | T09.1 | done *(engine `rustjay-io/ndi_runtime`)* |
 | 33 | **Network I/O — SRT / HLS / LL-HLS / DASH / RTMP(S)** send + receive | T09.2 | todo *(see rustjay-io probe below)* |
-| 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(see rustjay-io probe below)* |
+| 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(HAP Q encode available via local `hap-rs` workspace; H.264/H.265/AV1/ProRes via ffmpeg)* |
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
 | 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.varda/scene.json` = `MixerState` + sequencer; `.varda/stage.json` = `VardaStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.varda/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
 | 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
@@ -133,8 +133,9 @@ Audited: `crates/rustjay-io/src/input/mod.rs`, `webcam.rs`, `ndi.rs`, `syphon_in
 
 - **Fully covered (reuse)**: webcam, NDI in/out, Syphon in/out, Spout in/out, V4L2 in/out.
 - **Partial / absent**: everything else in Phases 2/9/10.
-- **Biggest single gap**: video file decode + HAP GPU-native decode. The standalone Varda has ~1280 LOC in `internal/video/` handling this. No engine equivalent exists.
-- **Recommended approach**: add a new `rustjay-io` feature `ffmpeg` that brings in `rust-ffmpeg` or `ffmpeg-next`, implements `input/ffmpeg.rs` (file decode + loop/scrub/speed) and `output/recorder.rs` (H.264/H.265/AV1/ProRes encode). HAP decode can be a separate `input/hap.rs` or bundled under the same feature. SRT/HLS/DASH/RTMP can reuse the ffmpeg protocol layer (ffmpeg can ingest and output all four protocols) rather than writing protocol-specific Rust code.
+- **Biggest single gap**: video file decode (ffmpeg). The standalone Varda has ~1280 LOC in `internal/video/` handling this. No engine equivalent exists.
+- **HAP decode/encode**: **covered by local `hap-rs` workspace** (`~/developer/rust/hap-rs`). Provides `hap-parser` (frame parsing + Snappy decompression), `hap-qt` (QuickTime container read/write), `hap-wgpu` (direct DXT/BCn texture upload to wgpu). Native HAP encoding without FFmpeg. All HAP variants: Hap1 (DXT1), Hap5 (DXT5), HapY (YCoCg-DXT5), HapA (BC4), Hap7 (BC7), HapH (BC6H).
+- **Recommended approach**: add `hap-rs` crates as workspace dependencies (or git submodules). For ffmpeg-based sources (video file decode + SRT/HLS/DASH/RTMP protocol ingest), add a `ffmpeg` feature to `rustjay-io` with `input/ffmpeg.rs` using `ffmpeg-next` or `rust-ffmpeg`. HAP path uses `hap-rs` natively; non-HAP video path uses ffmpeg.
 
 ---
 
