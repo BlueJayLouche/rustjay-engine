@@ -20,7 +20,10 @@ pub enum MidiCommand {
     None,
     RefreshDevices,
     SelectDevice(String),
-    StartLearn { param_path: String, param_name: String },
+    StartLearn {
+        param_path: String,
+        param_name: String,
+    },
     CancelLearn,
     ClearMappings,
 }
@@ -49,7 +52,15 @@ pub struct MidiMapping {
 }
 
 impl MidiMapping {
-    pub fn new(kind: MidiMsgKind, selector: u8, channel: u8, name: &str, param_path: &str, min: f32, max: f32) -> Self {
+    pub fn new(
+        kind: MidiMsgKind,
+        selector: u8,
+        channel: u8,
+        name: &str,
+        param_path: &str,
+        min: f32,
+        max: f32,
+    ) -> Self {
         Self {
             kind,
             selector,
@@ -106,7 +117,11 @@ pub enum LearnState {
     /// Waiting for any MIDI input
     Waiting,
     /// A message was captured; kept for potential future two-step UI flows
-    Learned { kind: MidiMsgKind, selector: u8, channel: u8 },
+    Learned {
+        kind: MidiMsgKind,
+        selector: u8,
+        channel: u8,
+    },
 }
 
 /// A single received MIDI event (for debugging / last-input display)
@@ -168,7 +183,12 @@ impl MidiState {
         self.learning_param_name = Some(param_name.to_string());
         self.learning_param_min = min;
         self.learning_param_max = max;
-        log::info!("MIDI learn started for: {} (range {:.3}–{:.3})", param_name, min, max);
+        log::info!(
+            "MIDI learn started for: {} (range {:.3}–{:.3})",
+            param_name,
+            min,
+            max
+        );
     }
 
     /// Cancel learning
@@ -182,11 +202,27 @@ impl MidiState {
     /// Complete learning with the received message
     pub fn complete_learning(&mut self, kind: MidiMsgKind, selector: u8, channel: u8) {
         if let (Some(path), Some(name)) = (&self.learning_param_path, &self.learning_param_name) {
-            self.mappings.retain(|m| !(m.kind == kind && m.selector == selector && m.channel == channel));
-            let mapping = MidiMapping::new(kind, selector, channel, name, path, self.learning_param_min, self.learning_param_max);
+            self.mappings
+                .retain(|m| !(m.kind == kind && m.selector == selector && m.channel == channel));
+            let mapping = MidiMapping::new(
+                kind,
+                selector,
+                channel,
+                name,
+                path,
+                self.learning_param_min,
+                self.learning_param_max,
+            );
             self.mappings.push(mapping);
-            log::info!("MIDI mapped: {} -> {:?} {} ch{} (range {:.3}–{:.3})",
-                name, kind, selector, channel, self.learning_param_min, self.learning_param_max);
+            log::info!(
+                "MIDI mapped: {} -> {:?} {} ch{} (range {:.3}–{:.3})",
+                name,
+                kind,
+                selector,
+                channel,
+                self.learning_param_min,
+                self.learning_param_max
+            );
         }
         self.learn_state = LearnState::Idle;
         self.learning_param_path = None;
@@ -199,7 +235,12 @@ impl MidiState {
     /// and 0 for channel aftertouch.
     /// `value` is 0 to signal Note Off (either a real 0x80 or Note On with velocity 0).
     pub fn handle_message(&mut self, kind: MidiMsgKind, channel: u8, selector: u8, value: u8) {
-        self.last_input = Some(MidiInputEvent { kind, channel, selector, value });
+        self.last_input = Some(MidiInputEvent {
+            kind,
+            channel,
+            selector,
+            value,
+        });
 
         match self.learn_state {
             LearnState::Waiting => {
@@ -211,7 +252,10 @@ impl MidiState {
             }
             _ => {
                 for mapping in &mut self.mappings {
-                    if mapping.kind != kind || mapping.selector != selector || mapping.channel != channel {
+                    if mapping.kind != kind
+                        || mapping.selector != selector
+                        || mapping.channel != channel
+                    {
                         continue;
                     }
                     if kind == MidiMsgKind::Note && value == 0 {
@@ -302,7 +346,9 @@ impl MidiManager {
 
         if let Ok(mut tmp) = MidiInput::new("RustJay MIDI Check") {
             tmp.ignore(Ignore::None);
-            let available = tmp.ports().iter()
+            let available = tmp
+                .ports()
+                .iter()
                 .any(|p| tmp.port_name(p).ok().as_deref() == Some(name.as_str()));
             Some(available)
         } else {
@@ -345,50 +391,65 @@ impl MidiManager {
     pub fn connect(&mut self, device_name: &str) -> anyhow::Result<()> {
         self.disconnect();
 
-        let input = self.input.take()
+        let input = self
+            .input
+            .take()
             .ok_or_else(|| anyhow::anyhow!("MIDI input not available"))?;
 
         let ports = input.ports();
         let port = ports
             .into_iter()
-            .find(|p| input.port_name(p).map(|n| n == device_name).unwrap_or(false))
+            .find(|p| {
+                input
+                    .port_name(p)
+                    .map(|n| n == device_name)
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow::anyhow!("MIDI device '{}' not found", device_name))?;
 
         let state = Arc::clone(&self.state);
 
-        let conn = input.connect(
-            &port,
-            "rustjay-midi",
-            move |_stamp, message, _| {
-                if message.is_empty() { return; }
-                let status = message[0];
-                let kind_byte = status & 0xF0;
-                let channel   = status & 0x0F;
-
-                let msg = match kind_byte {
-                    // CC
-                    0xB0 if message.len() >= 3 =>
-                        Some((MidiMsgKind::Cc, channel, message[1], message[2])),
-                    // Note On — velocity 0 is treated as Note Off
-                    0x90 if message.len() >= 3 =>
-                        Some((MidiMsgKind::Note, channel, message[1], message[2])),
-                    // Note Off — forward as Note with value 0
-                    0x80 if message.len() >= 3 =>
-                        Some((MidiMsgKind::Note, channel, message[1], 0)),
-                    // Channel (mono) Aftertouch
-                    0xD0 if message.len() >= 2 =>
-                        Some((MidiMsgKind::Aftertouch, channel, 0, message[1])),
-                    _ => None,
-                };
-
-                if let Some((kind, ch, sel, val)) = msg {
-                    if let Ok(mut state) = state.lock() {
-                        state.handle_message(kind, ch, sel, val);
+        let conn = input
+            .connect(
+                &port,
+                "rustjay-midi",
+                move |_stamp, message, _| {
+                    if message.is_empty() {
+                        return;
                     }
-                }
-            },
-            (),
-        ).map_err(|e| anyhow::anyhow!("MIDI connect error: {}", e))?;
+                    let status = message[0];
+                    let kind_byte = status & 0xF0;
+                    let channel = status & 0x0F;
+
+                    let msg = match kind_byte {
+                        // CC
+                        0xB0 if message.len() >= 3 => {
+                            Some((MidiMsgKind::Cc, channel, message[1], message[2]))
+                        }
+                        // Note On — velocity 0 is treated as Note Off
+                        0x90 if message.len() >= 3 => {
+                            Some((MidiMsgKind::Note, channel, message[1], message[2]))
+                        }
+                        // Note Off — forward as Note with value 0
+                        0x80 if message.len() >= 3 => {
+                            Some((MidiMsgKind::Note, channel, message[1], 0))
+                        }
+                        // Channel (mono) Aftertouch
+                        0xD0 if message.len() >= 2 => {
+                            Some((MidiMsgKind::Aftertouch, channel, 0, message[1]))
+                        }
+                        _ => None,
+                    };
+
+                    if let Some((kind, ch, sel, val)) = msg {
+                        if let Ok(mut state) = state.lock() {
+                            state.handle_message(kind, ch, sel, val);
+                        }
+                    }
+                },
+                (),
+            )
+            .map_err(|e| anyhow::anyhow!("MIDI connect error: {}", e))?;
 
         self.connection = Some(conn);
 

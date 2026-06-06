@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex};
 static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 fn now_ms() -> u64 {
-    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+    EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 // ── Nibble reassembler (per-port, not shared) ─────────────────────────────
@@ -31,7 +34,10 @@ struct MtcDecoder {
 
 impl MtcDecoder {
     fn new() -> Self {
-        Self { nibbles: [0; 8], seen: 0 }
+        Self {
+            nibbles: [0; 8],
+            seen: 0,
+        }
     }
 
     fn feed_quarter_frame(&mut self, data: u8) -> Option<SmpteTime> {
@@ -48,23 +54,25 @@ impl MtcDecoder {
 
     /// Full-frame SysEx: `F0 7F <dev> 01 01 hr mn sc fr F7`
     fn parse_full_frame(msg: &[u8]) -> Option<SmpteTime> {
-        if msg.len() < 10 || msg[3] != 0x01 || msg[4] != 0x01 { return None; }
+        if msg.len() < 10 || msg[3] != 0x01 || msg[4] != 0x01 {
+            return None;
+        }
         let hr = msg[5];
         Some(SmpteTime {
-            hours:      hr & 0x1F,
-            minutes:    msg[6],
-            seconds:    msg[7],
-            frames:     msg[8],
+            hours: hr & 0x1F,
+            minutes: msg[6],
+            seconds: msg[7],
+            frames: msg[8],
             frame_rate: Self::decode_rate((hr >> 5) & 0x03),
         })
     }
 
     fn assemble(&self) -> SmpteTime {
         SmpteTime {
-            frames:     self.nibbles[0] | (self.nibbles[1] << 4),
-            seconds:    self.nibbles[2] | (self.nibbles[3] << 4),
-            minutes:    self.nibbles[4] | (self.nibbles[5] << 4),
-            hours:      self.nibbles[6] | ((self.nibbles[7] & 0x01) << 4),
+            frames: self.nibbles[0] | (self.nibbles[1] << 4),
+            seconds: self.nibbles[2] | (self.nibbles[3] << 4),
+            minutes: self.nibbles[4] | (self.nibbles[5] << 4),
+            hours: self.nibbles[6] | ((self.nibbles[7] & 0x01) << 4),
             frame_rate: Self::decode_rate((self.nibbles[7] >> 1) & 0x03),
         }
     }
@@ -91,15 +99,15 @@ impl MtcDecoder {
 
 fn pack_smpte(tc: &SmpteTime, running: bool, playing: bool) -> u64 {
     let rate = match tc.frame_rate {
-        MtcFrameRate::Fps24       => 0u64,
-        MtcFrameRate::Fps25       => 1u64,
+        MtcFrameRate::Fps24 => 0u64,
+        MtcFrameRate::Fps25 => 1u64,
         MtcFrameRate::Fps2997Drop => 2u64,
-        MtcFrameRate::Fps30       => 3u64,
+        MtcFrameRate::Fps30 => 3u64,
     };
     (tc.hours as u64)
         | ((tc.minutes as u64) << 5)
         | ((tc.seconds as u64) << 11)
-        | ((tc.frames  as u64) << 17)
+        | ((tc.frames as u64) << 17)
         | (rate << 22)
         | ((running as u64) << 24)
         | ((playing as u64) << 25)
@@ -107,10 +115,10 @@ fn pack_smpte(tc: &SmpteTime, running: bool, playing: bool) -> u64 {
 
 fn unpack_smpte(packed: u64) -> (SmpteTime, bool, bool) {
     let tc = SmpteTime {
-        hours:      ( packed        & 0x1F) as u8,
-        minutes:    ((packed >>  5) & 0x3F) as u8,
-        seconds:    ((packed >> 11) & 0x3F) as u8,
-        frames:     ((packed >> 17) & 0x1F) as u8,
+        hours: (packed & 0x1F) as u8,
+        minutes: ((packed >> 5) & 0x3F) as u8,
+        seconds: ((packed >> 11) & 0x3F) as u8,
+        frames: ((packed >> 17) & 0x1F) as u8,
         frame_rate: match (packed >> 22) & 0x03 {
             0 => MtcFrameRate::Fps24,
             1 => MtcFrameRate::Fps25,
@@ -141,8 +149,8 @@ struct MtcPublished {
 impl MtcPublished {
     fn new() -> Self {
         Self {
-            smpte:         AtomicU64::new(0),
-            last_qf_ms:    AtomicU64::new(0),
+            smpte: AtomicU64::new(0),
+            last_qf_ms: AtomicU64::new(0),
             source_device: Mutex::new(String::new()),
         }
     }
@@ -156,24 +164,23 @@ impl MtcPublished {
 /// (internally throttled to once per 5 s) to pick up devices plugged in after
 /// launch. The decoded [`MtcState`] is available via [`clone_state`](MtcReceiver::clone_state).
 pub struct MtcReceiver {
-    published:       Arc<MtcPublished>,
+    published: Arc<MtcPublished>,
     /// Port names we have successfully connected to.
     connected_names: Vec<String>,
     /// Live connections — dropping one closes the port.
-    connections:     Vec<MidiInputConnection<()>>,
-    last_refresh:    std::time::Instant,
+    connections: Vec<MidiInputConnection<()>>,
+    last_refresh: std::time::Instant,
 }
 
 impl MtcReceiver {
     /// Create a receiver and immediately connect to all currently visible ports.
     pub fn new() -> Self {
         let mut r = Self {
-            published:       Arc::new(MtcPublished::new()),
+            published: Arc::new(MtcPublished::new()),
             connected_names: Vec::new(),
-            connections:     Vec::new(),
+            connections: Vec::new(),
             // Make elapsed() > 5 s so the first refresh() call runs immediately.
-            last_refresh:    std::time::Instant::now()
-                - std::time::Duration::from_secs(10),
+            last_refresh: std::time::Instant::now() - std::time::Duration::from_secs(10),
         };
         r.refresh();
         r
@@ -183,14 +190,19 @@ impl MtcReceiver {
     ///
     /// Internally throttled: exits immediately if called again within 5 s.
     pub fn refresh(&mut self) {
-        if self.last_refresh.elapsed().as_secs() < 5 { return; }
+        if self.last_refresh.elapsed().as_secs() < 5 {
+            return;
+        }
         self.last_refresh = std::time::Instant::now();
 
         // Probe: list all port names with a throw-away MidiInput.
         let new_names = {
-            let Ok(mut probe) = MidiInput::new("RustJay MTC Probe") else { return };
+            let Ok(mut probe) = MidiInput::new("RustJay MTC Probe") else {
+                return;
+            };
             probe.ignore(Ignore::None);
-            probe.ports()
+            probe
+                .ports()
                 .iter()
                 .filter_map(|p| probe.port_name(p).ok())
                 .filter(|n| !self.connected_names.contains(n))
@@ -214,7 +226,7 @@ impl MtcReceiver {
             };
 
             let published = Arc::clone(&self.published);
-            let device    = name.clone();
+            let device = name.clone();
             // Each port gets its own decoder — no sharing, no locking on the
             // hot path (240 quarter-frames/sec at 30 fps MTC).
             let mut decoder = MtcDecoder::new();
@@ -223,7 +235,9 @@ impl MtcReceiver {
                 &port,
                 "rustjay-mtc",
                 move |_, msg, _| {
-                    if msg.is_empty() { return; }
+                    if msg.is_empty() {
+                        return;
+                    }
                     match msg[0] {
                         0xF1 if msg.len() >= 2 => {
                             // Record arrival time before any decode work.
@@ -239,21 +253,17 @@ impl MtcReceiver {
                                         src.push_str(&device);
                                     }
                                 }
-                                published.smpte.store(
-                                    pack_smpte(&tc, true, true),
-                                    Ordering::Release,
-                                );
+                                published
+                                    .smpte
+                                    .store(pack_smpte(&tc, true, true), Ordering::Release);
                             } else {
                                 // Running but no complete SMPTE yet — set flags only.
-                                published.smpte.fetch_or(
-                                    (1u64 << 24) | (1u64 << 25),
-                                    Ordering::Relaxed,
-                                );
+                                published
+                                    .smpte
+                                    .fetch_or((1u64 << 24) | (1u64 << 25), Ordering::Relaxed);
                             }
                         }
-                        0xF0 if msg.len() >= 10
-                            && msg[3] == 0x01 && msg[4] == 0x01 =>
-                        {
+                        0xF0 if msg.len() >= 10 && msg[3] == 0x01 && msg[4] == 0x01 => {
                             if let Some(tc) = MtcDecoder::parse_full_frame(msg) {
                                 log::info!("[MTC] Full-frame locate: {} from {}", tc, device);
                                 if let Ok(mut src) = published.source_device.try_lock() {
@@ -263,10 +273,9 @@ impl MtcReceiver {
                                     }
                                 }
                                 // Full-frame is a locate — running but not playing.
-                                published.smpte.store(
-                                    pack_smpte(&tc, true, false),
-                                    Ordering::Release,
-                                );
+                                published
+                                    .smpte
+                                    .store(pack_smpte(&tc, true, false), Ordering::Release);
                             }
                         }
                         _ => {}
@@ -292,7 +301,9 @@ impl MtcReceiver {
         let last = self.published.last_qf_ms.load(Ordering::Acquire);
         if now_ms().saturating_sub(last) > 500 {
             // Atomically clear the playing bit (bit 25).
-            self.published.smpte.fetch_and(!(1u64 << 25), Ordering::Relaxed);
+            self.published
+                .smpte
+                .fetch_and(!(1u64 << 25), Ordering::Relaxed);
         }
     }
 
@@ -300,11 +311,18 @@ impl MtcReceiver {
     pub fn clone_state(&self) -> MtcState {
         let packed = self.published.smpte.load(Ordering::Acquire);
         let (position, running, playing) = unpack_smpte(packed);
-        let source_device = self.published.source_device
+        let source_device = self
+            .published
+            .source_device
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
-        MtcState { position, running, playing, source_device }
+        MtcState {
+            position,
+            running,
+            playing,
+            source_device,
+        }
     }
 
     /// Port names currently being listened to.
@@ -321,7 +339,7 @@ mod tests {
 
     #[test]
     fn smpte_roundtrip_exhaustive() {
-        for hours   in 0u8..24 {
+        for hours in 0u8..24 {
             for minutes in 0u8..60 {
                 for seconds in 0u8..60 {
                     for frames in 0u8..30 {
@@ -331,14 +349,20 @@ mod tests {
                             MtcFrameRate::Fps2997Drop,
                             MtcFrameRate::Fps30,
                         ] {
-                            let tc = SmpteTime { hours, minutes, seconds, frames, frame_rate: rate };
+                            let tc = SmpteTime {
+                                hours,
+                                minutes,
+                                seconds,
+                                frames,
+                                frame_rate: rate,
+                            };
                             let packed = pack_smpte(&tc, true, false);
                             let (tc2, running, playing) = unpack_smpte(packed);
-                            assert_eq!(tc2.hours,      hours,   "hours mismatch");
-                            assert_eq!(tc2.minutes,    minutes, "minutes mismatch");
-                            assert_eq!(tc2.seconds,    seconds, "seconds mismatch");
-                            assert_eq!(tc2.frames,     frames,  "frames mismatch");
-                            assert_eq!(tc2.frame_rate, rate,    "rate mismatch");
+                            assert_eq!(tc2.hours, hours, "hours mismatch");
+                            assert_eq!(tc2.minutes, minutes, "minutes mismatch");
+                            assert_eq!(tc2.seconds, seconds, "seconds mismatch");
+                            assert_eq!(tc2.frames, frames, "frames mismatch");
+                            assert_eq!(tc2.frame_rate, rate, "rate mismatch");
                             assert!(running);
                             assert!(!playing);
                         }

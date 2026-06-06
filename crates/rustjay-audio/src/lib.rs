@@ -57,13 +57,17 @@ impl AudioAnalyzer {
     }
 
     /// Current FFT window size.
-    pub fn fft_size(&self) -> usize { self.fft_size }
+    pub fn fft_size(&self) -> usize {
+        self.fft_size
+    }
 
     /// Set the FFT window size.
     ///
     /// Common values are 1024, 2048, 4096, and 8192. The change takes effect
     /// the next time the stream is started.
-    pub fn set_fft_size(&mut self, size: usize) { self.fft_size = size; }
+    pub fn set_fft_size(&mut self, size: usize) {
+        self.fft_size = size;
+    }
 
     /// Start audio capture on the default input device.
     pub fn start(&mut self) -> anyhow::Result<String> {
@@ -74,7 +78,11 @@ impl AudioAnalyzer {
     ///
     /// Returns the actual device name that was opened.
     pub fn start_with_device(&mut self, device_name: Option<&str>) -> anyhow::Result<String> {
-        log::info!("[Audio] start_with_device: {:?}, fft_size: {}", device_name, self.fft_size);
+        log::info!(
+            "[Audio] start_with_device: {:?}, fft_size: {}",
+            device_name,
+            self.fft_size
+        );
         if self.stream.is_some() {
             self.running.store(false, Ordering::Release);
             self.stream = None;
@@ -88,7 +96,11 @@ impl AudioAnalyzer {
         let device = match device_name {
             Some(name) => host
                 .input_devices()?
-                .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
+                .find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == name)
+                        .unwrap_or(false)
+                })
                 .ok_or_else(|| anyhow::anyhow!("Audio device '{}' not found", name))?,
             None => host
                 .default_input_device()
@@ -103,19 +115,37 @@ impl AudioAnalyzer {
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => build_stream_f32(
-                &device, &config.into(), sample_rate, channels, fft_size,
-                Arc::clone(&self.running), Arc::clone(&self.output),
-                Arc::clone(&self.config), Arc::clone(&self.stream_error),
+                &device,
+                &config.into(),
+                sample_rate,
+                channels,
+                fft_size,
+                Arc::clone(&self.running),
+                Arc::clone(&self.output),
+                Arc::clone(&self.config),
+                Arc::clone(&self.stream_error),
             )?,
             cpal::SampleFormat::I16 => build_stream_i16(
-                &device, &config.into(), sample_rate, channels, fft_size,
-                Arc::clone(&self.running), Arc::clone(&self.output),
-                Arc::clone(&self.config), Arc::clone(&self.stream_error),
+                &device,
+                &config.into(),
+                sample_rate,
+                channels,
+                fft_size,
+                Arc::clone(&self.running),
+                Arc::clone(&self.output),
+                Arc::clone(&self.config),
+                Arc::clone(&self.stream_error),
             )?,
             cpal::SampleFormat::U16 => build_stream_u16(
-                &device, &config.into(), sample_rate, channels, fft_size,
-                Arc::clone(&self.running), Arc::clone(&self.output),
-                Arc::clone(&self.config), Arc::clone(&self.stream_error),
+                &device,
+                &config.into(),
+                sample_rate,
+                channels,
+                fft_size,
+                Arc::clone(&self.running),
+                Arc::clone(&self.output),
+                Arc::clone(&self.config),
+                Arc::clone(&self.stream_error),
             )?,
             _ => return Err(anyhow::anyhow!("Unsupported sample format")),
         };
@@ -123,7 +153,11 @@ impl AudioAnalyzer {
         stream.play()?;
         self.stream = Some(stream);
         self.running.store(true, Ordering::Release);
-        log::info!("Audio analyzer started (device: {}, fft: {})", actual_name, fft_size);
+        log::info!(
+            "Audio analyzer started (device: {}, fft: {})",
+            actual_name,
+            fft_size
+        );
         Ok(actual_name)
     }
 
@@ -158,23 +192,43 @@ impl AudioAnalyzer {
     }
 
     /// Set input gain applied before FFT.
-    pub fn set_amplitude(&self, v: f32)         { self.config.amplitude.store(v.to_bits(), Ordering::Relaxed); }
+    pub fn set_amplitude(&self, v: f32) {
+        self.config.amplitude.store(v.to_bits(), Ordering::Relaxed);
+    }
     /// Set smoothing factor for FFT output (0–0.99).
-    pub fn set_smoothing(&self, v: f32)         { self.config.smoothing.store(v.clamp(0.0, 0.99).to_bits(), Ordering::Relaxed); }
+    pub fn set_smoothing(&self, v: f32) {
+        self.config
+            .smoothing
+            .store(v.clamp(0.0, 0.99).to_bits(), Ordering::Relaxed);
+    }
     /// Whether automatic peak normalisation is enabled.
-    pub fn get_normalize(&self) -> bool         { self.config.normalize.load(Ordering::Relaxed) }
+    pub fn get_normalize(&self) -> bool {
+        self.config.normalize.load(Ordering::Relaxed)
+    }
     /// Enable or disable automatic peak normalisation.
-    pub fn set_normalize(&self, v: bool)        { self.config.normalize.store(v, Ordering::Relaxed); }
+    pub fn set_normalize(&self, v: bool) {
+        self.config.normalize.store(v, Ordering::Relaxed);
+    }
     /// Whether pink-noise compensation shaping is enabled.
-    pub fn get_pink_noise_shaping(&self) -> bool{ self.config.pink_noise_shaping.load(Ordering::Relaxed) }
+    pub fn get_pink_noise_shaping(&self) -> bool {
+        self.config.pink_noise_shaping.load(Ordering::Relaxed)
+    }
     /// Enable or disable pink-noise compensation shaping.
-    pub fn set_pink_noise_shaping(&self, v: bool){ self.config.pink_noise_shaping.store(v, Ordering::Relaxed); }
+    pub fn set_pink_noise_shaping(&self, v: bool) {
+        self.config.pink_noise_shaping.store(v, Ordering::Relaxed);
+    }
 }
 
-impl Default for AudioAnalyzer { fn default() -> Self { Self::new() } }
+impl Default for AudioAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Drop for AudioAnalyzer {
-    fn drop(&mut self) { self.stop(); }
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 // Re-export routing types from rustjay-core for backwards compatibility.

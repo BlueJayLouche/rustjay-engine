@@ -117,7 +117,11 @@ pub fn process_audio_frame(
     config: &Arc<AudioConfig>,
 ) {
     // Apply pre-computed Hann window in-place (no allocation, no transcendental calls)
-    for ((s, w), w_out) in frame.iter().zip(hann_window.iter()).zip(windowed_buf.iter_mut()) {
+    for ((s, w), w_out) in frame
+        .iter()
+        .zip(hann_window.iter())
+        .zip(windowed_buf.iter_mut())
+    {
         *w_out = s * w;
     }
 
@@ -156,14 +160,14 @@ pub fn process_audio_frame(
     // stays at zero — only actual signal is boosted.
     if pink_noise_shaping {
         const PINK_GAINS: [f32; 8] = [
-            1.0,   // Sub Bass  ~40 Hz (reference)
-            1.15,  // Bass      ~90 Hz  (+1.2 octaves)
-            1.30,  // Low Mid   ~185 Hz (+2.2 octaves)
-            1.50,  // Mid       ~375 Hz (+3.2 octaves)
-            1.80,  // High Mid  ~1000 Hz (+4.6 octaves)
-            2.20,  // High      ~3000 Hz (+6.2 octaves)
-            2.60,  // Very High ~6000 Hz (+7.2 octaves)
-            3.00,  // Presence  ~12000 Hz (+8.2 octaves)
+            1.0,  // Sub Bass  ~40 Hz (reference)
+            1.15, // Bass      ~90 Hz  (+1.2 octaves)
+            1.30, // Low Mid   ~185 Hz (+2.2 octaves)
+            1.50, // Mid       ~375 Hz (+3.2 octaves)
+            1.80, // High Mid  ~1000 Hz (+4.6 octaves)
+            2.20, // High      ~3000 Hz (+6.2 octaves)
+            2.60, // Very High ~6000 Hz (+7.2 octaves)
+            3.00, // Presence  ~12000 Hz (+8.2 octaves)
         ];
         for (band, &g) in bands.iter_mut().zip(PINK_GAINS.iter()) {
             *band = (*band * g).min(1.0);
@@ -192,10 +196,8 @@ pub fn process_audio_frame(
         *beat_energy = instant_energy;
     }
 
-    let phase = ((*beat_counter as f32
-        + (instant_energy / beat_energy.max(0.001)).min(1.0))
-        * 0.1)
-        % 1.0;
+    let phase =
+        ((*beat_counter as f32 + (instant_energy / beat_energy.max(0.001)).min(1.0)) * 0.1) % 1.0;
 
     // Normalization: track a single slow-decaying global peak across all bands.
     // All bands are scaled by the same factor → no per-band transient inversion.
