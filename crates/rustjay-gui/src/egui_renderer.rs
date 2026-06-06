@@ -41,7 +41,9 @@ impl EguiRenderer {
             .formats
             .iter()
             .copied()
-            .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
+            .find(|f| {
+                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            })
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
@@ -144,16 +146,16 @@ impl EguiRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture_id = self.renderer.register_native_texture(
-            &self.device,
-            &view,
-            wgpu::FilterMode::Linear,
-        );
+        let texture_id =
+            self.renderer
+                .register_native_texture(&self.device, &view, wgpu::FilterMode::Linear);
         self.preview_texture_ids.push(texture_id);
         self.preview_textures.insert(texture_id, texture);
         texture_id
@@ -226,7 +228,8 @@ impl EguiRenderer {
 
         // Get surface texture
         let surface_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
                 self.surface.configure(&self.device, &self.surface_config);
                 return Ok(());
@@ -282,8 +285,11 @@ impl EguiRenderer {
                 multiview_mask: None,
             });
 
-            self.renderer
-                .render(&mut render_pass.forget_lifetime(), &paint_jobs, &screen_descriptor);
+            self.renderer.render(
+                &mut render_pass.forget_lifetime(),
+                &paint_jobs,
+                &screen_descriptor,
+            );
         }
 
         // Submit encoder + any extra command buffers from update_buffers

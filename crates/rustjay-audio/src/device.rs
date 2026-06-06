@@ -3,7 +3,7 @@
 // Stream-construction helpers thread many real-time params through one call.
 #![allow(clippy::too_many_arguments)]
 
-use crate::fft::{AudioConfig, AudioOutput, process_audio_frame};
+use crate::fft::{process_audio_frame, AudioConfig, AudioOutput};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use realfft::RealFftPlanner;
@@ -62,17 +62,29 @@ pub fn build_stream_f32(
                 return;
             }
             mono_buf.clear();
-            mono_buf.extend(data.chunks(channels).map(|chunk| chunk.iter().sum::<f32>() / channels as f32));
+            mono_buf.extend(
+                data.chunks(channels)
+                    .map(|chunk| chunk.iter().sum::<f32>() / channels as f32),
+            );
             input_buffer.extend_from_slice(&mono_buf);
             while input_buffer.len() >= fft_size {
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
-                    &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
-                    &mut beat_energy, &mut beat_history, &mut beat_counter,
+                    &frame_buf,
+                    sample_rate,
+                    &hann_window,
+                    &r2c,
+                    &mut scratch,
+                    &mut windowed_buf,
+                    &mut spectrum_buf,
+                    &mut magnitudes_buf,
+                    &mut beat_energy,
+                    &mut beat_history,
+                    &mut beat_counter,
                     &mut norm_peak,
-                    &output, &audio_config,
+                    &output,
+                    &audio_config,
                 );
             }
         },
@@ -133,11 +145,20 @@ pub fn build_stream_i16(
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
-                    &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
-                    &mut beat_energy, &mut beat_history, &mut beat_counter,
+                    &frame_buf,
+                    sample_rate,
+                    &hann_window,
+                    &r2c,
+                    &mut scratch,
+                    &mut windowed_buf,
+                    &mut spectrum_buf,
+                    &mut magnitudes_buf,
+                    &mut beat_energy,
+                    &mut beat_history,
+                    &mut beat_counter,
                     &mut norm_peak,
-                    &output, &audio_config,
+                    &output,
+                    &audio_config,
                 );
             }
         },
@@ -198,11 +219,20 @@ pub fn build_stream_u16(
                 frame_buf.clear();
                 frame_buf.extend(input_buffer.drain(..fft_size));
                 process_audio_frame(
-                    &frame_buf, sample_rate, &hann_window, &r2c, &mut scratch,
-                    &mut windowed_buf, &mut spectrum_buf, &mut magnitudes_buf,
-                    &mut beat_energy, &mut beat_history, &mut beat_counter,
+                    &frame_buf,
+                    sample_rate,
+                    &hann_window,
+                    &r2c,
+                    &mut scratch,
+                    &mut windowed_buf,
+                    &mut spectrum_buf,
+                    &mut magnitudes_buf,
+                    &mut beat_energy,
+                    &mut beat_history,
+                    &mut beat_counter,
                     &mut norm_peak,
-                    &output, &audio_config,
+                    &output,
+                    &audio_config,
                 );
             }
         },

@@ -15,7 +15,10 @@ impl EguiControlGui {
             state.ui_scale
         };
         ui.label("UI Scale:");
-        if ui.add(egui::Slider::new(&mut ui_scale, 0.5..=2.0).trailing_fill(true)).changed() {
+        if ui
+            .add(egui::Slider::new(&mut ui_scale, 0.5..=2.0).trailing_fill(true))
+            .changed()
+        {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.ui_scale = ui_scale;
         }
@@ -25,7 +28,11 @@ impl EguiControlGui {
         ui.add_space(8.0);
 
         // Resolution settings
-        ui.label(egui::RichText::new("Resolution Settings").color(ACCENT_CYAN).strong());
+        ui.label(
+            egui::RichText::new("Resolution Settings")
+                .color(ACCENT_CYAN)
+                .strong(),
+        );
 
         let presets = [
             ("Custom", 0, 0),
@@ -43,7 +50,10 @@ impl EguiControlGui {
         ui.label("Internal Resolution (Processing):");
         let (current_internal_w, current_internal_h) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.resolution.internal_width, state.resolution.internal_height)
+            (
+                state.resolution.internal_width,
+                state.resolution.internal_height,
+            )
         };
 
         let mut internal_preset_idx = 0;
@@ -59,7 +69,10 @@ impl EguiControlGui {
             .selected_text(preset_names[internal_preset_idx])
             .show_ui(ui, |ui| {
                 for (i, name) in preset_names.iter().enumerate() {
-                    if ui.selectable_label(internal_preset_idx == i, *name).clicked() {
+                    if ui
+                        .selectable_label(internal_preset_idx == i, *name)
+                        .clicked()
+                    {
                         internal_preset_idx = i;
                     }
                 }
@@ -125,10 +138,13 @@ impl EguiControlGui {
         });
 
         ui.add_space(8.0);
-        let apply_btn = egui::Button::new(egui::RichText::new("Apply Resolution Changes").strong().color(Color32::BLACK))
-            .fill(ACCENT_GREEN);
-        if ui.add(apply_btn).clicked()
-        {
+        let apply_btn = egui::Button::new(
+            egui::RichText::new("Apply Resolution Changes")
+                .strong()
+                .color(Color32::BLACK),
+        )
+        .fill(ACCENT_GREEN);
+        if ui.add(apply_btn).clicked() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.resolution.internal_width = self.pending_internal_width;
             state.resolution.internal_height = self.pending_internal_height;
@@ -136,16 +152,24 @@ impl EguiControlGui {
             state.output_height = self.pending_output_height;
             state.output_command = OutputCommand::ResizeOutput;
             state.save_settings_requested = true;
-            log::info!("Resolution changed - Internal: {}x{}, Output: {}x{}",
-                self.pending_internal_width, self.pending_internal_height,
-                self.pending_output_width, self.pending_output_height);
+            log::info!(
+                "Resolution changed - Internal: {}x{}, Output: {}x{}",
+                self.pending_internal_width,
+                self.pending_internal_height,
+                self.pending_output_width,
+                self.pending_output_height
+            );
         }
 
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Keyboard Shortcuts:").color(ACCENT_CYAN).strong());
+        ui.label(
+            egui::RichText::new("Keyboard Shortcuts:")
+                .color(ACCENT_CYAN)
+                .strong(),
+        );
         ui.label("• Shift+F — Toggle Fullscreen");
         ui.label("• Shift+T — Tap Tempo");
         ui.label("• Escape — Exit Application");
@@ -155,10 +179,15 @@ impl EguiControlGui {
         ui.separator();
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Performance (Output Window)").color(ACCENT_CYAN).strong());
+        ui.label(
+            egui::RichText::new("Performance (Output Window)")
+                .color(ACCENT_CYAN)
+                .strong(),
+        );
         let (fps, frame_time_ms) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.performance.fps, state.performance.frame_time_ms)
+            let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
+            (perf.fps, perf.frame_time_ms)
         };
         ui.label(format!("Output FPS: {:.1}", fps));
         ui.label(format!("Frame Time: {:.2} ms", frame_time_ms));
@@ -166,12 +195,22 @@ impl EguiControlGui {
         ui.add_space(8.0);
         ui.label("Target FPS:");
         let fps_options = [24u32, 30, 48, 60, 90, 120];
-        let fps_labels = ["24 fps", "30 fps", "48 fps", "60 fps (recommended)", "90 fps", "120 fps"];
+        let fps_labels = [
+            "24 fps",
+            "30 fps",
+            "48 fps",
+            "60 fps (recommended)",
+            "90 fps",
+            "120 fps",
+        ];
         let target_fps_val = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.target_fps
         };
-        let mut current_idx = fps_options.iter().position(|&f| f == target_fps_val).unwrap_or(3);
+        let mut current_idx = fps_options
+            .iter()
+            .position(|&f| f == target_fps_val)
+            .unwrap_or(3);
         egui::ComboBox::from_id_salt("target_fps")
             .width(180.0)
             .selected_text(fps_labels[current_idx])
@@ -192,14 +231,21 @@ impl EguiControlGui {
         ui.separator();
         ui.add_space(8.0);
 
-        let save_btn = egui::Button::new(egui::RichText::new("💾 Save All Settings").strong().color(Color32::BLACK))
-            .fill(ACCENT_CYAN);
-        if ui.add(save_btn).clicked()
-        {
+        let save_btn = egui::Button::new(
+            egui::RichText::new("💾 Save All Settings")
+                .strong()
+                .color(Color32::BLACK),
+        )
+        .fill(ACCENT_CYAN);
+        if ui.add(save_btn).clicked() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.save_settings_requested = true;
             log::info!("Save settings requested from GUI");
         }
-        ui.label(egui::RichText::new("Settings are auto-saved on exit, or manually with this button.").size(11.0).color(TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new("Settings are auto-saved on exit, or manually with this button.")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
     }
 }

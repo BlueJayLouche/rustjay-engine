@@ -8,9 +8,13 @@
 // This is a line/char scanner with frequent lookahead (`lines[i+1]`, `chars[j]`)
 // and manual prefix/suffix matching; index-based loops and manual stripping read
 // more clearly here than iterator adapters.
-#![allow(clippy::needless_range_loop, clippy::manual_strip, clippy::while_let_loop)]
+#![allow(
+    clippy::needless_range_loop,
+    clippy::manual_strip,
+    clippy::while_let_loop
+)]
 
-use isf::{Isf, InputType};
+use isf::{InputType, Isf};
 
 /// Maximum number of ISF uniforms (float/bool/int inputs + 4 built-ins).
 pub const MAX_ISF_UNIFORMS: usize = 64;
@@ -38,10 +42,18 @@ pub fn generate_wgsl(isf: &Isf, glsl_src: &str) -> Result<Transpiled, String> {
     let has_main_image = glsl_body.contains("void mainImage");
     // has_image_input: true when any image/audio input is present, OR when the GLSL source uses
     // IMG sampling macros (persistent-buffer shaders that reference their own rendered output).
-    let has_image_input = isf.inputs.iter().any(|i| matches!(
-        i.ty, InputType::Image | InputType::Audio(_) | InputType::AudioFft(_)
-    )) || {
-        let sampling_macros = ["IMG_NORM_PIXEL", "IMG_PIXEL", "IMG_THIS_PIXEL", "IMG_THIS_NORM_PIXEL"];
+    let has_image_input = isf.inputs.iter().any(|i| {
+        matches!(
+            i.ty,
+            InputType::Image | InputType::Audio(_) | InputType::AudioFft(_)
+        )
+    }) || {
+        let sampling_macros = [
+            "IMG_NORM_PIXEL",
+            "IMG_PIXEL",
+            "IMG_THIS_PIXEL",
+            "IMG_THIS_NORM_PIXEL",
+        ];
         sampling_macros.iter().any(|m| glsl_body.contains(m))
     };
 
@@ -78,7 +90,13 @@ pub fn generate_wgsl(isf: &Isf, glsl_src: &str) -> Result<Transpiled, String> {
     let preamble = generate_preamble(isf, &uniform_index, has_image_input);
 
     // Step 5: preprocess the GLSL body
-    let processed = preprocess_glsl(glsl_body, isf, &uniform_index, has_main_image, has_image_input);
+    let processed = preprocess_glsl(
+        glsl_body,
+        isf,
+        &uniform_index,
+        has_main_image,
+        has_image_input,
+    );
 
     Ok(Transpiled {
         wgsl: format!("{}\n{}", preamble, processed),
@@ -122,7 +140,11 @@ fn generate_preamble(_isf: &Isf, uniform_index: &UniformIndex, has_image_input: 
     }
     // Pad to reach the built-in block (must be 4-float aligned)
     let scalar_count = uniform_index.len();
-    let pad_needed = if !scalar_count.is_multiple_of(4) { 4 - (scalar_count % 4) } else { 0 };
+    let pad_needed = if !scalar_count.is_multiple_of(4) {
+        4 - (scalar_count % 4)
+    } else {
+        0
+    };
     for i in 0..pad_needed {
         out.push_str(&format!("    _pad{}: f32,\n", i));
     }
@@ -172,7 +194,7 @@ fn preprocess_glsl(
 
     // --- Preprocessor directives ---
     src = strip_preprocessor_blocks(&src);
-    src = expand_fn_like_macros(&src);   // parameterized #define macros before const conversion
+    src = expand_fn_like_macros(&src); // parameterized #define macros before const conversion
     src = convert_define_to_const(&src);
 
     // --- Strip GLSL precision qualifiers (highp/mediump/lowp used inline in declarations) ---
@@ -204,12 +226,19 @@ fn preprocess_glsl(
     // fix_builtin_type_mismatches into broadcasting scalar literals to vec2.)
     // IMPORTANT: replace multi-char swizzles (e.g. .xy) BEFORE single-char (.x) so
     // "RENDERSIZE.xy" doesn't get partially matched as "isf_u.rendersize_xy".
-    src = src.replace("RENDERSIZE.xy", "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)");
+    src = src.replace(
+        "RENDERSIZE.xy",
+        "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)",
+    );
     src = src.replace("RENDERSIZE.x", "isf_u.rendersize_x");
     src = src.replace("RENDERSIZE.y", "isf_u.rendersize_y");
     src = src.replace("RENDERSIZE[0]", "isf_u.rendersize_x");
     src = src.replace("RENDERSIZE[1]", "isf_u.rendersize_y");
-    src = replace_word(&src, "RENDERSIZE", "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)");
+    src = replace_word(
+        &src,
+        "RENDERSIZE",
+        "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)",
+    );
     src = replace_word(&src, "FRAMEINDEX", "isf_u.frame");
     src = replace_word(&src, "TIME", "isf_u.time");
     src = replace_word(&src, "TIMEDELTA", "(1.0/60.0)");
@@ -219,7 +248,11 @@ fn preprocess_glsl(
     // Some shaders declare `uniform vec2 renderSize;` instead of using RENDERSIZE.
     // After strip_uniform_declarations removes the declaration, replace bare uses.
     if !uniform_index.iter().any(|(n, _)| n == "renderSize") {
-        src = replace_word(&src, "renderSize", "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)");
+        src = replace_word(
+            &src,
+            "renderSize",
+            "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)",
+        );
     }
 
     // ISF image-rect variables (e.g. `_inputImage_imgRect`, `_maskImage_imgRect`).
@@ -234,10 +267,16 @@ fn preprocess_glsl(
                     let suffix_end = pos + "_imgRect".len();
                     let bytes = s.as_bytes();
                     let mut start = pos;
-                    while start > 0 && (bytes[start-1].is_ascii_alphanumeric() || bytes[start-1] == b'_') {
+                    while start > 0
+                        && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+                    {
                         start -= 1;
                     }
-                    s = format!("{}vec4<f32>(0.0, 0.0, 1.0, 1.0){}", &s[..start], &s[suffix_end..]);
+                    s = format!(
+                        "{}vec4<f32>(0.0, 0.0, 1.0, 1.0){}",
+                        &s[..start],
+                        &s[suffix_end..]
+                    );
                 }
                 out2.push_str(&s);
             } else {
@@ -245,7 +284,9 @@ fn preprocess_glsl(
             }
             out2.push('\n');
         }
-        if !src.ends_with('\n') && out2.ends_with('\n') { out2.pop(); }
+        if !src.ends_with('\n') && out2.ends_with('\n') {
+            out2.pop();
+        }
         src = out2;
     }
 
@@ -282,7 +323,9 @@ fn preprocess_glsl(
 
     // --- Remap Point2D and Color inputs → vec2/vec4 expressions (before scalar remapping) ---
     // Do longest names first to avoid partial matches on shorter names.
-    let mut compound_sorted: Vec<&isf::Input> = isf.inputs.iter()
+    let mut compound_sorted: Vec<&isf::Input> = isf
+        .inputs
+        .iter()
         .filter(|i| matches!(i.ty, InputType::Point2d(_) | InputType::Color(_)))
         .collect();
     compound_sorted.sort_by_key(|a| std::cmp::Reverse(a.name.len()));
@@ -290,7 +333,10 @@ fn preprocess_glsl(
         let safe = sanitize_ident(&input.name);
         let replacement = match &input.ty {
             InputType::Point2d(_) => format!("vec2<f32>(isf_u.{}_x, isf_u.{}_y)", safe, safe),
-            InputType::Color(_)   => format!("vec4<f32>(isf_u.{}_r, isf_u.{}_g, isf_u.{}_b, isf_u.{}_a)", safe, safe, safe, safe),
+            InputType::Color(_) => format!(
+                "vec4<f32>(isf_u.{}_r, isf_u.{}_g, isf_u.{}_b, isf_u.{}_a)",
+                safe, safe, safe, safe
+            ),
             _ => unreachable!(),
         };
         src = replace_word(&src, &input.name, &replacement);
@@ -299,12 +345,16 @@ fn preprocess_glsl(
     // --- Remap ISF scalar input names to isf_u.NAME ---
     // Skip compound-input component names (name_x, name_y, etc.) — they're now inside
     // the vec2<f32>(...) expressions generated above, so don't replace them a second time.
-    let compound_component_names: std::collections::HashSet<String> = isf.inputs.iter()
+    let compound_component_names: std::collections::HashSet<String> = isf
+        .inputs
+        .iter()
         .flat_map(|i| match &i.ty {
             InputType::Point2d(_) => vec![format!("{}_x", i.name), format!("{}_y", i.name)],
-            InputType::Color(_)   => vec![
-                format!("{}_r", i.name), format!("{}_g", i.name),
-                format!("{}_b", i.name), format!("{}_a", i.name),
+            InputType::Color(_) => vec![
+                format!("{}_r", i.name),
+                format!("{}_g", i.name),
+                format!("{}_b", i.name),
+                format!("{}_a", i.name),
             ],
             _ => vec![],
         })
@@ -314,15 +364,20 @@ fn preprocess_glsl(
     // Long inputs are also stored as f32, but GLSL uses them as int.
     // Replace long inputs with `i32(isf_u.NAME)` so integer contexts work in WGSL.
     // Do longest names first to avoid partial matches.
-    let bool_inputs: std::collections::HashSet<&str> = isf.inputs.iter()
+    let bool_inputs: std::collections::HashSet<&str> = isf
+        .inputs
+        .iter()
         .filter(|i| matches!(i.ty, InputType::Bool(_) | InputType::Event))
         .map(|i| i.name.as_str())
         .collect();
-    let long_inputs: std::collections::HashSet<&str> = isf.inputs.iter()
+    let long_inputs: std::collections::HashSet<&str> = isf
+        .inputs
+        .iter()
         .filter(|i| matches!(i.ty, InputType::Long(_)))
         .map(|i| i.name.as_str())
         .collect();
-    let mut sorted_uniforms: Vec<&(String, usize)> = uniform_index.iter()
+    let mut sorted_uniforms: Vec<&(String, usize)> = uniform_index
+        .iter()
         .filter(|(name, _)| !compound_component_names.contains(name))
         .collect();
     sorted_uniforms.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
@@ -468,15 +523,15 @@ fn preprocess_glsl(
             _isf_uv + vec2<f32>(2.0/isf_u.rendersize_x, 0.0), \
             _isf_uv + vec2<f32>(0.0, -1.0/isf_u.rendersize_y), \
             _isf_uv + vec2<f32>(0.0, 1.0/isf_u.rendersize_y), \
-            _isf_uv + vec2<f32>(0.0, 2.0/isf_u.rendersize_y));".to_string()
+            _isf_uv + vec2<f32>(0.0, 2.0/isf_u.rendersize_y));"
+                .to_string(),
         );
     }
 
     // rotmat: ISF rotation matrix varying. Inject identity mat2x2 placeholder.
     if src.contains("rotmat") {
-        injected_locals.push(
-            "    let rotmat: mat2x2<f32> = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);".to_string()
-        );
+        injected_locals
+            .push("    let rotmat: mat2x2<f32> = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);".to_string());
     }
 
     // --- Entry point ---
@@ -519,10 +574,15 @@ fn fix_bool_in_vec_constructors(src: &str) -> String {
         let s = s.trim();
         // Parenthesized comparison: `(expr == ...) ` or `(expr != ...)`
         if s.starts_with('(') && s.ends_with(')') {
-            let inner = &s[1..s.len()-1];
-            if inner.contains("==") || inner.contains("!=") || inner.contains("<=")
-                || inner.contains(">=") || inner.contains(" < ") || inner.contains(" > ")
-                || inner.contains("&&") || inner.contains("||")
+            let inner = &s[1..s.len() - 1];
+            if inner.contains("==")
+                || inner.contains("!=")
+                || inner.contains("<=")
+                || inner.contains(">=")
+                || inner.contains(" < ")
+                || inner.contains(" > ")
+                || inner.contains("&&")
+                || inner.contains("||")
             {
                 return true;
             }
@@ -532,22 +592,26 @@ fn fix_bool_in_vec_constructors(src: &str) -> String {
             return true;
         }
         // starts with `!` (boolean not)
-        if s.starts_with('!') { return true; }
+        if s.starts_with('!') {
+            return true;
+        }
         // any/all builtins
-        if s.starts_with("any(") || s.starts_with("all(") { return true; }
+        if s.starts_with("any(") || s.starts_with("all(") {
+            return true;
+        }
         false
     }
 
-    let vec_prefixes: &[&str] = &[
-        "vec4<f32>(", "vec3<f32>(", "vec2<f32>(",
-    ];
+    let vec_prefixes: &[&str] = &["vec4<f32>(", "vec3<f32>(", "vec2<f32>("];
     let lines: Vec<&str> = src.lines().collect();
     let mut out = String::with_capacity(src.len());
 
     for &line in &lines {
         let mut result = line.to_owned();
         for &prefix in vec_prefixes {
-            if !result.contains(prefix) { continue; }
+            if !result.contains(prefix) {
+                continue;
+            }
             let mut s2 = String::with_capacity(result.len() + 32);
             let mut rest: &str = &result;
             loop {
@@ -555,7 +619,11 @@ fn fix_bool_in_vec_constructors(src: &str) -> String {
                     s2.push_str(rest);
                     break;
                 };
-                let before_char = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+                let before_char = if pos > 0 {
+                    rest.as_bytes()[pos - 1] as char
+                } else {
+                    ' '
+                };
                 if is_word_char(before_char) {
                     s2.push_str(&rest[..pos + 1]);
                     rest = &rest[pos + 1..];
@@ -570,14 +638,17 @@ fn fix_bool_in_vec_constructors(src: &str) -> String {
                 }
                 // Process each argument
                 let args = split_top_level_commas(args_str);
-                let fixed_args: Vec<String> = args.iter().map(|a| {
-                    let t = a.trim();
-                    if looks_like_bool_expr(t) {
-                        format!("f32({})", t)
-                    } else {
-                        t.to_owned()
-                    }
-                }).collect();
+                let fixed_args: Vec<String> = args
+                    .iter()
+                    .map(|a| {
+                        let t = a.trim();
+                        if looks_like_bool_expr(t) {
+                            format!("f32({})", t)
+                        } else {
+                            t.to_owned()
+                        }
+                    })
+                    .collect();
                 s2.push_str(&fixed_args.join(", "));
                 s2.push(')');
                 rest = after_close;
@@ -587,7 +658,9 @@ fn fix_bool_in_vec_constructors(src: &str) -> String {
         out.push_str(&result);
         out.push('\n');
     }
-    if !src.ends_with('\n') && out.ends_with('\n') { out.pop(); }
+    if !src.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
@@ -664,8 +737,7 @@ fn add_missing_function_returns(src: &str) -> String {
 
         // Track if this is a return statement at the function body level (depth 1).
         if fn_return_type.is_some() && !is_comment && !trimmed.is_empty() && brace_depth == 1 {
-            last_depth1_was_return =
-                trimmed.starts_with("return ") || trimmed == "return;";
+            last_depth1_was_return = trimmed.starts_with("return ") || trimmed == "return;";
         }
 
         out_lines.push(line.to_string());
@@ -676,19 +748,43 @@ fn add_missing_function_returns(src: &str) -> String {
 
 fn line_ends_with_binary_op(s: &str) -> bool {
     let t = s.trim_end();
-    t.ends_with("&&") || t.ends_with("||") || t.ends_with("??")
+    t.ends_with("&&")
+        || t.ends_with("||")
+        || t.ends_with("??")
         || (t.ends_with('+') && !t.ends_with("++"))
         || (t.ends_with('-') && !t.ends_with("--"))
-        || t.ends_with('*') || t.ends_with('/') || t.ends_with('%')
-        || t.ends_with('|') || t.ends_with('&') || t.ends_with('^')
+        || t.ends_with('*')
+        || t.ends_with('/')
+        || t.ends_with('%')
+        || t.ends_with('|')
+        || t.ends_with('&')
+        || t.ends_with('^')
         || t.ends_with("return")
 }
 
 fn fix_discarded_must_use_calls(src: &str) -> String {
     let wgsl_keywords: &[&str] = &[
-        "if", "for", "while", "else", "return", "let", "var", "fn", "struct",
-        "const", "break", "continue", "loop", "switch", "case", "default",
-        "@fragment", "@vertex", "@group", "@builtin", "@location",
+        "if",
+        "for",
+        "while",
+        "else",
+        "return",
+        "let",
+        "var",
+        "fn",
+        "struct",
+        "const",
+        "break",
+        "continue",
+        "loop",
+        "switch",
+        "case",
+        "default",
+        "@fragment",
+        "@vertex",
+        "@group",
+        "@builtin",
+        "@location",
     ];
     let lines: Vec<&str> = src.lines().collect();
     let mut out = String::with_capacity(src.len());
@@ -698,21 +794,33 @@ fn fix_discarded_must_use_calls(src: &str) -> String {
         // Quick checks: ends with `;`, not empty, not a comment
         if trimmed.ends_with(';') && !trimmed.starts_with("//") && !trimmed.is_empty() {
             // Skip if this line continues a multi-line expression (prev line ended with binary op)
-            let prev_trimmed = lines[..idx].iter().rev()
+            let prev_trimmed = lines[..idx]
+                .iter()
+                .rev()
                 .find(|l| !l.trim().is_empty())
                 .map(|l| l.trim())
                 .unwrap_or("");
             let is_continuation = line_ends_with_binary_op(prev_trimmed);
             // Check it starts with an identifier (function call)
-            let ident_end = trimmed.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(0);
-            if !is_continuation && ident_end > 0 && trimmed.as_bytes().get(ident_end).copied() == Some(b'(') {
+            let ident_end = trimmed
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(0);
+            if !is_continuation
+                && ident_end > 0
+                && trimmed.as_bytes().get(ident_end).copied() == Some(b'(')
+            {
                 let ident = &trimmed[..ident_end];
                 // Skip if it's a WGSL keyword
                 if !wgsl_keywords.contains(&ident) {
                     // Skip continuation lines: if `)` outnumbers `(`, we're inside an outer paren.
-                    let paren_balance: i32 = trimmed.chars().map(|c| match c {
-                        '(' => 1, ')' => -1, _ => 0
-                    }).sum();
+                    let paren_balance: i32 = trimmed
+                        .chars()
+                        .map(|c| match c {
+                            '(' => 1,
+                            ')' => -1,
+                            _ => 0,
+                        })
+                        .sum();
                     // Check there's no top-level `=` assignment in the line
                     let has_assign = {
                         let mut depth = 0i32;
@@ -724,10 +832,14 @@ fn fix_discarded_must_use_calls(src: &str) -> String {
                                 b'(' | b'[' | b'{' => depth += 1,
                                 b')' | b']' | b'}' => depth -= 1,
                                 b'=' if depth == 0 => {
-                                    let prev = if i > 0 { bytes[i-1] } else { 0 };
-                                    let next = if i + 1 < bytes.len() { bytes[i+1] } else { 0 };
-                                    if prev != b'!' && prev != b'<' && prev != b'>' && prev != b'='
-                                       && next != b'=' {
+                                    let prev = if i > 0 { bytes[i - 1] } else { 0 };
+                                    let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+                                    if prev != b'!'
+                                        && prev != b'<'
+                                        && prev != b'>'
+                                        && prev != b'='
+                                        && next != b'='
+                                    {
                                         found = true;
                                         break;
                                     }
@@ -786,7 +898,14 @@ fn move_fragment_fn_to_end(src: &str) -> String {
     let mut entered = false;
     for i in frag_start..n {
         for c in lines[i].chars() {
-            match c { '{' => { brace_depth += 1; entered = true; } '}' => brace_depth -= 1, _ => {} }
+            match c {
+                '{' => {
+                    brace_depth += 1;
+                    entered = true;
+                }
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
         }
         if entered && brace_depth <= 0 {
             frag_end = i + 1;
@@ -817,8 +936,10 @@ fn move_fragment_fn_to_end(src: &str) -> String {
 ///
 /// Returns (modified_src_with_lines_removed, vec_of_wgsl_local_decl_lines).
 fn extract_module_scope_runtime_vars(src: &str) -> (String, Vec<String>) {
-    let glsl_types = ["float ", "int ", "uint ", "bool ", "vec2 ", "vec3 ", "vec4 ",
-                      "ivec2 ", "ivec3 ", "ivec4 ", "mat2 ", "mat3 ", "mat4 "];
+    let glsl_types = [
+        "float ", "int ", "uint ", "bool ", "vec2 ", "vec3 ", "vec4 ", "ivec2 ", "ivec3 ",
+        "ivec4 ", "mat2 ", "mat3 ", "mat4 ",
+    ];
 
     let mut out = String::with_capacity(src.len());
     let mut injected = Vec::new();
@@ -832,7 +953,11 @@ fn extract_module_scope_runtime_vars(src: &str) -> (String, Vec<String>) {
 
         // Track brace depth
         for c in trimmed.chars() {
-            match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+            match c {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
         }
 
         // Only extract from module scope (depth 0 after processing the line's braces)
@@ -920,7 +1045,9 @@ fn strip_preprocessor_blocks(src: &str) -> String {
         }
         if trimmed == "#endif" {
             depth -= 1;
-            if depth == 0 { in_strip_block = false; }
+            if depth == 0 {
+                in_strip_block = false;
+            }
             continue;
         }
         if in_strip_block {
@@ -928,7 +1055,9 @@ fn strip_preprocessor_blocks(src: &str) -> String {
         }
 
         // Strip standalone precision declarations outside preprocessor blocks
-        if trimmed.starts_with("precision ") { continue; }
+        if trimmed.starts_with("precision ") {
+            continue;
+        }
 
         out.push_str(line);
         out.push('\n');
@@ -952,7 +1081,11 @@ fn replace_word_exact(src: &str, pattern: &str, replacement: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
     while let Some(pos) = rest.find(pattern) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -986,14 +1119,19 @@ fn convert_prefix_incr_in_line(line: &str) -> String {
     let mut out = String::with_capacity(n + 4);
     let mut i = 0;
     while i < n {
-        if i + 1 < n && chars[i] == '+' && chars[i+1] == '+' {
+        if i + 1 < n && chars[i] == '+' && chars[i + 1] == '+' {
             // Check if it's prefix (next is identifier, prev is not identifier)
-            let prev = if i > 0 { chars[i-1] } else { ' ' };
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
             let rest_start = i + 2;
-            if !is_word_char(prev) && rest_start < n && (chars[rest_start].is_alphanumeric() || chars[rest_start] == '_') {
+            if !is_word_char(prev)
+                && rest_start < n
+                && (chars[rest_start].is_alphanumeric() || chars[rest_start] == '_')
+            {
                 // Collect identifier
                 let mut j = rest_start;
-                while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') { j += 1; }
+                while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
                 let ident: String = chars[rest_start..j].iter().collect();
                 out.push_str(&ident);
                 out.push_str("++");
@@ -1001,12 +1139,17 @@ fn convert_prefix_incr_in_line(line: &str) -> String {
                 continue;
             }
         }
-        if i + 1 < n && chars[i] == '-' && chars[i+1] == '-' {
-            let prev = if i > 0 { chars[i-1] } else { ' ' };
+        if i + 1 < n && chars[i] == '-' && chars[i + 1] == '-' {
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
             let rest_start = i + 2;
-            if !is_word_char(prev) && rest_start < n && (chars[rest_start].is_alphanumeric() || chars[rest_start] == '_') {
+            if !is_word_char(prev)
+                && rest_start < n
+                && (chars[rest_start].is_alphanumeric() || chars[rest_start] == '_')
+            {
                 let mut j = rest_start;
-                while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') { j += 1; }
+                while j < n && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                    j += 1;
+                }
                 let ident: String = chars[rest_start..j].iter().collect();
                 out.push_str(&ident);
                 out.push_str("--");
@@ -1039,7 +1182,8 @@ fn expand_fn_like_macros(src: &str) -> String {
                         let params_str = &after_paren[..close_pos];
                         let body = after_paren[close_pos + 1..].trim();
                         if !body.is_empty() {
-                            let params = params_str.split(',').map(|s| s.trim().to_owned()).collect();
+                            let params =
+                                params_str.split(',').map(|s| s.trim().to_owned()).collect();
                             macros.push((name.to_owned(), params, body.to_owned()));
                             continue; // Remove the #define line
                         }
@@ -1055,7 +1199,9 @@ fn expand_fn_like_macros(src: &str) -> String {
     }
 
     let mut result = body_lines.join("\n");
-    if src.ends_with('\n') { result.push('\n'); }
+    if src.ends_with('\n') {
+        result.push('\n');
+    }
 
     // Fixed-point: repeat expansion passes until no more macro calls remain.
     // Needed for macros that expand into calls to other macros (e.g. Median's s2/mn3/mx3 chain).
@@ -1067,8 +1213,14 @@ fn expand_fn_like_macros(src: &str) -> String {
             let mut rest: &str = &result;
             let pattern = format!("{}(", name);
             loop {
-                let Some(pos) = rest.find(&pattern) else { break };
-                let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+                let Some(pos) = rest.find(&pattern) else {
+                    break;
+                };
+                let before = if pos > 0 {
+                    rest.as_bytes()[pos - 1] as char
+                } else {
+                    ' '
+                };
                 if is_word_char(before) {
                     s2.push_str(&rest[..pos + 1]);
                     rest = &rest[pos + 1..];
@@ -1088,7 +1240,9 @@ fn expand_fn_like_macros(src: &str) -> String {
             s2.push_str(rest);
             result = s2;
         }
-        if result == prev { break; }
+        if result == prev {
+            break;
+        }
     }
     result
 }
@@ -1105,22 +1259,47 @@ fn convert_define_to_const(src: &str) -> String {
                 continue; // skip empty defines
             }
             // Skip function-like macros: name contains `(` e.g. `#define FOO(x) expr`
-            if name.contains('(') { continue; }
+            if name.contains('(') {
+                continue;
+            }
             // Strip trailing inline `//` comment from value (e.g. `#define X 1.0 // comment`)
             // so the emitted `const X: f32 = 1.0;` doesn't have the `;` inside the comment.
-            let value = if let Some(ci) = value.find("//") { value[..ci].trim() } else { value };
-            if value.is_empty() { continue; }
+            let value = if let Some(ci) = value.find("//") {
+                value[..ci].trim()
+            } else {
+                value
+            };
+            if value.is_empty() {
+                continue;
+            }
             // Skip macros that contain statement separators (can't be a single const expr)
-            if value.contains('{') || value.contains(';') { continue; }
-            let ty = if value.contains('.') || value.contains('e') || value.contains('E') || value.contains('(') {
+            if value.contains('{') || value.contains(';') {
+                continue;
+            }
+            let ty = if value.contains('.')
+                || value.contains('e')
+                || value.contains('E')
+                || value.contains('(')
+            {
                 "f32"
-            } else if value.starts_with('-') || value.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            } else if value.starts_with('-')
+                || value.chars().all(|c| c.is_ascii_digit() || c == '-')
+            {
                 "i32"
             } else {
                 "f32" // default (identifier references etc.)
             };
             // Strip trailing `f`/`F` suffix only for pure numeric literals
-            let is_pure_literal = value.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == 'f' || c == 'F' || c == '+');
+            let is_pure_literal = value.chars().all(|c| {
+                c.is_ascii_digit()
+                    || c == '.'
+                    || c == '-'
+                    || c == 'e'
+                    || c == 'E'
+                    || c == 'f'
+                    || c == 'F'
+                    || c == '+'
+            });
             let val = if is_pure_literal {
                 value.trim_end_matches('f').trim_end_matches('F')
             } else {
@@ -1152,8 +1331,7 @@ fn convert_define_to_const(src: &str) -> String {
 /// to `_fp_NAME` before the ISF replacement runs, updating both the signature and the body.
 fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]) -> String {
     const GLSL_RETURN_TYPES: &[&str] = &[
-        "void", "bool", "float", "int", "uint",
-        "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "void", "bool", "float", "int", "uint", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
         "mat2", "mat3", "mat4",
     ];
 
@@ -1169,7 +1347,11 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
 
         // Update brace depth AFTER computing depth_before (we need the depth at start of line)
         for c in trimmed.chars() {
-            match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+            match c {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
         }
 
         // Clear renames when we exit the function body back to module scope.
@@ -1186,7 +1368,9 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                 }
                 // Must have `(` with no `=` before it — excludes global variable declarations
                 // like `float nQuick = clamp(...)` which are not function declarations.
-                trimmed.find('(').is_some_and(|p| !trimmed[..p].contains('='))
+                trimmed
+                    .find('(')
+                    .is_some_and(|p| !trimmed[..p].contains('='))
             });
 
             if is_func_decl {
@@ -1223,7 +1407,9 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
             for &ty in GLSL_RETURN_TYPES {
                 let prefix = format!("{} ", ty);
                 if let Some(rest) = trimmed.strip_prefix(prefix.as_str()) {
-                    let ident_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+                    let ident_end = rest
+                        .find(|c: char| !c.is_alphanumeric() && c != '_')
+                        .unwrap_or(rest.len());
                     let ident = &rest[..ident_end];
                     // Check it's an ISF input name and not already renamed
                     if !ident.is_empty()
@@ -1238,10 +1424,11 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
             }
         }
         // Track if this line is the declaration that introduced a new local rename.
-        let just_declared: Option<(String, String)> = new_local_rename.take().map(|(orig, renamed)| {
-            active_renames.push((orig.clone(), renamed.clone()));
-            (orig, renamed)
-        });
+        let just_declared: Option<(String, String)> =
+            new_local_rename.take().map(|(orig, renamed)| {
+                active_renames.push((orig.clone(), renamed.clone()));
+                (orig, renamed)
+            });
 
         // Apply active renames in function bodies.
         if depth_before > 0 && !active_renames.is_empty() {
@@ -1252,7 +1439,9 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                 // The RHS references to the same name are ISF inputs and must remain
                 // unrenamed so the ISF substitution pass can convert them to isf_u.NAME.
                 for (o, r) in &active_renames {
-                    if o == orig { continue; }
+                    if o == orig {
+                        continue;
+                    }
                     new_line = replace_word(&new_line, o, r);
                 }
                 new_line = replace_word_first(&new_line, orig, renamed);
@@ -1275,11 +1464,23 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
 /// Find the position of the closing delimiter (e.g. `)`) matching the one that just opened.
 /// `src` starts immediately AFTER the opening delimiter.
 fn find_matching_close(src: &str, close: char) -> Option<usize> {
-    let open = match close { ')' => '(', ']' => '[', '}' => '{', _ => return None };
+    let open = match close {
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        _ => return None,
+    };
     let mut depth = 1i32;
     for (i, c) in src.char_indices() {
-        if c == open  { depth += 1; }
-        if c == close { depth -= 1; if depth == 0 { return Some(i); } }
+        if c == open {
+            depth += 1;
+        }
+        if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
     }
     None
 }
@@ -1289,9 +1490,8 @@ fn strip_isf_coord_varyings(src: &str) -> String {
     // GLSL varyings have no equivalent in WGSL; ISF-specific ones are re-injected as
     // local `let` bindings inside fs_main.
     const GLSL_TYPES: &[&str] = &[
-        "float", "int", "uint", "bool",
-        "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
-        "mat2", "mat3", "mat4",
+        "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "mat2",
+        "mat3", "mat4",
     ];
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
@@ -1299,7 +1499,11 @@ fn strip_isf_coord_varyings(src: &str) -> String {
         let is_varying_decl = (t.starts_with("varying ") || t.starts_with("in "))
             && t.ends_with(';')
             && GLSL_TYPES.iter().any(|ty| {
-                let rest = if t.starts_with("varying ") { &t[8..] } else { &t[3..] };
+                let rest = if t.starts_with("varying ") {
+                    &t[8..]
+                } else {
+                    &t[3..]
+                };
                 let rest = rest.trim_start();
                 rest.starts_with(ty) && {
                     let after = rest[ty.len()..].trim_start();
@@ -1330,9 +1534,10 @@ fn strip_glsl_precision_qualifiers(src: &str) -> String {
 /// Strip GLSL function forward declarations at module scope (e.g. `vec3 rgb2hsv(vec3 c);`).
 /// WGSL does not allow forward declarations; functions must be fully defined before use.
 fn strip_glsl_forward_declarations(src: &str) -> String {
-    let glsl_return_types = ["void", "float", "int", "uint", "bool",
-                             "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
-                             "mat2", "mat3", "mat4"];
+    let glsl_return_types = [
+        "void", "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "mat2", "mat3", "mat4",
+    ];
     let mut out = String::with_capacity(src.len());
     let mut brace_depth = 0i32;
 
@@ -1340,24 +1545,31 @@ fn strip_glsl_forward_declarations(src: &str) -> String {
         let trimmed = line.trim();
         // Track brace depth to only strip at module scope.
         for c in trimmed.chars() {
-            match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+            match c {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
         }
         // At module scope, detect `TYPE FUNCNAME(ARGS);` — note brace_depth is AFTER counting,
         // so we use the depth before counting this line.
         // Re-count to get the depth BEFORE this line:
-        let depth_before: i32 = brace_depth - trimmed.chars().fold(0i32, |acc, c| match c {
-            '{' => acc + 1, '}' => acc - 1, _ => acc,
-        });
-        let is_forward_decl = depth_before == 0
-            && trimmed.ends_with(");")
-            && !trimmed.starts_with("//")
-            && {
+        let depth_before: i32 = brace_depth
+            - trimmed.chars().fold(0i32, |acc, c| match c {
+                '{' => acc + 1,
+                '}' => acc - 1,
+                _ => acc,
+            });
+        let is_forward_decl =
+            depth_before == 0 && trimmed.ends_with(");") && !trimmed.starts_with("//") && {
                 // Starts with a GLSL return type, followed by an identifier, then '('
                 let mut is_fwd = false;
                 for &ty in &glsl_return_types {
                     if trimmed.starts_with(ty) {
                         let after = trimmed[ty.len()..].trim_start();
-                        let id_end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(0);
+                        let id_end = after
+                            .find(|c: char| !c.is_alphanumeric() && c != '_')
+                            .unwrap_or(0);
                         if id_end > 0 && after[id_end..].trim_start().starts_with('(') {
                             is_fwd = true;
                             break;
@@ -1388,7 +1600,7 @@ fn replace_img_macros(src: &str) -> String {
     // IMG_PIXEL(name, pixelCoord) → textureLoad(t_input, vec2<i32>(pixelCoord), 0)
     let src = replace_img_pixel(&src);
     // IMG_SIZE(name) → render size as vec2 (best approximation for single-image shaders)
-    
+
     replace_img_size(&src)
 }
 
@@ -1503,9 +1715,17 @@ fn split_first_top_level_comma(src: &str) -> (&str, &str) {
 fn replace_word_first(src: &str, word: &str, replacement: &str) -> String {
     let mut rest = src;
     while let Some(pos) = rest.find(word) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         let after_pos = pos + word.len();
-        let after = if after_pos < rest.len() { rest.as_bytes()[after_pos] as char } else { ' ' };
+        let after = if after_pos < rest.len() {
+            rest.as_bytes()[after_pos] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) || before == '.' || is_word_char(after) {
             rest = &rest[pos + 1..];
             continue;
@@ -1526,9 +1746,17 @@ fn replace_word(src: &str, word: &str, replacement: &str) -> String {
     let mut rest = src;
     while let Some(pos) = rest.find(word) {
         // Check word boundary before
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         let after_pos = pos + word.len();
-        let after = if after_pos < rest.len() { rest.as_bytes()[after_pos] as char } else { ' ' };
+        let after = if after_pos < rest.len() {
+            rest.as_bytes()[after_pos] as char
+        } else {
+            ' '
+        };
 
         if is_word_char(before) || before == '.' || is_word_char(after) {
             // Not a word boundary, or preceded by `.` (swizzle/field access) — skip
@@ -1556,7 +1784,9 @@ fn contains_word(src: &str, word: &str) -> bool {
             let before_ok = abs == 0 || !is_word_char(src.as_bytes()[abs - 1] as char);
             let after_ok = abs + word.len() >= src.len()
                 || !is_word_char(src.as_bytes()[abs + word.len()] as char);
-            if before_ok && after_ok { return true; }
+            if before_ok && after_ok {
+                return true;
+            }
             start = abs + 1;
         } else {
             break;
@@ -1577,7 +1807,11 @@ fn replace_type_cast_word_boundary(src: &str, glsl_type: &str, wgsl_type: &str) 
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
     while let Some(pos) = rest.find(pattern.as_str()) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -1659,7 +1893,13 @@ fn convert_types_and_syntax(src: &str) -> String {
 /// Only replaces after a `.` when all characters are from `stpq`.
 fn convert_stpq_swizzles(src: &str) -> String {
     let map = |c: char| -> char {
-        match c { 's' => 'x', 't' => 'y', 'p' => 'z', 'q' => 'w', _ => c }
+        match c {
+            's' => 'x',
+            't' => 'y',
+            'p' => 'z',
+            'q' => 'w',
+            _ => c,
+        }
     };
     let bytes = src.as_bytes();
     let mut out = String::with_capacity(src.len());
@@ -1669,14 +1909,18 @@ fn convert_stpq_swizzles(src: &str) -> String {
             let j = i + 1;
             // Scan following chars that are all stpq
             let mut k = j;
-            while k < bytes.len() && "stpq".contains(bytes[k] as char) { k += 1; }
+            while k < bytes.len() && "stpq".contains(bytes[k] as char) {
+                k += 1;
+            }
             let swizzle_len = k - j;
             if (2..=4).contains(&swizzle_len) {
                 // Ensure what follows is not a word char (e.g. `.step` should not match `.st`)
                 let after_ok = k >= bytes.len() || !is_word_char(bytes[k] as char);
                 if after_ok {
                     out.push('.');
-                    for idx in j..k { out.push(map(bytes[idx] as char)); }
+                    for idx in j..k {
+                        out.push(map(bytes[idx] as char));
+                    }
                     i = k;
                     continue;
                 }
@@ -1693,8 +1937,12 @@ fn convert_stpq_swizzles(src: &str) -> String {
 /// conversion runs. This prevents `convert_texture2d_calls` from clobbering the user function.
 fn rename_user_defined_texture_fn(src: &str) -> String {
     let type_prefixes = [
-        "vec4 texture(", "vec3 texture(", "vec2 texture(",
-        "float texture(", "int texture(", "bool texture(",
+        "vec4 texture(",
+        "vec3 texture(",
+        "vec2 texture(",
+        "float texture(",
+        "int texture(",
+        "bool texture(",
     ];
     if !type_prefixes.iter().any(|p| src.contains(p)) {
         return src.to_owned();
@@ -1703,7 +1951,11 @@ fn rename_user_defined_texture_fn(src: &str) -> String {
     let pattern = "texture(";
     let mut rest = src;
     while let Some(pos) = rest.find(pattern) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -1727,7 +1979,11 @@ fn convert_texture2d_calls(src: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut rest: &str = &s;
         while let Some(pos) = rest.find(pattern) {
-            let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+            let before = if pos > 0 {
+                rest.as_bytes()[pos - 1] as char
+            } else {
+                ' '
+            };
             if is_word_char(before) {
                 // Part of a longer identifier (e.g. `textureSample`) — skip one char
                 out.push_str(&rest[..pos + 1]);
@@ -1763,7 +2019,11 @@ fn convert_atan_calls(src: &str) -> String {
     let mut rest = src.as_str();
     let pattern = "atan(";
     while let Some(pos) = rest.find(pattern) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             // Part of a longer identifier (e.g. "atan2") — skip
             out.push_str(&rest[..pos + 1]);
@@ -1794,7 +2054,11 @@ fn convert_clamp_01_to_saturate(src: &str) -> String {
     let mut rest = src;
     let pattern = "clamp(";
     while let Some(pos) = rest.find(pattern) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -1810,7 +2074,7 @@ fn convert_clamp_01_to_saturate(src: &str) -> String {
 
         // Detect 0.0/1.0 literal bounds → saturate
         let lo_is_zero = matches!(low, "0.0" | "0." | "0");
-        let hi_is_one  = matches!(high, "1.0" | "1." | "1");
+        let hi_is_one = matches!(high, "1.0" | "1." | "1");
 
         if lo_is_zero && hi_is_one {
             out.push_str(&format!("saturate({})", a1.trim()));
@@ -1824,7 +2088,6 @@ fn convert_clamp_01_to_saturate(src: &str) -> String {
     out
 }
 
-
 /// Inline GLSL `mod(x, y)` → `(x - y * floor(x / y))`.
 /// Works for any scalar or vector type — no helper function needed.
 fn convert_mod_calls(src: &str) -> String {
@@ -1832,7 +2095,11 @@ fn convert_mod_calls(src: &str) -> String {
     let mut rest = src;
     let pattern = "mod(";
     while let Some(pos) = rest.find(pattern) {
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             // Part of a longer identifier (modf, smooth, ...) — skip one char
             out.push_str(&rest[..pos + 1]);
@@ -1860,19 +2127,23 @@ fn convert_mod_calls(src: &str) -> String {
 /// `lessThan(a, b)` → `(a < b)`, etc.
 fn replace_glsl_comparison_builtins(src: &str) -> String {
     let comparisons: &[(&str, &str)] = &[
-        ("lessThanEqual(",    "<="),
+        ("lessThanEqual(", "<="),
         ("greaterThanEqual(", ">="),
-        ("lessThan(",         "<"),
-        ("greaterThan(",      ">"),
-        ("notEqual(",         "!="),
-        ("equal(",            "=="),
+        ("lessThan(", "<"),
+        ("greaterThan(", ">"),
+        ("notEqual(", "!="),
+        ("equal(", "=="),
     ];
     let mut s = src.to_owned();
     for (pattern, op) in comparisons {
         let mut out = String::with_capacity(s.len());
         let mut rest: &str = &s;
         while let Some(pos) = rest.find(pattern) {
-            let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+            let before = if pos > 0 {
+                rest.as_bytes()[pos - 1] as char
+            } else {
+                ' '
+            };
             if is_word_char(before) {
                 out.push_str(&rest[..pos + 1]);
                 rest = &rest[pos + 1..];
@@ -1925,7 +2196,7 @@ fn find_else_in_braceless_body(s: &str) -> Option<usize> {
             b'(' | b'{' | b'[' => depth += 1,
             b')' | b'}' | b']' => depth -= 1,
             b';' if depth == 0 => {
-                let rest = s[i+1..].trim_start();
+                let rest = s[i + 1..].trim_start();
                 if rest.starts_with("else ") || rest == "else" {
                     return Some(i);
                 }
@@ -1953,7 +2224,11 @@ fn add_braces_to_braceless_control_flow(src: &str) -> String {
 fn try_add_braces_to_line(line: &str) -> std::borrow::Cow<'_, str> {
     let trimmed = line.trim();
     // Skip empty, comment, already-ended-with-brace lines
-    if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.ends_with('{') || trimmed.ends_with('}') {
+    if trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.ends_with('{')
+        || trimmed.ends_with('}')
+    {
         return std::borrow::Cow::Borrowed(line);
     }
 
@@ -1984,32 +2259,48 @@ fn try_add_braces_to_line(line: &str) -> std::borrow::Cow<'_, str> {
         let header = &trimmed[..header_len];
         // Strip trailing `// comment` from body before wrapping inline
         let body_raw = after_paren;
-        let body_no_comment = if let Some(c) = body_raw.find("//") { &body_raw[..c] } else { body_raw };
+        let body_no_comment = if let Some(c) = body_raw.find("//") {
+            &body_raw[..c]
+        } else {
+            body_raw
+        };
         // Check for `then_body; else else_body` on the same line
         if let Some(else_pos) = find_else_in_braceless_body(body_no_comment) {
             let then_raw = body_no_comment[..else_pos].trim().trim_end_matches(';');
             let else_raw = body_no_comment[else_pos + 2..].trim(); // skip "; "
-            // else_raw starts with "else " — strip it
-            let else_body_raw = if let Some(r) = else_raw.strip_prefix("else ") { r.trim() } else { else_raw };
+                                                                   // else_raw starts with "else " — strip it
+            let else_body_raw = if let Some(r) = else_raw.strip_prefix("else ") {
+                r.trim()
+            } else {
+                else_raw
+            };
             let else_body = else_body_raw.trim_end_matches(';');
             if !then_raw.is_empty() && !else_body.is_empty() {
                 return std::borrow::Cow::Owned(format!(
-                    "{}{} {{ {}; }} else {{ {}; }}", indent, header, then_raw, else_body
+                    "{}{} {{ {}; }} else {{ {}; }}",
+                    indent, header, then_raw, else_body
                 ));
             }
         }
         let body = body_no_comment.trim_end_matches(';').trim_end();
         // If the body is empty after stripping a trailing comment, the real body is on the
         // next line as `{...}` — leave this line alone so the brace forms the for/while body.
-        if body.is_empty() { break; }
+        if body.is_empty() {
+            break;
+        }
         return std::borrow::Cow::Owned(format!("{}{}{{ {}; }}", indent, header, body));
     }
 
     // Handle braceless `else STMT` (no parens)
     if trimmed.starts_with("else ") || trimmed.starts_with("} else ") {
-        let prefix = if trimmed.starts_with("} else ") { "} else " } else { "else " };
+        let prefix = if trimmed.starts_with("} else ") {
+            "} else "
+        } else {
+            "else "
+        };
         let after_else = trimmed[prefix.len()..].trim_start();
-        if !after_else.starts_with("if ") && !after_else.starts_with('{') && !after_else.is_empty() {
+        if !after_else.starts_with("if ") && !after_else.starts_with('{') && !after_else.is_empty()
+        {
             let body = after_else.trim_end_matches(';');
             let close = if prefix.starts_with('}') { "} " } else { "" };
             return std::borrow::Cow::Owned(format!("{}{}else {{ {}; }}", indent, close, body));
@@ -2047,7 +2338,9 @@ fn fix_inline_braceless_in_line(line: &str) -> std::borrow::Cow<'_, str> {
         's_scan: for kw in kw_patterns {
             let mut search_start = 0;
             loop {
-                let Some(pos) = s[search_start..].find(kw) else { break };
+                let Some(pos) = s[search_start..].find(kw) else {
+                    break;
+                };
                 let abs_pos = search_start + pos;
                 // Ensure word boundary before keyword
                 if abs_pos > 0 && is_word_char(s.as_bytes()[abs_pos - 1] as char) {
@@ -2068,20 +2361,29 @@ fn fix_inline_braceless_in_line(line: &str) -> std::borrow::Cow<'_, str> {
                 let stmt_end = find_stmt_end_in_line(after_paren_trimmed);
                 let body = after_paren_trimmed[..stmt_end].trim_end_matches(';');
                 // Strip trailing comment from body
-                let body = if let Some(c) = body.find("//") { body[..c].trim_end() } else { body };
-                let total_consumed = abs_pos + kw.len() + after_kw.len() - after_paren.len() + body_start + stmt_end;
-                let new_s = format!("{}{}{}{} {{ {}; }}{}",
+                let body = if let Some(c) = body.find("//") {
+                    body[..c].trim_end()
+                } else {
+                    body
+                };
+                let total_consumed =
+                    abs_pos + kw.len() + after_kw.len() - after_paren.len() + body_start + stmt_end;
+                let new_s = format!(
+                    "{}{}{}{} {{ {}; }}{}",
                     &s[..abs_pos],
                     kw,
                     &after_kw[..after_kw.len() - after_paren.len()], // the balanced paren content + close
                     "",
                     body,
-                    &s[total_consumed..]);
+                    &s[total_consumed..]
+                );
                 s = new_s;
                 continue 's_scan;
             }
         }
-        if s == prev { break; }
+        if s == prev {
+            break;
+        }
     }
     if s == line {
         std::borrow::Cow::Borrowed(line)
@@ -2099,7 +2401,9 @@ fn find_stmt_end_in_line(s: &str) -> usize {
         match bytes[i] {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => {
-                if depth == 0 { return i; }
+                if depth == 0 {
+                    return i;
+                }
                 depth -= 1;
             }
             b';' if depth == 0 => return i + 1,
@@ -2112,7 +2416,12 @@ fn find_stmt_end_in_line(s: &str) -> usize {
 
 /// Convert GLSL for-loop init declarations to WGSL: `for (int i = 0; ...)` → `for (var i: i32 = 0; ...)`
 fn convert_for_loops(src: &str) -> String {
-    let type_map: &[(&str, &str)] = &[("int ", "i32"), ("float ", "f32"), ("uint ", "u32"), ("bool ", "bool")];
+    let type_map: &[(&str, &str)] = &[
+        ("int ", "i32"),
+        ("float ", "f32"),
+        ("uint ", "u32"),
+        ("bool ", "bool"),
+    ];
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
         out.push_str(&try_convert_for_header(line, type_map).unwrap_or_else(|| line.to_string()));
@@ -2135,8 +2444,12 @@ fn try_convert_for_header(line: &str, type_map: &[(&str, &str)]) -> Option<Strin
     for (glsl_ty, wgsl_ty) in type_map {
         if let Some(rest) = after_paren.strip_prefix(glsl_ty) {
             // rest: "i = 0; i < N; i++) {"
-            let ident_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
-            if ident_end == 0 { continue; }
+            let ident_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            if ident_end == 0 {
+                continue;
+            }
             let ident = &rest[..ident_end];
             let after_ident = &rest[ident_end..];
 
@@ -2149,8 +2462,14 @@ fn try_convert_for_header(line: &str, type_map: &[(&str, &str)]) -> Option<Strin
             } else {
                 after_ident.to_string()
             };
-            let result = format!("{}{}(var {}: {} {}",
-                indent, for_prefix, ident, wgsl_ty, after_fixed.trim_start());
+            let result = format!(
+                "{}{}(var {}: {} {}",
+                indent,
+                for_prefix,
+                ident,
+                wgsl_ty,
+                after_fixed.trim_start()
+            );
             return Some(result);
         }
     }
@@ -2189,7 +2508,10 @@ fn try_convert_function_sig(line: &str) -> Option<String> {
         return None;
     }
     // Must not be a keyword
-    if matches!(func_name, "if" | "else" | "for" | "while" | "do" | "switch" | "return") {
+    if matches!(
+        func_name,
+        "if" | "else" | "for" | "while" | "do" | "switch" | "return"
+    ) {
         return None;
     }
     // Skip void main / void mainImage — handled separately
@@ -2226,17 +2548,26 @@ fn try_convert_function_sig(line: &str) -> Option<String> {
 
     // { on next line (or same line but after stripped comment) — emit just the signature
     if suffix_no_comment.is_empty() {
-        return Some(format!("{}fn {}({}){}", indent, func_name, wgsl_args, wgsl_ret));
+        return Some(format!(
+            "{}fn {}({}){}",
+            indent, func_name, wgsl_args, wgsl_ret
+        ));
     }
 
     // Single-line function body: `TYPE fn(args) { body }` — expand to multiple lines
     let after_brace = suffix[1..].trim();
     if let Some(close_pos) = after_brace.rfind('}') {
         let body = after_brace[..close_pos].trim();
-        return Some(format!("{}fn {}({}){} {{\n{}    {}\n{}}}", indent, func_name, wgsl_args, wgsl_ret, indent, body, indent));
+        return Some(format!(
+            "{}fn {}({}){} {{\n{}    {}\n{}}}",
+            indent, func_name, wgsl_args, wgsl_ret, indent, body, indent
+        ));
     }
 
-    Some(format!("{}fn {}({}){} {{", indent, func_name, wgsl_args, wgsl_ret))
+    Some(format!(
+        "{}fn {}({}){} {{",
+        indent, func_name, wgsl_args, wgsl_ret
+    ))
 }
 
 fn convert_arg_list(args: &str) -> String {
@@ -2247,10 +2578,18 @@ fn convert_arg_list(args: &str) -> String {
         .map(|arg| {
             let a = arg.trim();
             // Strip qualifiers: in, out, inout, const
-            let a = a.trim_start_matches("in ").trim_start_matches("out ").trim_start_matches("inout ").trim_start_matches("const ");
+            let a = a
+                .trim_start_matches("in ")
+                .trim_start_matches("out ")
+                .trim_start_matches("inout ")
+                .trim_start_matches("const ");
             let parts: Vec<&str> = a.splitn(2, char::is_whitespace).collect();
             if parts.len() == 2 {
-                format!("{}: {}", parts[1].trim(), glsl_type_to_wgsl(parts[0].trim()))
+                format!(
+                    "{}: {}",
+                    parts[1].trim(),
+                    glsl_type_to_wgsl(parts[0].trim())
+                )
             } else {
                 a.to_string()
             }
@@ -2261,20 +2600,20 @@ fn convert_arg_list(args: &str) -> String {
 
 fn glsl_type_to_wgsl(t: &str) -> std::borrow::Cow<'_, str> {
     match t {
-        "float"          => "f32".into(),
-        "int"            => "i32".into(),
-        "uint"           => "u32".into(),
-        "bool"           => "bool".into(),
-        "void"           => "void".into(),
-        "vec2"           => "vec2<f32>".into(),
-        "vec3"           => "vec3<f32>".into(),
-        "vec4"           => "vec4<f32>".into(),
-        "ivec2"          => "vec2<i32>".into(),
-        "ivec3"          => "vec3<i32>".into(),
-        "ivec4"          => "vec4<i32>".into(),
-        "uvec2"          => "vec2<u32>".into(),
-        "uvec3"          => "vec3<u32>".into(),
-        "uvec4"          => "vec4<u32>".into(),
+        "float" => "f32".into(),
+        "int" => "i32".into(),
+        "uint" => "u32".into(),
+        "bool" => "bool".into(),
+        "void" => "void".into(),
+        "vec2" => "vec2<f32>".into(),
+        "vec3" => "vec3<f32>".into(),
+        "vec4" => "vec4<f32>".into(),
+        "ivec2" => "vec2<i32>".into(),
+        "ivec3" => "vec3<i32>".into(),
+        "ivec4" => "vec4<i32>".into(),
+        "uvec2" => "vec2<u32>".into(),
+        "uvec3" => "vec3<u32>".into(),
+        "uvec4" => "vec4<u32>".into(),
         "mat2" | "mat2x2" => "mat2x2<f32>".into(),
         "mat3" | "mat3x3" => "mat3x3<f32>".into(),
         "mat4" | "mat4x4" => "mat4x4<f32>".into(),
@@ -2298,7 +2637,11 @@ fn promote_module_scope_vars_to_private(src: &str) -> String {
         let trimmed = line.trim();
         let depth_before = brace_depth;
         for c in trimmed.chars() {
-            match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+            match c {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
         }
         if depth_before == 0 {
             // At module scope: promote plain `var name: …` to `var<private> name: …`
@@ -2320,11 +2663,8 @@ fn promote_module_scope_vars_to_private(src: &str) -> String {
 
 fn convert_var_declarations(src: &str) -> String {
     let glsl_types = [
-        "float", "int", "uint", "bool",
-        "vec2", "vec3", "vec4",
-        "ivec2", "ivec3", "ivec4",
-        "uvec2", "uvec3", "uvec4",
-        "mat2", "mat3", "mat4",
+        "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "uvec2",
+        "uvec3", "uvec4", "mat2", "mat3", "mat4",
     ];
 
     // Collect user-defined struct type names so `TypeName varName;` can be converted.
@@ -2332,7 +2672,9 @@ fn convert_var_declarations(src: &str) -> String {
     for line in src.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("struct ") {
-            let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let name_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
             if name_end > 0 {
                 struct_names.push(rest[..name_end].to_owned());
             }
@@ -2354,7 +2696,11 @@ fn convert_var_declarations(src: &str) -> String {
         }
         if in_struct {
             for c in trimmed.chars() {
-                match c { '{' => struct_brace_depth += 1, '}' => struct_brace_depth -= 1, _ => {} }
+                match c {
+                    '{' => struct_brace_depth += 1,
+                    '}' => struct_brace_depth -= 1,
+                    _ => {}
+                }
             }
             if struct_brace_depth <= 0 {
                 in_struct = false;
@@ -2392,10 +2738,16 @@ fn convert_var_declarations(src: &str) -> String {
 fn try_convert_struct_var_decl(trimmed: &str, struct_names: &[String]) -> Option<String> {
     for name in struct_names {
         let prefix = format!("{} ", name);
-        if !trimmed.starts_with(&prefix) { continue; }
+        if !trimmed.starts_with(&prefix) {
+            continue;
+        }
         let rest = trimmed[prefix.len()..].trim_start();
-        let ident_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
-        if ident_end == 0 { continue; }
+        let ident_end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        if ident_end == 0 {
+            continue;
+        }
         let ident = &rest[..ident_end];
         let after = rest[ident_end..].trim_start();
         if after == ";" || after.is_empty() {
@@ -2420,7 +2772,7 @@ fn try_convert_struct_field(trimmed: &str, glsl_types: &[&str]) -> String {
     }
     // Already converted or unknown — keep as-is but ensure it ends with `,`
     if trimmed.ends_with(';') {
-        trimmed[..trimmed.len()-1].to_owned() + ","
+        trimmed[..trimmed.len() - 1].to_owned() + ","
     } else {
         trimmed.to_owned()
     }
@@ -2448,12 +2800,20 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
     // Must be handled before the mutable var case below.
     if let Some(rest) = trimmed.strip_prefix("const ") {
         for &glsl_ty in glsl_types {
-            if !rest.starts_with(glsl_ty) { continue; }
+            if !rest.starts_with(glsl_ty) {
+                continue;
+            }
             let next = rest.as_bytes().get(glsl_ty.len()).copied().unwrap_or(b' ') as char;
-            if !next.is_whitespace() { continue; }
+            if !next.is_whitespace() {
+                continue;
+            }
             let after_type = rest[glsl_ty.len()..].trim_start();
-            let ident_end = after_type.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after_type.len());
-            if ident_end == 0 { continue; }
+            let ident_end = after_type
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after_type.len());
+            if ident_end == 0 {
+                continue;
+            }
             let ident = &after_type[..ident_end];
             let after = after_type[ident_end..].trim_start();
             if after.starts_with('=') {
@@ -2469,12 +2829,22 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
     // Match: TYPE NAME = ... ; or TYPE NAME;
     // Accept both space and tab between type keyword and identifier name.
     for &glsl_ty in glsl_types {
-        if !trimmed.starts_with(glsl_ty) { continue; }
-        let next = trimmed.as_bytes().get(glsl_ty.len()).copied().unwrap_or(b' ') as char;
-        if !next.is_whitespace() { continue; }
+        if !trimmed.starts_with(glsl_ty) {
+            continue;
+        }
+        let next = trimmed
+            .as_bytes()
+            .get(glsl_ty.len())
+            .copied()
+            .unwrap_or(b' ') as char;
+        if !next.is_whitespace() {
+            continue;
+        }
         let rest = trimmed[glsl_ty.len()..].trim_start();
         // rest starts with identifier
-        let ident_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        let ident_end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
         if ident_end == 0 {
             continue;
         }
@@ -2485,13 +2855,18 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
         // The identifier is `isf_u` and `after` starts with `.NAME = ...`.
         // Rename the local to `_NAME_local` to avoid the compound identifier.
         if let Some(dot_rest) = after.strip_prefix('.') {
-            let field_end = dot_rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(dot_rest.len());
+            let field_end = dot_rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(dot_rest.len());
             let field_name = &dot_rest[..field_end];
             let after2 = dot_rest[field_end..].trim_start();
             let wgsl_ty = glsl_type_to_wgsl(glsl_ty);
             if after2.starts_with('=') {
                 let expr = after2[1..].trim();
-                return format!("{}var _{}_local: {} = {}", indent, field_name, wgsl_ty, expr);
+                return format!(
+                    "{}var _{}_local: {} = {}",
+                    indent, field_name, wgsl_ty, expr
+                );
             }
         }
 
@@ -2510,7 +2885,9 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
             let mut tail = after; // starts with ','
             while let Some(pos) = tail.find(',') {
                 tail = tail[pos + 1..].trim_start();
-                let name_end = tail.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(tail.len());
+                let name_end = tail
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(tail.len());
                 let extra_name = tail[..name_end].trim();
                 if !extra_name.is_empty() {
                     result.push('\n');
@@ -2531,7 +2908,10 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
                 }
                 if let Some(eq_rest) = rest_after.strip_prefix('=') {
                     let expr = eq_rest.trim().trim_end_matches(';');
-                    return format!("{}var {}: array<{}, {}> = {};", indent, ident, wgsl_ty, n_str, expr);
+                    return format!(
+                        "{}var {}: array<{}, {}> = {};",
+                        indent, ident, wgsl_ty, n_str, expr
+                    );
                 }
             }
         }
@@ -2544,7 +2924,11 @@ fn try_convert_var_decl(line: &str, glsl_types: &[&str]) -> String {
 // ---------------------------------------------------------------------------
 
 /// Convert `void main()` style entry point.
-fn convert_void_main_entry(src: &str, _has_image_input: bool, injected_locals: &[String]) -> String {
+fn convert_void_main_entry(
+    src: &str,
+    _has_image_input: bool,
+    injected_locals: &[String],
+) -> String {
     let mut out = String::with_capacity(src.len());
 
     // Find `void main()` and replace its signature + inject fs_main preamble
@@ -2592,7 +2976,11 @@ fn convert_void_main_entry(src: &str, _has_image_input: bool, injected_locals: &
                 } else if trimmed.contains('{') {
                     // Opening brace mixed with content (unusual but handle it)
                     for c in trimmed.chars() {
-                        match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+                        match c {
+                            '{' => brace_depth += 1,
+                            '}' => brace_depth -= 1,
+                            _ => {}
+                        }
                     }
                     main_brace_depth = brace_depth;
                     out.push_str(line);
@@ -2642,7 +3030,11 @@ fn convert_void_main_entry(src: &str, _has_image_input: bool, injected_locals: &
 }
 
 /// Convert `mainImage(out vec4 fragColor, in vec2 fragCoord)` + bridge pattern.
-fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: &[String]) -> String {
+fn convert_main_image_entry(
+    src: &str,
+    _has_image_input: bool,
+    injected_locals: &[String],
+) -> String {
     let mut out = String::with_capacity(src.len());
     let mut found_main_image = false;
     let mut in_main_image = false;
@@ -2663,13 +3055,21 @@ fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: 
             brace_depth = 0;
             // Count any brace on the same line (e.g. `void main() {`)
             for c in trimmed.chars() {
-                match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+                match c {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
             }
             continue;
         }
         if skip_void_main {
             for c in trimmed.chars() {
-                match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+                match c {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
             }
             if brace_depth <= 0 {
                 skip_void_main = false;
@@ -2679,7 +3079,9 @@ fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: 
         }
 
         // Detect mainImage signature
-        if !found_main_image && (trimmed.starts_with("void mainImage(") || trimmed.starts_with("void mainImage (")) {
+        if !found_main_image
+            && (trimmed.starts_with("void mainImage(") || trimmed.starts_with("void mainImage ("))
+        {
             found_main_image = true;
             in_main_image = true;
             brace_depth = 0;
@@ -2708,7 +3110,11 @@ fn convert_main_image_entry(src: &str, _has_image_input: bool, injected_locals: 
 
         if in_main_image {
             for c in trimmed.chars() {
-                match c { '{' => brace_depth += 1, '}' => brace_depth -= 1, _ => {} }
+                match c {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
             }
             if brace_depth <= 0 {
                 // End of mainImage body — close fs_main with return fragColor
@@ -2745,8 +3151,8 @@ fn resolve_function_overloads(src: &str) -> String {
     #[derive(Clone, Debug)]
     struct FnDef {
         name: String,
-        all_param_tys: Vec<String>,  // WGSL types of all params
-        suffix: String,              // derived from all_param_tys
+        all_param_tys: Vec<String>, // WGSL types of all params
+        suffix: String,             // derived from all_param_tys
     }
 
     let lines: Vec<&str> = src.lines().collect();
@@ -2759,26 +3165,40 @@ fn resolve_function_overloads(src: &str) -> String {
             let paren = rest.find('(').unwrap_or(rest.len());
             let name = rest[..paren].trim().to_owned();
             // Skip entry points
-            if name == "vs_main" || name == "fs_main" { continue; }
+            if name == "vs_main" || name == "fs_main" {
+                continue;
+            }
             // Extract all param types
             let params_str = &rest[paren + 1..];
             let (params_inner, _) = extract_balanced(params_str, ')');
             let all_param_tys: Vec<String> = if params_inner.trim().is_empty() {
                 vec!["void".to_owned()]
             } else {
-                split_top_level_commas(params_inner).iter().map(|param| {
-                    let param = param.trim();
-                    if let Some(colon) = param.find(':') {
-                        let ty_part = param[colon + 1..].trim();
-                        let ty_end = ty_part.find([',', ';', '='].as_ref()).unwrap_or(ty_part.len());
-                        ty_part[..ty_end].trim().to_owned()
-                    } else {
-                        "unknown".to_owned()
-                    }
-                }).collect()
+                split_top_level_commas(params_inner)
+                    .iter()
+                    .map(|param| {
+                        let param = param.trim();
+                        if let Some(colon) = param.find(':') {
+                            let ty_part = param[colon + 1..].trim();
+                            let ty_end = ty_part
+                                .find([',', ';', '='].as_ref())
+                                .unwrap_or(ty_part.len());
+                            ty_part[..ty_end].trim().to_owned()
+                        } else {
+                            "unknown".to_owned()
+                        }
+                    })
+                    .collect()
             };
-            let suffix: String = all_param_tys.iter().map(|t| type_to_overload_suffix(t)).collect();
-            fn_defs.push(FnDef { name: name.clone(), all_param_tys, suffix });
+            let suffix: String = all_param_tys
+                .iter()
+                .map(|t| type_to_overload_suffix(t))
+                .collect();
+            fn_defs.push(FnDef {
+                name: name.clone(),
+                all_param_tys,
+                suffix,
+            });
             *name_count.entry(name).or_insert(0) += 1;
         }
     }
@@ -2842,7 +3262,9 @@ fn resolve_function_overloads(src: &str) -> String {
             let vname = rest[..colon].trim().to_owned();
             if colon < rest.len() {
                 let ty_part = &rest[colon + 1..];
-                let ty_end = ty_part.find(['=', ';', ','].as_ref()).unwrap_or(ty_part.len());
+                let ty_end = ty_part
+                    .find(['=', ';', ','].as_ref())
+                    .unwrap_or(ty_part.len());
                 let ty = ty_part[..ty_end].trim().to_owned();
                 if !vname.is_empty() && !ty.is_empty() {
                     local_var_types.insert(vname, ty);
@@ -2883,16 +3305,24 @@ fn resolve_function_overloads(src: &str) -> String {
                     let all_tys: Vec<String> = if inner.trim().is_empty() {
                         vec!["void".to_owned()]
                     } else {
-                        split_top_level_commas(inner).iter().map(|param| {
-                            let param = param.trim();
-                            if let Some(colon) = param.find(':') {
-                                let ty_part = param[colon + 1..].trim();
-                                let ty_end = ty_part.find([',', ';', '='].as_ref()).unwrap_or(ty_part.len());
-                                ty_part[..ty_end].trim().to_owned()
-                            } else { "unknown".to_owned() }
-                        }).collect()
+                        split_top_level_commas(inner)
+                            .iter()
+                            .map(|param| {
+                                let param = param.trim();
+                                if let Some(colon) = param.find(':') {
+                                    let ty_part = param[colon + 1..].trim();
+                                    let ty_end = ty_part
+                                        .find([',', ';', '='].as_ref())
+                                        .unwrap_or(ty_part.len());
+                                    ty_part[..ty_end].trim().to_owned()
+                                } else {
+                                    "unknown".to_owned()
+                                }
+                            })
+                            .collect()
                     };
-                    let suffix: String = all_tys.iter().map(|t| type_to_overload_suffix(t)).collect();
+                    let suffix: String =
+                        all_tys.iter().map(|t| type_to_overload_suffix(t)).collect();
                     out_line.push_str(&format!("{}{}", found_name, suffix));
                 } else {
                     out_line.push_str(found_name);
@@ -2904,31 +3334,40 @@ fn resolve_function_overloads(src: &str) -> String {
                     let (args_inner, _) = extract_balanced(args_start, ')');
                     let call_args = split_top_level_commas(args_inner);
                     // Infer type of each argument
-                    let inferred_tys: Vec<Option<String>> = call_args.iter()
+                    let inferred_tys: Vec<Option<String>> = call_args
+                        .iter()
                         .map(|arg| infer_call_arg_type(arg.trim(), &local_var_types))
                         .collect();
                     // Build a key from fully inferred types
                     let all_known = inferred_tys.iter().all(|t| t.is_some());
                     let new_name = if all_known {
-                        let tys_key = inferred_tys.iter()
+                        let tys_key = inferred_tys
+                            .iter()
                             .map(|t| t.as_deref().unwrap_or("unknown"))
                             .collect::<Vec<_>>()
                             .join(",");
-                        rename_map.get(&(found_name.to_owned(), tys_key))
-                            .cloned()
+                        rename_map.get(&(found_name.to_owned(), tys_key)).cloned()
                     } else {
                         // Partial inference: try matching by first inferred arg
-                        let first_ty = inferred_tys.first().and_then(|t| t.clone()).unwrap_or_default();
+                        let first_ty = inferred_tys
+                            .first()
+                            .and_then(|t| t.clone())
+                            .unwrap_or_default();
                         // Find a def whose first param type matches
-                        fn_defs.iter()
-                            .find(|d| d.name == found_name
-                                && overloaded_names.contains(&d.name)
-                                && d.all_param_tys.first().map(|t| t.as_str()) == Some(first_ty.as_str()))
+                        fn_defs
+                            .iter()
+                            .find(|d| {
+                                d.name == found_name
+                                    && overloaded_names.contains(&d.name)
+                                    && d.all_param_tys.first().map(|t| t.as_str())
+                                        == Some(first_ty.as_str())
+                            })
                             .map(|d| format!("{}{}", d.name, d.suffix))
                     };
                     let new_name = new_name.unwrap_or_else(|| {
                         // Fall back to first defined overload
-                        fn_defs.iter()
+                        fn_defs
+                            .iter()
                             .find(|d| d.name == found_name && overloaded_names.contains(&d.name))
                             .map(|d| format!("{}{}", d.name, d.suffix))
                             .unwrap_or_else(|| found_name.to_owned())
@@ -2959,7 +3398,11 @@ fn find_fn_name_call_or_def(src: &str, name: &str) -> Option<usize> {
     let mut search = 0;
     loop {
         let pos = src[search..].find(name).map(|p| p + search)?;
-        let before = if pos > 0 { src.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            src.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         let after_end = pos + name.len();
         let after = src[after_end..].trim_start();
         if !is_word_char(before) && after.starts_with('(') {
@@ -2971,42 +3414,60 @@ fn find_fn_name_call_or_def(src: &str, name: &str) -> Option<usize> {
 
 fn type_to_overload_suffix(ty: &str) -> String {
     match ty {
-        "f32"       => "_f32".to_owned(),
-        "i32"       => "_i32".to_owned(),
-        "u32"       => "_u32".to_owned(),
+        "f32" => "_f32".to_owned(),
+        "i32" => "_i32".to_owned(),
+        "u32" => "_u32".to_owned(),
         "vec2<f32>" => "_v2f32".to_owned(),
         "vec3<f32>" => "_v3f32".to_owned(),
         "vec4<f32>" => "_v4f32".to_owned(),
         "vec2<i32>" => "_v2i32".to_owned(),
         "vec3<i32>" => "_v3i32".to_owned(),
         "vec4<i32>" => "_v4i32".to_owned(),
-        other       => format!("_{}", other.replace(['<', '>', ' '], "_")),
+        other => format!("_{}", other.replace(['<', '>', ' '], "_")),
     }
 }
 
 /// Infer the WGSL type of the first argument in a function call argument string.
-fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, String>) -> Option<String> {
+fn infer_call_arg_type(
+    arg: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     // Split at top-level comma and use the first arg
     let first_arg = {
         let parts = split_top_level_commas(arg);
-        parts.into_iter().next().map(|s| s.trim().to_owned()).unwrap_or_default()
+        parts
+            .into_iter()
+            .next()
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default()
     };
     let arg = first_arg.trim();
 
     // Direct vec constructors
     for (prefix, ty) in &[
-        ("vec4<f32>(", "vec4<f32>"), ("vec4(", "vec4<f32>"),
-        ("vec3<f32>(", "vec3<f32>"), ("vec3(", "vec3<f32>"),
-        ("vec2<f32>(", "vec2<f32>"), ("vec2(", "vec2<f32>"),
-        ("vec4<i32>(", "vec4<i32>"), ("vec3<i32>(", "vec3<i32>"), ("vec2<i32>(", "vec2<i32>"),
+        ("vec4<f32>(", "vec4<f32>"),
+        ("vec4(", "vec4<f32>"),
+        ("vec3<f32>(", "vec3<f32>"),
+        ("vec3(", "vec3<f32>"),
+        ("vec2<f32>(", "vec2<f32>"),
+        ("vec2(", "vec2<f32>"),
+        ("vec4<i32>(", "vec4<i32>"),
+        ("vec3<i32>(", "vec3<i32>"),
+        ("vec2<i32>(", "vec2<i32>"),
     ] {
-        if arg.starts_with(prefix) { return Some(ty.to_string()); }
+        if arg.starts_with(prefix) {
+            return Some(ty.to_string());
+        }
     }
 
     // `dot(a, b)` → f32
-    if arg.starts_with("dot(") { return Some("f32".to_owned()); }
+    if arg.starts_with("dot(") {
+        return Some("f32".to_owned());
+    }
     // `f32(...)` literal cast
-    if arg.starts_with("f32(") { return Some("f32".to_owned()); }
+    if arg.starts_with("f32(") {
+        return Some("f32".to_owned());
+    }
 
     // Swizzle: `expr.xyzw` → type from swizzle length.
     // Only treat as a whole-expression trailing swizzle if the part before the `.` has
@@ -3022,13 +3483,19 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
                 match c {
                     '(' | '[' => depth += 1,
                     ')' | ']' => depth -= 1,
-                    '+' | '-' | '*' | '/' if depth == 0 => { found = true; break; }
+                    '+' | '-' | '*' | '/' if depth == 0 => {
+                        found = true;
+                        break;
+                    }
                     _ => {}
                 }
             }
             found
         };
-        if !has_top_level_op && !swizzle.is_empty() && swizzle.chars().all(|c| "xyzwrgba".contains(c)) {
+        if !has_top_level_op
+            && !swizzle.is_empty()
+            && swizzle.chars().all(|c| "xyzwrgba".contains(c))
+        {
             return Some(match swizzle.len() {
                 1 => "f32".to_owned(),
                 2 => "vec2<f32>".to_owned(),
@@ -3042,12 +3509,32 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
     // Single-argument passthrough functions whose return type equals their input type.
     // E.g., `fract(x)` returns the same type as `x`.
     const PASSTHROUGH_FUNS: &[&str] = &[
-        "fract(", "floor(", "ceil(", "round(", "abs(", "sign(",
-        "sqrt(", "exp(", "exp2(", "log(", "log2(",
-        "sin(", "cos(", "tan(", "asin(", "acos(",
-        "sinh(", "cosh(", "tanh(",
-        "degrees(", "radians(", "normalize(", "saturate(",
-        "dpdx(", "dpdy(", "fwidth(",
+        "fract(",
+        "floor(",
+        "ceil(",
+        "round(",
+        "abs(",
+        "sign(",
+        "sqrt(",
+        "exp(",
+        "exp2(",
+        "log(",
+        "log2(",
+        "sin(",
+        "cos(",
+        "tan(",
+        "asin(",
+        "acos(",
+        "sinh(",
+        "cosh(",
+        "tanh(",
+        "degrees(",
+        "radians(",
+        "normalize(",
+        "saturate(",
+        "dpdx(",
+        "dpdy(",
+        "fwidth(",
     ];
     for &prefix in PASSTHROUGH_FUNS {
         if let Some(rest) = arg.strip_prefix(prefix) {
@@ -3063,7 +3550,9 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
     // Strip parentheses
     let stripped = arg.trim_start_matches('(').trim_end_matches(')');
     // Try to find the base identifier (leftmost word)
-    let ident_end = stripped.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(stripped.len());
+    let ident_end = stripped
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(stripped.len());
     if ident_end > 0 {
         let ident = &stripped[..ident_end];
         let after_ident = &stripped[ident_end..];
@@ -3098,7 +3587,9 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
         if let Some(close_pos) = after_ident.find(')') {
             let after_close = after_ident[close_pos + 1..].trim_start();
             if let Some(sw_part) = after_close.strip_prefix('.') {
-                let sw_len = sw_part.find(|c: char| !"xyzwrgba".contains(c)).unwrap_or(sw_part.len());
+                let sw_len = sw_part
+                    .find(|c: char| !"xyzwrgba".contains(c))
+                    .unwrap_or(sw_part.len());
                 if sw_len > 0 && sw_len <= 4 {
                     return Some(match sw_len {
                         1 => "f32".to_owned(),
@@ -3112,7 +3603,10 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
         }
 
         // Strip `_fp_` prefix (injected shadow params use `_fp_name`)
-        let lookup_name = ident.strip_prefix("_fp_").unwrap_or(ident).trim_start_matches('_');
+        let lookup_name = ident
+            .strip_prefix("_fp_")
+            .unwrap_or(ident)
+            .trim_start_matches('_');
         if let Some(ty) = var_types.get(lookup_name).or_else(|| var_types.get(ident)) {
             return Some(ty.clone());
         }
@@ -3129,42 +3623,76 @@ fn infer_call_arg_type(arg: &str, var_types: &std::collections::HashMap<String, 
     let n = bytes.len();
     for i in 0..=n {
         let at_end = i == n;
-        let is_op = if at_end { false } else { arith_ops.contains(&(bytes[i] as char)) && depth == 0 };
+        let is_op = if at_end {
+            false
+        } else {
+            arith_ops.contains(&(bytes[i] as char)) && depth == 0
+        };
         if is_op || at_end {
             let token = arg[token_start..i].trim();
             if !token.is_empty() {
                 // Check vec constructor prefix
-                let vec_ty: Option<&'static str> = if token.starts_with("vec4") { Some("vec4<f32>") }
-                    else if token.starts_with("vec3") { Some("vec3<f32>") }
-                    else if token.starts_with("vec2") { Some("vec2<f32>") }
-                    else { None };
+                let vec_ty: Option<&'static str> = if token.starts_with("vec4") {
+                    Some("vec4<f32>")
+                } else if token.starts_with("vec3") {
+                    Some("vec3<f32>")
+                } else if token.starts_with("vec2") {
+                    Some("vec2<f32>")
+                } else {
+                    None
+                };
                 // Check pure identifier in var_types
                 let ident_ty = if vec_ty.is_none() {
                     let trimmed_tok = token.trim_start_matches('(').trim_end_matches(')').trim();
-                    let ident_end = trimmed_tok.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(trimmed_tok.len());
+                    let ident_end = trimmed_tok
+                        .find(|c: char| !c.is_alphanumeric() && c != '_')
+                        .unwrap_or(trimmed_tok.len());
                     if ident_end == trimmed_tok.len() && !trimmed_tok.is_empty() {
                         // Pure identifier: look up in var_types
-                        let lookup = trimmed_tok.strip_prefix("_fp_").unwrap_or(trimmed_tok).trim_start_matches('_');
-                        var_types.get(lookup).or_else(|| var_types.get(trimmed_tok)).cloned()
-                    } else { None }
-                } else { None };
+                        let lookup = trimmed_tok
+                            .strip_prefix("_fp_")
+                            .unwrap_or(trimmed_tok)
+                            .trim_start_matches('_');
+                        var_types
+                            .get(lookup)
+                            .or_else(|| var_types.get(trimmed_tok))
+                            .cloned()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
                 let ty = vec_ty.map(|s| s.to_owned()).or(ident_ty);
                 if let Some(ty) = ty {
                     match ty.as_str() {
-                        t if t.starts_with("vec4") => { best = Some(ty); break; }
-                        t if t.starts_with("vec3") => { best = Some(ty); }
-                        t if t.starts_with("vec2") && best.is_none() => { best = Some(ty); }
+                        t if t.starts_with("vec4") => {
+                            best = Some(ty);
+                            break;
+                        }
+                        t if t.starts_with("vec3") => {
+                            best = Some(ty);
+                        }
+                        t if t.starts_with("vec2") && best.is_none() => {
+                            best = Some(ty);
+                        }
                         _ => {}
                     }
                 }
             }
             token_start = i + 1;
         } else {
-            match bytes[i] as char { '(' | '[' => depth += 1, ')' | ']' => depth -= 1, _ => {} }
+            match bytes[i] as char {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                _ => {}
+            }
         }
     }
-    if best.is_some() { return best; }
+    if best.is_some() {
+        return best;
+    }
 
     None
 }
@@ -3176,19 +3704,33 @@ fn detect_vec_type_in_expr(expr: &str) -> Option<&'static str> {
     let expr = expr.trim();
 
     // Direct vec constructors at the start of the expression — safe to infer.
-    if expr.starts_with("vec4<f32>(") { return Some("vec4<f32>"); }
-    if expr.starts_with("vec3<f32>(") { return Some("vec3<f32>"); }
-    if expr.starts_with("vec2<f32>(") { return Some("vec2<f32>"); }
-    if expr.starts_with("vec4(") { return Some("vec4<f32>"); }
-    if expr.starts_with("vec3(") { return Some("vec3<f32>"); }
-    if expr.starts_with("vec2(") { return Some("vec2<f32>"); }
+    if expr.starts_with("vec4<f32>(") {
+        return Some("vec4<f32>");
+    }
+    if expr.starts_with("vec3<f32>(") {
+        return Some("vec3<f32>");
+    }
+    if expr.starts_with("vec2<f32>(") {
+        return Some("vec2<f32>");
+    }
+    if expr.starts_with("vec4(") {
+        return Some("vec4<f32>");
+    }
+    if expr.starts_with("vec3(") {
+        return Some("vec3<f32>");
+    }
+    if expr.starts_with("vec2(") {
+        return Some("vec2<f32>");
+    }
 
     // If the expression is a top-level non-vec function call (e.g. `dot(...)`,
     // `reflect(...)`, `normalize(...)`), we cannot infer the return type by scanning
     // for vec constructors inside the arguments — those are *argument* types, not the
     // return type.  Return None to avoid false positives like treating `dot(v, w)` as
     // vec3 just because `w` is constructed with `vec3<f32>(...)`.
-    let ident_end = expr.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(expr.len());
+    let ident_end = expr
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(expr.len());
     if ident_end > 0 && expr[ident_end..].trim_start().starts_with('(') {
         return None;
     }
@@ -3198,9 +3740,15 @@ fn detect_vec_type_in_expr(expr: &str) -> Option<&'static str> {
     // like `1.0 - distance(vec2<f32>(...), pt)` where the vec2 is an argument to
     // `distance` (which returns f32), not the type of the outer expression.
     let flat = collapse_parens(expr);
-    if flat.contains("vec4<f32>(") || flat.contains("vec4(") { return Some("vec4<f32>"); }
-    if flat.contains("vec3<f32>(") || flat.contains("vec3(") { return Some("vec3<f32>"); }
-    if flat.contains("vec2<f32>(") || flat.contains("vec2(") { return Some("vec2<f32>"); }
+    if flat.contains("vec4<f32>(") || flat.contains("vec4(") {
+        return Some("vec4<f32>");
+    }
+    if flat.contains("vec3<f32>(") || flat.contains("vec3(") {
+        return Some("vec3<f32>");
+    }
+    if flat.contains("vec2<f32>(") || flat.contains("vec2(") {
+        return Some("vec2<f32>");
+    }
     None
 }
 
@@ -3212,9 +3760,20 @@ fn collapse_parens(src: &str) -> String {
     let mut depth = 0i32;
     for c in src.chars() {
         match c {
-            '(' => { depth += 1; out.push('('); }
-            ')' => { depth -= 1; if depth < 0 { depth = 0; } out.push(')'); }
-            _ if depth == 0 => { out.push(c); }
+            '(' => {
+                depth += 1;
+                out.push('(');
+            }
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    depth = 0;
+                }
+                out.push(')');
+            }
+            _ if depth == 0 => {
+                out.push(c);
+            }
             _ => {} // inside parens — skip
         }
     }
@@ -3224,15 +3783,29 @@ fn collapse_parens(src: &str) -> String {
 /// Returns true if `s` looks like a plain scalar literal (digits, `.`, `-`, `e`, `f`).
 fn is_scalar_literal(s: &str) -> bool {
     let s = s.trim();
-    if s.is_empty() { return false; }
-    s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+' || c == 'f')
+    if s.is_empty() {
+        return false;
+    }
+    s.chars().all(|c| {
+        c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+' || c == 'f'
+    })
 }
 
 /// Type-aware scalar-expression check. For pure identifiers, looks up the type in `var_types`.
-fn is_scalar_expr_with_types(s: &str, var_types: &std::collections::HashMap<String, String>) -> bool {
-    if is_scalar_literal(s) { return true; }
-    if s.contains("vec2<") || s.contains("vec3<") || s.contains("vec4<")
-    || s.contains("vec2(") || s.contains("vec3(") || s.contains("vec4(") {
+fn is_scalar_expr_with_types(
+    s: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    if is_scalar_literal(s) {
+        return true;
+    }
+    if s.contains("vec2<")
+        || s.contains("vec3<")
+        || s.contains("vec4<")
+        || s.contains("vec2(")
+        || s.contains("vec3(")
+        || s.contains("vec4(")
+    {
         return false;
     }
     // Pure identifier → look up in var_types.
@@ -3247,24 +3820,30 @@ fn is_scalar_expr_with_types(s: &str, var_types: &std::collections::HashMap<Stri
     let n = bytes.len();
     let mut i = 0;
     while i < n {
-        if bytes[i] == b'.' && i + 1 < n && is_word_char(if i > 0 { bytes[i - 1] as char } else { ' ' }) {
+        if bytes[i] == b'.'
+            && i + 1 < n
+            && is_word_char(if i > 0 { bytes[i - 1] as char } else { ' ' })
+        {
             let sw_start = i + 1;
             let mut sw_end = sw_start;
-            while sw_end < n && b"xyzwrgba".contains(&bytes[sw_end]) { sw_end += 1; }
-            if sw_end - sw_start >= 2 { return false; }
+            while sw_end < n && b"xyzwrgba".contains(&bytes[sw_end]) {
+                sw_end += 1;
+            }
+            if sw_end - sw_start >= 2 {
+                return false;
+            }
         }
         i += 1;
     }
     // Function call: check if it propagates the type of its first argument.
     // Functions that always return scalar regardless of input:
-    const SCALAR_RETURN_FNS: &[&str] = &[
-        "dot", "length", "distance", "determinant", "any", "all",
-    ];
+    const SCALAR_RETURN_FNS: &[&str] = &["dot", "length", "distance", "determinant", "any", "all"];
     let s_trimmed = s.trim();
     if let Some(paren_pos) = s_trimmed.find('(') {
         let fn_name = s_trimmed[..paren_pos].trim();
         // Only consider plain identifiers as function names.
-        if !fn_name.is_empty() && fn_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        if !fn_name.is_empty()
+            && fn_name.chars().all(|c| c.is_alphanumeric() || c == '_')
             && !SCALAR_RETURN_FNS.contains(&fn_name)
         {
             let after_paren = &s_trimmed[paren_pos + 1..];
@@ -3318,7 +3897,9 @@ fn fix_builtin_type_mismatches(src: &str) -> String {
             let vname = rest[..colon].trim().to_owned();
             if colon < rest.len() {
                 let ty_part = &rest[colon + 1..];
-                let ty_end = ty_part.find(['=', ';', ','].as_ref()).unwrap_or(ty_part.len());
+                let ty_end = ty_part
+                    .find(['=', ';', ','].as_ref())
+                    .unwrap_or(ty_part.len());
                 let ty = ty_part[..ty_end].trim().to_owned();
                 if !vname.is_empty() && !ty.is_empty() {
                     local_var_types.insert(vname, ty);
@@ -3331,19 +3912,22 @@ fn fix_builtin_type_mismatches(src: &str) -> String {
         result.push('\n');
     }
 
-    if !src.ends_with('\n') && result.ends_with('\n') { result.pop(); }
+    if !src.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
     result
 }
 
-fn fix_builtins_in_line(line: &str, var_types: &std::collections::HashMap<String, String>) -> String {
+fn fix_builtins_in_line(
+    line: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> String {
     // Patterns: (fn_name, n_args, which_args_can_be_scalar, which_args_provide_type)
     // For max(A,B): if one is vector, broadcast the other
     // For min(A,B): same
     // For smoothstep(A,B,C): if C is vector, broadcast A and B
     // For clamp(X,A,B): if X is vector, broadcast A and B
-    let builtins: &[(&str, usize)] = &[
-        ("max(", 2), ("min(", 2), ("smoothstep(", 3), ("clamp(", 3),
-    ];
+    let builtins: &[(&str, usize)] = &[("max(", 2), ("min(", 2), ("smoothstep(", 3), ("clamp(", 3)];
 
     let mut out = line.to_owned();
     for (builtin, n_args) in builtins {
@@ -3367,7 +3951,11 @@ fn fix_builtin_call(
             break;
         };
         // Check word boundary before (skip "smoothstep(" inside identifiers)
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -3406,7 +3994,9 @@ fn fix_builtin_call(
                                 "vec4<f32>" => "vec4<f32>",
                                 "vec3<f32>" => "vec3<f32>",
                                 "vec2<f32>" => "vec2<f32>",
-                                _ => { continue; }
+                                _ => {
+                                    continue;
+                                }
                             });
                             break;
                         }
@@ -3425,16 +4015,19 @@ fn fix_builtin_call(
         // Broadcast scalar values to the detected vector type.
         // Wrap scalar literals and ISF uniform fields (isf_u.* — always f32).
         // Leave args alone if they are already the right vector type.
-        let new_args: Vec<String> = args.iter().map(|arg| {
-            let a = arg.trim();
-            let already_vec = infer_call_arg_type(a, var_types)
-                .is_some_and(|ty| ty.starts_with("vec"));
-            if !already_vec && (is_scalar_literal(a) || a.starts_with("isf_u.")) {
-                format!("{}({})", vty, a)
-            } else {
-                a.to_owned()
-            }
-        }).collect();
+        let new_args: Vec<String> = args
+            .iter()
+            .map(|arg| {
+                let a = arg.trim();
+                let already_vec =
+                    infer_call_arg_type(a, var_types).is_some_and(|ty| ty.starts_with("vec"));
+                if !already_vec && (is_scalar_literal(a) || a.starts_with("isf_u.")) {
+                    format!("{}({})", vty, a)
+                } else {
+                    a.to_owned()
+                }
+            })
+            .collect();
 
         // Only rewrite if something changed
         if new_args.iter().zip(args.iter()).any(|(n, o)| n != o.trim()) {
@@ -3456,7 +4049,9 @@ fn fix_int_cast_comparisons(src: &str) -> String {
         out.push_str(&fix_int_cast_cmp_in_line(line));
         out.push('\n');
     }
-    if !src.ends_with('\n') && out.ends_with('\n') { out.pop(); }
+    if !src.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
@@ -3480,7 +4075,11 @@ fn fix_cast_cmp_one(line: &str, cast: &str) -> String {
             break;
         };
         // Word boundary check
-        let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
         if is_word_char(before) {
             out.push_str(&rest[..pos + 1]);
             rest = &rest[pos + 1..];
@@ -3553,7 +4152,9 @@ fn fix_swizzle_compound_assignments(src: &str) -> String {
             let vname = rest[..colon].trim().to_owned();
             if colon < rest.len() {
                 let ty_part = &rest[colon + 1..];
-                let ty_end = ty_part.find(['=', ';', ','].as_ref()).unwrap_or(ty_part.len());
+                let ty_end = ty_part
+                    .find(['=', ';', ','].as_ref())
+                    .unwrap_or(ty_part.len());
                 let ty = ty_part[..ty_end].trim().to_owned();
                 if !vname.is_empty() && !ty.is_empty() {
                     if in_function {
@@ -3571,7 +4172,9 @@ fn fix_swizzle_compound_assignments(src: &str) -> String {
             let vname = rest[..colon].trim().to_owned();
             if colon < rest.len() {
                 let ty_part = &rest[colon + 1..];
-                let ty_end = ty_part.find(['=', ';', ','].as_ref()).unwrap_or(ty_part.len());
+                let ty_end = ty_part
+                    .find(['=', ';', ','].as_ref())
+                    .unwrap_or(ty_part.len());
                 let ty = ty_part[..ty_end].trim().to_owned();
                 if !vname.is_empty() && !ty.is_empty() {
                     local_var_types.insert(vname, ty);
@@ -3589,14 +4192,23 @@ fn fix_swizzle_compound_assignments(src: &str) -> String {
         out.push_str(&expanded);
         out.push('\n');
     }
-    if !src.ends_with('\n') && out.ends_with('\n') { out.pop(); }
+    if !src.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
     out
 }
 
-fn try_expand_swizzle_assignment(line: &str, swizzle_chars: &[u8], ops: &[&str], var_types: &std::collections::HashMap<String, String>) -> String {
+fn try_expand_swizzle_assignment(
+    line: &str,
+    swizzle_chars: &[u8],
+    ops: &[&str],
+    var_types: &std::collections::HashMap<String, String>,
+) -> String {
     let trimmed = line.trim();
     // Quick check: must contain `.` and one of the compound ops
-    if !trimmed.contains('.') { return line.to_owned(); }
+    if !trimmed.contains('.') {
+        return line.to_owned();
+    }
 
     let indent = &line[..line.len() - line.trim_start().len()];
 
@@ -3620,7 +4232,9 @@ fn try_expand_swizzle_assignment(line: &str, swizzle_chars: &[u8], ops: &[&str],
         // Collect the identifier before the `.`
         let ident_end = i;
         let mut ident_start = ident_end;
-        while ident_start > 0 && (bytes[ident_start - 1].is_ascii_alphanumeric() || bytes[ident_start - 1] == b'_') {
+        while ident_start > 0
+            && (bytes[ident_start - 1].is_ascii_alphanumeric() || bytes[ident_start - 1] == b'_')
+        {
             ident_start -= 1;
         }
         // Only expand if ident_start == 0 (line starts with ident, possibly after indent)
@@ -3655,8 +4269,7 @@ fn try_expand_swizzle_assignment(line: &str, swizzle_chars: &[u8], ops: &[&str],
             }
         }
         // Also handle plain `=` (not `==`)
-        let is_plain_assign =
-            after_swizzle.starts_with('=') && !after_swizzle.starts_with("==");
+        let is_plain_assign = after_swizzle.starts_with('=') && !after_swizzle.starts_with("==");
 
         if matched_op.is_none() && !is_plain_assign {
             i += 1;
@@ -3666,13 +4279,19 @@ fn try_expand_swizzle_assignment(line: &str, swizzle_chars: &[u8], ops: &[&str],
         if let Some(op) = matched_op {
             let after_op = after_swizzle[op.len()..].trim_start();
             let rhs = after_op.trim_end_matches(';').trim_end();
-            if rhs.is_empty() { i += 1; continue; }
+            if rhs.is_empty() {
+                i += 1;
+                continue;
+            }
 
             let rhs_is_scalar = is_scalar_expr_with_types(rhs, var_types);
             let components: Vec<char> = swizzle.chars().collect();
             let mut expanded = String::new();
             for (comp_idx, &comp) in components.iter().enumerate() {
-                if comp_idx > 0 { expanded.push('\n'); expanded.push_str(indent); }
+                if comp_idx > 0 {
+                    expanded.push('\n');
+                    expanded.push_str(indent);
+                }
                 let rhs_part = if rhs_is_scalar {
                     rhs.to_owned()
                 } else {
@@ -3687,13 +4306,19 @@ fn try_expand_swizzle_assignment(line: &str, swizzle_chars: &[u8], ops: &[&str],
             // Expand to per-component assignments using RHS component access.
             let after_op = after_swizzle[1..].trim_start(); // skip `=`
             let rhs = after_op.trim_end_matches(';').trim_end();
-            if rhs.is_empty() { i += 1; continue; }
+            if rhs.is_empty() {
+                i += 1;
+                continue;
+            }
 
             let rhs_is_scalar = is_scalar_expr_with_types(rhs, var_types);
             let components: Vec<char> = swizzle.chars().collect();
             let mut expanded = String::new();
             for (comp_idx, &comp) in components.iter().enumerate() {
-                if comp_idx > 0 { expanded.push('\n'); expanded.push_str(indent); }
+                if comp_idx > 0 {
+                    expanded.push('\n');
+                    expanded.push_str(indent);
+                }
                 let rhs_part = if rhs_is_scalar {
                     rhs.to_owned()
                 } else {
@@ -3748,7 +4373,9 @@ fn fix_oversized_vec_constructors(src: &str) -> String {
             let vname = rest[..colon].trim().to_owned();
             if colon < rest.len() {
                 let ty_part = &rest[colon + 1..];
-                let ty_end = ty_part.find(['=', ';', ','].as_ref()).unwrap_or(ty_part.len());
+                let ty_end = ty_part
+                    .find(['=', ';', ','].as_ref())
+                    .unwrap_or(ty_part.len());
                 let ty = ty_part[..ty_end].trim().to_owned();
                 if !vname.is_empty() && !ty.is_empty() {
                     local_var_types.insert(vname, ty);
@@ -3761,7 +4388,9 @@ fn fix_oversized_vec_constructors(src: &str) -> String {
         result.push('\n');
     }
 
-    if !src.ends_with('\n') && result.ends_with('\n') { result.pop(); }
+    if !src.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
     result
 }
 
@@ -3770,9 +4399,15 @@ fn fix_vec_constructors_in_line(
     var_types: &std::collections::HashMap<String, String>,
 ) -> String {
     const VEC_PATTERNS: &[(&str, usize)] = &[
-        ("vec4<f32>(", 4), ("vec3<f32>(", 3), ("vec2<f32>(", 2),
-        ("vec4<i32>(", 4), ("vec3<i32>(", 3), ("vec2<i32>(", 2),
-        ("vec4<u32>(", 4), ("vec3<u32>(", 3), ("vec2<u32>(", 2),
+        ("vec4<f32>(", 4),
+        ("vec3<f32>(", 3),
+        ("vec2<f32>(", 2),
+        ("vec4<i32>(", 4),
+        ("vec3<i32>(", 3),
+        ("vec2<i32>(", 2),
+        ("vec4<u32>(", 4),
+        ("vec3<u32>(", 3),
+        ("vec2<u32>(", 2),
     ];
 
     let mut out = line.to_owned();
@@ -3784,7 +4419,11 @@ fn fix_vec_constructors_in_line(
                 s2.push_str(rest);
                 break;
             };
-            let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+            let before = if pos > 0 {
+                rest.as_bytes()[pos - 1] as char
+            } else {
+                ' '
+            };
             if is_word_char(before) {
                 s2.push_str(&rest[..pos + 1]);
                 rest = &rest[pos + 1..];
@@ -3808,7 +4447,8 @@ fn fix_vec_constructors_in_line(
 
             // Single-line: process — determine how to emit before writing anything.
             let args = split_top_level_commas(args_str);
-            let arg_ncs: Vec<usize> = args.iter()
+            let arg_ncs: Vec<usize> = args
+                .iter()
                 .map(|a| infer_component_count(a.trim(), var_types))
                 .collect();
             let total: usize = arg_ncs.iter().sum();
@@ -3816,7 +4456,7 @@ fn fix_vec_constructors_in_line(
             // Single oversized arg: vec3<f32>(vec4_expr) → (vec4_expr).xyz
             if total > *expected_n && args.len() == 1 && arg_ncs[0] > *expected_n {
                 let swizzle = &"xyzw"[..*expected_n];
-                s2.push_str(&rest[..pos]);  // content before the constructor
+                s2.push_str(&rest[..pos]); // content before the constructor
                 s2.push_str(&format!("({}).{}", args[0].trim(), swizzle));
                 rest = after_close;
                 continue;
@@ -3854,7 +4494,10 @@ fn fix_vec_constructors_in_line(
 }
 
 /// Infer the number of vector components an expression contributes.
-fn infer_component_count(expr: &str, var_types: &std::collections::HashMap<String, String>) -> usize {
+fn infer_component_count(
+    expr: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> usize {
     // Check trailing swizzle FIRST: `vec4<f32>(...).rgb` must return 3, not 4.
     // `infer_call_arg_type` would match the vec4 prefix before seeing the swizzle.
     if let Some(dot_pos) = expr.rfind('.') {
@@ -3872,9 +4515,15 @@ fn infer_component_count(expr: &str, var_types: &std::collections::HashMap<Strin
         };
     }
     // Direct vec constructor prefix check as fallback
-    if expr.starts_with("vec4<") { return 4; }
-    if expr.starts_with("vec3<") { return 3; }
-    if expr.starts_with("vec2<") { return 2; }
+    if expr.starts_with("vec4<") {
+        return 4;
+    }
+    if expr.starts_with("vec3<") {
+        return 3;
+    }
+    if expr.starts_with("vec2<") {
+        return 2;
+    }
     1
 }
 
@@ -3906,9 +4555,17 @@ fn rename_wgsl_reserved_keywords(src: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut rest: &str = &s;
         while let Some(pos) = rest.find("fn") {
-            let before = if pos > 0 { rest.as_bytes()[pos - 1] as char } else { ' ' };
+            let before = if pos > 0 {
+                rest.as_bytes()[pos - 1] as char
+            } else {
+                ' '
+            };
             let after_pos = pos + 2;
-            let after = if after_pos < rest.len() { rest.as_bytes()[after_pos] as char } else { ' ' };
+            let after = if after_pos < rest.len() {
+                rest.as_bytes()[after_pos] as char
+            } else {
+                ' '
+            };
             // Skip if it's part of a longer identifier
             if is_word_char(before) || is_word_char(after) {
                 out.push_str(&rest[..pos + 1]);
@@ -3985,7 +4642,9 @@ fn join_ternary_continuation_lines(src: &str) -> String {
         // Look ahead for continuation lines (lines starting with ? or :, or when the
         // current line ends with a binary operator inside a ternary context).
         loop {
-            if i + 1 >= lines.len() { break; }
+            if i + 1 >= lines.len() {
+                break;
+            }
             let next = lines[i + 1].trim();
             let is_ternary_q = next.starts_with('?') && !next.starts_with("//");
             // `:` continuation: starts with `: ` followed by non-empty content,
@@ -3998,11 +4657,16 @@ fn join_ternary_continuation_lines(src: &str) -> String {
             // indicating the true-value expression spans multiple lines.
             let ends_with_op = {
                 let t = joined.trim_end();
-                t.ends_with('*') || t.ends_with('/') || t.ends_with('%')
-                    || t.ends_with("||") || t.ends_with("&&")
+                t.ends_with('*')
+                    || t.ends_with('/')
+                    || t.ends_with('%')
+                    || t.ends_with("||")
+                    || t.ends_with("&&")
                     || (t.ends_with('+') && !t.ends_with("++"))
                     || (t.ends_with('-') && !t.ends_with("--"))
-                    || t.ends_with('|') || t.ends_with('&') || t.ends_with('^')
+                    || t.ends_with('|')
+                    || t.ends_with('&')
+                    || t.ends_with('^')
             };
             let in_ternary_context = joined.contains('?');
             let is_operator_continuation = ends_with_op && in_ternary_context;
@@ -4030,7 +4694,9 @@ fn convert_ternary_operators(src: &str) -> String {
     let mut s = src.to_string();
     for _ in 0..4 {
         let s2 = convert_ternary_pass(&s);
-        if s2 == s { break; }
+        if s2 == s {
+            break;
+        }
         s = s2;
     }
     s
@@ -4105,18 +4771,29 @@ fn convert_ternary_in_line(s: &str) -> String {
                     match chars[j] {
                         '(' | '[' => scan_depth += 1,
                         ')' | ']' => {
-                            if scan_depth == q_depth && q_depth > 0 { break; }
-                            if scan_depth > 0 { scan_depth -= 1; }
+                            if scan_depth == q_depth && q_depth > 0 {
+                                break;
+                            }
+                            if scan_depth > 0 {
+                                scan_depth -= 1;
+                            }
                         }
                         '?' if scan_depth == q_depth => ternary_nesting += 1,
                         ':' if scan_depth == q_depth => {
-                            if ternary_nesting > 0 { ternary_nesting -= 1; }
-                            else { colon_pos = Some(j); break; }
+                            if ternary_nesting > 0 {
+                                ternary_nesting -= 1;
+                            } else {
+                                colon_pos = Some(j);
+                                break;
+                            }
                         }
                         _ => {}
                     }
                 }
-                let colon_pos = match colon_pos { Some(p) => p, None => continue };
+                let colon_pos = match colon_pos {
+                    Some(p) => p,
+                    None => continue,
+                };
 
                 // Find end of false value
                 let mut scan_depth = q_depth;
@@ -4130,12 +4807,18 @@ fn convert_ternary_in_line(s: &str) -> String {
                                 false_end = j;
                                 break;
                             }
-                            if scan_depth > 0 { scan_depth -= 1; }
+                            if scan_depth > 0 {
+                                scan_depth -= 1;
+                            }
                         }
                         '?' if scan_depth == q_depth => ternary_nesting += 1,
                         ':' if scan_depth == q_depth => {
-                            if ternary_nesting > 0 { ternary_nesting -= 1; }
-                            else { false_end = j; break; }
+                            if ternary_nesting > 0 {
+                                ternary_nesting -= 1;
+                            } else {
+                                false_end = j;
+                                break;
+                            }
                         }
                         ',' | ';' if scan_depth == q_depth && ternary_nesting == 0 => {
                             false_end = j;
@@ -4153,7 +4836,8 @@ fn convert_ternary_in_line(s: &str) -> String {
 
                 // `return COND ? A : B` — the `return` belongs in the prefix, not the condition.
                 let cond_trimmed = cond_raw.trim();
-                let (prefix, cond) = if let Some(rest) = cond_trimmed.strip_prefix("return ")
+                let (prefix, cond) = if let Some(rest) = cond_trimmed
+                    .strip_prefix("return ")
                     .or_else(|| cond_trimmed.strip_prefix("return\t"))
                 {
                     (format!("{}return ", prefix_raw), rest.trim().to_string())
@@ -4165,8 +4849,10 @@ fn convert_ternary_in_line(s: &str) -> String {
                 let true_v = true_val.trim().trim_start_matches('+');
                 let false_v = false_val.trim().trim_start_matches('+');
 
-                return format!("{}select({}, {}, {}){}",
-                    prefix, false_v, true_v, cond, suffix);
+                return format!(
+                    "{}select({}, {}, {}){}",
+                    prefix, false_v, true_v, cond, suffix
+                );
             }
             _ => {}
         }
@@ -4218,7 +4904,9 @@ fn inject_param_var_shadows(src: &str) -> String {
                     out.push_str(&shadow);
                     out.push('\n');
                 }
-                if !trimmed.is_empty() { prev_line_is_attr = false; }
+                if !trimmed.is_empty() {
+                    prev_line_is_attr = false;
+                }
                 continue;
             }
             // Next-line brace: `fn name(...) -> TYPE` followed by a lone `{` on the next line
@@ -4226,7 +4914,9 @@ fn inject_param_var_shadows(src: &str) -> String {
                 out.push_str(&new_sig);
                 out.push('\n');
                 pending_shadows = shadows;
-                if !trimmed.is_empty() { prev_line_is_attr = false; }
+                if !trimmed.is_empty() {
+                    prev_line_is_attr = false;
+                }
                 continue;
             }
         }
@@ -4246,7 +4936,9 @@ fn inject_param_var_shadows(src: &str) -> String {
 /// - shadow lines: `    var p: T = _p;`, `    var q: U = _q;`
 fn rename_fn_params_for_mutability(line: &str) -> Option<(String, Vec<String>)> {
     let trimmed = line.trim();
-    if !trimmed.starts_with("fn ") || !trimmed.ends_with('{') { return None; }
+    if !trimmed.starts_with("fn ") || !trimmed.ends_with('{') {
+        return None;
+    }
 
     let after_fn = &trimmed[3..];
     let paren_open = after_fn.find('(')?;
@@ -4254,7 +4946,9 @@ fn rename_fn_params_for_mutability(line: &str) -> Option<(String, Vec<String>)> 
     let params_content = &after_fn[paren_open + 1..];
     let (params_str, rest_after_close) = extract_balanced(params_content, ')');
 
-    if params_str.trim().is_empty() { return None; }
+    if params_str.trim().is_empty() {
+        return None;
+    }
 
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
@@ -4265,7 +4959,9 @@ fn rename_fn_params_for_mutability(line: &str) -> Option<(String, Vec<String>)> 
 
     for param in split_top_level_commas(params_str) {
         let param = param.trim();
-        if param.is_empty() { continue; }
+        if param.is_empty() {
+            continue;
+        }
         if let Some(colon_pos) = param.find(':') {
             let name = param[..colon_pos].trim();
             let ty = param[colon_pos + 1..].trim();
@@ -4285,16 +4981,27 @@ fn rename_fn_params_for_mutability(line: &str) -> Option<(String, Vec<String>)> 
             // Rename param: p → _fp_p, inject var p: T = _fp_p;
             // Prefix `_fp_` (function-parameter) is unlikely to conflict with user variables.
             new_param_parts.push(format!("_fp_{}: {}", name, ty));
-            shadows.push(format!("{}var {}: {} = _fp_{};", body_indent, name, ty, name));
+            shadows.push(format!(
+                "{}var {}: {} = _fp_{};",
+                body_indent, name, ty, name
+            ));
         } else {
             new_param_parts.push(param.to_string());
         }
     }
 
-    if shadows.is_empty() { return None; }
+    if shadows.is_empty() {
+        return None;
+    }
 
     let new_params_str = new_param_parts.join(", ");
-    let new_sig = format!("{}fn {}({}) {}", indent, func_name, new_params_str, rest_after_close.trim());
+    let new_sig = format!(
+        "{}fn {}({}) {}",
+        indent,
+        func_name,
+        new_params_str,
+        rest_after_close.trim()
+    );
     Some((new_sig, shadows))
 }
 
@@ -4303,16 +5010,26 @@ fn rename_fn_params_for_mutability(line: &str) -> Option<(String, Vec<String>)> 
 fn rename_fn_params_next_line_brace(line: &str) -> Option<(String, Vec<String>)> {
     let trimmed = line.trim();
     // Must be a `fn ` signature without a trailing `{`
-    if !trimmed.starts_with("fn ") || trimmed.ends_with('{') { return None; }
+    if !trimmed.starts_with("fn ") || trimmed.ends_with('{') {
+        return None;
+    }
     // Must look like a function signature: has `(` and `)` and not end in `;`
-    if !trimmed.contains('(') || trimmed.ends_with(';') { return None; }
+    if !trimmed.contains('(') || trimmed.ends_with(';') {
+        return None;
+    }
     // Delegate by appending a fake `{` and calling the same-line version
     let fake_line = format!("{} {{", line.trim_end());
     if let Some((sig_with_brace, shadows)) = rename_fn_params_for_mutability(&fake_line) {
         // Strip the appended ` {` from the signature
         let indent_len = line.len() - trimmed.len();
-        let clean = sig_with_brace.trim_end_matches(" {").trim_end_matches('{').trim_end();
-        Some((format!("{}{}", &line[..indent_len], &clean[indent_len..]), shadows))
+        let clean = sig_with_brace
+            .trim_end_matches(" {")
+            .trim_end_matches('{')
+            .trim_end();
+        Some((
+            format!("{}{}", &line[..indent_len], &clean[indent_len..]),
+            shadows,
+        ))
     } else {
         None
     }
@@ -4329,7 +5046,9 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
             '(' | '[' => depth += 1,
             ')' | ']' => depth -= 1,
             '<' => angle += 1,
-            '>' if angle > 0 => { angle -= 1; }
+            '>' if angle > 0 => {
+                angle -= 1;
+            }
             ',' if depth == 0 && angle == 0 => {
                 parts.push(&s[start..i]);
                 start = i + 1;
@@ -4350,9 +5069,15 @@ fn split_multi_var_decls(src: &str) -> String {
     for line in src.lines() {
         match try_split_multi_var_decl(line) {
             Some(lines) => {
-                for l in lines { out.push_str(&l); out.push('\n'); }
+                for l in lines {
+                    out.push_str(&l);
+                    out.push('\n');
+                }
             }
-            None => { out.push_str(line); out.push('\n'); }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
     }
     out
@@ -4360,7 +5085,9 @@ fn split_multi_var_decls(src: &str) -> String {
 
 fn try_split_multi_var_decl(line: &str) -> Option<Vec<String>> {
     let trimmed = line.trim();
-    if !trimmed.starts_with("var ") { return None; }
+    if !trimmed.starts_with("var ") {
+        return None;
+    }
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
 
@@ -4377,11 +5104,19 @@ fn try_split_multi_var_decl(line: &str) -> Option<Vec<String>> {
 
     // Scan for `, IDENT =` at top level
     let assignments = split_at_top_level_ident_eq(val_part, &name0)?;
-    if assignments.len() <= 1 { return None; }
+    if assignments.len() <= 1 {
+        return None;
+    }
 
     let mut result = Vec::new();
     for (var_name, var_val) in assignments {
-        result.push(format!("{}var {}: {} = {};", indent, var_name, ty, var_val.trim().trim_end_matches(';')));
+        result.push(format!(
+            "{}var {}: {} = {};",
+            indent,
+            var_name,
+            ty,
+            var_val.trim().trim_end_matches(';')
+        ));
     }
     Some(result)
 }
@@ -4392,11 +5127,19 @@ fn find_top_level_assign(s: &str) -> Option<usize> {
     for i in 0..bytes.len() {
         match bytes[i] as char {
             '(' | '[' | '<' => depth += 1,
-            ')' | ']' | '>' if depth > 0 => { depth -= 1; }
+            ')' | ']' | '>' if depth > 0 => {
+                depth -= 1;
+            }
             '=' if depth == 0 => {
                 // Not `==`
-                let next = if i + 1 < bytes.len() { bytes[i + 1] as char } else { ' ' };
-                if next != '=' { return Some(i); }
+                let next = if i + 1 < bytes.len() {
+                    bytes[i + 1] as char
+                } else {
+                    ' '
+                };
+                if next != '=' {
+                    return Some(i);
+                }
             }
             _ => {}
         }
@@ -4417,24 +5160,41 @@ fn split_at_top_level_ident_eq(s: &str, first_name: &str) -> Option<Vec<(String,
     let mut i = 0usize;
     while i < n {
         match chars[i] {
-            '(' | '[' => { depth += 1; i += 1; }
-            ')' | ']' => { depth -= 1; i += 1; }
+            '(' | '[' => {
+                depth += 1;
+                i += 1;
+            }
+            ')' | ']' => {
+                depth -= 1;
+                i += 1;
+            }
             ',' if depth == 0 => {
                 let comma_i = i;
                 i += 1;
                 // Skip whitespace
-                while i < n && chars[i].is_whitespace() { i += 1; }
+                while i < n && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 // Read identifier
                 let ident_start = i;
-                while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
+                while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
                 let ident_end = i;
-                if ident_end == ident_start { i = comma_i + 1; continue; }
+                if ident_end == ident_start {
+                    i = comma_i + 1;
+                    continue;
+                }
                 // Skip whitespace
-                while i < n && chars[i].is_whitespace() { i += 1; }
+                while i < n && chars[i].is_whitespace() {
+                    i += 1;
+                }
                 // Check for `=` (not `==`)
                 if i < n && chars[i] == '=' && (i + 1 >= n || chars[i + 1] != '=') {
                     i += 1; // skip '='
-                    while i < n && chars[i].is_whitespace() { i += 1; }
+                    while i < n && chars[i].is_whitespace() {
+                        i += 1;
+                    }
                     // Save the previous segment
                     let val: String = chars[seg_start..comma_i].iter().collect();
                     parts.push((current_name.clone(), val.trim().to_string()));
@@ -4444,14 +5204,21 @@ fn split_at_top_level_ident_eq(s: &str, first_name: &str) -> Option<Vec<(String,
                     i = comma_i + 1;
                 }
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
-    if parts.is_empty() { return None; }
+    if parts.is_empty() {
+        return None;
+    }
     // Add the last segment
     let last_val: String = chars[seg_start..].iter().collect();
-    parts.push((current_name, last_val.trim().trim_end_matches(';').to_string()));
+    parts.push((
+        current_name,
+        last_val.trim().trim_end_matches(';').to_string(),
+    ));
     Some(parts)
 }
 
@@ -4483,7 +5250,8 @@ fn add_braces_to_multiline_braceless_control_flow(src: &str) -> String {
         let indent = &line[..line.len() - line.trim_start().len()];
 
         if is_multiline_braceless_header(trimmed) {
-            let j_opt = (i + 1..n).find(|&k| !lines[k].trim().is_empty() && !lines[k].trim().starts_with("//"));
+            let j_opt = (i + 1..n)
+                .find(|&k| !lines[k].trim().is_empty() && !lines[k].trim().starts_with("//"));
             if let Some(j) = j_opt {
                 let body_line = lines[j];
                 let body_trimmed = body_line.trim();
@@ -4499,29 +5267,53 @@ fn add_braces_to_multiline_braceless_control_flow(src: &str) -> String {
                     let mut block_end = n;
                     'outer: for k in j..n {
                         for c in lines[k].chars() {
-                            match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { block_end = k; break 'outer; } } _ => {} }
+                            match c {
+                                '{' => depth += 1,
+                                '}' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        block_end = k;
+                                        break 'outer;
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     if block_end != n {
-                        out.push_str(line); out.push_str(" {\n");
-                        for k in (i + 1)..=block_end { out.push_str(lines[k]); out.push('\n'); }
-                        out.push_str(indent); out.push_str("}\n");
+                        out.push_str(line);
+                        out.push_str(" {\n");
+                        for k in (i + 1)..=block_end {
+                            out.push_str(lines[k]);
+                            out.push('\n');
+                        }
+                        out.push_str(indent);
+                        out.push_str("}\n");
                         i = block_end + 1;
                         continue;
                     }
-                } else if !body_trimmed.ends_with('}') && !is_multiline_braceless_header(body_trimmed) {
+                } else if !body_trimmed.ends_with('}')
+                    && !is_multiline_braceless_header(body_trimmed)
+                {
                     // Simple single-statement body
-                    out.push_str(line); out.push_str(" {\n");
-                    for k in (i + 1)..j { out.push_str(lines[k]); out.push('\n'); }
-                    out.push_str(body_line); out.push('\n');
-                    out.push_str(indent); out.push_str("}\n");
+                    out.push_str(line);
+                    out.push_str(" {\n");
+                    for k in (i + 1)..j {
+                        out.push_str(lines[k]);
+                        out.push('\n');
+                    }
+                    out.push_str(body_line);
+                    out.push('\n');
+                    out.push_str(indent);
+                    out.push_str("}\n");
                     i = j + 1;
                     continue;
                 }
             }
         }
 
-        out.push_str(line); out.push('\n');
+        out.push_str(line);
+        out.push('\n');
         i += 1;
     }
     out
@@ -4542,8 +5334,10 @@ fn join_control_flow_condition_lines(src: &str) -> String {
     while i < n {
         let trimmed = lines[i].trim();
         // Only consider lines that start with a control flow keyword
-        let starts_cf = trimmed.starts_with("if (") || trimmed.starts_with("} else if (")
-            || trimmed.starts_with("else if (") || trimmed.starts_with("for (")
+        let starts_cf = trimmed.starts_with("if (")
+            || trimmed.starts_with("} else if (")
+            || trimmed.starts_with("else if (")
+            || trimmed.starts_with("for (")
             || trimmed.starts_with("while (");
         if starts_cf {
             // Check paren balance: if balanced (depth==0), the condition is closed on this line
@@ -4560,7 +5354,11 @@ fn join_control_flow_condition_lines(src: &str) -> String {
                     joined.push_str(next);
                     i += 1;
                     for c in next.chars() {
-                        match c { '(' => d += 1, ')' => d -= 1, _ => {} }
+                        match c {
+                            '(' => d += 1,
+                            ')' => d -= 1,
+                            _ => {}
+                        }
                     }
                 }
                 out.push_str(&joined);
@@ -4577,15 +5375,25 @@ fn join_control_flow_condition_lines(src: &str) -> String {
 
 fn paren_depth(s: &str) -> i32 {
     let mut d = 0i32;
-    for c in s.chars() { match c { '(' => d += 1, ')' => d -= 1, _ => {} } }
+    for c in s.chars() {
+        match c {
+            '(' => d += 1,
+            ')' => d -= 1,
+            _ => {}
+        }
+    }
     d
 }
 
 fn is_multiline_braceless_header(trimmed: &str) -> bool {
-    if trimmed.ends_with('{') || trimmed.ends_with('}') || trimmed.is_empty() { return false; }
+    if trimmed.ends_with('{') || trimmed.ends_with('}') || trimmed.is_empty() {
+        return false;
+    }
 
     // `else` or `} else` alone on a line
-    if trimmed == "else" || trimmed == "} else" { return true; }
+    if trimmed == "else" || trimmed == "} else" {
+        return true;
+    }
 
     // `if (...)`, `else if (...)`, `for (...)`, `while (...)` ending with `)` — no body
     for kw in &["if (", "} else if (", "else if (", "for (", "while ("] {
@@ -4602,7 +5410,13 @@ fn is_multiline_braceless_header(trimmed: &str) -> bool {
 
 fn sanitize_ident(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -4638,9 +5452,21 @@ fn rewrite_partial_gl_frag_color(src: &str) -> String {
             let mut main_end = n;
             for j in main_brace_line..n {
                 for c in lines[j].chars() {
-                    match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { main_end = j; break; } } _ => {} }
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                main_end = j;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                if main_end != n { break; }
+                if main_end != n {
+                    break;
+                }
             }
             // Collect the body lines (between opening and closing brace)
             // Output lines up to and including the opening brace line, inserting _fc decl
@@ -4677,8 +5503,7 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("shaders")
             .join(name);
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("{} not found", name));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} not found", name));
         let isf = isf::parse(&src).unwrap_or_else(|e| panic!("parse failed for {}: {}", name, e));
         let result = generate_wgsl(&isf, &src)
             .unwrap_or_else(|e| panic!("transpile failed for {}: {}", name, e));
@@ -4686,12 +5511,24 @@ mod tests {
     }
 
     fn assert_valid_wgsl(wgsl: &str, shader_name: &str) {
-        assert!(wgsl.contains("fn fs_main"), "{}: missing fs_main", shader_name);
-        assert!(wgsl.contains("fn vs_main"), "{}: missing vs_main", shader_name);
+        assert!(
+            wgsl.contains("fn fs_main"),
+            "{}: missing fs_main",
+            shader_name
+        );
+        assert!(
+            wgsl.contains("fn vs_main"),
+            "{}: missing vs_main",
+            shader_name
+        );
         // Should have balanced braces
         let open = wgsl.chars().filter(|&c| c == '{').count();
         let close = wgsl.chars().filter(|&c| c == '}').count();
-        assert_eq!(open, close, "{}: unbalanced braces ({} open, {} close)", shader_name, open, close);
+        assert_eq!(
+            open, close,
+            "{}: unbalanced braces ({} open, {} close)",
+            shader_name, open, close
+        );
     }
 
     #[test]
@@ -4706,7 +5543,11 @@ mod tests {
         let result = fix_vec_constructors_in_line(line, &var_types);
         eprintln!("input:  {}", line);
         eprintln!("output: {}", result);
-        assert!(result.contains("1.0"), "1.0 should be preserved: {}", result);
+        assert!(
+            result.contains("1.0"),
+            "1.0 should be preserved: {}",
+            result
+        );
     }
 
     #[test]
@@ -4716,10 +5557,19 @@ mod tests {
         assert_valid_wgsl(&wgsl, "ColorCycle.fs");
         assert!(wgsl.contains("isf_u.time"), "missing time uniform");
         assert!(wgsl.contains("atan2"), "atan should be converted to atan2");
-        assert!(!wgsl.contains("vec3 iResolution"), "module-scope var should be injected");
+        assert!(
+            !wgsl.contains("vec3 iResolution"),
+            "module-scope var should be injected"
+        );
         // iResolution is emitted as var<private> at module scope + assigned in fs_main
-        assert!(wgsl.contains("iResolution"), "iResolution should be present in output");
-        assert!(wgsl.contains("iResolution = vec3<f32>(isf_u.rendersize_x"), "iResolution should be assigned in fs_main");
+        assert!(
+            wgsl.contains("iResolution"),
+            "iResolution should be present in output"
+        );
+        assert!(
+            wgsl.contains("iResolution = vec3<f32>(isf_u.rendersize_x"),
+            "iResolution should be assigned in fs_main"
+        );
     }
 
     #[test]
@@ -4735,14 +5585,32 @@ mod tests {
         for entry in std::fs::read_dir(&shaders_dir).expect("shaders dir") {
             let entry = entry.expect("dir entry");
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("fs") { continue; }
+            if path.extension().and_then(|e| e.to_str()) != Some("fs") {
+                continue;
+            }
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            let src = match std::fs::read_to_string(&path) { Ok(s) => s, Err(_) => continue };
-            let isf = match isf::parse(&src) { Ok(i) => i, Err(_) => continue };
-            let result = match generate_wgsl(&isf, &src) { Ok(r) => r, Err(e) => { naga_failures.push(format!("{}: {}", name, e)); continue; } };
-            let tmp = std::env::temp_dir().join(format!("isf_test_{}.wgsl", name.replace(' ', "_")));
+            let src = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let isf = match isf::parse(&src) {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+            let result = match generate_wgsl(&isf, &src) {
+                Ok(r) => r,
+                Err(e) => {
+                    naga_failures.push(format!("{}: {}", name, e));
+                    continue;
+                }
+            };
+            let tmp =
+                std::env::temp_dir().join(format!("isf_test_{}.wgsl", name.replace(' ', "_")));
             std::fs::write(&tmp, &result.wgsl).expect("write wgsl");
-            let out = std::process::Command::new("naga").arg(&tmp).output().expect("run naga");
+            let out = std::process::Command::new("naga")
+                .arg(&tmp)
+                .output()
+                .expect("run naga");
             std::fs::remove_file(&tmp).ok();
             if out.status.success() {
                 ok += 1;
@@ -4752,8 +5620,14 @@ mod tests {
                 naga_failures.push(format!("{}: {}", name, preview));
             }
         }
-        eprintln!("WGSL validation: {}/{} passed", ok, ok + naga_failures.len());
-        for f in &naga_failures { eprintln!("  FAIL: {}", f); }
+        eprintln!(
+            "WGSL validation: {}/{} passed",
+            ok,
+            ok + naga_failures.len()
+        );
+        for f in &naga_failures {
+            eprintln!("  FAIL: {}", f);
+        }
         // This test reports but doesn't fail — some shaders have known GLSL features not in WGSL
     }
 
@@ -4764,8 +5638,8 @@ mod tests {
             eprintln!("naga CLI not available, skipping batch library validation");
             return;
         }
-        let lib_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../isf/test_files");
+        let lib_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../isf/test_files");
         if !lib_dir.exists() {
             eprintln!("ISF library not found at {}, skipping", lib_dir.display());
             return;
@@ -4774,28 +5648,47 @@ mod tests {
         let mut naga_failures: Vec<String> = Vec::new();
         let mut parse_skipped = 0usize;
         let mut ok = 0usize;
-        let mut error_categories: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        let mut error_categories: std::collections::BTreeMap<String, Vec<String>> =
+            Default::default();
 
         for entry in std::fs::read_dir(&lib_dir).expect("read isf test_files dir") {
             let entry = entry.expect("dir entry");
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("fs") { continue; }
+            if path.extension().and_then(|e| e.to_str()) != Some("fs") {
+                continue;
+            }
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            let src = match std::fs::read_to_string(&path) { Ok(s) => s, Err(_) => continue };
-            let isf = match isf::parse(&src) { Ok(i) => i, Err(_) => { parse_skipped += 1; continue; } };
+            let src = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let isf = match isf::parse(&src) {
+                Ok(i) => i,
+                Err(_) => {
+                    parse_skipped += 1;
+                    continue;
+                }
+            };
             let result = match generate_wgsl(&isf, &src) {
                 Ok(r) => r,
                 Err(e) => {
                     let msg = format!("[transpile-error] {}", e);
-                    error_categories.entry("transpile-error".to_string()).or_default().push(name.clone());
+                    error_categories
+                        .entry("transpile-error".to_string())
+                        .or_default()
+                        .push(name.clone());
                     naga_failures.push(format!("{}: {}", name, msg));
                     continue;
                 }
             };
 
-            let tmp = std::env::temp_dir().join(format!("isf_lib_{}.wgsl", name.replace([' ', '/'], "_")));
+            let tmp = std::env::temp_dir()
+                .join(format!("isf_lib_{}.wgsl", name.replace([' ', '/'], "_")));
             std::fs::write(&tmp, &result.wgsl).expect("write wgsl");
-            let out = std::process::Command::new("naga").arg(&tmp).output().expect("run naga");
+            let out = std::process::Command::new("naga")
+                .arg(&tmp)
+                .output()
+                .expect("run naga");
             std::fs::remove_file(&tmp).ok();
 
             if out.status.success() {
@@ -4803,7 +5696,8 @@ mod tests {
             } else {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 // Extract the core error message for categorisation
-                let category = stderr.lines()
+                let category = stderr
+                    .lines()
                     .find(|l| l.contains("error:"))
                     .map(|l| l.trim().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
@@ -4822,32 +5716,47 @@ mod tests {
                     "parse-error"
                 } else {
                     "other"
-                }.to_string();
+                }
+                .to_string();
 
-                let preview: String = stderr.lines()
+                let preview: String = stderr
+                    .lines()
                     .filter(|l| !l.trim().is_empty())
                     .take(4)
                     .map(|l| l.trim())
                     .collect::<Vec<_>>()
                     .join(" | ");
 
-                error_categories.entry(cat_key).or_default().push(name.clone());
+                error_categories
+                    .entry(cat_key)
+                    .or_default()
+                    .push(name.clone());
                 naga_failures.push(format!("{}: {}", name, preview));
             }
         }
 
         eprintln!("\n=== ISF library batch WGSL validation ===");
-        eprintln!("  Parsed & transpiled: {} ok, {} naga failures, {} parse-skipped",
-            ok, naga_failures.len(), parse_skipped);
+        eprintln!(
+            "  Parsed & transpiled: {} ok, {} naga failures, {} parse-skipped",
+            ok,
+            naga_failures.len(),
+            parse_skipped
+        );
         eprintln!("\nFailure categories:");
         for (cat, names) in &error_categories {
             eprintln!("  [{cat}] ({} shaders)", names.len());
-            for n in names.iter().take(5) { eprintln!("    - {}", n); }
-            if names.len() > 5 { eprintln!("    ... and {} more", names.len() - 5); }
+            for n in names.iter().take(5) {
+                eprintln!("    - {}", n);
+            }
+            if names.len() > 5 {
+                eprintln!("    ... and {} more", names.len() - 5);
+            }
         }
         if !naga_failures.is_empty() {
             eprintln!("\nFull failure list:");
-            for f in &naga_failures { eprintln!("  {}", f); }
+            for f in &naga_failures {
+                eprintln!("  {}", f);
+            }
         }
         // Informational test: never fails, just reports
     }
@@ -4867,57 +5776,92 @@ mod tests {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             let src = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
-                Err(e) => { transpile_failures.push(format!("{}: read error: {}", name, e)); continue; }
+                Err(e) => {
+                    transpile_failures.push(format!("{}: read error: {}", name, e));
+                    continue;
+                }
             };
             // ISF parse failures are acceptable (broken ISF files, not our bug)
             let isf = match isf::parse(&src) {
                 Ok(i) => i,
-                Err(e) => { parse_skipped.push(format!("{}: {}", name, e)); continue; }
+                Err(e) => {
+                    parse_skipped.push(format!("{}: {}", name, e));
+                    continue;
+                }
             };
             let result = match generate_wgsl(&isf, &src) {
                 Ok(r) => r,
-                Err(e) => { transpile_failures.push(format!("{}: transpile error: {}", name, e)); continue; }
+                Err(e) => {
+                    transpile_failures.push(format!("{}: transpile error: {}", name, e));
+                    continue;
+                }
             };
             let open = result.wgsl.chars().filter(|&c| c == '{').count();
             let close = result.wgsl.chars().filter(|&c| c == '}').count();
             if open != close {
-                transpile_failures.push(format!("{}: unbalanced braces ({} open, {} close)", name, open, close));
+                transpile_failures.push(format!(
+                    "{}: unbalanced braces ({} open, {} close)",
+                    name, open, close
+                ));
             } else {
                 ok += 1;
             }
         }
         if !parse_skipped.is_empty() {
-            eprintln!("Skipped {} shaders with ISF parse errors (not our bug):", parse_skipped.len());
-            for s in &parse_skipped { eprintln!("  - {}", s); }
+            eprintln!(
+                "Skipped {} shaders with ISF parse errors (not our bug):",
+                parse_skipped.len()
+            );
+            for s in &parse_skipped {
+                eprintln!("  - {}", s);
+            }
         }
-        eprintln!("Transpiled {}/{} valid ISF shaders successfully", ok, ok + transpile_failures.len());
+        eprintln!(
+            "Transpiled {}/{} valid ISF shaders successfully",
+            ok,
+            ok + transpile_failures.len()
+        );
         if !transpile_failures.is_empty() {
             panic!("Transpiler failures:\n{}", transpile_failures.join("\n"));
         }
     }
 }
 
-    #[test]
-    fn dump_failing_wgsl_samples() {
-        let lib_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../isf/test_files");
-        if !lib_dir.exists() { return; }
-        
-        let samples = &[
-            "Gloom.fs",
-            "Mosaic.fs",
-            "Hexagonalize.fs",
-            "Test-Audio.fs",
-        ];
-        
-        for name in samples {
-            let path = lib_dir.join(name);
-            let src = match std::fs::read_to_string(&path) { Ok(s) => s, Err(_) => { eprintln!("skip {name}: not found"); continue; } };
-            let isf = match isf::parse(&src) { Ok(i) => i, Err(e) => { eprintln!("skip {name}: parse err {e}"); continue; } };
-            let result = match generate_wgsl(&isf, &src) { Ok(r) => r, Err(e) => { eprintln!("skip {name}: transpile err {e}"); continue; } };
-            eprintln!("\n=== {name} (has_image={}) ===", result.has_image_input);
-            for (i, line) in result.wgsl.lines().enumerate() {
-                eprintln!("{:>4}: {}", i + 1, line);
+#[test]
+fn dump_failing_wgsl_samples() {
+    let lib_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../isf/test_files");
+    if !lib_dir.exists() {
+        return;
+    }
+
+    let samples = &["Gloom.fs", "Mosaic.fs", "Hexagonalize.fs", "Test-Audio.fs"];
+
+    for name in samples {
+        let path = lib_dir.join(name);
+        let src = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("skip {name}: not found");
+                continue;
             }
+        };
+        let isf = match isf::parse(&src) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("skip {name}: parse err {e}");
+                continue;
+            }
+        };
+        let result = match generate_wgsl(&isf, &src) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skip {name}: transpile err {e}");
+                continue;
+            }
+        };
+        eprintln!("\n=== {name} (has_image={}) ===", result.has_image_input);
+        for (i, line) in result.wgsl.lines().enumerate() {
+            eprintln!("{:>4}: {}", i + 1, line);
         }
     }
+}

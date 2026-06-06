@@ -105,7 +105,11 @@ impl BlitPipeline {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout, sampler }
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+        }
     }
 
     /// Blit `source` into `dest` using the shared fullscreen `vertex_buffer`.

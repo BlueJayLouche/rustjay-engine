@@ -59,9 +59,11 @@ impl SyphonInputReceiver {
 
         #[cfg(target_os = "macos")]
         {
-            let inner = self.inner.as_mut()
-                .ok_or_else(|| anyhow::anyhow!("SyphonInputReceiver not initialized — call initialize() first"))?;
-            inner.connect(&server_name)
+            let inner = self.inner.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("SyphonInputReceiver not initialized — call initialize() first")
+            })?;
+            inner
+                .connect(&server_name)
                 .map_err(|e| anyhow::anyhow!("Failed to connect to '{}': {:?}", server_name, e))?;
         }
 
@@ -72,7 +74,11 @@ impl SyphonInputReceiver {
     /// Connect to a Syphon server by UUID (unambiguous).
     /// Falls back to name-based matching if UUID lookup fails.
     /// Returns an error if `initialize()` has not been called.
-    pub fn connect_by_uuid(&mut self, server_uuid: impl Into<String>, server_name: impl Into<String>) -> anyhow::Result<()> {
+    pub fn connect_by_uuid(
+        &mut self,
+        server_uuid: impl Into<String>,
+        server_name: impl Into<String>,
+    ) -> anyhow::Result<()> {
         let server_uuid = server_uuid.into();
         let server_name = server_name.into();
 
@@ -80,12 +86,17 @@ impl SyphonInputReceiver {
             self.disconnect();
         }
 
-        log::info!("[Syphon Input] Connecting to: {} (uuid={})", server_name, server_uuid);
+        log::info!(
+            "[Syphon Input] Connecting to: {} (uuid={})",
+            server_name,
+            server_uuid
+        );
 
         #[cfg(target_os = "macos")]
         {
-            let inner = self.inner.as_mut()
-                .ok_or_else(|| anyhow::anyhow!("SyphonInputReceiver not initialized — call initialize() first"))?;
+            let inner = self.inner.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("SyphonInputReceiver not initialized — call initialize() first")
+            })?;
 
             let info = syphon_core::ServerInfo {
                 name: server_name.clone(),
@@ -94,8 +105,14 @@ impl SyphonInputReceiver {
                 bundle_id: String::new(),
             };
 
-            inner.connect_by_info(&info)
-                .map_err(|e| anyhow::anyhow!("Failed to connect to '{}' (uuid={}): {:?}", server_name, server_uuid, e))?;
+            inner.connect_by_info(&info).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to connect to '{}' (uuid={}): {:?}",
+                    server_name,
+                    server_uuid,
+                    e
+                )
+            })?;
         }
 
         self.server_name = Some(server_name);
@@ -106,11 +123,7 @@ impl SyphonInputReceiver {
     ///
     /// Returns `true` when a new frame was written. Access the texture with
     /// [`output_texture`](Self::output_texture).
-    pub fn try_receive_texture(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> bool {
+    pub fn try_receive_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
         #[cfg(target_os = "macos")]
         {
             if let Some(ref mut inner) = self.inner {
@@ -130,9 +143,13 @@ impl SyphonInputReceiver {
     /// returns `true`.
     pub fn output_texture(&self) -> Option<&wgpu::Texture> {
         #[cfg(target_os = "macos")]
-        { self.inner.as_ref().and_then(|i| i.output_texture()) }
+        {
+            self.inner.as_ref().and_then(|i| i.output_texture())
+        }
         #[cfg(not(target_os = "macos"))]
-        { None }
+        {
+            None
+        }
     }
 
     /// Disconnect from the server
@@ -150,7 +167,10 @@ impl SyphonInputReceiver {
     pub fn is_connected(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            self.inner.as_ref().map(|i| i.is_connected()).unwrap_or(false)
+            self.inner
+                .as_ref()
+                .map(|i| i.is_connected())
+                .unwrap_or(false)
         }
         #[cfg(not(target_os = "macos"))]
         {

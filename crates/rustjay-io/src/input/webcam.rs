@@ -2,9 +2,11 @@
 //!
 //! Local camera capture using nokhwa.
 
-use nokhwa::Camera;
 use nokhwa::pixel_format::{RgbFormat, YuyvFormat};
-use nokhwa::utils::{CameraIndex, CameraFormat, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
+use nokhwa::utils::{
+    CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution,
+};
+use nokhwa::Camera;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -70,8 +72,12 @@ impl WebcamCapture {
             let actual_width = actual_resolution.width() as u32;
             let actual_height = actual_resolution.height() as u32;
 
-            log::info!("[Webcam] Camera {} opened at {}x{}",
-                device_index, actual_width, actual_height);
+            log::info!(
+                "[Webcam] Camera {} opened at {}x{}",
+                device_index,
+                actual_width,
+                actual_height
+            );
 
             // Capture loop
             loop {
@@ -85,7 +91,8 @@ impl WebcamCapture {
 
                         // Convert YUY2 to BGRA
                         let yuyv_data = buffer.to_vec();
-                        let mut bgra_data = Vec::with_capacity((actual_width * actual_height * 4) as usize);
+                        let mut bgra_data =
+                            Vec::with_capacity((actual_width * actual_height * 4) as usize);
 
                         // YUY2 is 2 bytes per pixel, arranged as: Y0 U Y1 V.
                         // Cameras commonly deliver limited-range BT.601 YUV here,
@@ -98,12 +105,14 @@ impl WebcamCapture {
 
                             // Convert first pixel (Y0, U, V)
                             let r0 = (1.164383 * y0 + 1.596027 * v).clamp(0.0, 255.0) as u8;
-                            let g0 = (1.164383 * y0 - 0.391762 * u - 0.812968 * v).clamp(0.0, 255.0) as u8;
+                            let g0 = (1.164383 * y0 - 0.391762 * u - 0.812968 * v).clamp(0.0, 255.0)
+                                as u8;
                             let b0 = (1.164383 * y0 + 2.017232 * u).clamp(0.0, 255.0) as u8;
 
                             // Convert second pixel (Y1, U, V)
                             let r1 = (1.164383 * y1 + 1.596027 * v).clamp(0.0, 255.0) as u8;
-                            let g1 = (1.164383 * y1 - 0.391762 * u - 0.812968 * v).clamp(0.0, 255.0) as u8;
+                            let g1 = (1.164383 * y1 - 0.391762 * u - 0.812968 * v).clamp(0.0, 255.0)
+                                as u8;
                             let b1 = (1.164383 * y1 + 2.017232 * u).clamp(0.0, 255.0) as u8;
 
                             // Output as BGRA for first pixel
@@ -193,7 +202,8 @@ fn ensure_camera_authorized() -> bool {
 
         // AVMediaTypeVideo = NSString "vide"
         let ns_string_cls = Class::get("NSString").unwrap();
-        let media_type: *mut Object = objc::msg_send![ns_string_cls, stringWithUTF8String: c"vide".as_ptr()];
+        let media_type: *mut Object =
+            objc::msg_send![ns_string_cls, stringWithUTF8String: c"vide".as_ptr()];
 
         // authorizationStatusForMediaType: returns i64 (0=NotDetermined, 1=Restricted, 2=Denied, 3=Authorized)
         let status: i64 = objc::msg_send![cls, authorizationStatusForMediaType: media_type];
@@ -268,7 +278,10 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
 
     // Strategy 1: Let the camera decide (no format constraint)
     log::info!("[Webcam] Trying NoPreference strategy...");
-    if let Ok(cam) = try_create_camera(&index, RequestedFormat::new::<RgbFormat>(RequestedFormatType::None)) {
+    if let Ok(cam) = try_create_camera(
+        &index,
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::None),
+    ) {
         log::info!("[Webcam] Success with NoPreference");
         return Ok(cam);
     }
@@ -277,7 +290,9 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
     log::info!("[Webcam] Trying HighestResolution strategy...");
     if let Ok(cam) = try_create_camera(
         &index,
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::HighestResolution(Resolution::new(1280, 720))),
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::HighestResolution(Resolution::new(
+            1280, 720,
+        ))),
     ) {
         log::info!("[Webcam] Success with HighestResolution");
         return Ok(cam);
@@ -287,9 +302,11 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
     log::info!("[Webcam] Trying YUYV 1280x720@30...");
     if let Ok(cam) = try_create_camera(
         &index,
-        RequestedFormat::new::<YuyvFormat>(RequestedFormatType::Closest(
-            CameraFormat::new(Resolution::new(1280, 720), FrameFormat::YUYV, 30),
-        )),
+        RequestedFormat::new::<YuyvFormat>(RequestedFormatType::Closest(CameraFormat::new(
+            Resolution::new(1280, 720),
+            FrameFormat::YUYV,
+            30,
+        ))),
     ) {
         log::info!("[Webcam] Success with YUYV");
         return Ok(cam);
@@ -299,9 +316,11 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
     log::info!("[Webcam] Trying MJPEG 1280x720@30...");
     if let Ok(cam) = try_create_camera(
         &index,
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(
-            CameraFormat::new(Resolution::new(1280, 720), FrameFormat::MJPEG, 30),
-        )),
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(
+            Resolution::new(1280, 720),
+            FrameFormat::MJPEG,
+            30,
+        ))),
     ) {
         log::info!("[Webcam] Success with MJPEG");
         return Ok(cam);
@@ -311,16 +330,20 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
     log::info!("[Webcam] Trying 640x480 fallback...");
     if let Ok(cam) = try_create_camera(
         &index,
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(
-            CameraFormat::new(Resolution::new(640, 480), FrameFormat::YUYV, 30),
-        )),
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(
+            Resolution::new(640, 480),
+            FrameFormat::YUYV,
+            30,
+        ))),
     ) {
         log::info!("[Webcam] Success with 640x480");
         return Ok(cam);
     }
 
     log::error!("[Webcam] All strategies failed for camera {:?}", index);
-    Err(anyhow::anyhow!("Failed to open camera after trying all format strategies"))
+    Err(anyhow::anyhow!(
+        "Failed to open camera after trying all format strategies"
+    ))
 }
 
 /// Helper: create camera with panic protection (nokhwa can panic on some backends).

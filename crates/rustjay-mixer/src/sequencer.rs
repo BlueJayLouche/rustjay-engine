@@ -5,7 +5,7 @@
 use crate::crossfade::{AutoCrossfade, Easing};
 
 /// One step in a transition sequence.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TransitionStep {
     /// What this step does.
     pub kind: StepKind,
@@ -25,10 +25,24 @@ impl TransitionStep {
             kind: StepKind::Hold { beats },
         }
     }
+
+    /// Convenience: create a timed crossfade step (wall-clock seconds).
+    pub fn timed_crossfade(target: f32, seconds: f32) -> Self {
+        Self {
+            kind: StepKind::TimedCrossfade { target, seconds },
+        }
+    }
+
+    /// Convenience: create a timed hold step (wall-clock seconds).
+    pub fn timed_hold(seconds: f32) -> Self {
+        Self {
+            kind: StepKind::TimedHold { seconds },
+        }
+    }
 }
 
 /// What a single transition step does.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum StepKind {
     /// Crossfade to a target value over N beats.
     Crossfade {
@@ -42,6 +56,18 @@ pub enum StepKind {
         /// Duration in beats.
         beats: f32,
     },
+    /// Crossfade to a target value over N seconds (wall-clock, independent of BPM).
+    TimedCrossfade {
+        /// Target crossfader position (0–1).
+        target: f32,
+        /// Duration in seconds.
+        seconds: f32,
+    },
+    /// Hold the current crossfader position for N seconds.
+    TimedHold {
+        /// Duration in seconds.
+        seconds: f32,
+    },
     /// Placeholder for a transition effect (e.g. strobe, wipe).
     ///
     /// Not yet implemented — steps of this kind advance immediately.
@@ -49,7 +75,7 @@ pub enum StepKind {
 }
 
 /// Placeholder for transition-specific visual effects.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TransitionEffect;
 
 /// Sequencer state machine.
@@ -58,7 +84,7 @@ pub struct TransitionEffect;
 /// through its steps in order, converting beat durations to seconds via the
 /// engine BPM. When `looping` is false and the last step completes, the
 /// sequencer stops.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequencerState {
     /// Ordered steps.
     pub steps: Vec<TransitionStep>,
@@ -68,10 +94,18 @@ pub struct SequencerState {
     pub playing: bool,
     /// Whether to loop back to step 0 after the last step.
     pub looping: bool,
+    /// True once play() has been called at least once; distinguishes "not yet
+    /// started" from "finished" in is_done().
+    pub has_run: bool,
     /// Beat accumulator for the current step (used by Hold steps).
+    #[serde(skip)]
     step_elapsed_beats: f32,
-    /// Active auto-crossfade for a Crossfade step.
+    /// Active auto-crossfade for a Crossfade or TimedCrossfade step.
+    #[serde(skip)]
     auto: Option<AutoCrossfade>,
+    /// Wall-clock accumulator for TimedHold steps (seconds).
+    #[serde(skip)]
+    step_elapsed_seconds: f32,
 }
 
 impl SequencerState {
@@ -83,6 +117,7 @@ impl SequencerState {
     /// Start playback from the current step.
     pub fn play(&mut self) {
         self.playing = true;
+        self.has_run = true;
     }
 
     /// Stop playback and reset to step 0.
@@ -90,6 +125,7 @@ impl SequencerState {
         self.playing = false;
         self.index = 0;
         self.step_elapsed_beats = 0.0;
+        self.step_elapsed_seconds = 0.0;
         self.auto = None;
     }
 
@@ -103,12 +139,7 @@ impl SequencerState {
     /// `crossfader` is the current mixer crossfader value. `bpm` is the
     /// effective BPM from the engine (used to convert beat durations to
     /// seconds). Returns `Some(value)` when the crossfader should be updated.
-    pub fn tick(
-        &mut self,
-        crossfader: f32,
-        dt: f32,
-        bpm: Option<f32>,
-    ) -> Option<f32> {
+    pub fn tick(&mut self, crossfader: f32, dt: f32, bpm: Option<f32>) -> Option<f32> {
         if !self.playing || self.steps.is_empty() {
             return None;
         }
@@ -150,6 +181,35 @@ impl SequencerState {
                     self.advance();
                 }
             }
+            StepKind::TimedCrossfade { target, seconds } => {
+                if self.auto.is_none() {
+                    self.auto = Some(AutoCrossfade::new(
+                        crossfader,
+                        *target,
+                        *seconds,
+                        Easing::EaseInOut,
+                    ));
+                }
+
+                if let Some(ref mut auto) = self.auto {
+                    let target = auto.target();
+                    match auto.tick(dt) {
+                        Some(v) => return Some(v),
+                        None => {
+                            self.auto = None;
+                            self.advance();
+                            return Some(target);
+                        }
+                    }
+                }
+            }
+            StepKind::TimedHold { seconds } => {
+                self.step_elapsed_seconds += dt;
+                if self.step_elapsed_seconds >= *seconds {
+                    self.step_elapsed_seconds -= *seconds;
+                    self.advance();
+                }
+            }
             StepKind::Effect(_) => {
                 // Transition effects are not yet implemented.
                 self.advance();
@@ -160,13 +220,15 @@ impl SequencerState {
     }
 
     /// Whether the sequencer has run through all steps and stopped.
+    /// Returns false for a sequencer that has never been played.
     pub fn is_done(&self) -> bool {
-        !self.playing && self.index == 0 && self.auto.is_none()
+        self.has_run && !self.playing && self.index == 0 && self.auto.is_none()
     }
 
     fn advance(&mut self) {
         self.index += 1;
         self.step_elapsed_beats = 0.0;
+        self.step_elapsed_seconds = 0.0;
         self.auto = None;
         if self.index >= self.steps.len() {
             if self.looping {

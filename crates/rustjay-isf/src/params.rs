@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use isf::InputType;
-use rustjay_core::{ParameterDescriptor, ParamCategory};
+use rustjay_core::{ParamCategory, ParameterDescriptor};
 
 /// Convert a slice of ISF inputs into rustjay-engine [`ParameterDescriptor`]s.
 ///
@@ -21,16 +21,21 @@ pub fn isf_inputs_to_parameters(inputs: &[isf::Input]) -> Vec<ParameterDescripto
                 let step = ((max - min) / 100.0).max(0.001);
                 let label = input.label.clone().unwrap_or_else(|| input.name.clone());
                 params.push(ParameterDescriptor::float(
-                    &input.name, label,
+                    &input.name,
+                    label,
                     ParamCategory::Custom("ISF".to_string()),
-                    min, max, default, step,
+                    min,
+                    max,
+                    default,
+                    step,
                 ));
             }
             InputType::Bool(b) => {
                 let default = b.default.unwrap_or(false);
                 let label = input.label.clone().unwrap_or_else(|| input.name.clone());
                 params.push(ParameterDescriptor::bool(
-                    &input.name, label,
+                    &input.name,
+                    label,
                     ParamCategory::Custom("ISF".to_string()),
                     default,
                 ));
@@ -41,9 +46,12 @@ pub fn isf_inputs_to_parameters(inputs: &[isf::Input]) -> Vec<ParameterDescripto
                 let default = l.default.unwrap_or(0);
                 let label = input.label.clone().unwrap_or_else(|| input.name.clone());
                 params.push(ParameterDescriptor::int(
-                    &input.name, label,
+                    &input.name,
+                    label,
                     ParamCategory::Custom("ISF".to_string()),
-                    min, max, default,
+                    min,
+                    max,
+                    default,
                 ));
             }
             _ => {} // image, color, point2D, audio, audioFFT — skipped
@@ -63,7 +71,10 @@ pub fn isf_inputs_to_default_values(inputs: &[isf::Input]) -> HashMap<String, f3
                 values.insert(input.name.clone(), f.default.unwrap_or(0.0));
             }
             InputType::Bool(b) => {
-                values.insert(input.name.clone(), if b.default.unwrap_or(false) { 1.0 } else { 0.0 });
+                values.insert(
+                    input.name.clone(),
+                    if b.default.unwrap_or(false) { 1.0 } else { 0.0 },
+                );
             }
             InputType::Long(l) => {
                 values.insert(input.name.clone(), l.default.unwrap_or(0) as f32);

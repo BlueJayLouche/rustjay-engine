@@ -6,17 +6,17 @@
 //! browser.  No native engine crates are used; only `wgpu` (WebGPU backend)
 //! and `wasm-bindgen` for JS interop.
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::closure::Closure;
-use web_sys::HtmlCanvasElement;
-use wgpu::util::DeviceExt;
 use std::cell::RefCell;
 use std::rc::Rc;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::*;
+use web_sys::HtmlCanvasElement;
+use wgpu::util::DeviceExt;
 
 mod delta;
 mod webcam;
 
-use delta::{DeltaUniforms, create_pipeline};
+use delta::{create_pipeline, DeltaUniforms};
 
 // ---------------------------------------------------------------------------
 // Parameter state (shared between JS setters and render loop)
@@ -89,7 +89,8 @@ pub async fn start() -> Result<(), JsValue> {
     let width = canvas.width();
     let height = canvas.height();
 
-    let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+    let surface = instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
         .map_err(|e| JsValue::from_str(&format!("create_surface failed: {:?}", e)))?;
 
     let adapter = instance
@@ -298,8 +299,7 @@ pub async fn start() -> Result<(), JsValue> {
         });
 
         if let Some(closure) = f.borrow().as_ref() {
-            let _ = win_for_closure
-                .request_animation_frame(closure.as_ref().unchecked_ref());
+            let _ = win_for_closure.request_animation_frame(closure.as_ref().unchecked_ref());
         }
     }));
 
@@ -328,8 +328,7 @@ fn render_frame(app: &mut App) {
     let surface_view = surface_texture.texture.create_view(&Default::default());
 
     // Upload uniforms
-    let uniforms =
-        DeltaUniforms::new(params, app.config.width as f32, app.config.height as f32);
+    let uniforms = DeltaUniforms::new(params, app.config.width as f32, app.config.height as f32);
     app.queue
         .write_buffer(&app.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 

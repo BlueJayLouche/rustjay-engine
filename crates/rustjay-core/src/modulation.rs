@@ -100,8 +100,6 @@ pub enum StepInterpolation {
     Smooth,
 }
 
-
-
 // ─── Audio analysis values ─────────────────────────────────────────────────
 
 /// Audio analysis values for a single source, passed to the modulation engine.
@@ -126,7 +124,8 @@ impl AudioSourceValues {
         }
         let fft_size = self.fft.len() * 2;
         let bin_width = self.sample_rate / fft_size as f32;
-        let bin_low = ((freq_low / bin_width).floor() as usize).min(self.fft.len().saturating_sub(1));
+        let bin_low =
+            ((freq_low / bin_width).floor() as usize).min(self.fft.len().saturating_sub(1));
         let bin_high = ((freq_high / bin_width).ceil() as usize).min(self.fft.len());
         if bin_high <= bin_low {
             return 0.0;
@@ -151,7 +150,10 @@ pub struct AudioValues {
 impl AudioValues {
     /// Get the first/primary source's data (lowest id).
     pub fn primary(&self) -> Option<&AudioSourceValues> {
-        self.sources.iter().min_by_key(|(id, _)| **id).map(|(_, v)| v)
+        self.sources
+            .iter()
+            .min_by_key(|(id, _)| **id)
+            .map(|(_, v)| v)
     }
 }
 
@@ -196,7 +198,9 @@ impl ModulationSourceEntry {
 
 // ─── Modulation source types ───────────────────────────────────────────────
 
-fn default_noise_gate() -> f32 { 0.1 }
+fn default_noise_gate() -> f32 {
+    0.1
+}
 
 /// Modulation source types and their computation logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,20 +280,78 @@ impl ModulationSource {
     pub fn config_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                ModulationSource::LFO { waveform: w1, frequency: f1, phase: p1, amplitude: a1, bipolar: b1 },
-                ModulationSource::LFO { waveform: w2, frequency: f2, phase: p2, amplitude: a2, bipolar: b2 },
+                ModulationSource::LFO {
+                    waveform: w1,
+                    frequency: f1,
+                    phase: p1,
+                    amplitude: a1,
+                    bipolar: b1,
+                },
+                ModulationSource::LFO {
+                    waveform: w2,
+                    frequency: f2,
+                    phase: p2,
+                    amplitude: a2,
+                    bipolar: b2,
+                },
             ) => w1 == w2 && f1 == f2 && p1 == p2 && a1 == a2 && b1 == b2,
             (
-                ModulationSource::AudioBand { source_id: s1, freq_low: fl1, freq_high: fh1, gain: g1, smoothing: sm1, mode: m1, noise_gate: ng1 },
-                ModulationSource::AudioBand { source_id: s2, freq_low: fl2, freq_high: fh2, gain: g2, smoothing: sm2, mode: m2, noise_gate: ng2 },
-            ) => s1 == s2 && fl1 == fl2 && fh1 == fh2 && g1 == g2 && sm1 == sm2 && m1 == m2 && ng1 == ng2,
+                ModulationSource::AudioBand {
+                    source_id: s1,
+                    freq_low: fl1,
+                    freq_high: fh1,
+                    gain: g1,
+                    smoothing: sm1,
+                    mode: m1,
+                    noise_gate: ng1,
+                },
+                ModulationSource::AudioBand {
+                    source_id: s2,
+                    freq_low: fl2,
+                    freq_high: fh2,
+                    gain: g2,
+                    smoothing: sm2,
+                    mode: m2,
+                    noise_gate: ng2,
+                },
+            ) => {
+                s1 == s2
+                    && fl1 == fl2
+                    && fh1 == fh2
+                    && g1 == g2
+                    && sm1 == sm2
+                    && m1 == m2
+                    && ng1 == ng2
+            }
             (
-                ModulationSource::ADSR { attack: a1, decay: d1, sustain: s1, release: r1, .. },
-                ModulationSource::ADSR { attack: a2, decay: d2, sustain: s2, release: r2, .. },
+                ModulationSource::ADSR {
+                    attack: a1,
+                    decay: d1,
+                    sustain: s1,
+                    release: r1,
+                    ..
+                },
+                ModulationSource::ADSR {
+                    attack: a2,
+                    decay: d2,
+                    sustain: s2,
+                    release: r2,
+                    ..
+                },
             ) => a1 == a2 && d1 == d2 && s1 == s2 && r1 == r2,
             (
-                ModulationSource::StepSequencer { steps: s1, rate: r1, interpolation: i1, bipolar: b1 },
-                ModulationSource::StepSequencer { steps: s2, rate: r2, interpolation: i2, bipolar: b2 },
+                ModulationSource::StepSequencer {
+                    steps: s1,
+                    rate: r1,
+                    interpolation: i1,
+                    bipolar: b1,
+                },
+                ModulationSource::StepSequencer {
+                    steps: s2,
+                    rate: r2,
+                    interpolation: i2,
+                    bipolar: b2,
+                },
             ) => s1 == s2 && r1 == r2 && i1 == i2 && b1 == b2,
             _ => false,
         }
@@ -346,7 +408,13 @@ impl ModulationSource {
 
     /// Gate on (for ADSR).
     pub fn gate_on(&mut self) {
-        if let ModulationSource::ADSR { stage, stage_time, gate, .. } = self {
+        if let ModulationSource::ADSR {
+            stage,
+            stage_time,
+            gate,
+            ..
+        } = self
+        {
             *gate = true;
             *stage = ADSRStage::Attack;
             *stage_time = 0.0;
@@ -355,7 +423,13 @@ impl ModulationSource {
 
     /// Gate off (for ADSR).
     pub fn gate_off(&mut self) {
-        if let ModulationSource::ADSR { stage, stage_time, gate, .. } = self {
+        if let ModulationSource::ADSR {
+            stage,
+            stage_time,
+            gate,
+            ..
+        } = self
+        {
             *gate = false;
             if *stage != ADSRStage::Idle {
                 *stage = ADSRStage::Release;
@@ -369,11 +443,23 @@ impl ModulationSource {
     /// Returns value in range `[-1, 1]` for bipolar or `[0, 1]` for unipolar.
     pub fn calculate(&mut self, time: f32, dt: f32, audio: &AudioValues, prev_value: f32) -> f32 {
         match self {
-            ModulationSource::LFO { waveform, frequency, phase, amplitude, bipolar } => {
+            ModulationSource::LFO {
+                waveform,
+                frequency,
+                phase,
+                amplitude,
+                bipolar,
+            } => {
                 let t = (time * *frequency + *phase) % 1.0;
                 let raw = match waveform {
                     LFOWaveform::Sine => (t * std::f32::consts::TAU).sin(),
-                    LFOWaveform::Square => if t < 0.5 { 1.0 } else { -1.0 },
+                    LFOWaveform::Square => {
+                        if t < 0.5 {
+                            1.0
+                        } else {
+                            -1.0
+                        }
+                    }
                     LFOWaveform::Triangle => 1.0 - 4.0 * (t - 0.5).abs(),
                     LFOWaveform::Sawtooth => 2.0 * t - 1.0,
                     LFOWaveform::Random => {
@@ -383,9 +469,21 @@ impl ModulationSource {
                     }
                 };
                 let scaled = raw * *amplitude;
-                if *bipolar { scaled } else { scaled * 0.5 + 0.5 }
+                if *bipolar {
+                    scaled
+                } else {
+                    scaled * 0.5 + 0.5
+                }
             }
-            ModulationSource::AudioBand { source_id, freq_low, freq_high, gain, smoothing, mode, noise_gate } => {
+            ModulationSource::AudioBand {
+                source_id,
+                freq_low,
+                freq_high,
+                gain,
+                smoothing,
+                mode,
+                noise_gate,
+            } => {
                 let source_vals = if let Some(id) = source_id {
                     audio.sources.get(id)
                 } else {
@@ -396,7 +494,11 @@ impl ModulationSource {
                 } else {
                     0.0
                 };
-                let raw = if raw_signal < *noise_gate { 0.0 } else { raw_signal };
+                let raw = if raw_signal < *noise_gate {
+                    0.0
+                } else {
+                    raw_signal
+                };
                 match mode {
                     AudioReactMode::Direct => {
                         if raw >= prev_value {
@@ -407,29 +509,56 @@ impl ModulationSource {
                         }
                     }
                     AudioReactMode::Increase => {
-                        if raw <= 0.0 { prev_value } else {
+                        if raw <= 0.0 {
+                            prev_value
+                        } else {
                             let speed = (1.0 - *smoothing * 0.9) * 4.0;
                             let step = raw * dt * speed;
                             let next = prev_value + step;
-                            if next >= 1.0 { next - 1.0 } else { next }
+                            if next >= 1.0 {
+                                next - 1.0
+                            } else {
+                                next
+                            }
                         }
                     }
                     AudioReactMode::Decrease => {
-                        if raw <= 0.0 { prev_value } else {
+                        if raw <= 0.0 {
+                            prev_value
+                        } else {
                             let speed = (1.0 - *smoothing * 0.9) * 4.0;
                             let step = raw * dt * speed;
                             let next = prev_value - step;
-                            if next <= 0.0 { next + 1.0 } else { next }
+                            if next <= 0.0 {
+                                next + 1.0
+                            } else {
+                                next
+                            }
                         }
                     }
                 }
             }
-            ModulationSource::ADSR { attack, decay, sustain, release, stage, stage_time, current_level, .. } => {
+            ModulationSource::ADSR {
+                attack,
+                decay,
+                sustain,
+                release,
+                stage,
+                stage_time,
+                current_level,
+                ..
+            } => {
                 *stage_time += dt;
                 match stage {
-                    ADSRStage::Idle => { *current_level = 0.0; }
+                    ADSRStage::Idle => {
+                        *current_level = 0.0;
+                    }
                     ADSRStage::Attack => {
-                        let progress = if *attack > 0.001 { *stage_time / *attack } else { 1.0 };
+                        let progress = if *attack > 0.001 {
+                            *stage_time / *attack
+                        } else {
+                            1.0
+                        };
                         if progress >= 1.0 {
                             *current_level = 1.0;
                             *stage = ADSRStage::Decay;
@@ -439,7 +568,11 @@ impl ModulationSource {
                         }
                     }
                     ADSRStage::Decay => {
-                        let progress = if *decay > 0.001 { *stage_time / *decay } else { 1.0 };
+                        let progress = if *decay > 0.001 {
+                            *stage_time / *decay
+                        } else {
+                            1.0
+                        };
                         if progress >= 1.0 {
                             *current_level = *sustain;
                             *stage = ADSRStage::Sustain;
@@ -448,10 +581,16 @@ impl ModulationSource {
                             *current_level = 1.0 - (1.0 - *sustain) * progress;
                         }
                     }
-                    ADSRStage::Sustain => { *current_level = *sustain; }
+                    ADSRStage::Sustain => {
+                        *current_level = *sustain;
+                    }
                     ADSRStage::Release => {
                         let start_level = *current_level;
-                        let progress = if *release > 0.001 { *stage_time / *release } else { 1.0 };
+                        let progress = if *release > 0.001 {
+                            *stage_time / *release
+                        } else {
+                            1.0
+                        };
                         if progress >= 1.0 {
                             *current_level = 0.0;
                             *stage = ADSRStage::Idle;
@@ -463,8 +602,15 @@ impl ModulationSource {
                 }
                 *current_level
             }
-            ModulationSource::StepSequencer { steps, rate, interpolation, bipolar } => {
-                if steps.is_empty() { return 0.0; }
+            ModulationSource::StepSequencer {
+                steps,
+                rate,
+                interpolation,
+                bipolar,
+            } => {
+                if steps.is_empty() {
+                    return 0.0;
+                }
                 let total_steps = steps.len() as f32;
                 let position = (time * *rate) % total_steps;
                 let current_idx = position.floor() as usize % steps.len();
@@ -482,7 +628,11 @@ impl ModulationSource {
                         steps[current_idx] * (1.0 - t) + steps[next_idx] * t
                     }
                 };
-                if *bipolar { raw * 2.0 - 1.0 } else { raw }
+                if *bipolar {
+                    raw * 2.0 - 1.0
+                } else {
+                    raw
+                }
             }
         }
     }
@@ -550,7 +700,8 @@ impl ModulationEngine {
         self.sources.push(entry);
         self.prev_values.push(0.0);
         self.current_values.push(0.0);
-        self.uuid_to_idx.insert(uuid.clone(), self.sources.len() - 1);
+        self.uuid_to_idx
+            .insert(uuid.clone(), self.sources.len() - 1);
         self.invalidate_evaluation_cache();
         uuid
     }
@@ -561,7 +712,8 @@ impl ModulationEngine {
         self.sources.push(entry);
         self.prev_values.push(0.0);
         self.current_values.push(0.0);
-        self.uuid_to_idx.insert(uuid.clone(), self.sources.len() - 1);
+        self.uuid_to_idx
+            .insert(uuid.clone(), self.sources.len() - 1);
         self.invalidate_evaluation_cache();
         uuid
     }
@@ -608,7 +760,13 @@ impl ModulationEngine {
     }
 
     /// Assign a source to modulate a parameter.
-    pub fn assign(&mut self, param_name: &str, source_id: &str, amount: f32, component: Option<usize>) {
+    pub fn assign(
+        &mut self,
+        param_name: &str,
+        source_id: &str,
+        amount: f32,
+        component: Option<usize>,
+    ) {
         if !self.uuid_to_idx.contains_key(source_id) {
             self.ensure_index();
             if !self.uuid_to_idx.contains_key(source_id) {
@@ -629,7 +787,13 @@ impl ModulationEngine {
     }
 
     /// Assign a source to modulate another source's parameter (mod-on-mod).
-    pub fn assign_mod_on_mod(&mut self, target_uuid: &str, param_name: &str, modulator_uuid: &str, amount: f32) {
+    pub fn assign_mod_on_mod(
+        &mut self,
+        target_uuid: &str,
+        param_name: &str,
+        modulator_uuid: &str,
+        amount: f32,
+    ) {
         let key = format!("mod:{}:{}", target_uuid, param_name);
         self.assign(&key, modulator_uuid, amount, None);
     }
@@ -666,7 +830,10 @@ impl ModulationEngine {
     /// Get a mutable reference to a source by UUID.
     pub fn source_mut(&mut self, uuid: &str) -> Option<&mut ModulationSource> {
         self.ensure_index();
-        self.uuid_to_idx.get(uuid).copied().map(|idx| &mut self.sources[idx].source)
+        self.uuid_to_idx
+            .get(uuid)
+            .copied()
+            .map(|idx| &mut self.sources[idx].source)
     }
 
     /// Check if a source exists.
@@ -687,16 +854,32 @@ impl ModulationEngine {
         let uuid = &self.sources[idx].uuid;
         let mut modified = source.clone();
         match &mut modified {
-            ModulationSource::LFO { frequency, phase, amplitude, .. } => {
-                *frequency = (*frequency + self.get_mod_source_offset(uuid, "frequency")).max(0.001);
+            ModulationSource::LFO {
+                frequency,
+                phase,
+                amplitude,
+                ..
+            } => {
+                *frequency =
+                    (*frequency + self.get_mod_source_offset(uuid, "frequency")).max(0.001);
                 *phase = (*phase + self.get_mod_source_offset(uuid, "phase")).clamp(0.0, 1.0);
-                *amplitude = (*amplitude + self.get_mod_source_offset(uuid, "amplitude")).clamp(0.0, 1.0);
+                *amplitude =
+                    (*amplitude + self.get_mod_source_offset(uuid, "amplitude")).clamp(0.0, 1.0);
             }
-            ModulationSource::AudioBand { gain, smoothing, .. } => {
+            ModulationSource::AudioBand {
+                gain, smoothing, ..
+            } => {
                 *gain = (*gain + self.get_mod_source_offset(uuid, "gain")).max(0.0);
-                *smoothing = (*smoothing + self.get_mod_source_offset(uuid, "smoothing")).clamp(0.0, 0.99);
+                *smoothing =
+                    (*smoothing + self.get_mod_source_offset(uuid, "smoothing")).clamp(0.0, 0.99);
             }
-            ModulationSource::ADSR { attack, decay, sustain, release, .. } => {
+            ModulationSource::ADSR {
+                attack,
+                decay,
+                sustain,
+                release,
+                ..
+            } => {
                 *attack = (*attack + self.get_mod_source_offset(uuid, "attack")).max(0.001);
                 *decay = (*decay + self.get_mod_source_offset(uuid, "decay")).max(0.001);
                 *sustain = (*sustain + self.get_mod_source_offset(uuid, "sustain")).clamp(0.0, 1.0);
@@ -781,13 +964,11 @@ impl ModulationEngine {
             self.current_values.push(0.0);
         }
 
-        let order = self.cached_evaluation_order
-            .clone()
-            .unwrap_or_else(|| {
-                let o = self.evaluation_order();
-                self.cached_evaluation_order = Some(o.clone());
-                o
-            });
+        let order = self.cached_evaluation_order.clone().unwrap_or_else(|| {
+            let o = self.evaluation_order();
+            self.cached_evaluation_order = Some(o.clone());
+            o
+        });
         for i in order {
             let mut effective = if self.has_mod_on_mod {
                 self.apply_mod_on_mod(i, &self.sources[i].source)
@@ -798,8 +979,18 @@ impl ModulationEngine {
 
             // Copy back mutable state changes (ADSR stage progression)
             if let (
-                ModulationSource::ADSR { stage, stage_time, current_level, .. },
-                ModulationSource::ADSR { stage: eff_stage, stage_time: eff_st, current_level: eff_cl, .. },
+                ModulationSource::ADSR {
+                    stage,
+                    stage_time,
+                    current_level,
+                    ..
+                },
+                ModulationSource::ADSR {
+                    stage: eff_stage,
+                    stage_time: eff_st,
+                    current_level: eff_cl,
+                    ..
+                },
             ) = (&mut self.sources[i].source, &effective)
             {
                 *stage = *eff_stage;
@@ -819,7 +1010,9 @@ impl ModulationEngine {
 
     /// Get the total modulation offset for a specific component (color params).
     pub fn get_modulation_for_component(&self, param_name: &str, component: Option<usize>) -> f32 {
-        let Some(mods) = self.assignments.get(param_name) else { return 0.0 };
+        let Some(mods) = self.assignments.get(param_name) else {
+            return 0.0;
+        };
         let mut total = 0.0;
         for m in mods {
             if m.component == component {
@@ -842,7 +1035,9 @@ impl ModulationEngine {
 
     /// Check if a parameter has any modulations assigned.
     pub fn has_modulation(&self, param_name: &str) -> bool {
-        self.assignments.get(param_name).is_some_and(|v| !v.is_empty())
+        self.assignments
+            .get(param_name)
+            .is_some_and(|v| !v.is_empty())
     }
 
     /// Number of sources.
@@ -894,7 +1089,10 @@ mod tests {
         for i in 0..100 {
             let t = i as f32 / 100.0;
             let val = lfo.calculate(t, 0.01, &audio, 0.0);
-            assert!((0.0..=1.0).contains(&val), "Sine unipolar out of range: {val} at t={t}");
+            assert!(
+                (0.0..=1.0).contains(&val),
+                "Sine unipolar out of range: {val} at t={t}"
+            );
         }
     }
 
@@ -911,7 +1109,10 @@ mod tests {
         for i in 0..100 {
             let t = i as f32 / 100.0;
             let val = lfo.calculate(t, 0.01, &audio, 0.0);
-            assert!((-1.0..=1.0).contains(&val), "Sine bipolar out of range: {val}");
+            assert!(
+                (-1.0..=1.0).contains(&val),
+                "Sine bipolar out of range: {val}"
+            );
         }
     }
 
@@ -943,7 +1144,10 @@ mod tests {
         let audio = empty_audio();
         let val_start = lfo.calculate(0.0, 0.01, &audio, 0.0);
         let val_mid = lfo.calculate(0.5, 0.01, &audio, 0.0);
-        assert!((val_start - (-1.0)).abs() < 1e-5, "Triangle at 0: {val_start}");
+        assert!(
+            (val_start - (-1.0)).abs() < 1e-5,
+            "Triangle at 0: {val_start}"
+        );
         assert!((val_mid - 1.0).abs() < 1e-5, "Triangle at 0.5: {val_mid}");
     }
 
@@ -1002,7 +1206,10 @@ mod tests {
         let audio = empty_audio();
         let val1 = lfo.calculate(0.3, 0.01, &audio, 0.0);
         let val2 = lfo.calculate(0.3, 0.01, &audio, 0.0);
-        assert_eq!(val1, val2, "Random LFO should be deterministic for same time");
+        assert_eq!(
+            val1, val2,
+            "Random LFO should be deterministic for same time"
+        );
     }
 
     // ── ADSR tests ───────────────────────────────────────────────────
@@ -1024,7 +1231,10 @@ mod tests {
         for _ in 0..20 {
             val = adsr.calculate(0.0, 0.01, &audio, val);
         }
-        assert!(val > 0.4, "ADSR should reach significant level during attack: {val}");
+        assert!(
+            val > 0.4,
+            "ADSR should reach significant level during attack: {val}"
+        );
     }
 
     #[test]
@@ -1036,7 +1246,10 @@ mod tests {
         for _ in 0..100 {
             val = adsr.calculate(0.0, 0.01, &audio, val);
         }
-        assert!((val - 0.7).abs() < 0.05, "ADSR should hold at sustain level: {val}");
+        assert!(
+            (val - 0.7).abs() < 0.05,
+            "ADSR should hold at sustain level: {val}"
+        );
     }
 
     #[test]
@@ -1133,7 +1346,10 @@ mod tests {
         let audio = empty_audio();
         let val = seq.calculate(0.5, 0.01, &audio, 0.0);
         assert!(val > 0.0 && val < 1.0, "Smooth interp: {val}");
-        assert!((val - 0.5).abs() < 0.01, "Smoothstep at 0.5 should be 0.5: {val}");
+        assert!(
+            (val - 0.5).abs() < 0.01,
+            "Smoothstep at 0.5 should be 0.5: {val}"
+        );
     }
 
     // ── AudioSourceValues tests ──────────────────────────────────────
@@ -1339,7 +1555,10 @@ mod tests {
         assert_eq!(no_mod, 0.0);
         // Same source drives both assigned components; component 1's scale (0.5)
         // is half of component 0's (1.0), so its modulation is half.
-        assert!((g_mod - 0.5 * r_mod).abs() < 1e-6, "g_mod={g_mod} r_mod={r_mod}");
+        assert!(
+            (g_mod - 0.5 * r_mod).abs() < 1e-6,
+            "g_mod={g_mod} r_mod={r_mod}"
+        );
     }
 
     // ── AudioBandPreset tests ────────────────────────────────────────
@@ -1356,7 +1575,12 @@ mod tests {
     fn audio_band_from_preset_creates_valid_source() {
         let source = ModulationSource::audio_from_preset(AudioBandPreset::Low);
         match source {
-            ModulationSource::AudioBand { freq_low, freq_high, gain, .. } => {
+            ModulationSource::AudioBand {
+                freq_low,
+                freq_high,
+                gain,
+                ..
+            } => {
                 assert_eq!(freq_low, 20.0);
                 assert_eq!(freq_high, 250.0);
                 assert_eq!(gain, 1.0);
@@ -1380,8 +1604,14 @@ mod tests {
 
     #[test]
     fn parse_mod_target_valid() {
-        assert_eq!(ModulationEngine::parse_mod_target("mod:abc123:frequency"), Some("abc123"));
-        assert_eq!(ModulationEngine::parse_mod_target("mod:def456:phase"), Some("def456"));
+        assert_eq!(
+            ModulationEngine::parse_mod_target("mod:abc123:frequency"),
+            Some("abc123")
+        );
+        assert_eq!(
+            ModulationEngine::parse_mod_target("mod:def456:phase"),
+            Some("def456")
+        );
     }
 
     #[test]
@@ -1482,7 +1712,8 @@ mod tests {
     #[test]
     fn add_source_with_uuid_preserves_uuid() {
         let mut engine = ModulationEngine::new();
-        let uuid = engine.add_source_with_uuid("custom01".to_string(), ModulationSource::sine_lfo(2.0));
+        let uuid =
+            engine.add_source_with_uuid("custom01".to_string(), ModulationSource::sine_lfo(2.0));
         assert_eq!(uuid, "custom01");
         assert!(engine.has_source("custom01"));
     }
@@ -1543,7 +1774,10 @@ mod tests {
             .iter()
             .position(|&i| i == engine.sources.iter().position(|e| e.uuid == b).unwrap())
             .unwrap();
-        assert!(a_pos < b_pos, "dependency A should be evaluated before target B");
+        assert!(
+            a_pos < b_pos,
+            "dependency A should be evaluated before target B"
+        );
     }
 
     #[test]
@@ -1598,7 +1832,10 @@ mod tests {
         assert!(!engine.has_source(&a));
         // The mod-on-mod key "mod:{a}:frequency" should have been purged
         for key in engine.assignments_iter().map(|(k, _)| k) {
-            assert!(!key.contains(&a), "stale mod-on-mod key found after target removal");
+            assert!(
+                !key.contains(&a),
+                "stale mod-on-mod key found after target removal"
+            );
         }
     }
 
@@ -1682,7 +1919,10 @@ mod tests {
         };
         let audio = empty_audio();
         let val = lfo.calculate(1.0, 0.01, &audio, 0.0);
-        assert!(val.is_finite(), "negative freq should produce finite: {val}");
+        assert!(
+            val.is_finite(),
+            "negative freq should produce finite: {val}"
+        );
     }
 
     #[test]

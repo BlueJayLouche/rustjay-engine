@@ -1,9 +1,12 @@
 use super::App;
-use rustjay_core::EffectPlugin;
 use rustjay_audio::list_audio_devices;
-use rustjay_core::{AudioCommand, InputCommand, OutputCommand, MidiCommand, OscCommand, PresetCommand, EngineState, WebCommand, LinkCommand, ProDjCommand};
 use rustjay_control::{MidiMapping, OscServer};
-use rustjay_control::{WebServer, WebConfig, WebCommand as WebServerCommand};
+use rustjay_control::{WebCommand as WebServerCommand, WebConfig, WebServer};
+use rustjay_core::EffectPlugin;
+use rustjay_core::{
+    AudioCommand, EngineState, InputCommand, LinkCommand, MidiCommand, OscCommand, OutputCommand,
+    PresetCommand, ProDjCommand, WebCommand,
+};
 
 fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, EngineState> {
     state.lock().unwrap_or_else(|e| e.into_inner())
@@ -21,16 +24,16 @@ fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarg
 
 /// All pending commands popped from shared state in a single lock acquisition.
 struct PendingCommands {
-    input:         InputCommand,
-    second_input:  InputCommand,
-    output:        OutputCommand,
-    audio:         AudioCommand,
-    midi:          MidiCommand,
-    osc:           OscCommand,
-    preset:        PresetCommand,
-    web:           WebCommand,
-    link:          LinkCommand,
-    prodj:         ProDjCommand,
+    input: InputCommand,
+    second_input: InputCommand,
+    output: OutputCommand,
+    audio: AudioCommand,
+    midi: MidiCommand,
+    osc: OscCommand,
+    preset: PresetCommand,
+    web: WebCommand,
+    link: LinkCommand,
+    prodj: ProDjCommand,
 }
 
 impl<P: EffectPlugin> App<P> {
@@ -40,16 +43,16 @@ impl<P: EffectPlugin> App<P> {
         let cmds = {
             let mut s = lock(&self.shared_state);
             PendingCommands {
-                input:         std::mem::replace(&mut s.input_command,         InputCommand::None),
-                second_input:  std::mem::replace(&mut s.second_input_command,  InputCommand::None),
-                output:        std::mem::replace(&mut s.output_command,        OutputCommand::None),
-                audio:         std::mem::replace(&mut s.audio_command,         AudioCommand::None),
-                midi:          std::mem::replace(&mut s.midi_command,          MidiCommand::None),
-                osc:           std::mem::replace(&mut s.osc_command,           OscCommand::None),
-                preset:        std::mem::replace(&mut s.preset_command,        PresetCommand::None),
-                web:           std::mem::replace(&mut s.web_command,           WebCommand::None),
-                link:          std::mem::replace(&mut s.link_command,          LinkCommand::None),
-                prodj:         std::mem::replace(&mut s.prodj_command,         ProDjCommand::None),
+                input: std::mem::replace(&mut s.input_command, InputCommand::None),
+                second_input: std::mem::replace(&mut s.second_input_command, InputCommand::None),
+                output: std::mem::replace(&mut s.output_command, OutputCommand::None),
+                audio: std::mem::replace(&mut s.audio_command, AudioCommand::None),
+                midi: std::mem::replace(&mut s.midi_command, MidiCommand::None),
+                osc: std::mem::replace(&mut s.osc_command, OscCommand::None),
+                preset: std::mem::replace(&mut s.preset_command, PresetCommand::None),
+                web: std::mem::replace(&mut s.web_command, WebCommand::None),
+                link: std::mem::replace(&mut s.link_command, LinkCommand::None),
+                prodj: std::mem::replace(&mut s.prodj_command, ProDjCommand::None),
             }
         };
         self.process_input_commands(cmds.input);
@@ -81,13 +84,22 @@ impl<P: EffectPlugin> App<P> {
         let slot_prefix = if is_second { "Input 2" } else { "Input 1" };
 
         match command {
-            InputCommand::StartWebcam { device_index, width, height, fps } => {
+            InputCommand::StartWebcam {
+                device_index,
+                width,
+                height,
+                fps,
+            } => {
                 log::info!("{} starting webcam: device={}", slot_prefix, device_index);
                 if let Some(ref mut manager) = manager_opt {
                     match manager.start_webcam(device_index, width, height, fps) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            let input = if is_second {
+                                &mut state.second_input
+                            } else {
+                                &mut state.input
+                            };
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Webcam;
                             input.source_name = format!("Webcam {}", device_index);
@@ -104,7 +116,11 @@ impl<P: EffectPlugin> App<P> {
                     match manager.start_ndi(&source_name) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            let input = if is_second {
+                                &mut state.second_input
+                            } else {
+                                &mut state.input
+                            };
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Ndi;
                             input.source_name = source_name;
@@ -114,13 +130,25 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             #[cfg(target_os = "macos")]
-            InputCommand::StartSyphon { server_name, server_uuid } => {
-                log::info!("{} starting Syphon: {} (uuid={})", slot_prefix, server_name, server_uuid);
+            InputCommand::StartSyphon {
+                server_name,
+                server_uuid,
+            } => {
+                log::info!(
+                    "{} starting Syphon: {} (uuid={})",
+                    slot_prefix,
+                    server_name,
+                    server_uuid
+                );
                 if let Some(ref mut manager) = manager_opt {
                     match manager.start_syphon(&server_name, &server_uuid) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            let input = if is_second {
+                                &mut state.second_input
+                            } else {
+                                &mut state.input
+                            };
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Syphon;
                             input.source_name = server_name;
@@ -136,7 +164,11 @@ impl<P: EffectPlugin> App<P> {
                     match manager.start_spout(&sender_name) {
                         Ok(_) => {
                             let mut state = lock(&self.shared_state);
-                            let input = if is_second { &mut state.second_input } else { &mut state.input };
+                            let input = if is_second {
+                                &mut state.second_input
+                            } else {
+                                &mut state.input
+                            };
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Spout;
                             input.source_name = sender_name;
@@ -155,19 +187,34 @@ impl<P: EffectPlugin> App<P> {
                     .and_then(|s| s.parse::<u32>().ok());
                 match (index, manager_opt) {
                     (Some(idx), Some(manager)) => {
-                        log::info!("{} starting V4L2 input: {} (index {})", slot_prefix, device_path, idx);
+                        log::info!(
+                            "{} starting V4L2 input: {} (index {})",
+                            slot_prefix,
+                            device_path,
+                            idx
+                        );
                         match manager.start_webcam(idx as usize, 1920, 1080, 30) {
                             Ok(_) => {
                                 let mut state = lock(&self.shared_state);
-                                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                                let input = if is_second {
+                                    &mut state.second_input
+                                } else {
+                                    &mut state.input
+                                };
                                 input.is_active = true;
                                 input.input_type = rustjay_core::InputType::V4l2;
                                 input.source_name = device_path;
                             }
-                            Err(e) => log::error!("{} failed to start V4L2 input: {:?}", slot_prefix, e),
+                            Err(e) => {
+                                log::error!("{} failed to start V4L2 input: {:?}", slot_prefix, e)
+                            }
                         }
                     }
-                    (None, _) => log::error!("{} StartV4l2: could not parse device index from '{}'", slot_prefix, device_path),
+                    (None, _) => log::error!(
+                        "{} StartV4l2: could not parse device index from '{}'",
+                        slot_prefix,
+                        device_path
+                    ),
                     _ => {}
                 }
             }
@@ -175,7 +222,11 @@ impl<P: EffectPlugin> App<P> {
                 if let Some(ref mut manager) = manager_opt {
                     manager.stop();
                     let mut state = lock(&self.shared_state);
-                    let input = if is_second { &mut state.second_input } else { &mut state.input };
+                    let input = if is_second {
+                        &mut state.second_input
+                    } else {
+                        &mut state.input
+                    };
                     input.is_active = false;
                     input.source_name.clear();
                 }
@@ -193,14 +244,16 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_output_commands(&mut self, command: OutputCommand) {
-
         match command {
             #[cfg(feature = "ndi")]
             OutputCommand::StartNdi => {
                 if let Some(ref mut engine) = self.output_engine {
                     let (name, include_alpha) = {
                         let state = lock(&self.shared_state);
-                        (state.ndi_output.stream_name.clone(), state.ndi_output.include_alpha)
+                        (
+                            state.ndi_output.stream_name.clone(),
+                            state.ndi_output.include_alpha,
+                        )
                     };
                     if let Err(e) = engine.start_ndi_output(&name, include_alpha) {
                         log::error!("Failed to start NDI output: {:?}", e);
@@ -272,18 +325,42 @@ impl<P: EffectPlugin> App<P> {
                 }
                 lock(&self.shared_state).v4l2_output.enabled = false;
             }
+            OutputCommand::StartRecording { path, codec } => {
+                if let Some(ref mut engine) = self.output_engine {
+                    let fps = lock(&self.shared_state).target_fps as f32;
+                    let p = std::path::PathBuf::from(path);
+                    if let Err(e) = engine.start_recording(&p, fps, codec) {
+                        log::error!("Failed to start recording: {}", e);
+                    } else {
+                        lock(&self.shared_state).recording_active = true;
+                    }
+                }
+            }
+            OutputCommand::StopRecording => {
+                if let Some(ref mut engine) = self.output_engine {
+                    engine.stop_recording();
+                }
+                lock(&self.shared_state).recording_active = false;
+            }
             OutputCommand::ResizeOutput => {
                 if let (Some(output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())
                 {
                     let (output_width, output_height, internal_width, internal_height) = {
                         let state = lock(&self.shared_state);
-                        (state.output_width, state.output_height,
-                         state.resolution.internal_width, state.resolution.internal_height)
+                        (
+                            state.output_width,
+                            state.output_height,
+                            state.resolution.internal_width,
+                            state.resolution.internal_height,
+                        )
                     };
                     engine.resize(output_width, output_height);
                     engine.resize_render_target(internal_width, internal_height);
-                    let _ = output_window.request_inner_size(winit::dpi::LogicalSize::new(output_width, output_height));
+                    let _ = output_window.request_inner_size(winit::dpi::LogicalSize::new(
+                        output_width,
+                        output_height,
+                    ));
                 }
             }
             _ => {}
@@ -291,7 +368,6 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_audio_commands(&mut self, command: AudioCommand) {
-
         match command {
             AudioCommand::RefreshDevices => {
                 let devices = list_audio_devices();
@@ -306,7 +382,11 @@ impl<P: EffectPlugin> App<P> {
                         Ok(actual_name) => {
                             lock(&self.shared_state).audio.selected_device = Some(actual_name);
                         }
-                        Err(e) => log::error!("Failed to start audio with device '{}': {}", device_name, e),
+                        Err(e) => log::error!(
+                            "Failed to start audio with device '{}': {}",
+                            device_name,
+                            e
+                        ),
                     }
                 }
             }
@@ -334,7 +414,9 @@ impl<P: EffectPlugin> App<P> {
                         Ok(actual_name) => {
                             lock(&self.shared_state).audio.selected_device = Some(actual_name);
                         }
-                        Err(e) => log::error!("Failed to restart audio with FFT size {}: {}", size, e),
+                        Err(e) => {
+                            log::error!("Failed to restart audio with FFT size {}: {}", size, e)
+                        }
                     }
                 }
             }
@@ -343,7 +425,6 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_midi_commands(&mut self, command: MidiCommand) {
-
         match command {
             MidiCommand::RefreshDevices => {
                 if let Some(ref mut manager) = self.midi_manager {
@@ -362,12 +443,21 @@ impl<P: EffectPlugin> App<P> {
                             state.midi_enabled = true;
                         }
                         Err(e) => {
-                            log::error!("Failed to connect to MIDI device '{}': {}", device_name, e);
+                            log::error!(
+                                "Failed to connect to MIDI device '{}': {}",
+                                device_name,
+                                e
+                            );
                         }
                     }
                 }
             }
-            MidiCommand::StartLearn { param_path, param_name, min, max } => {
+            MidiCommand::StartLearn {
+                param_path,
+                param_name,
+                min,
+                max,
+            } => {
                 if let Some(ref mut manager) = self.midi_manager {
                     manager.start_learn(&param_path, &param_name, min, max);
                     let mut state = lock(&self.shared_state);
@@ -404,12 +494,19 @@ impl<P: EffectPlugin> App<P> {
                         midi_state.mappings.clear();
                         for s in snapshots {
                             midi_state.mappings.push(MidiMapping::new(
-                                s.kind, s.selector, s.channel,
-                                &s.name, &s.param_path,
-                                s.min_value, s.max_value,
+                                s.kind,
+                                s.selector,
+                                s.channel,
+                                &s.name,
+                                &s.param_path,
+                                s.min_value,
+                                s.max_value,
                             ));
                         }
-                        log::info!("Restored {} MIDI mappings from preset", midi_state.mappings.len());
+                        log::info!(
+                            "Restored {} MIDI mappings from preset",
+                            midi_state.mappings.len()
+                        );
                     }
                 }
             }
@@ -418,7 +515,6 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_osc_commands(&mut self, command: OscCommand) {
-
         match command {
             OscCommand::Start => {
                 if let Some(ref mut server) = self.osc_server {
@@ -461,7 +557,6 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_preset_commands(&mut self, command: PresetCommand) {
-
         match command {
             PresetCommand::Save { name } => {
                 if let Some(ref mut bank) = self.preset_bank {
@@ -506,7 +601,8 @@ impl<P: EffectPlugin> App<P> {
             }
             PresetCommand::ApplySlot(slot) => {
                 if let Some(ref mut bank) = self.preset_bank {
-                    let plugin_state = bank.get_slot(slot)
+                    let plugin_state = bank
+                        .get_slot(slot)
                         .and_then(|idx| bank.presets.get(idx).and_then(|p| p.plugin_state.clone()));
                     {
                         let mut state = lock(&self.shared_state);
@@ -545,9 +641,8 @@ impl<P: EffectPlugin> App<P> {
     fn sync_preset_names_to_state(&mut self) {
         if let Some(ref bank) = self.preset_bank {
             let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
-            let slot_names: [Option<String>; 8] = std::array::from_fn(|i| {
-                bank.get_slot_name(i + 1).map(|s| s.to_string())
-            });
+            let slot_names: [Option<String>; 8] =
+                std::array::from_fn(|i| bank.get_slot_name(i + 1).map(|s| s.to_string()));
             let mut state = lock(&self.shared_state);
             state.preset_names = names;
             state.preset_quick_slot_names = slot_names;
@@ -555,7 +650,6 @@ impl<P: EffectPlugin> App<P> {
     }
 
     fn process_web_commands(&mut self, command: WebCommand) {
-
         match command {
             WebCommand::Start => {
                 if let Some(ref mut server) = self.web_server {
@@ -588,7 +682,14 @@ impl<P: EffectPlugin> App<P> {
                         let s = lock(&self.shared_state);
                         (s.web_host.clone(), s.web_lan_trust)
                     };
-                    let config = WebConfig { host, port, app_name: "rustjay".to_string(), enabled: false, lan_trust, token: None };
+                    let config = WebConfig {
+                        host,
+                        port,
+                        app_name: "rustjay".to_string(),
+                        enabled: false,
+                        lan_trust,
+                        token: None,
+                    };
                     let (new_server, cmd_tx) = WebServer::new(config);
                     *server = new_server;
                     self.web_command_tx = Some(cmd_tx);
@@ -616,23 +717,35 @@ impl<P: EffectPlugin> App<P> {
                             match id.as_str() {
                                 "color/hue_shift" => {
                                     let v = value.clamp(-180.0, 180.0);
-                                    state.hsb_params.hue_shift       = v;
-                                    state.hsb_param_bases.hue_shift  = v;
-                                    let (h, s, b) = (v, state.hsb_param_bases.saturation, state.hsb_param_bases.brightness);
+                                    state.hsb_params.hue_shift = v;
+                                    state.hsb_param_bases.hue_shift = v;
+                                    let (h, s, b) = (
+                                        v,
+                                        state.hsb_param_bases.saturation,
+                                        state.hsb_param_bases.brightness,
+                                    );
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/saturation" => {
                                     let v = value.clamp(0.0, 2.0);
-                                    state.hsb_params.saturation       = v;
-                                    state.hsb_param_bases.saturation  = v;
-                                    let (h, s, b) = (state.hsb_param_bases.hue_shift, v, state.hsb_param_bases.brightness);
+                                    state.hsb_params.saturation = v;
+                                    state.hsb_param_bases.saturation = v;
+                                    let (h, s, b) = (
+                                        state.hsb_param_bases.hue_shift,
+                                        v,
+                                        state.hsb_param_bases.brightness,
+                                    );
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/brightness" => {
                                     let v = value.clamp(0.0, 2.0);
-                                    state.hsb_params.brightness       = v;
-                                    state.hsb_param_bases.brightness  = v;
-                                    let (h, s, b) = (state.hsb_param_bases.hue_shift, state.hsb_param_bases.saturation, v);
+                                    state.hsb_params.brightness = v;
+                                    state.hsb_param_bases.brightness = v;
+                                    let (h, s, b) = (
+                                        state.hsb_param_bases.hue_shift,
+                                        state.hsb_param_bases.saturation,
+                                        v,
+                                    );
                                     state.audio_routing.update_base_values(h, s, b);
                                 }
                                 "color/enabled" => state.color_enabled = value > 0.5,
@@ -643,194 +756,236 @@ impl<P: EffectPlugin> App<P> {
                                 "audio/pink_noise" => state.audio.pink_noise_shaping = value > 0.5,
                                 "output/fullscreen" => state.output_fullscreen = value > 0.5,
                                 _ => {
-                                    // Fallback: check if this is an effect-declared custom param
+                                    // App-specific param resolver (e.g. Varda's hierarchical paths).
+                                    let resolved = state
+                                        .param_resolver
+                                        .as_ref()
+                                        .and_then(|r| r.resolve(&id))
+                                        .unwrap_or(id);
+                                    // Fallback: check if this is an effect-declared custom param.
+                                    // Accept either category/id (web UI) or raw canonical id (API/OSC/MIDI).
                                     if let Some(desc) = state.param_descriptors.iter().find(|d| {
-                                        format!("{}/{}", d.category.name().to_lowercase(), d.id) == id
+                                        format!("{}/{}", d.category.name().to_lowercase(), d.id)
+                                            == resolved
+                                            || d.id == resolved
                                     }) {
-                                        let (desc_id, desc_min, desc_max) = (desc.id.clone(), desc.min, desc.max);
-                                        state.set_param_base(&desc_id, value.clamp(desc_min, desc_max));
+                                        let (desc_id, desc_min, desc_max) =
+                                            (desc.id.clone(), desc.min, desc.max);
+                                        state.set_param_base(
+                                            &desc_id,
+                                            value.clamp(desc_min, desc_max),
+                                        );
                                     }
                                 }
                             }
                         }
                     }
-                    WebServerCommand::Input(input_cmd) => {
-                        match input_cmd {
-                            rustjay_control::InputWebCommand::SelectDevice { index, width, height, fps } => {
+                    WebServerCommand::Input(input_cmd) => match input_cmd {
+                        rustjay_control::InputWebCommand::SelectDevice {
+                            index,
+                            width,
+                            height,
+                            fps,
+                        } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.input_command = InputCommand::StartWebcam {
+                                    device_index: index,
+                                    width,
+                                    height,
+                                    fps,
+                                };
+                            }
+                        }
+                        rustjay_control::InputWebCommand::StopInput => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.input_command = InputCommand::StopInput;
+                            }
+                        }
+                        rustjay_control::InputWebCommand::RefreshDevices => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.input_command = InputCommand::RefreshDevices;
+                            }
+                        }
+                    },
+                    WebServerCommand::Control(ctrl_cmd) => match ctrl_cmd {
+                        rustjay_control::ControlWebCommand::Osc { enabled } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.osc_command = if enabled {
+                                    OscCommand::Start
+                                } else {
+                                    OscCommand::Stop
+                                };
+                            }
+                        }
+                        rustjay_control::ControlWebCommand::OscSetPort { port } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.osc_command = OscCommand::SetPort(port);
+                            }
+                        }
+                        rustjay_control::ControlWebCommand::MidiLearn { param_id } => {
+                            let (name, min, max) = {
+                                let state = lock(&self.shared_state);
+                                state
+                                    .param_descriptors
+                                    .iter()
+                                    .find(|d| {
+                                        let full = format!(
+                                            "{}/{}",
+                                            d.category.name().to_lowercase(),
+                                            d.id
+                                        );
+                                        full == param_id || d.id == param_id
+                                    })
+                                    .map(|d| (d.name.clone(), d.min, d.max))
+                                    .unwrap_or_default()
+                            };
+                            if !name.is_empty() {
                                 if let Ok(mut state) = self.shared_state.lock() {
-                                    state.input_command = InputCommand::StartWebcam {
-                                        device_index: index, width, height, fps,
+                                    state.midi_command = MidiCommand::StartLearn {
+                                        param_path: param_id,
+                                        param_name: name,
+                                        min,
+                                        max,
                                     };
                                 }
+                            } else {
+                                log::warn!("Web MidiLearn: unknown param_id '{}'", param_id);
                             }
-                            rustjay_control::InputWebCommand::StopInput => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.input_command = InputCommand::StopInput;
-                                }
+                        }
+                        rustjay_control::ControlWebCommand::MidiLearnCancel => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.midi_command = MidiCommand::CancelLearn;
                             }
-                            rustjay_control::InputWebCommand::RefreshDevices => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.input_command = InputCommand::RefreshDevices;
+                        }
+                        rustjay_control::ControlWebCommand::MidiUnlearn { cc, channel } => {
+                            if let Some(ref m) = self.midi_manager {
+                                if let Ok(mut midi_st) = m.state().lock() {
+                                    midi_st.mappings.retain(|mapping| {
+                                        !(mapping.selector == cc && mapping.channel == channel)
+                                    });
                                 }
                             }
                         }
-                    }
-                    WebServerCommand::Control(ctrl_cmd) => {
-                        match ctrl_cmd {
-                            rustjay_control::ControlWebCommand::Osc { enabled } => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.osc_command = if enabled { OscCommand::Start } else { OscCommand::Stop };
+                        rustjay_control::ControlWebCommand::MidiRefreshDevices => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.midi_command = MidiCommand::RefreshDevices;
+                            }
+                        }
+                        rustjay_control::ControlWebCommand::MidiSelectDevice { device } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.midi_command = MidiCommand::SelectDevice(device);
+                            }
+                        }
+                        rustjay_control::ControlWebCommand::MidiDisconnect => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                state.midi_command = MidiCommand::Disconnect;
+                            }
+                        }
+                    },
+                    WebServerCommand::Modulation(mod_cmd) => match mod_cmd {
+                        rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                if slot < state.lfo.bank.lfos.len() {
+                                    let existing = state.lfo.bank.lfos[slot].clone();
+                                    let mut new_config = config;
+                                    new_config.phase = existing.phase;
+                                    new_config.output = existing.output;
+                                    new_config.last_beat_phase = existing.last_beat_phase;
+                                    state.lfo.bank.lfos[slot] = new_config;
                                 }
                             }
-                            rustjay_control::ControlWebCommand::OscSetPort { port } => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.osc_command = OscCommand::SetPort(port);
+                        }
+                        rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                if slot < state.lfo.bank.lfos.len() {
+                                    state.lfo.bank.lfos[slot].enabled = enabled;
                                 }
                             }
-                            rustjay_control::ControlWebCommand::MidiLearn { param_id } => {
-                                let (name, min, max) = {
-                                    let state = lock(&self.shared_state);
-                                    state.param_descriptors.iter()
-                                        .find(|d| {
-                                            let full = format!("{}/{}", d.category.name().to_lowercase(), d.id);
-                                            full == param_id || d.id == param_id
-                                        })
-                                        .map(|d| (d.name.clone(), d.min, d.max))
-                                        .unwrap_or_default()
-                                };
-                                if !name.is_empty() {
-                                    if let Ok(mut state) = self.shared_state.lock() {
-                                        state.midi_command = MidiCommand::StartLearn {
-                                            param_path: param_id,
-                                            param_name: name,
-                                            min,
-                                            max,
-                                        };
+                        }
+                        rustjay_control::ModulationWebCommand::AudioRoute {
+                            param_id,
+                            band,
+                            depth,
+                        } => {
+                            let target = param_id_to_modulation_target(&param_id);
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                let ids_to_remove: Vec<usize> = state
+                                    .audio_routing
+                                    .matrix
+                                    .routes()
+                                    .iter()
+                                    .filter(|r| r.band == band && r.target == target)
+                                    .map(|r| r.id)
+                                    .collect();
+                                for id in ids_to_remove {
+                                    state.audio_routing.matrix.remove_route(id);
+                                }
+                                if let Some(id) = state.audio_routing.matrix.add_route(band, target)
+                                {
+                                    if let Some(route) =
+                                        state.audio_routing.matrix.get_route_mut(id)
+                                    {
+                                        route.amount = depth;
+                                    }
+                                }
+                            }
+                        }
+                        rustjay_control::ModulationWebCommand::AudioUnroute { param_id } => {
+                            let target = param_id_to_modulation_target(&param_id);
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                let ids_to_remove: Vec<usize> = state
+                                    .audio_routing
+                                    .matrix
+                                    .routes()
+                                    .iter()
+                                    .filter(|r| r.target == target)
+                                    .map(|r| r.id)
+                                    .collect();
+                                for id in ids_to_remove {
+                                    state.audio_routing.matrix.remove_route(id);
+                                }
+                            }
+                        }
+                        rustjay_control::ModulationWebCommand::TapTempo => {
+                            use std::time::{SystemTime, UNIX_EPOCH};
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64();
+                            if let Ok(mut state) = self.shared_state.lock() {
+                                let is_first_tap = now - state.audio.last_tap_time > 2.0;
+                                if is_first_tap {
+                                    state.audio.tap_times.clear();
+                                    state.lfo.bank.reset_all();
+                                }
+                                state.audio.tap_times.push(now);
+                                state.audio.last_tap_time = now;
+                                if state.audio.tap_times.len() > 8 {
+                                    state.audio.tap_times.remove(0);
+                                }
+                                state.audio.beat_phase = 0.0;
+                                if state.audio.tap_times.len() >= 2 {
+                                    let n = state.audio.tap_times.len();
+                                    let mut intervals = Vec::new();
+                                    for i in 1..n {
+                                        intervals.push(
+                                            state.audio.tap_times[i] - state.audio.tap_times[i - 1],
+                                        );
+                                    }
+                                    let avg_interval: f64 =
+                                        intervals.iter().sum::<f64>() / intervals.len() as f64;
+                                    if avg_interval > 0.1 && avg_interval < 3.0 {
+                                        state.audio.bpm = (60.0 / avg_interval) as f32;
+                                        state.audio.tap_tempo_info =
+                                            format!("{:.1} BPM ({} taps)", state.audio.bpm, n);
                                     }
                                 } else {
-                                    log::warn!("Web MidiLearn: unknown param_id '{}'", param_id);
+                                    state.audio.tap_tempo_info = "Tap again…".to_string();
                                 }
                             }
-                            rustjay_control::ControlWebCommand::MidiLearnCancel => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.midi_command = MidiCommand::CancelLearn;
-                                }
-                            }
-                            rustjay_control::ControlWebCommand::MidiUnlearn { cc, channel } => {
-                                if let Some(ref m) = self.midi_manager {
-                                    if let Ok(mut midi_st) = m.state().lock() {
-                                        midi_st.mappings.retain(|mapping| {
-                                            !(mapping.selector == cc && mapping.channel == channel)
-                                        });
-                                    }
-                                }
-                            }
-                            rustjay_control::ControlWebCommand::MidiRefreshDevices => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.midi_command = MidiCommand::RefreshDevices;
-                                }
-                            }
-                            rustjay_control::ControlWebCommand::MidiSelectDevice { device } => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.midi_command = MidiCommand::SelectDevice(device);
-                                }
-                            }
-                            rustjay_control::ControlWebCommand::MidiDisconnect => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    state.midi_command = MidiCommand::Disconnect;
-                                }
-                            }
+                            server.modulation_dirty = true;
                         }
-                    }
-                    WebServerCommand::Modulation(mod_cmd) => {
-                        match mod_cmd {
-                            rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    if slot < state.lfo.bank.lfos.len() {
-                                        let existing = state.lfo.bank.lfos[slot].clone();
-                                        let mut new_config = config;
-                                        new_config.phase           = existing.phase;
-                                        new_config.output          = existing.output;
-                                        new_config.last_beat_phase = existing.last_beat_phase;
-                                        state.lfo.bank.lfos[slot]  = new_config;
-                                    }
-                                }
-                            }
-                            rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    if slot < state.lfo.bank.lfos.len() {
-                                        state.lfo.bank.lfos[slot].enabled = enabled;
-                                    }
-                                }
-                            }
-                            rustjay_control::ModulationWebCommand::AudioRoute { param_id, band, depth } => {
-                                let target = param_id_to_modulation_target(&param_id);
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
-                                        .iter()
-                                        .filter(|r| r.band == band && r.target == target)
-                                        .map(|r| r.id)
-                                        .collect();
-                                    for id in ids_to_remove {
-                                        state.audio_routing.matrix.remove_route(id);
-                                    }
-                                    if let Some(id) = state.audio_routing.matrix.add_route(band, target) {
-                                        if let Some(route) = state.audio_routing.matrix.get_route_mut(id) {
-                                            route.amount = depth;
-                                        }
-                                    }
-                                }
-                            }
-                            rustjay_control::ModulationWebCommand::AudioUnroute { param_id } => {
-                                let target = param_id_to_modulation_target(&param_id);
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    let ids_to_remove: Vec<usize> = state.audio_routing.matrix.routes()
-                                        .iter()
-                                        .filter(|r| r.target == target)
-                                        .map(|r| r.id)
-                                        .collect();
-                                    for id in ids_to_remove {
-                                        state.audio_routing.matrix.remove_route(id);
-                                    }
-                                }
-                            }
-                            rustjay_control::ModulationWebCommand::TapTempo => {
-                                use std::time::{SystemTime, UNIX_EPOCH};
-                                let now = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs_f64();
-                                if let Ok(mut state) = self.shared_state.lock() {
-                                    let is_first_tap = now - state.audio.last_tap_time > 2.0;
-                                    if is_first_tap {
-                                        state.audio.tap_times.clear();
-                                        state.lfo.bank.reset_all();
-                                    }
-                                    state.audio.tap_times.push(now);
-                                    state.audio.last_tap_time = now;
-                                    if state.audio.tap_times.len() > 8 {
-                                        state.audio.tap_times.remove(0);
-                                    }
-                                    state.audio.beat_phase = 0.0;
-                                    if state.audio.tap_times.len() >= 2 {
-                                        let n = state.audio.tap_times.len();
-                                        let mut intervals = Vec::new();
-                                        for i in 1..n {
-                                            intervals.push(state.audio.tap_times[i] - state.audio.tap_times[i - 1]);
-                                        }
-                                        let avg_interval: f64 = intervals.iter().sum::<f64>() / intervals.len() as f64;
-                                        if avg_interval > 0.1 && avg_interval < 3.0 {
-                                            state.audio.bpm = (60.0 / avg_interval) as f32;
-                                            state.audio.tap_tempo_info = format!("{:.1} BPM ({} taps)", state.audio.bpm, n);
-                                        }
-                                    } else {
-                                        state.audio.tap_tempo_info = "Tap again…".to_string();
-                                    }
-                                }
-                                server.modulation_dirty = true;
-                            }
-                        }
-                    }
+                    },
                     WebServerCommand::Preset(preset_cmd) => {
                         match preset_cmd {
                             rustjay_control::PresetWebCommand::List => {
@@ -879,35 +1034,45 @@ impl<P: EffectPlugin> App<P> {
                                 OutputCommand::None
                             }
                             #[cfg(target_os = "macos")]
-                            rustjay_control::OutputWebCommand::StartSyphon => OutputCommand::StartSyphon,
+                            rustjay_control::OutputWebCommand::StartSyphon => {
+                                OutputCommand::StartSyphon
+                            }
                             #[cfg(not(target_os = "macos"))]
                             rustjay_control::OutputWebCommand::StartSyphon => {
                                 log::warn!("Syphon output is only available on macOS");
                                 OutputCommand::None
                             }
                             #[cfg(target_os = "macos")]
-                            rustjay_control::OutputWebCommand::StopSyphon => OutputCommand::StopSyphon,
+                            rustjay_control::OutputWebCommand::StopSyphon => {
+                                OutputCommand::StopSyphon
+                            }
                             #[cfg(not(target_os = "macos"))]
                             rustjay_control::OutputWebCommand::StopSyphon => {
                                 log::warn!("Syphon output is only available on macOS");
                                 OutputCommand::None
                             }
                             #[cfg(target_os = "windows")]
-                            rustjay_control::OutputWebCommand::StartSpout { sender_name } => OutputCommand::StartSpout { sender_name },
+                            rustjay_control::OutputWebCommand::StartSpout { sender_name } => {
+                                OutputCommand::StartSpout { sender_name }
+                            }
                             #[cfg(not(target_os = "windows"))]
                             rustjay_control::OutputWebCommand::StartSpout { .. } => {
                                 log::warn!("Spout output is only available on Windows");
                                 OutputCommand::None
                             }
                             #[cfg(target_os = "windows")]
-                            rustjay_control::OutputWebCommand::StopSpout => OutputCommand::StopSpout,
+                            rustjay_control::OutputWebCommand::StopSpout => {
+                                OutputCommand::StopSpout
+                            }
                             #[cfg(not(target_os = "windows"))]
                             rustjay_control::OutputWebCommand::StopSpout => {
                                 log::warn!("Spout output is only available on Windows");
                                 OutputCommand::None
                             }
                             #[cfg(target_os = "linux")]
-                            rustjay_control::OutputWebCommand::StartV4l2 { device_path } => OutputCommand::StartV4l2 { device_path },
+                            rustjay_control::OutputWebCommand::StartV4l2 { device_path } => {
+                                OutputCommand::StartV4l2 { device_path }
+                            }
                             #[cfg(not(target_os = "linux"))]
                             rustjay_control::OutputWebCommand::StartV4l2 { .. } => {
                                 log::warn!("V4L2 output is only available on Linux");
@@ -920,7 +1085,9 @@ impl<P: EffectPlugin> App<P> {
                                 log::warn!("V4L2 output is only available on Linux");
                                 OutputCommand::None
                             }
-                            rustjay_control::OutputWebCommand::ResizeOutput => OutputCommand::ResizeOutput,
+                            rustjay_control::OutputWebCommand::ResizeOutput => {
+                                OutputCommand::ResizeOutput
+                            }
                         };
                         if let Ok(mut state) = self.shared_state.lock() {
                             state.output_command = core_cmd;
@@ -930,9 +1097,15 @@ impl<P: EffectPlugin> App<P> {
                         let core_cmd = match audio_cmd {
                             rustjay_control::AudioWebCommand::Start => AudioCommand::Start,
                             rustjay_control::AudioWebCommand::Stop => AudioCommand::Stop,
-                            rustjay_control::AudioWebCommand::RefreshDevices => AudioCommand::RefreshDevices,
-                            rustjay_control::AudioWebCommand::SelectDevice { device } => AudioCommand::SelectDevice(device),
-                            rustjay_control::AudioWebCommand::SetFftSize { size } => AudioCommand::SetFftSize(size),
+                            rustjay_control::AudioWebCommand::RefreshDevices => {
+                                AudioCommand::RefreshDevices
+                            }
+                            rustjay_control::AudioWebCommand::SelectDevice { device } => {
+                                AudioCommand::SelectDevice(device)
+                            }
+                            rustjay_control::AudioWebCommand::SetFftSize { size } => {
+                                AudioCommand::SetFftSize(size)
+                            }
                         };
                         if let Ok(mut state) = self.shared_state.lock() {
                             state.audio_command = core_cmd;
@@ -942,7 +1115,9 @@ impl<P: EffectPlugin> App<P> {
                         let core_cmd = match link_cmd {
                             rustjay_control::LinkWebCommand::Enable => LinkCommand::Enable,
                             rustjay_control::LinkWebCommand::Disable => LinkCommand::Disable,
-                            rustjay_control::LinkWebCommand::SetQuantum { quantum } => LinkCommand::SetQuantum(quantum),
+                            rustjay_control::LinkWebCommand::SetQuantum { quantum } => {
+                                LinkCommand::SetQuantum(quantum)
+                            }
                         };
                         if let Ok(mut state) = self.shared_state.lock() {
                             state.link_command = core_cmd;
@@ -962,15 +1137,19 @@ impl<P: EffectPlugin> App<P> {
                 // MIDI mapping change detection (WR-3.3 / WR-6)
                 if let Some(ref m) = self.midi_manager {
                     if let Ok(midi_st) = m.state().lock() {
-                        let current: Vec<rustjay_core::MidiMappingSnapshot> = midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
-                            name: m.name.clone(),
-                            param_path: m.param_path.clone(),
-                            kind: m.kind,
-                            selector: m.selector,
-                            channel: m.channel,
-                            min_value: m.min_value,
-                            max_value: m.max_value,
-                        }).collect();
+                        let current: Vec<rustjay_core::MidiMappingSnapshot> = midi_st
+                            .mappings
+                            .iter()
+                            .map(|m| rustjay_core::MidiMappingSnapshot {
+                                name: m.name.clone(),
+                                param_path: m.param_path.clone(),
+                                kind: m.kind,
+                                selector: m.selector,
+                                channel: m.channel,
+                                min_value: m.min_value,
+                                max_value: m.max_value,
+                            })
+                            .collect();
                         if current != self.last_broadcast_mappings {
                             self.last_broadcast_mappings = current;
                             server.control_dirty = true;

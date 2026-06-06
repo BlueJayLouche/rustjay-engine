@@ -8,8 +8,8 @@
 
 use crate::build_router;
 use axum::body::Body;
-use axum::Router;
 use axum::http::{Request, StatusCode};
+use axum::Router;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -39,9 +39,14 @@ async fn test_health_returns_ok() {
         .unwrap();
 
     let status = resp.status();
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body_str = String::from_utf8_lossy(&body);
-    assert!(status == StatusCode::OK, "Expected 200, got {status}. Body: {body_str}");
+    assert!(
+        status == StatusCode::OK,
+        "Expected 200, got {status}. Body: {body_str}"
+    );
 }
 
 #[tokio::test]
@@ -74,4 +79,32 @@ async fn test_set_param_returns_ok() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ── Generic app routes ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_app_state_returns_503_when_not_initialized() {
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
+
+    let resp = app
+        .oneshot(Request::get("/api/app/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_app_params_returns_503_when_not_initialized() {
+    let server = test_server();
+    let app = build_router().with_state(Arc::clone(&server.state));
+
+    let resp = app
+        .oneshot(Request::get("/api/app/params").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

@@ -1,8 +1,11 @@
 //! Plugin-aware renderer that compiles app-provided shaders and manages
 //! the per-effect pipeline, uniform buffer, and bind groups.
 
-use rustjay_core::{EffectInput, EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, Vertex, RenderHookCtx};
 use crate::texture::Texture;
+use rustjay_core::{
+    EffectInput, EffectPlugin, EngineState, MeshDescriptor, MeshTopology, PassInput, RenderHookCtx,
+    Vertex,
+};
 use wgpu::util::{DeviceExt, StagingBelt};
 
 pub(crate) struct PluginRenderer<P: EffectPlugin> {
@@ -135,11 +138,13 @@ fn create_mesh_buffers(
     let index_buffer = if indices.is_empty() {
         None
     } else {
-        Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Mesh Index Buffer"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        }))
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Mesh Index Buffer"),
+                contents: bytemuck::cast_slice(indices),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+        )
     };
 
     (vertex_buffer, index_buffer, index_count)
@@ -156,7 +161,9 @@ fn wgpu_topology(topology: MeshTopology) -> wgpu::PrimitiveTopology {
 fn wgpu_polygon_mode(topology: MeshTopology, device: &wgpu::Device) -> wgpu::PolygonMode {
     match topology {
         MeshTopology::Wireframe
-            if device.features().contains(wgpu::Features::POLYGON_MODE_LINE) =>
+            if device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE) =>
         {
             wgpu::PolygonMode::Line
         }
@@ -180,19 +187,20 @@ fn build_compute_resources(
         source: wgpu::ShaderSource::Wgsl(compute_shader.into()),
     });
 
-    let storage_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Compute Storage Bind Group Layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    });
+    let storage_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Compute Storage Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
     let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Compute Pipeline Layout"),
@@ -243,7 +251,12 @@ struct FrameInputs<'a> {
 }
 
 impl<P: EffectPlugin> PluginRenderer<P> {
-    pub fn new(plugin: P, device: &wgpu::Device, queue: &wgpu::Queue, _engine_state: &EngineState) -> Self {
+    pub fn new(
+        plugin: P,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _engine_state: &EngineState,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Plugin Shader"),
             source: wgpu::ShaderSource::Wgsl(plugin.shader_source().into()),
@@ -258,43 +271,44 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         // Unified texture bind group layout: always 4 entries so the same
         // layout works for single-pass plugins and multi-pass graph passes.
         // Single-pass shaders simply omit @binding(2) and @binding(3).
-        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Texture Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: shader_stages,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Texture Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: shader_stages,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: shader_stages,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: shader_stages,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: shader_stages,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: shader_stages,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: shader_stages,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: shader_stages,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let uniform_stages = if plugin.compute_shader().is_some() {
             shader_stages | wgpu::ShaderStages::COMPUTE
@@ -302,23 +316,27 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             shader_stages
         };
 
-        let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Uniform Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: uniform_stages,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Uniform Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: uniform_stages,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
-            bind_group_layouts: &[Some(&texture_bind_group_layout), Some(&uniform_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&texture_bind_group_layout),
+                Some(&uniform_bind_group_layout),
+            ],
             ..Default::default()
         });
 
@@ -345,11 +363,15 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: initial_topology.map(wgpu_topology).unwrap_or(wgpu::PrimitiveTopology::TriangleList),
+                topology: initial_topology
+                    .map(wgpu_topology)
+                    .unwrap_or(wgpu::PrimitiveTopology::TriangleList),
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
-                polygon_mode: initial_topology.map(|t| wgpu_polygon_mode(t, device)).unwrap_or(wgpu::PolygonMode::Fill),
+                polygon_mode: initial_topology
+                    .map(|t| wgpu_polygon_mode(t, device))
+                    .unwrap_or(wgpu::PolygonMode::Fill),
                 unclipped_depth: false,
                 conservative: false,
             },
@@ -375,10 +397,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             }],
         });
 
-        let dummy_feedback = Texture::from_bgra(
-            device, queue, 1, 1, "Dummy Feedback",
-            &[0, 0, 0, 255],
-        );
+        let dummy_feedback =
+            Texture::from_bgra(device, queue, 1, 1, "Dummy Feedback", &[0, 0, 0, 255]);
 
         // Cache the graph before plugin is moved into Self.
         let cached_graph = plugin.render_graph();
@@ -392,7 +412,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 } else {
                     wgpu::BufferUsages::VERTEX
                 };
-                let (vb, ib, count) = create_mesh_buffers(device, &vertices, &indices, vertex_usage);
+                let (vb, ib, count) =
+                    create_mesh_buffers(device, &vertices, &indices, vertex_usage);
                 let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                 (Some(vb), ib, count, vertex_count)
             } else {
@@ -405,7 +426,11 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 if let Some(ref vb) = mesh_vertex_buffer {
                     let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                     let (cp, cb, wg) = build_compute_resources(
-                        device, cs, &uniform_bind_group_layout, vb, vertex_count,
+                        device,
+                        cs,
+                        &uniform_bind_group_layout,
+                        vb,
+                        vertex_count,
                     );
                     (Some(cp), Some(cb), wg)
                 } else {
@@ -450,16 +475,23 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         renderer
     }
 
+    /// Forward the engine-ready hook to the plugin.
+    pub fn on_engine_ready(&mut self, engine: &mut EngineState) {
+        self.plugin.on_engine_ready(engine);
+    }
+
     fn rebuild_single_pass_pipeline(&mut self, device: &wgpu::Device) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Plugin Shader"),
             source: wgpu::ShaderSource::Wgsl(self.plugin.shader_source().into()),
         });
 
-        let topology = self.cached_mesh
+        let topology = self
+            .cached_mesh
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
-        let polygon_mode = self.cached_mesh
+        let polygon_mode = self
+            .cached_mesh
             .map(|m| wgpu_polygon_mode(m.topology, device))
             .unwrap_or(wgpu::PolygonMode::Fill);
 
@@ -530,7 +562,11 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 };
                 let vertex_count = (desc.cols + 1) * (desc.rows + 1);
                 let (cp, cb, wg) = build_compute_resources(
-                    device, cs, &self.uniform_bind_group_layout, vb, vertex_count,
+                    device,
+                    cs,
+                    &self.uniform_bind_group_layout,
+                    vb,
+                    vertex_count,
                 );
                 self.compute_pipeline = Some(cp);
                 self.compute_bind_group = Some(cb);
@@ -632,7 +668,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         self.check_mesh_dirty(device, app_state);
 
         // Run compute pass if the plugin provides a compute shader.
-        if let (Some(ref pipeline), Some(ref bind_group)) = (&self.compute_pipeline, &self.compute_bind_group) {
+        if let (Some(ref pipeline), Some(ref bind_group)) =
+            (&self.compute_pipeline, &self.compute_bind_group)
+        {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Mesh Compute Pass"),
                 timestamp_writes: None,
@@ -670,11 +708,22 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         // Multi-pass graph path.
         // Take ownership to release the field borrow before calling the &mut self
         // method, then restore. Moves the Vec fat-pointer (no heap alloc).
-        if self.cached_graph.as_ref().is_some_and(|g| !g.passes.is_empty()) {
+        if self
+            .cached_graph
+            .as_ref()
+            .is_some_and(|g| !g.passes.is_empty())
+        {
             let graph = self.cached_graph.take().expect("checked above");
             self.run_graph(
-                encoder, device, target_view, target_size,
-                frame, app_state, engine_state, vertex_buffer, &graph,
+                encoder,
+                device,
+                target_view,
+                target_size,
+                frame,
+                app_state,
+                engine_state,
+                vertex_buffer,
+                &graph,
             );
             self.cached_graph = Some(graph);
             self.staging_belt.finish();
@@ -683,7 +732,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
         // Single-pass path.
         self.run_single_pass(
-            encoder, device, target_view, frame, app_state, engine_state, vertex_buffer,
+            encoder,
+            device,
+            target_view,
+            frame,
+            app_state,
+            engine_state,
+            vertex_buffer,
         );
         self.staging_belt.finish();
     }
@@ -705,36 +760,42 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         let uniforms = self.plugin.build_uniforms(app_state, engine_state);
         {
             let size = wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
-            let mut view = self.staging_belt.write_buffer(encoder, &self.uniform_buffer, 0, size);
+            let mut view = self
+                .staging_belt
+                .write_buffer(encoder, &self.uniform_buffer, 0, size);
             view.copy_from_slice(bytemuck::bytes_of(&uniforms));
         }
 
         if self.cached_texture_gen != frame.input_generation {
-            if let (Some(input_view), Some(input_sampler)) =
-                (frame.input_view, frame.input_sampler)
+            if let (Some(input_view), Some(input_sampler)) = (frame.input_view, frame.input_sampler)
             {
-                self.cached_texture_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Texture Bind Group"),
-                    layout: &self.texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(input_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(input_sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&self.dummy_feedback.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(&self.dummy_feedback.sampler),
-                        },
-                    ],
-                }));
+                self.cached_texture_bind_group =
+                    Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Texture Bind Group"),
+                        layout: &self.texture_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(input_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(input_sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &self.dummy_feedback.view,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(
+                                    &self.dummy_feedback.sampler,
+                                ),
+                            },
+                        ],
+                    }));
                 self.cached_texture_gen = frame.input_generation;
             }
         }
@@ -795,7 +856,9 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
         // Ensure intermediate textures (one per non-final pass, at the current target size).
         let needed_intermediates = graph.passes.len().saturating_sub(1);
-        let size_changed = self.intermediate_textures.first()
+        let size_changed = self
+            .intermediate_textures
+            .first()
             .map(|t| t.width != target_width || t.height != target_height)
             .unwrap_or(false);
         if self.intermediate_textures.len() != needed_intermediates || size_changed {
@@ -809,24 +872,32 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 *gen = u64::MAX;
             }
             for i in 0..needed_intermediates {
-                self.intermediate_textures.push(Texture::create_render_target(
-                    device, target_width, target_height,
-                    &format!("Graph Intermediate {}", i),
-                ));
+                self.intermediate_textures
+                    .push(Texture::create_render_target(
+                        device,
+                        target_width,
+                        target_height,
+                        &format!("Graph Intermediate {}", i),
+                    ));
             }
         }
 
         // Rebuild pipelines + per-pass uniform buffers when pass count or
         // shader content changes, or when mesh topology changes.
-        let graph_topology = self.cached_mesh
+        let graph_topology = self
+            .cached_mesh
             .map(|m| wgpu_topology(m.topology))
             .unwrap_or(wgpu::PrimitiveTopology::TriangleList);
-        let graph_polygon_mode = self.cached_mesh
+        let graph_polygon_mode = self
+            .cached_mesh
             .map(|m| wgpu_polygon_mode(m.topology, device))
             .unwrap_or(wgpu::PolygonMode::Fill);
 
         let needs_rebuild = self.graph_pipelines.len() != graph.passes.len()
-            || graph.passes.iter().zip(self.graph_shader_sources.iter())
+            || graph
+                .passes
+                .iter()
+                .zip(self.graph_shader_sources.iter())
                 .any(|(pass, &src)| !std::ptr::eq(pass.shader.as_bytes(), src.as_bytes()));
 
         if needs_rebuild {
@@ -943,9 +1014,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             // Write per-pass uniforms into this pass's dedicated buffer.
             let uniforms = self.plugin.build_pass_uniforms(i, app_state, engine_state);
             {
-                let size = wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
+                let size =
+                    wgpu::BufferSize::new(std::mem::size_of::<P::Uniforms>() as u64).unwrap();
                 let mut view = self.staging_belt.write_buffer(
-                    encoder, &self.graph_uniform_buffers[i], 0, size,
+                    encoder,
+                    &self.graph_uniform_buffers[i],
+                    0,
+                    size,
                 );
                 view.copy_from_slice(bytemuck::bytes_of(&uniforms));
             }
@@ -966,28 +1041,29 @@ impl<P: EffectPlugin> PluginRenderer<P> {
 
             let current_gen = frame.input_generation;
             if self.cached_pass_texture_gens[i] != current_gen {
-                self.cached_pass_bind_groups[i] = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&format!("Pass {} Bind Group", i)),
-                    layout: &self.texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(iv),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(is),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(fbv),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(fbs),
-                        },
-                    ],
-                }));
+                self.cached_pass_bind_groups[i] =
+                    Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(&format!("Pass {} Bind Group", i)),
+                        layout: &self.texture_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(iv),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(is),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(fbv),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(fbs),
+                            },
+                        ],
+                    }));
                 self.cached_pass_texture_gens[i] = current_gen;
             }
 

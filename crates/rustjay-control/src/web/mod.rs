@@ -9,12 +9,16 @@
 #![allow(clippy::too_many_arguments)]
 
 use axum::{
-    extract::{ws::{WebSocket, Message}, State, WebSocketUpgrade, Query, Json},
+    body::Body,
+    extract::{
+        ws::{Message, WebSocket},
+        Json, Query, State, WebSocketUpgrade,
+    },
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Router, middleware::{self, Next},
-    http::{Request, StatusCode, HeaderMap},
-    body::Body,
+    Router,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -95,7 +99,8 @@ pub struct WebServerState {
     /// Preset names for initial broadcast on new WebSocket connect.
     pub preset_names: Vec<String>,
     /// Pending device enumeration result from async Tokio task.
-    pub pending_devices: std::sync::Arc<std::sync::Mutex<Option<Vec<rustjay_core::InputDeviceInfo>>>>,
+    pub pending_devices:
+        std::sync::Arc<std::sync::Mutex<Option<Vec<rustjay_core::InputDeviceInfo>>>>,
     /// Last time a device refresh was requested (for throttling).
     pub last_refresh: std::time::Instant,
     /// Last-sent input state for hydrating new WebSocket clients immediately.
@@ -137,7 +142,12 @@ pub enum InputWebCommand {
     #[serde(rename = "refresh_devices")]
     RefreshDevices,
     #[serde(rename = "select_device")]
-    SelectDevice { index: usize, width: u32, height: u32, fps: u32 },
+    SelectDevice {
+        index: usize,
+        width: u32,
+        height: u32,
+        fps: u32,
+    },
     #[serde(rename = "stop")]
     StopInput,
 }
@@ -169,11 +179,18 @@ pub enum ControlWebCommand {
 #[serde(tag = "action")]
 pub enum ModulationWebCommand {
     #[serde(rename = "lfo_set")]
-    LfoSet { slot: usize, config: rustjay_core::lfo::Lfo },
+    LfoSet {
+        slot: usize,
+        config: rustjay_core::lfo::Lfo,
+    },
     #[serde(rename = "lfo_enable")]
     LfoEnable { slot: usize, enabled: bool },
     #[serde(rename = "audio_route")]
-    AudioRoute { param_id: String, band: rustjay_core::FftBand, depth: f32 },
+    AudioRoute {
+        param_id: String,
+        band: rustjay_core::FftBand,
+        depth: f32,
+    },
     #[serde(rename = "audio_unroute")]
     AudioUnroute { param_id: String },
     #[serde(rename = "tap_tempo")]
@@ -396,59 +413,137 @@ impl WebServer {
     }
 
     /// Register a parameter for the web UI
-    pub fn register_parameter(&mut self, id: &str, name: &str, category: &str, min: f32, max: f32, value: f32, step: f32) {
+    pub fn register_parameter(
+        &mut self,
+        id: &str,
+        name: &str,
+        category: &str,
+        min: f32,
+        max: f32,
+        value: f32,
+        step: f32,
+    ) {
         // Clear stale diff-tracking entry so the initial broadcast is never skipped.
         self.last_sent.remove(id);
         if let Ok(mut state) = self.state.lock() {
-            state.parameters.insert(id.to_string(), WebParameter {
-                id: id.to_string(),
-                name: name.to_string(),
-                category: category.to_string(),
-                min,
-                max,
-                value,
-                default: value,
-                step,
-                options: None,
-            });
+            state.parameters.insert(
+                id.to_string(),
+                WebParameter {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    category: category.to_string(),
+                    min,
+                    max,
+                    value,
+                    default: value,
+                    step,
+                    options: None,
+                },
+            );
         }
     }
 
     /// Register an enum parameter for the web UI (rendered as a select/dropdown)
-    pub fn register_enum_parameter(&mut self, id: &str, name: &str, category: &str, options: Vec<String>, value: f32) {
+    pub fn register_enum_parameter(
+        &mut self,
+        id: &str,
+        name: &str,
+        category: &str,
+        options: Vec<String>,
+        value: f32,
+    ) {
         self.last_sent.remove(id);
         if let Ok(mut state) = self.state.lock() {
-            state.parameters.insert(id.to_string(), WebParameter {
-                id: id.to_string(),
-                name: name.to_string(),
-                category: category.to_string(),
-                min: 0.0,
-                max: (options.len() as f32) - 1.0,
-                value,
-                default: value,
-                step: 1.0,
-                options: Some(options),
-            });
+            state.parameters.insert(
+                id.to_string(),
+                WebParameter {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    category: category.to_string(),
+                    min: 0.0,
+                    max: (options.len() as f32) - 1.0,
+                    value,
+                    default: value,
+                    step: 1.0,
+                    options: Some(options),
+                },
+            );
         }
     }
 
     /// Register default parameters (color, audio, etc.)
     pub fn register_default_parameters(&mut self) {
         // Color parameters
-        self.register_parameter("color/hue_shift", "Hue Shift", "Color", -180.0, 180.0, 0.0, 1.0);
-        self.register_parameter("color/saturation", "Saturation", "Color", 0.0, 2.0, 1.0, 0.01);
-        self.register_parameter("color/brightness", "Brightness", "Color", 0.0, 2.0, 1.0, 0.01);
-        self.register_parameter("color/enabled", "Color Enabled", "Color", 0.0, 1.0, 1.0, 1.0);
+        self.register_parameter(
+            "color/hue_shift",
+            "Hue Shift",
+            "Color",
+            -180.0,
+            180.0,
+            0.0,
+            1.0,
+        );
+        self.register_parameter(
+            "color/saturation",
+            "Saturation",
+            "Color",
+            0.0,
+            2.0,
+            1.0,
+            0.01,
+        );
+        self.register_parameter(
+            "color/brightness",
+            "Brightness",
+            "Color",
+            0.0,
+            2.0,
+            1.0,
+            0.01,
+        );
+        self.register_parameter(
+            "color/enabled",
+            "Color Enabled",
+            "Color",
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+        );
 
         // Audio parameters
         self.register_parameter("audio/amplitude", "Amplitude", "Audio", 0.0, 5.0, 1.0, 0.01);
         self.register_parameter("audio/smoothing", "Smoothing", "Audio", 0.0, 1.0, 0.5, 0.01);
-        self.register_parameter("audio/enabled", "Audio Enabled", "Audio", 0.0, 1.0, 1.0, 1.0);
+        self.register_parameter(
+            "audio/enabled",
+            "Audio Enabled",
+            "Audio",
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+        );
         self.register_parameter("audio/normalize", "Normalize", "Audio", 0.0, 1.0, 1.0, 1.0);
-        self.register_parameter("audio/pink_noise", "Pink Noise", "Audio", 0.0, 1.0, 0.0, 1.0);
+        self.register_parameter(
+            "audio/pink_noise",
+            "Pink Noise",
+            "Audio",
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
 
         // Output parameters
-        self.register_parameter("output/fullscreen", "Fullscreen", "Output", 0.0, 1.0, 0.0, 1.0);
+        self.register_parameter(
+            "output/fullscreen",
+            "Fullscreen",
+            "Output",
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
     }
 
     /// Register effect-declared parameters dynamically.
@@ -458,10 +553,18 @@ impl WebServer {
             let id = format!("{}/{}", category.to_lowercase(), d.id);
             match &d.param_type {
                 rustjay_core::ParamType::Enum { variants } => {
-                    self.register_enum_parameter(&id, &d.name, &category, variants.clone(), d.default);
+                    self.register_enum_parameter(
+                        &id,
+                        &d.name,
+                        &category,
+                        variants.clone(),
+                        d.default,
+                    );
                 }
                 _ => {
-                    self.register_parameter(&id, &d.name, &category, d.min, d.max, d.default, d.step);
+                    self.register_parameter(
+                        &id, &d.name, &category, d.min, d.max, d.default, d.step,
+                    );
                 }
             }
         }
@@ -474,7 +577,10 @@ impl WebServer {
     }
 
     /// Provide the engine state for API snapshot reads.
-    pub fn set_engine_state(&mut self, engine_state: Arc<std::sync::Mutex<rustjay_core::EngineState>>) {
+    pub fn set_engine_state(
+        &mut self,
+        engine_state: Arc<std::sync::Mutex<rustjay_core::EngineState>>,
+    ) {
         if let Ok(mut state) = self.state.lock() {
             state.engine_state = Some(engine_state);
         }
@@ -532,7 +638,12 @@ impl WebServer {
         let state = Arc::clone(&self.state);
         let (port, app_name, host, token) = {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
-            (s.config.port, s.config.app_name.clone(), s.config.host.clone(), s.bearer_token.clone())
+            (
+                s.config.port,
+                s.config.app_name.clone(),
+                s.config.host.clone(),
+                s.bearer_token.clone(),
+            )
         };
 
         let api_router = self.api_router.take();
@@ -633,10 +744,9 @@ impl WebServer {
     /// Get the server URL (no token)
     pub fn get_url(&self) -> String {
         if let Ok(state) = self.state.lock() {
-            format!("http://{}:{}/{}",
-                state.config.host,
-                state.config.port,
-                state.config.app_name
+            format!(
+                "http://{}:{}/{}",
+                state.config.host, state.config.port, state.config.app_name
             )
         } else {
             String::new()
@@ -645,7 +755,8 @@ impl WebServer {
 
     /// Get the bearer token.
     pub fn get_token(&self) -> String {
-        self.state.lock()
+        self.state
+            .lock()
             .map(|s| s.bearer_token.clone())
             .unwrap_or_default()
     }
@@ -654,11 +765,9 @@ impl WebServer {
     pub fn get_full_url(&self) -> String {
         if let Ok(state) = self.state.lock() {
             let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-            format!("http://{}:{}/{}?token={}",
-                ip,
-                state.config.port,
-                state.config.app_name,
-                state.bearer_token,
+            format!(
+                "http://{}:{}/{}?token={}",
+                ip, state.config.port, state.config.app_name, state.bearer_token,
             )
         } else {
             String::new()
@@ -743,7 +852,9 @@ async fn cmd_handler(
                     std::process::Command::new("v4l2-ctl")
                         .args(["--list-devices"])
                         .output()
-                }).await {
+                })
+                .await
+                {
                     Ok(Ok(output)) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let devices = parse_v4l2_list_devices(&stdout);
@@ -788,7 +899,8 @@ fn parse_v4l2_list_devices(output: &str) -> Vec<rustjay_core::InputDeviceInfo> {
             if path.starts_with("/dev/video") {
                 if let Some(ref name) = current_name {
                     // Extract index from /dev/videoN
-                    let index = path.strip_prefix("/dev/video")
+                    let index = path
+                        .strip_prefix("/dev/video")
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap_or(devices.len());
                     devices.push(rustjay_core::InputDeviceInfo {
@@ -834,28 +946,35 @@ fn create_router(
     // Auth middleware receives the shared state so it can read `lan_trust` live.
     let mut protected = Router::new()
         .route(&ws_path, get(ws_handler))
-        .route(&page_path, get(move || async move {
-            index_handler(&html_with_token).await
-        }))
-        .route(&page_path_slash, get(move || async move {
-            axum::response::Redirect::permanent(&page_path_redirect)
-        }))
-        .route("/", get(move || async move {
-            axum::response::Redirect::temporary(&page_path_redirect2)
-        }))
+        .route(
+            &page_path,
+            get(move || async move { index_handler(&html_with_token).await }),
+        )
+        .route(
+            &page_path_slash,
+            get(move || async move { axum::response::Redirect::permanent(&page_path_redirect) }),
+        )
+        .route(
+            "/",
+            get(move || async move { axum::response::Redirect::temporary(&page_path_redirect2) }),
+        )
         .route(&cmd_path, post(cmd_handler))
-        .route(&input_path, get(move || async move {
-            index_handler(&input_html_with_token).await
-        }))
-        .route(&control_path, get(move || async move {
-            index_handler(&control_html_with_token).await
-        }))
-        .route(&modulation_path, get(move || async move {
-            index_handler(&modulation_html_with_token).await
-        }))
-        .route(&presets_path, get(move || async move {
-            index_handler(&presets_html_with_token).await
-        }));
+        .route(
+            &input_path,
+            get(move || async move { index_handler(&input_html_with_token).await }),
+        )
+        .route(
+            &control_path,
+            get(move || async move { index_handler(&control_html_with_token).await }),
+        )
+        .route(
+            &modulation_path,
+            get(move || async move { index_handler(&modulation_html_with_token).await }),
+        )
+        .route(
+            &presets_path,
+            get(move || async move { index_handler(&presets_html_with_token).await }),
+        );
 
     // Merge the optional API router (REST/OpenAPI/Swagger) BEFORE applying the
     // auth layer. `route_layer` only wraps routes already present on the router,
@@ -946,7 +1065,13 @@ async fn ws_handler(
                     .get(axum::http::header::HOST)
                     .and_then(|h| h.to_str().ok())
                     .unwrap_or("");
-                let origin_host = origin_str.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+                let origin_host = origin_str
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('/')
+                    .next()
+                    .unwrap_or("");
                 if !origin_host.eq_ignore_ascii_case(host) {
                     return StatusCode::FORBIDDEN.into_response();
                 }
@@ -968,7 +1093,10 @@ async fn ws_handler(
         let s = state.lock().unwrap_or_else(|e| e.into_inner());
         let current = s.active_ws_count.load(Ordering::Relaxed);
         if current >= MAX_WS_CONNECTIONS {
-            log::warn!("WS connection rejected: max connections ({}) reached", MAX_WS_CONNECTIONS);
+            log::warn!(
+                "WS connection rejected: max connections ({}) reached",
+                MAX_WS_CONNECTIONS
+            );
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         s.active_ws_count.store(current + 1, Ordering::Relaxed);
@@ -990,7 +1118,11 @@ impl Drop for WsConnGuard {
 
 /// Handle a WebSocket connection. `_conn_guard` owns the connection-cap slot
 /// reserved in `ws_handler` and releases it when this future completes.
-async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>, _conn_guard: WsConnGuard) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: Arc<Mutex<WebServerState>>,
+    _conn_guard: WsConnGuard,
+) {
     // Rate-limit state
     let mut msg_count: u32 = 0;
     let mut last_window = std::time::Instant::now();
@@ -1016,7 +1148,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>,
     // without requiring the user to click Refresh (WR-9.6).
     if !preset_names.is_empty() {
         let preset_msg = WebMessage::PresetState(PresetStateJson {
-            presets: preset_names.into_iter().enumerate()
+            presets: preset_names
+                .into_iter()
+                .enumerate()
                 .map(|(i, name)| PresetInfo { index: i, name })
                 .collect(),
         });
@@ -1030,32 +1164,50 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<Mutex<WebServerState>>,
     // Send cached structural states so panels populate immediately on connect.
     let (last_input, last_control, last_modulation) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        (state.last_input_state.clone(), state.last_control_state.clone(), state.last_modulation_state.clone())
+        (
+            state.last_input_state.clone(),
+            state.last_control_state.clone(),
+            state.last_modulation_state.clone(),
+        )
     };
-    log::debug!("WS connect: sending cached states — input={}, control={}, modulation={}",
-        last_input.is_some(), last_control.is_some(), last_modulation.is_some());
+    log::debug!(
+        "WS connect: sending cached states — input={}, control={}, modulation={}",
+        last_input.is_some(),
+        last_control.is_some(),
+        last_modulation.is_some()
+    );
     if let Some(s) = last_input {
         match serde_json::to_string(&WebMessage::InputState(s)) {
-            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Ok(json) => {
+                let _ = socket.send(Message::Text(json.into())).await;
+            }
             Err(e) => log::warn!("WS input_state serialize failed: {}", e),
         }
     }
     if let Some(s) = last_control {
         match serde_json::to_string(&WebMessage::ControlState(s)) {
-            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Ok(json) => {
+                let _ = socket.send(Message::Text(json.into())).await;
+            }
             Err(e) => log::warn!("WS control_state serialize failed: {}", e),
         }
     }
     if let Some(s) = last_modulation {
         match serde_json::to_string(&WebMessage::ModulationState(s)) {
-            Ok(json) => { let _ = socket.send(Message::Text(json.into())).await; }
+            Ok(json) => {
+                let _ = socket.send(Message::Text(json.into())).await;
+            }
             Err(e) => log::warn!("WS modulation_state serialize failed: {}", e),
         }
     }
 
     // Subscribe to broadcasts
     let mut rx = {
-        state.lock().unwrap_or_else(|e| e.into_inner()).broadcast_tx.subscribe()
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .broadcast_tx
+            .subscribe()
     };
 
     // Handle messages from client and broadcasts
@@ -1172,9 +1324,7 @@ async fn auth_middleware(
             let expected = format!("Bearer {}", token);
             constant_time_eq(header, &expected)
         }
-        _ => {
-            token_from_query(&req).is_some_and(|q| constant_time_eq(q, &token))
-        }
+        _ => token_from_query(&req).is_some_and(|q| constant_time_eq(q, &token)),
     };
 
     if auth_ok {
@@ -1244,8 +1394,11 @@ mod auth_merge_tests {
             .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
-            "merged /api route must be behind auth");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "merged /api route must be behind auth"
+        );
     }
 
     #[tokio::test]

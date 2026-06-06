@@ -1,6 +1,6 @@
 //! Persistent configuration — save/load application settings.
 
-use rustjay_core::{HsbParams, EngineState};
+use rustjay_core::{EngineState, HsbParams};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,7 +13,9 @@ fn default_target_fps() -> u32 {
     60
 }
 
-fn default_midi_kind() -> rustjay_core::MidiMsgKind { rustjay_core::MidiMsgKind::Cc }
+fn default_midi_kind() -> rustjay_core::MidiMsgKind {
+    rustjay_core::MidiMsgKind::Cc
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MidiMappingConfig {
@@ -31,8 +33,13 @@ pub(crate) struct MidiMappingConfig {
 impl Default for MidiMappingConfig {
     fn default() -> Self {
         Self {
-            cc: 0, channel: 0, param_path: String::new(), name: String::new(),
-            kind: default_midi_kind(), min_value: 0.0, max_value: 1.0,
+            cc: 0,
+            channel: 0,
+            param_path: String::new(),
+            name: String::new(),
+            kind: default_midi_kind(),
+            min_value: 0.0,
+            max_value: 1.0,
         }
     }
 }
@@ -47,7 +54,12 @@ pub(crate) struct OscConfig {
 
 impl Default for OscConfig {
     fn default() -> Self {
-        Self { host: "127.0.0.1".to_string(), port: 9001, enabled: false, base_address: "/rustjay".to_string() }
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 9001,
+            enabled: false,
+            base_address: "/rustjay".to_string(),
+        }
     }
 }
 
@@ -144,7 +156,10 @@ impl AppSettings {
         let path = Self::config_path(app_name)?;
         let tmp_path = path.with_extension("json.tmp");
         if tmp_path.exists() {
-            log::warn!("Found leftover {:?} — previous save may have been interrupted.", tmp_path);
+            log::warn!(
+                "Found leftover {:?} — previous save may have been interrupted.",
+                tmp_path
+            );
         }
         if !path.exists() {
             log::info!("No config file found at {:?}, using defaults", path);
@@ -153,7 +168,10 @@ impl AppSettings {
         let metadata = std::fs::metadata(&path)?;
         // Limit file size to mitigate stack-overflow DoS from deeply nested JSON.
         if metadata.len() > 65_536 {
-            return Err(anyhow::anyhow!("Config file too large: {} bytes (max 64 KiB)", metadata.len()));
+            return Err(anyhow::anyhow!(
+                "Config file too large: {} bytes (max 64 KiB)",
+                metadata.len()
+            ));
         }
         let content = std::fs::read_to_string(&path)?;
         let mut settings: AppSettings = serde_json::from_str(&content)?;
@@ -173,8 +191,10 @@ impl AppSettings {
         const MAX_DIM: u32 = 4096;
         const VALID_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
 
-        if self.internal_width > MAX_DIM || self.internal_height > MAX_DIM
-            || self.output_width > MAX_DIM || self.output_height > MAX_DIM
+        if self.internal_width > MAX_DIM
+            || self.internal_height > MAX_DIM
+            || self.output_width > MAX_DIM
+            || self.output_height > MAX_DIM
         {
             return Err(anyhow::anyhow!(
                 "Output/internal dimensions out of range (max {})",
@@ -184,7 +204,8 @@ impl AppSettings {
         if !VALID_FFT_SIZES.contains(&self.audio_fft_size) {
             return Err(anyhow::anyhow!(
                 "Invalid audio_fft_size: {} (valid: {:?})",
-                self.audio_fft_size, VALID_FFT_SIZES
+                self.audio_fft_size,
+                VALID_FFT_SIZES
             ));
         }
         if self.custom_params.len() > 256 {
@@ -197,7 +218,8 @@ impl AppSettings {
         if !VALID_FPS.contains(&self.target_fps) {
             return Err(anyhow::anyhow!(
                 "Invalid target_fps: {} (valid: {:?})",
-                self.target_fps, VALID_FPS
+                self.target_fps,
+                VALID_FPS
             ));
         }
         Ok(())
@@ -217,8 +239,8 @@ impl AppSettings {
     }
 
     pub fn config_path(app_name: &str) -> anyhow::Result<PathBuf> {
-        let dirs = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+        let dirs =
+            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
         Ok(dirs.join("rustjay").join(format!("{}.json", app_name)))
     }
 
@@ -227,7 +249,7 @@ impl AppSettings {
         state.output_height = self.output_height;
         state.resolution.internal_width = self.internal_width;
         state.resolution.internal_height = self.internal_height;
-        state.hsb_params      = self.hsb_params;
+        state.hsb_params = self.hsb_params;
         state.hsb_param_bases = self.hsb_params;
         state.audio_routing.update_base_values(
             self.hsb_params.hue_shift,
@@ -276,10 +298,16 @@ impl AppSettings {
         // block can reconnect the manager after it is created.
         state.midi_enabled = self.midi_enabled;
         state.midi_selected_device = self.midi_device.clone();
-        state.midi_mappings = self.midi_mappings.iter().map(|m| {
-            rustjay_core::MidiMappingSnapshot {
+        state.midi_mappings = self
+            .midi_mappings
+            .iter()
+            .map(|m| rustjay_core::MidiMappingSnapshot {
                 name: if m.name.is_empty() {
-                    m.param_path.split('/').next_back().unwrap_or(&m.param_path).to_string()
+                    m.param_path
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&m.param_path)
+                        .to_string()
                 } else {
                     m.name.clone()
                 },
@@ -289,8 +317,8 @@ impl AppSettings {
                 channel: m.channel,
                 min_value: m.min_value,
                 max_value: m.max_value,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
@@ -298,7 +326,10 @@ impl AppSettings {
                 state.custom_param_bases[i] = *value;
                 state.custom_params[i] = *value;
             } else {
-                log::warn!("Config parameter '{}' not found in current descriptors, skipping", id);
+                log::warn!(
+                    "Config parameter '{}' not found in current descriptors, skipping",
+                    id
+                );
             }
         }
     }
@@ -330,15 +361,19 @@ impl AppSettings {
             v4l2_device_path: state.v4l2_output.device_path.clone(),
             midi_enabled: state.midi_enabled,
             midi_device: state.midi_selected_device.clone(),
-            midi_mappings: state.midi_mappings.iter().map(|m| MidiMappingConfig {
-                cc: m.selector,
-                channel: m.channel,
-                param_path: m.param_path.clone(),
-                name: m.name.clone(),
-                kind: m.kind,
-                min_value: m.min_value,
-                max_value: m.max_value,
-            }).collect(),
+            midi_mappings: state
+                .midi_mappings
+                .iter()
+                .map(|m| MidiMappingConfig {
+                    cc: m.selector,
+                    channel: m.channel,
+                    param_path: m.param_path.clone(),
+                    name: m.name.clone(),
+                    kind: m.kind,
+                    min_value: m.min_value,
+                    max_value: m.max_value,
+                })
+                .collect(),
             osc: OscConfig {
                 host: state.osc_host.clone(),
                 port: state.osc_port,
@@ -351,7 +386,10 @@ impl AppSettings {
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
             target_fps: state.target_fps,
-            custom_params: state.param_descriptors.iter().enumerate()
+            custom_params: state
+                .param_descriptors
+                .iter()
+                .enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),
             // Persist the active device so next launch auto-restarts it.
@@ -370,7 +408,10 @@ pub(crate) struct ConfigManager {
 impl ConfigManager {
     pub fn new(app_name: &str) -> Self {
         let settings = AppSettings::load(app_name).unwrap_or_default();
-        Self { settings, app_name: app_name.to_string() }
+        Self {
+            settings,
+            app_name: app_name.to_string(),
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

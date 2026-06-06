@@ -33,13 +33,14 @@ pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
 pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
 pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
 
-use rustjay_core::{EffectInstance, EffectInput, RenderCtx, RenderTarget, EngineState};
-use rustjay_core::modulation::{ModulationEngine, AudioValues, AudioSourceValues};
-use rustjay_core::params::{ParameterDescriptor, ParamCategory};
+use rustjay_core::modulation::{AudioSourceValues, AudioValues, ModulationEngine};
+use rustjay_core::params::{ParamCategory, ParameterDescriptor};
+use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
 use rustjay_render::Texture;
+use std::sync::{Arc, Mutex};
 
 /// Which engine input slot a channel samples from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum InputSelect {
     /// Sample from the engine's primary input (slot 1).
     #[default]
@@ -84,6 +85,27 @@ enum LastOutput {
     Ping,
 }
 
+/// An effect in a chain with an on/off toggle and a stable UUID.
+pub struct EffectSlot {
+    /// The actual effect instance to render.
+    pub effect: Box<dyn EffectInstance>,
+    /// Whether this slot is currently active in the chain.
+    pub enabled: bool,
+    /// Stable identifier for this effect slot (used in param prefixes).
+    pub uuid: String,
+}
+
+impl EffectSlot {
+    /// Create a new slot, enabled by default, with a generated UUID.
+    pub fn new(effect: Box<dyn EffectInstance>) -> Self {
+        Self {
+            effect,
+            enabled: true,
+            uuid: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+        }
+    }
+}
+
 /// One mixer channel: an effect plus how it is mixed into the composite.
 pub struct Channel {
     /// Stable identity, persisted across presets (REQ-01.3).
@@ -93,7 +115,7 @@ pub struct Channel {
     /// The effect this channel renders.
     pub effect: Box<dyn EffectInstance>,
     /// Ordered post-effect chain applied before compositing (REQ-01.5).
-    pub chain: Vec<Box<dyn EffectInstance>>,
+    pub chain: Vec<EffectSlot>,
     /// Mix opacity, 0.0–1.0.
     pub opacity: f32,
     /// How this channel blends onto the composite.
@@ -115,18 +137,23 @@ pub struct Channel {
     opacity_key: String,
     blend_key: String,
     input_select_key: String,
-    /// Last-seen chain length; used to detect parity flips that change
+    /// Last-seen count of enabled FX; used to detect parity flips that change
     /// `output_texture()` and invalidate the composite cache (CORR-2).
-    last_chain_len: usize,
+    last_enabled_count: usize,
 }
 
 impl Channel {
     /// Create a channel from an effect instance with default mix settings.
     ///
     /// GPU textures are allocated on first render when the target size is known.
-    pub fn new(uuid: impl Into<String>, name: impl Into<String>, effect: Box<dyn EffectInstance>) -> Self {
+    pub fn new(
+        uuid: impl Into<String>,
+        name: impl Into<String>,
+        mut effect: Box<dyn EffectInstance>,
+    ) -> Self {
         let uuid = uuid.into();
         let name = name.into();
+        effect.set_param_prefix(&format!("ch_{}_", &uuid));
         Self {
             opacity_key: format!("ch_{}_opacity", &uuid),
             blend_key: format!("ch_{}_blend", &uuid),
@@ -144,8 +171,37 @@ impl Channel {
             ping: None,
             size: [0, 0],
             last_output: LastOutput::Texture,
-            last_chain_len: 0,
+            last_enabled_count: 0,
         }
+    }
+
+    /// Append an effect to this channel's post-chain, assigning its parameter
+    /// prefix (`ch_<uuid>_fx<uuid>_`) so its params are reachable by GUI/MIDI/
+    /// OSC/LFO — mirrors [`Mixer::add_master_effect`].
+    pub fn add_effect(&mut self, effect: Box<dyn EffectInstance>) {
+        self.chain.push(EffectSlot::new(effect));
+        let slot = self.chain.last_mut().unwrap();
+        let prefix = format!("ch_{}_fx{}_", self.uuid, &slot.uuid);
+        slot.effect.set_param_prefix(&prefix);
+    }
+
+    /// Enable or disable the effect at `index` without removing it (per-effect
+    /// enable). Out-of-range indices are ignored.
+    pub fn set_effect_enabled(&mut self, index: usize, enabled: bool) {
+        if let Some(slot) = self.chain.get_mut(index) {
+            slot.enabled = enabled;
+        }
+    }
+
+    /// Reorder the channel's post-chain: move the effect at `from` to `to`.
+    /// UUID-stable prefixes mean existing param values stay wired.
+    pub fn reorder_effect(&mut self, from: usize, to: usize) {
+        if from >= self.chain.len() || from == to {
+            return;
+        }
+        let to = to.min(self.chain.len() - 1);
+        let slot = self.chain.remove(from);
+        self.chain.insert(to, slot);
     }
 
     /// Ensure the channel's render-target textures match `size`.
@@ -154,11 +210,15 @@ impl Channel {
             return;
         }
         self.texture = Some(Texture::create_render_target(
-            device, size[0], size[1],
+            device,
+            size[0],
+            size[1],
             &format!("ch {} tex", self.name),
         ));
         self.ping = Some(Texture::create_render_target(
-            device, size[0], size[1],
+            device,
+            size[0],
+            size[1],
             &format!("ch {} ping", self.name),
         ));
         self.size = size;
@@ -167,12 +227,20 @@ impl Channel {
 
     /// Render the channel effect and run its post-chain, returning the texture
     /// that holds the final output for this frame.
-    fn render<'a>(&'a mut self, ctx: &mut RenderCtx<'_>, inputs: &[EffectInput<'_>], engine: &EngineState) -> Option<&'a Texture> {
+    fn render<'a>(
+        &'a mut self,
+        ctx: &mut RenderCtx<'_>,
+        inputs: &[EffectInput<'_>],
+        engine: &EngineState,
+    ) -> Option<&'a Texture> {
         let tex = self.texture.as_ref()?;
         self.effect.render_to(
             ctx,
             inputs,
-            RenderTarget { view: &tex.view, size: self.size },
+            RenderTarget {
+                view: &tex.view,
+                size: self.size,
+            },
             engine,
         );
         self.last_output = LastOutput::Texture;
@@ -184,22 +252,24 @@ impl Channel {
         let ping = self.ping.as_ref()?;
         let mut is_ping = false; // false → src=tex, dst=ping
 
-        for fx in self.chain.iter_mut() {
-            let (src_tex, dst_tex) = if is_ping {
-                (ping, tex)
-            } else {
-                (tex, ping)
-            };
+        for slot in self.chain.iter_mut() {
+            if !slot.enabled {
+                continue;
+            }
+            let (src_tex, dst_tex) = if is_ping { (ping, tex) } else { (tex, ping) };
             let input = EffectInput {
                 view: &src_tex.view,
                 sampler: &src_tex.sampler,
                 generation: src_tex.generation,
                 texture: Some(&src_tex.texture),
             };
-            fx.render_to(
+            slot.effect.render_to(
                 ctx,
                 &[input],
-                RenderTarget { view: &dst_tex.view, size: self.size },
+                RenderTarget {
+                    view: &dst_tex.view,
+                    size: self.size,
+                },
                 engine,
             );
             is_ping = !is_ping;
@@ -237,7 +307,7 @@ pub struct Mixer {
     /// 2-channel case; ignored when `channels.len() != 2`.
     pub crossfader: f32,
     /// Master effect chain applied after compositing (REQ-06).
-    pub master: Vec<Box<dyn EffectInstance>>,
+    pub master: Vec<EffectSlot>,
     /// Active auto-crossfade state machine (REQ-04.1).
     pub auto: Option<AutoCrossfade>,
     /// Active beat-synced crossfade (REQ-04.3).
@@ -245,7 +315,7 @@ pub struct Mixer {
     /// Transition sequencer (REQ-05).
     pub sequencer: SequencerState,
     /// UUID-stable modulation engine (T13 / B2).
-    pub modulation: ModulationEngine,
+    pub modulation: Arc<Mutex<ModulationEngine>>,
     /// Monotonic elapsed time for modulation tick.
     elapsed_time: f32,
 
@@ -276,7 +346,7 @@ impl Mixer {
             auto: None,
             beat_sync: None,
             sequencer: SequencerState::new(),
-            modulation: ModulationEngine::new(),
+            modulation: Arc::new(Mutex::new(ModulationEngine::new())),
             elapsed_time: 0.0,
             composite: None,
             blit: None,
@@ -321,12 +391,24 @@ impl Mixer {
 
     /// Add an effect to the master chain.
     ///
-    /// Automatically assigns the prefix `master_fx{k}_` where `k` is the
-    /// effect's index in the master chain (ARCH-3).
-    pub fn add_master_effect(&mut self, mut effect: Box<dyn EffectInstance>) {
-        let prefix = format!("master_fx{}_", self.master.len());
-        effect.set_param_prefix(&prefix);
-        self.master.push(effect);
+    /// Automatically assigns the prefix `master_fx{uuid}_` where `uuid` is the
+    /// effect slot's stable identifier (ARCH-3).
+    pub fn add_master_effect(&mut self, effect: Box<dyn EffectInstance>) {
+        self.master.push(EffectSlot::new(effect));
+        let slot = self.master.last_mut().unwrap();
+        let prefix = format!("master_fx{}_", &slot.uuid);
+        slot.effect.set_param_prefix(&prefix);
+    }
+
+    /// Reorder the master effect chain: move the effect at `from` to `to`.
+    /// UUID-stable prefixes mean existing param values stay wired.
+    pub fn reorder_master_effect(&mut self, from: usize, to: usize) {
+        if from >= self.master.len() || from == to {
+            return;
+        }
+        let to = to.min(self.master.len() - 1);
+        let slot = self.master.remove(from);
+        self.master.insert(to, slot);
     }
 
     /// Effective per-channel opacity for the current frame (REQ-02.4).
@@ -350,9 +432,24 @@ impl Mixer {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             self.composite = Some(CompositePipeline::new(device, format));
             self.blit = Some(BlitPipeline::new(device, format));
-            self.acc_a = Some(Texture::create_render_target(device, size[0], size[1], "mixer acc_a"));
-            self.acc_b = Some(Texture::create_render_target(device, size[0], size[1], "mixer acc_b"));
-            self.master_ping = Some(Texture::create_render_target(device, size[0], size[1], "master ping"));
+            self.acc_a = Some(Texture::create_render_target(
+                device,
+                size[0],
+                size[1],
+                "mixer acc_a",
+            ));
+            self.acc_b = Some(Texture::create_render_target(
+                device,
+                size[0],
+                size[1],
+                "mixer acc_b",
+            ));
+            self.master_ping = Some(Texture::create_render_target(
+                device,
+                size[0],
+                size[1],
+                "master ping",
+            ));
             self.size = size;
             self.generation = self.generation.wrapping_add(1);
         }
@@ -457,7 +554,10 @@ impl EffectInstance for Mixer {
                 format!("{prefix}blend"),
                 format!("{} Blend", ch.name),
                 ParamCategory::Custom("Mixer".to_string()),
-                BlendMode::all().iter().map(|m| m.short_name().to_string()).collect(),
+                BlendMode::all()
+                    .iter()
+                    .map(|m| m.short_name().to_string())
+                    .collect(),
                 ch.blend_mode.to_index() as usize,
             ));
 
@@ -465,7 +565,10 @@ impl EffectInstance for Mixer {
                 format!("{prefix}input_select"),
                 format!("{} Input", ch.name),
                 ParamCategory::Custom("Mixer".to_string()),
-                InputSelect::labels().iter().map(|s| s.to_string()).collect(),
+                InputSelect::labels()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 ch.input_select.to_index(),
             ));
 
@@ -475,18 +578,18 @@ impl EffectInstance for Mixer {
             }
 
             // Channel chain effect params
-            for (k, fx) in ch.chain.iter().enumerate() {
-                let chain_prefix = format!("{prefix}fx{k}_");
-                for p in fx.parameters() {
+            for slot in ch.chain.iter() {
+                let chain_prefix = format!("{prefix}fx{}_", slot.uuid);
+                for p in slot.effect.parameters() {
                     out.push(prefix_descriptor(&chain_prefix, &p));
                 }
             }
         }
 
         // Master chain params
-        for (k, fx) in self.master.iter().enumerate() {
-            let prefix = format!("master_fx{k}_");
-            for p in fx.parameters() {
+        for slot in self.master.iter() {
+            let prefix = format!("master_fx{}_", slot.uuid);
+            for p in slot.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
             }
         }
@@ -511,19 +614,24 @@ impl EffectInstance for Mixer {
     ) {
         self.ensure_resources(ctx.device, target.size);
 
-        // CORR-2: detect chain length changes that flip output_texture() parity.
+        // CORR-2: detect enabled-count changes that flip output_texture() parity.
         // A parity flip changes which texture (main vs ping) the composite samples,
         // so the generation must bump to invalidate the bind-group cache.
         for ch in &mut self.channels {
-            let current = ch.chain.len();
-            if ch.last_chain_len != current {
-                ch.last_chain_len = current;
+            let current = ch.chain.iter().filter(|s| s.enabled).count();
+            if ch.last_enabled_count != current {
+                ch.last_enabled_count = current;
                 self.generation = self.generation.wrapping_add(1);
             }
         }
 
         // Tick transitions (auto, beat-sync, sequencer) before reading params.
-        let dt = engine.performance.frame_time_ms / 1000.0;
+        let dt = engine
+            .performance
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frame_time_ms
+            / 1000.0;
         let bpm = engine.effective_bpm();
         let beat_phase = engine.effective_beat_phase();
         self.tick_transitions(dt, Some(bpm).filter(|&b| b > 0.0), beat_phase);
@@ -531,34 +639,46 @@ impl EffectInstance for Mixer {
         // Tick UUID-stable modulation engine (T13).
         self.elapsed_time += dt;
         let audio = build_audio_values(&engine.audio);
-        self.modulation.update(self.elapsed_time, &audio);
+        {
+            let mut mod_eng = self.modulation.lock().unwrap();
+            mod_eng.update(self.elapsed_time, &audio);
+        }
 
         // Read mixer-level params from the engine, then apply mixer modulation.
         let base_crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
-        let crossfader_mod = self.modulation.get_modulation("crossfader");
+        let crossfader_mod = self.modulation.lock().unwrap().get_modulation("crossfader");
         let crossfader = (base_crossfader + crossfader_mod).clamp(0.0, 1.0);
 
         let eff: Vec<f32> = if self.channels.len() == 2 {
             let ch0 = &self.channels[0];
             let ch0_base = engine.get_param(&ch0.opacity_key).unwrap_or(ch0.opacity);
-            let ch0_mod = self.modulation.get_modulation(&ch0.opacity_key);
+            let ch0_mod = self
+                .modulation
+                .lock()
+                .unwrap()
+                .get_modulation(&ch0.opacity_key);
             let ch0_opacity = (ch0_base + ch0_mod).clamp(0.0, 1.0);
 
             let ch1 = &self.channels[1];
             let ch1_base = engine.get_param(&ch1.opacity_key).unwrap_or(ch1.opacity);
-            let ch1_mod = self.modulation.get_modulation(&ch1.opacity_key);
+            let ch1_mod = self
+                .modulation
+                .lock()
+                .unwrap()
+                .get_modulation(&ch1.opacity_key);
             let ch1_opacity = (ch1_base + ch1_mod).clamp(0.0, 1.0);
 
-            vec![
-                (1.0 - crossfader) * ch0_opacity,
-                crossfader * ch1_opacity,
-            ]
+            vec![(1.0 - crossfader) * ch0_opacity, crossfader * ch1_opacity]
         } else {
             self.channels
                 .iter()
                 .map(|ch| {
                     let base = engine.get_param(&ch.opacity_key).unwrap_or(ch.opacity);
-                    let m = self.modulation.get_modulation(&ch.opacity_key);
+                    let m = self
+                        .modulation
+                        .lock()
+                        .unwrap()
+                        .get_modulation(&ch.opacity_key);
                     (base + m).clamp(0.0, 1.0)
                 })
                 .collect()
@@ -600,7 +720,9 @@ impl EffectInstance for Mixer {
 
         for &i in &active {
             let ch = &self.channels[i];
-            let Some(src) = ch.output_texture() else { continue };
+            let Some(src) = ch.output_texture() else {
+                continue;
+            };
 
             let blend_mode = engine
                 .get_param(&ch.blend_key)
@@ -635,11 +757,24 @@ impl EffectInstance for Mixer {
 
         // 3. Master effect chain (REQ-06).
         let master_ping = self.master_ping.as_ref().unwrap();
-        let final_tex = run_chain(&mut self.master, ctx, composite_out, master_ping, self.size, engine);
+        let final_tex = run_chain(
+            &mut self.master,
+            ctx,
+            composite_out,
+            master_ping,
+            self.size,
+            engine,
+        );
 
         // 4. Blit the final result to the given target (REQ-08.2).
         let blit = self.blit.as_ref().unwrap();
-        blit.blit(ctx.device, ctx.encoder, &final_tex.view, target.view, ctx.vertex_buffer);
+        blit.blit(
+            ctx.device,
+            ctx.encoder,
+            &final_tex.view,
+            target.view,
+            ctx.vertex_buffer,
+        );
     }
 }
 
@@ -666,7 +801,7 @@ fn prefix_descriptor(prefix: &str, desc: &ParameterDescriptor) -> ParameterDescr
 ///
 /// Shared between per-channel chains and the master chain (design.md §Q2).
 fn run_chain<'a>(
-    effects: &'a mut [Box<dyn EffectInstance>],
+    effects: &'a mut [EffectSlot],
     ctx: &mut RenderCtx<'_>,
     initial_input: &'a Texture,
     ping: &'a Texture,
@@ -679,7 +814,10 @@ fn run_chain<'a>(
 
     let mut is_ping = false; // false → src=initial_input, dst=ping
 
-    for fx in effects.iter_mut() {
+    for slot in effects.iter_mut() {
+        if !slot.enabled {
+            continue;
+        }
         let (src_tex, dst_tex) = if is_ping {
             (ping, initial_input)
         } else {
@@ -691,10 +829,13 @@ fn run_chain<'a>(
             generation: src_tex.generation,
             texture: Some(&src_tex.texture),
         };
-        fx.render_to(
+        slot.effect.render_to(
             ctx,
             &[input],
-            RenderTarget { view: &dst_tex.view, size },
+            RenderTarget {
+                view: &dst_tex.view,
+                size,
+            },
             engine,
         );
         is_ping = !is_ping;
@@ -771,8 +912,12 @@ mod tests {
     #[test]
     fn crossfader_splits_two_channel_opacity() {
         let mut mixer = Mixer::new();
-        mixer.add_channel(Channel::new("a", "A", Box::new(Stub))).unwrap();
-        mixer.add_channel(Channel::new("b", "B", Box::new(Stub))).unwrap();
+        mixer
+            .add_channel(Channel::new("a", "A", Box::new(Stub)))
+            .unwrap();
+        mixer
+            .add_channel(Channel::new("b", "B", Box::new(Stub)))
+            .unwrap();
         mixer.crossfader = 0.25;
 
         let eff = mixer.effective_opacities();
@@ -785,9 +930,17 @@ mod tests {
     fn channel_count_clamped() {
         let mut mixer = Mixer::new();
         for i in 0..8 {
-            assert!(mixer.add_channel(Channel::new(format!("{i}"), format!("CH{i}"), Box::new(Stub))).is_ok());
+            assert!(mixer
+                .add_channel(Channel::new(
+                    format!("{i}"),
+                    format!("CH{i}"),
+                    Box::new(Stub)
+                ))
+                .is_ok());
         }
-        assert!(mixer.add_channel(Channel::new("overflow", "OVF", Box::new(Stub))).is_err());
+        assert!(mixer
+            .add_channel(Channel::new("overflow", "OVF", Box::new(Stub)))
+            .is_err());
 
         // Can't remove below 1
         for _ in 0..7 {
@@ -805,13 +958,33 @@ mod tests {
 
     #[test]
     fn mixer_owns_modulation_engine() {
-        let mut mixer = Mixer::new();
-        let lfo = mixer.modulation.add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
-        mixer.modulation.assign("crossfader", &lfo, 1.0, None);
-        mixer.modulation.assign("ch_a_opacity", &lfo, 0.5, None);
+        let mixer = Mixer::new();
+        let lfo = mixer
+            .modulation
+            .lock()
+            .unwrap()
+            .add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
+        mixer
+            .modulation
+            .lock()
+            .unwrap()
+            .assign("crossfader", &lfo, 1.0, None);
+        mixer
+            .modulation
+            .lock()
+            .unwrap()
+            .assign("ch_a_opacity", &lfo, 0.5, None);
 
-        assert_eq!(mixer.modulation.source_count(), 1);
-        assert!(mixer.modulation.has_modulation("crossfader"));
-        assert!(mixer.modulation.has_modulation("ch_a_opacity"));
+        assert_eq!(mixer.modulation.lock().unwrap().source_count(), 1);
+        assert!(mixer
+            .modulation
+            .lock()
+            .unwrap()
+            .has_modulation("crossfader"));
+        assert!(mixer
+            .modulation
+            .lock()
+            .unwrap()
+            .has_modulation("ch_a_opacity"));
     }
 }

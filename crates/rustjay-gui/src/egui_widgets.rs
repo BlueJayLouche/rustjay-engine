@@ -72,26 +72,23 @@ pub fn hud_frame<R>(
 pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
     ui.add_space(8.0);
     let row_height = 18.0;
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), row_height),
-        Sense::hover(),
-    );
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::hover());
     let painter = ui.painter();
 
     // Amber tick glyph ▌
     painter.rect_filled(
-        Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 2.0), Vec2::new(3.0, row_height - 4.0)),
+        Rect::from_min_size(
+            rect.left_top() + Vec2::new(0.0, 2.0),
+            Vec2::new(3.0, row_height - 4.0),
+        ),
         0.0,
         AMBER,
     );
 
     // Title (uppercase, letterspaced visually via tracking)
     let title_pos = rect.left_top() + Vec2::new(10.0, row_height / 2.0);
-    let title_galley = painter.layout_no_wrap(
-        title.to_uppercase(),
-        FontId::monospace(11.0),
-        INK_2,
-    );
+    let title_galley = painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
     painter.galley(
         Pos2::new(title_pos.x, title_pos.y - title_galley.size().y / 2.0),
         title_galley.clone(),
@@ -194,7 +191,11 @@ pub fn segmented_select(
         if active {
             painter.rect_filled(seg_rect, 0.0, AMBER);
         } else if hovered {
-            painter.rect_filled(seg_rect, 0.0, Color32::from_rgba_premultiplied(8, 12, 16, 24));
+            painter.rect_filled(
+                seg_rect,
+                0.0,
+                Color32::from_rgba_premultiplied(8, 12, 16, 24),
+            );
         }
         if i > 0 {
             painter.line_segment(
@@ -203,12 +204,12 @@ pub fn segmented_select(
             );
         }
 
-        let color = if active { Color32::from_rgb(0x0a, 0x0a, 0x0a) } else { INK_3 };
-        let galley = painter.layout_no_wrap(
-            label.to_uppercase(),
-            FontId::monospace(12.0),
-            color,
-        );
+        let color = if active {
+            Color32::from_rgb(0x0a, 0x0a, 0x0a)
+        } else {
+            INK_3
+        };
+        let galley = painter.layout_no_wrap(label.to_uppercase(), FontId::monospace(12.0), color);
         let pos = seg_rect.center() - galley.size() / 2.0;
         painter.galley(pos, galley, color);
 
@@ -224,8 +225,7 @@ pub fn segmented_select(
 // a stable seed for the interact() ids across frames.
 fn _id_source_hash<H: std::hash::Hash>(h: &H) -> u64 {
     use std::hash::BuildHasher;
-    
-    
+
     std::collections::hash_map::RandomState::new().hash_one(h)
 }
 
@@ -234,15 +234,20 @@ fn _id_source_hash<H: std::hash::Hash>(h: &H) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum PillState { Online, Offline, Warn, Neutral }
+pub enum PillState {
+    Online,
+    Offline,
+    Warn,
+    Neutral,
+}
 
 /// A status pill: filled dot + uppercase label. Online dot pulses subtly.
 pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     let (fg, dot) = match state {
-        PillState::Online   => (SIGNAL, SIGNAL),
-        PillState::Offline  => (ALERT,  ALERT),
-        PillState::Warn     => (AMBER,  AMBER),
-        PillState::Neutral  => (INK_3,  INK_4),
+        PillState::Online => (SIGNAL, SIGNAL),
+        PillState::Offline => (ALERT, ALERT),
+        PillState::Warn => (AMBER, AMBER),
+        PillState::Neutral => (INK_3, INK_4),
     };
 
     let text = label.to_uppercase();
@@ -250,17 +255,27 @@ pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     let galley = ui.painter().layout_no_wrap(text, font, fg);
     let pad = Vec2::new(8.0, 4.0);
     let dot_r = 4.0;
-    let size = Vec2::new(galley.size().x + dot_r * 2.0 + 8.0 + pad.x * 2.0, galley.size().y + pad.y * 2.0);
+    let size = Vec2::new(
+        galley.size().x + dot_r * 2.0 + 8.0 + pad.x * 2.0,
+        galley.size().y + pad.y * 2.0,
+    );
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
 
     let painter = ui.painter();
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, HAIR_2), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, HAIR_2),
+        egui::StrokeKind::Inside,
+    );
 
     // pulsing dot
     let t = ui.ctx().input(|i| i.time);
     let pulse = if matches!(state, PillState::Online) {
         0.6 + 0.4 * ((t * 3.5).sin() * 0.5 + 0.5) as f32
-    } else { 1.0 };
+    } else {
+        1.0
+    };
     let dot_center = rect.left_center() + Vec2::new(pad.x + dot_r, 0.0);
     painter.circle_filled(
         dot_center,
@@ -352,10 +367,14 @@ pub fn parameter_card_f32(
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         ui.label(
-                            egui::RichText::new(format!("{}…{}", format_bound(min), format_bound(max)))
-                                .color(INK_4)
-                                .size(10.0)
-                                .monospace(),
+                            egui::RichText::new(format!(
+                                "{}…{}",
+                                format_bound(min),
+                                format_bound(max)
+                            ))
+                            .color(INK_4)
+                            .size(10.0)
+                            .monospace(),
                         );
                     });
                 });
@@ -376,10 +395,9 @@ pub fn parameter_card_f32(
         }
 
         // Tick row under the slider
-        let tick_rect = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 4.0),
-            Sense::hover(),
-        ).0;
+        let tick_rect = ui
+            .allocate_exact_size(Vec2::new(ui.available_width(), 4.0), Sense::hover())
+            .0;
         let painter = ui.painter();
         let tick_count = 20;
         for i in 0..=tick_count {
@@ -387,24 +405,40 @@ pub fn parameter_card_f32(
             let major = i % 5 == 0;
             let h = if major { 4.0 } else { 2.0 };
             painter.line_segment(
-                [Pos2::new(x, tick_rect.top()), Pos2::new(x, tick_rect.top() + h)],
+                [
+                    Pos2::new(x, tick_rect.top()),
+                    Pos2::new(x, tick_rect.top() + h),
+                ],
                 Stroke::new(1.0, if major { HAIR_3 } else { HAIR_2 }),
             );
         }
 
         // Min / mid / max scale labels
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format_bound(min)).color(INK_4).size(10.0).monospace());
-            ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+            ui.label(
+                egui::RichText::new(format_bound(min))
+                    .color(INK_4)
+                    .size(10.0)
+                    .monospace(),
+            );
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(format_bound((min + max) / 2.0))
+                            .color(INK_4)
+                            .size(10.0)
+                            .monospace(),
+                    );
+                },
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 ui.label(
-                    egui::RichText::new(format_bound((min + max) / 2.0))
+                    egui::RichText::new(format_bound(max))
                         .color(INK_4)
                         .size(10.0)
                         .monospace(),
                 );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                ui.label(egui::RichText::new(format_bound(max)).color(INK_4).size(10.0).monospace());
             });
         });
     });
@@ -419,13 +453,21 @@ pub fn parameter_card_f32(
 
 pub fn format_value(v: f32) -> String {
     let a = v.abs();
-    if a >= 100.0 { format!("{:.0}", v) }
-    else if a >= 10.0 { format!("{:.1}", v) }
-    else { format!("{:.2}", v) }
+    if a >= 100.0 {
+        format!("{:.0}", v)
+    } else if a >= 10.0 {
+        format!("{:.1}", v)
+    } else {
+        format!("{:.2}", v)
+    }
 }
 
 pub fn format_bound(v: f32) -> String {
-    if v.fract().abs() < 1e-6 { format!("{:.0}", v) }
-    else if v.abs() >= 10.0 { format!("{:.1}", v) }
-    else { format!("{:.2}", v) }
+    if v.fract().abs() < 1e-6 {
+        format!("{:.0}", v)
+    } else if v.abs() >= 10.0 {
+        format!("{:.1}", v)
+    } else {
+        format!("{:.2}", v)
+    }
 }

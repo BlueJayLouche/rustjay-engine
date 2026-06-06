@@ -21,18 +21,20 @@ pub mod routing;
 pub mod state;
 pub mod vertex;
 
-pub use instance::{EffectInstance, EffectInput, RenderCtx, RenderTarget};
-pub use lfo::{LfoState, LfoBank, Lfo, Waveform, LfoTarget, beat_division_to_hz, BEAT_DIVISIONS, BEAT_DIVISION_NAMES};
+pub use instance::{EffectInput, EffectInstance, RenderCtx, RenderTarget};
+pub use lfo::{
+    beat_division_to_hz, Lfo, LfoBank, LfoState, LfoTarget, Waveform, BEAT_DIVISIONS,
+    BEAT_DIVISION_NAMES,
+};
 #[cfg(feature = "modulation")]
 pub use modulation::{
-    ADSRStage, AudioBandPreset, AudioReactMode, AudioSourceValues, AudioValues,
-    LFOWaveform, ModulationEngine, ModulationSource, ModulationSourceEntry,
-    ParamModulation, StepInterpolation,
+    ADSRStage, AudioBandPreset, AudioReactMode, AudioSourceValues, AudioValues, LFOWaveform,
+    ModulationEngine, ModulationSource, ModulationSourceEntry, ParamModulation, StepInterpolation,
 };
-pub use params::{ParameterDescriptor, ParamCategory, ParamType};
-pub use plugin::{EffectPlugin, RenderGraph, Pass, PassInput, MeshDescriptor, MeshTopology, RenderHookCtx};
-pub use routing::{
-    FftBand, ModulationTarget, AudioRoute, RoutingMatrix, AudioRoutingState,
+pub use params::{ParamCategory, ParamType, ParameterDescriptor};
+pub use plugin::{
+    EffectPlugin, MeshDescriptor, MeshTopology, Pass, PassInput, RenderGraph, RenderHookCtx,
 };
+pub use routing::{AudioRoute, AudioRoutingState, FftBand, ModulationTarget, RoutingMatrix};
 pub use state::*;
 pub use vertex::Vertex;

@@ -9,7 +9,9 @@ pub trait AnyEguiTab: Send + Sync {
     /// Returns the display name of this tab.
     fn name(&self) -> &str;
     /// If Some, this tab replaces the named built-in tab instead of appending.
-    fn replaces(&self) -> Option<BuiltinTab> { None }
+    fn replaces(&self) -> Option<BuiltinTab> {
+        None
+    }
     /// Draws the tab contents.
     fn draw(
         &mut self,
@@ -33,7 +35,10 @@ pub fn param_slider(
     max: f32,
 ) {
     let mut val = engine.get_param_base(id).unwrap_or(0.0);
-    if ui.add(egui::Slider::new(&mut val, min..=max).text(label)).changed() {
+    if ui
+        .add(egui::Slider::new(&mut val, min..=max).text(label))
+        .changed()
+    {
         engine.set_param_base(id, val);
     }
 }
@@ -48,7 +53,10 @@ pub fn param_slider_int(
     max: i32,
 ) {
     let mut val = engine.get_param_base(id).unwrap_or(0.0).round() as i32;
-    if ui.add(egui::Slider::new(&mut val, min..=max).text(label)).changed() {
+    if ui
+        .add(egui::Slider::new(&mut val, min..=max).text(label))
+        .changed()
+    {
         engine.set_param_base(id, val as f32);
     }
 }

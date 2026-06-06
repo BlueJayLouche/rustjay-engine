@@ -6,8 +6,11 @@
 //! drives the mixer's [`EffectInstance::render_to`] path. This needs **no**
 //! engine changes — it works through the existing custom-render-hook API.
 
-use rustjay_core::{EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, RenderCtx, RenderHookCtx, RenderTarget};
 use crate::Mixer;
+use rustjay_core::{
+    EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, RenderCtx,
+    RenderHookCtx, RenderTarget,
+};
 
 /// An [`EffectPlugin`] adapter that turns a [`Mixer`] into the engine root.
 ///
@@ -25,7 +28,9 @@ pub struct MixerPlugin {
 impl MixerPlugin {
     /// Wrap an existing mixer.
     pub fn new(mixer: Mixer) -> Self {
-        Self { mixer: std::sync::Mutex::new(mixer) }
+        Self {
+            mixer: std::sync::Mutex::new(mixer),
+        }
     }
 
     /// Lock and return mutable access to the underlying mixer.
@@ -96,11 +101,7 @@ impl EffectPlugin for MixerPlugin {
 
     /// Custom render hook: the engine skips its default pass and lets the mixer
     /// drive all channel rendering, compositing, and the master chain itself.
-    fn render(
-        &mut self,
-        ctx: &mut RenderHookCtx<'_>,
-        _app_state: &mut (),
-    ) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _app_state: &mut ()) -> bool {
         let mut render_ctx = RenderCtx {
             device: ctx.device,
             queue: ctx.queue,

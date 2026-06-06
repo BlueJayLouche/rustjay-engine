@@ -8,10 +8,10 @@ pub mod tab_control;
 pub mod tab_input;
 /// LFO modulation window tab.
 pub mod tab_lfo;
-/// Auto-generated parameter category tab.
-pub mod tab_params;
 /// Output configuration tab.
 pub mod tab_output;
+/// Auto-generated parameter category tab.
+pub mod tab_params;
 /// Preset management tab.
 pub mod tab_presets;
 /// Application settings tab.

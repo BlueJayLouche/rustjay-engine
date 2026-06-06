@@ -20,9 +20,9 @@ pub mod texture;
 pub use instance::EffectNode;
 /// Re-export of the main wgpu rendering engine.
 pub use renderer::WgpuEngine;
-/// Re-export of the generic texture type.
-pub use texture::Texture;
 /// Re-export of the input texture wrapper.
 pub use texture::InputTexture;
 /// Re-export of the feedback texture wrapper.
 pub use texture::PreviousFrameTexture;
+/// Re-export of the generic texture type.
+pub use texture::Texture;

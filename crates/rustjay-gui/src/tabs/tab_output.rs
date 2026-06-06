@@ -34,7 +34,8 @@ impl ControlGui {
             ui.spacing();
 
             ui.text_colored([0.0, 1.0, 0.5, 1.0], "NDI Output");
-            ui.input_text("Stream Name", &mut self.ndi_output_name).build();
+            ui.input_text("Stream Name", &mut self.ndi_output_name)
+                .build();
 
             if !ndi_active {
                 if ui.button("Start NDI Output") {
@@ -64,7 +65,8 @@ impl ControlGui {
             };
 
             ui.text_colored([1.0, 0.5, 0.0, 1.0], "Syphon Output (macOS)");
-            ui.input_text("Server Name", &mut self.syphon_output_name).build();
+            ui.input_text("Server Name", &mut self.syphon_output_name)
+                .build();
 
             if !syphon_enabled {
                 if ui.button("Start Syphon Output") {
@@ -94,7 +96,8 @@ impl ControlGui {
             };
 
             ui.text_colored([0.3, 0.6, 1.0, 1.0], "Spout Output (Windows)");
-            ui.input_text("Spout Sender Name##out", &mut self.spout_output_name).build();
+            ui.input_text("Spout Sender Name##out", &mut self.spout_output_name)
+                .build();
 
             if !spout_active {
                 if ui.button("Start Spout Output") {
@@ -145,7 +148,8 @@ impl ControlGui {
                 }
             } else {
                 ui.text_disabled("No v4l2loopback devices found — see README for setup");
-                ui.input_text("Device Path", &mut self.v4l2_device_path).build();
+                ui.input_text("Device Path", &mut self.v4l2_device_path)
+                    .build();
             }
 
             if !v4l2_active {

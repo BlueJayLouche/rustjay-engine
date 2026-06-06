@@ -26,7 +26,10 @@ impl ProDjManager {
     pub fn update(&mut self, state: &mut ProDjState) {
         if state.enabled != self.last_enabled {
             self.last_enabled = state.enabled;
-            log::info!("[ProDJ] {}", if state.enabled { "enabled" } else { "disabled" });
+            log::info!(
+                "[ProDJ] {}",
+                if state.enabled { "enabled" } else { "disabled" }
+            );
             if !state.enabled {
                 state.devices.clear();
                 state.master_bpm = 0.0;

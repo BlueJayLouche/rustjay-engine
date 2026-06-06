@@ -93,7 +93,7 @@ impl CompositePipeline {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
                         min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<CompositeParams>() as u64,
+                            std::mem::size_of::<CompositeParams>() as u64
                         ),
                     },
                     count: None,
@@ -192,7 +192,10 @@ impl CompositePipeline {
         blend_mode: BlendMode,
         vertex_buffer: &wgpu::Buffer,
     ) {
-        debug_assert!(slot < MAX_CHANNELS, "composite slot {slot} exceeds MAX_CHANNELS");
+        debug_assert!(
+            slot < MAX_CHANNELS,
+            "composite slot {slot} exceeds MAX_CHANNELS"
+        );
 
         // Drop cached bind groups built for a previous generation (resize /
         // channel add-remove changed the texture views they reference).
@@ -221,9 +224,18 @@ impl CompositePipeline {
                 label: Some("Mixer Composite Bind Group"),
                 layout: &self.bind_group_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(dest) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(dest),
+                    },
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -274,6 +286,8 @@ mod tests {
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         );
-        validator.validate(&module).expect("composite.wgsl validates");
+        validator
+            .validate(&module)
+            .expect("composite.wgsl validates");
     }
 }

@@ -86,7 +86,11 @@ pub struct DomeStage {
 
 impl DomeStage {
     /// Create a new dome stage with the given configuration and target format.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, config: DomemasterConfig) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        config: DomemasterConfig,
+    ) -> Self {
         let output_size = config.resolution.pixels();
         let face_size = output_size / 2;
 
@@ -169,15 +173,11 @@ impl DomeStage {
 
         let vertex_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Domemaster Vertex Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/domemaster.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/domemaster.wgsl").into()),
         });
         let fragment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Domemaster Fragment Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/domemaster.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/domemaster.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -432,7 +432,11 @@ mod tests {
         // Create a white input texture (512×512 to match R1K face size).
         let face_size = DomemasterResolution::R1K.pixels() / 2;
         let (_input_tex, input_view) = crate::test_harness::create_solid_texture(
-            &device, &queue, face_size, face_size, [255, 255, 255, 255],
+            &device,
+            &queue,
+            face_size,
+            face_size,
+            [255, 255, 255, 255],
         );
 
         let config = DomemasterConfig {
@@ -442,27 +446,47 @@ mod tests {
         };
         let output_size = config.resolution.pixels();
         let mut stage = DomeStage::new(&device, wgpu::TextureFormat::Rgba8Unorm, config);
-        let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, output_size, output_size);
+        let (_output_tex, output_view) =
+            crate::test_harness::create_output_texture(&device, output_size, output_size);
 
         crate::test_harness::run_stage(
-            &device, &queue, &mut stage,
-            &input_view, Some(&_input_tex), &output_view, [output_size, output_size],
+            &device,
+            &queue,
+            &mut stage,
+            &input_view,
+            Some(&_input_tex),
+            &output_view,
+            [output_size, output_size],
         );
 
-        let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, output_size, output_size);
+        let pixels = crate::test_harness::readback_rgba8(
+            &device,
+            &queue,
+            &_output_tex,
+            output_size,
+            output_size,
+        );
 
         // With 0° tilt the zenith maps to the top face; the front face appears
         // at the top edge of the fisheye image. Check a pixel that samples the
         // front-face center (top-middle of output).
         let front_idx = (output_size / 2) * 4;
         let front = &pixels[front_idx as usize..front_idx as usize + 4];
-        assert!(front[0] > 200, "dome front-face sample should be bright, got {:?}", front);
+        assert!(
+            front[0] > 200,
+            "dome front-face sample should be bright, got {:?}",
+            front
+        );
 
         // Center pixel samples the top face (cleared black in this simplified
         // single-face projection).
         let center_idx = ((output_size / 2) * output_size + (output_size / 2)) * 4;
         let center = &pixels[center_idx as usize..center_idx as usize + 4];
-        assert!(center[0] < 50, "dome center (top face) should be black, got {:?}", center);
+        assert!(
+            center[0] < 50,
+            "dome center (top face) should be black, got {:?}",
+            center
+        );
 
         // Edge pixel (top-left corner) is outside the fisheye circle → black.
         let edge = &pixels[0..4];

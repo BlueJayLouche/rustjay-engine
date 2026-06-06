@@ -39,7 +39,10 @@ pub fn create_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 }
 
 /// 1×1 black `Bgra8Unorm` texture for unbound sampler slots.
-pub fn create_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {
+pub fn create_dummy_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("waaaves dummy"),
         size: wgpu::Extent3d {

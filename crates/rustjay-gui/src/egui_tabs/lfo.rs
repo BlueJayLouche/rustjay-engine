@@ -3,7 +3,7 @@
 use crate::egui_control_gui::EguiControlGui;
 use crate::egui_theme::colors::*;
 use egui::{Color32, Stroke};
-use rustjay_core::lfo::{LfoTarget, Waveform, beat_division_to_hz};
+use rustjay_core::lfo::{beat_division_to_hz, LfoTarget, Waveform};
 
 impl EguiControlGui {
     pub(crate) fn build_lfo_tab(&mut self, ui: &mut egui::Ui) {
@@ -34,9 +34,16 @@ impl EguiControlGui {
         };
 
         ui.heading("Low Frequency Oscillator Modulation");
-        ui.label(egui::RichText::new("Each LFO can modulate parameters declared by the active effect").size(11.0).color(TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new("Each LFO can modulate parameters declared by the active effect")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
         ui.add_space(8.0);
-        ui.label(format!("Tempo: {:.1} BPM  (source: {})", bpm, sync_source_name));
+        ui.label(format!(
+            "Tempo: {:.1} BPM  (source: {})",
+            bpm, sync_source_name
+        ));
         ui.add_space(8.0);
 
         let waveforms = ["Sine", "Triangle", "Ramp Up", "Ramp Down", "Square"];
@@ -48,19 +55,42 @@ impl EguiControlGui {
         };
 
         for i in 0..lfo_count {
-            let (enabled, mut rate, mut amplitude, waveform_idx,
-                 tempo_sync, current_division, phase_offset, current_target) = {
+            let (
+                enabled,
+                mut rate,
+                mut amplitude,
+                waveform_idx,
+                tempo_sync,
+                current_division,
+                phase_offset,
+                current_target,
+            ) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let bank = &state.lfo.bank.lfos[i];
-                (bank.enabled, bank.rate, bank.amplitude, bank.waveform as usize,
-                 bank.tempo_sync, bank.division, bank.phase_offset, bank.target.clone())
+                (
+                    bank.enabled,
+                    bank.rate,
+                    bank.amplitude,
+                    bank.waveform as usize,
+                    bank.tempo_sync,
+                    bank.division,
+                    bank.phase_offset,
+                    bank.target.clone(),
+                )
             };
 
-            let target_idx = target_list.iter().position(|t| *t == current_target).unwrap_or(0);
+            let target_idx = target_list
+                .iter()
+                .position(|t| *t == current_target)
+                .unwrap_or(0);
             let mut division_idx = current_division;
 
             let header_text = format!("LFO {} — {}", i + 1, if enabled { "ON" } else { "OFF" });
-            let header_color = if enabled { ACCENT_GREEN } else { TEXT_SECONDARY };
+            let header_color = if enabled {
+                ACCENT_GREEN
+            } else {
+                TEXT_SECONDARY
+            };
 
             egui::Frame::group(ui.style())
                 .fill(BG_WIDGET)
@@ -68,11 +98,18 @@ impl EguiControlGui {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&header_text).strong().color(header_color));
+                        ui.label(
+                            egui::RichText::new(&header_text)
+                                .strong()
+                                .color(header_color),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let mut enabled_mut = enabled;
-                            if ui.checkbox(&mut enabled_mut, "Enabled").changed() && enabled_mut != enabled {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            if ui.checkbox(&mut enabled_mut, "Enabled").changed()
+                                && enabled_mut != enabled
+                            {
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.lfo.bank.lfos[i].enabled = enabled_mut;
                             }
                         });
@@ -93,12 +130,21 @@ impl EguiControlGui {
                                 }
                             });
                         if division_idx != current_division {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].division = division_idx;
                         }
                     } else {
-                        if ui.add(egui::Slider::new(&mut rate, 0.01..=10.0).text("Rate (Hz)").trailing_fill(true)).changed() {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut rate, 0.01..=10.0)
+                                    .text("Rate (Hz)")
+                                    .trailing_fill(true),
+                            )
+                            .changed()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].rate = rate;
                         }
                     }
@@ -107,11 +153,19 @@ impl EguiControlGui {
                     let mut sync = tempo_sync;
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut sync, "Tempo Sync").changed() && sync != tempo_sync {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].tempo_sync = sync;
                         }
                         if tempo_sync {
-                            ui.label(egui::RichText::new(format!("= {:.2} Hz", beat_division_to_hz(division_idx, bpm))).size(11.0).color(TEXT_SECONDARY));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "= {:.2} Hz",
+                                    beat_division_to_hz(division_idx, bpm)
+                                ))
+                                .size(11.0)
+                                .color(TEXT_SECONDARY),
+                            );
                         }
                     });
 
@@ -123,14 +177,17 @@ impl EguiControlGui {
                         for (wf_idx, wf_name) in waveforms.iter().enumerate() {
                             let is_selected = waveform_idx == wf_idx;
                             let btn = if is_selected {
-                                egui::Button::new(egui::RichText::new(*wf_name).strong().color(Color32::BLACK))
-                                    .fill(ACCENT_CYAN)
+                                egui::Button::new(
+                                    egui::RichText::new(*wf_name).strong().color(Color32::BLACK),
+                                )
+                                .fill(ACCENT_CYAN)
                             } else {
                                 egui::Button::new(egui::RichText::new(*wf_name).color(TEXT_PRIMARY))
                                     .fill(BG_HOVER)
                             };
                             if ui.add_sized(egui::vec2(70.0, 24.0), btn).clicked() && !is_selected {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 let lfo = &mut state.lfo.bank.lfos[i];
                                 lfo.waveform = match wf_idx {
                                     0 => Waveform::Sine,
@@ -151,15 +208,34 @@ impl EguiControlGui {
                     // Phase offset
                     let mut phase_degrees_mut = phase_offset;
                     ui.horizontal(|ui| {
-                        if ui.add(egui::Slider::new(&mut phase_degrees_mut, 0.0..=360.0).text("Phase Offset (°)").trailing_fill(true)).changed() {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut phase_degrees_mut, 0.0..=360.0)
+                                    .text("Phase Offset (°)")
+                                    .trailing_fill(true),
+                            )
+                            .changed()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.lfo.bank.lfos[i].phase_offset = phase_degrees_mut;
                         }
-                        ui.label(egui::RichText::new("(0° = on beat)").size(11.0).color(TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new("(0° = on beat)")
+                                .size(11.0)
+                                .color(TEXT_SECONDARY),
+                        );
                     });
 
                     // Amplitude
-                    if ui.add(egui::Slider::new(&mut amplitude, -1.0..=1.0).text("Amplitude").trailing_fill(true)).changed() {
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut amplitude, -1.0..=1.0)
+                                .text("Amplitude")
+                                .trailing_fill(true),
+                        )
+                        .changed()
+                    {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.lfo.bank.lfos[i].amplitude = amplitude;
                     }
@@ -179,7 +255,8 @@ impl EguiControlGui {
                             }
                         });
                     if tgt_idx != target_idx {
-                        let new_target = target_list.get(tgt_idx).cloned().unwrap_or(LfoTarget::None);
+                        let new_target =
+                            target_list.get(tgt_idx).cloned().unwrap_or(LfoTarget::None);
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.lfo.bank.lfos[i].target = new_target;
                     }
@@ -194,7 +271,8 @@ impl EguiControlGui {
                                 _ => String::new(),
                             }
                         } else {
-                            let name = target_list.get(target_idx)
+                            let name = target_list
+                                .get(target_idx)
                                 .and_then(|t| t.param_id())
                                 .and_then(|id| param_names.get(id))
                                 .map(|n| n.as_str())

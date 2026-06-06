@@ -8,16 +8,16 @@ mod isf_tab;
 
 use std::path::{Path, PathBuf};
 
-use rustjay_isf::{IsfEffect, last_shader_config_path};
 use isf_tab::IsfTab;
+use rustjay_isf::{last_shader_config_path, IsfEffect};
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_default_env()
         .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
-        .filter_module("naga",            log::LevelFilter::Warn)
-        .filter_module("wgpu_core",       log::LevelFilter::Warn)
-        .filter_module("winit",           log::LevelFilter::Warn)
-        .filter_module("tracing::span",   log::LevelFilter::Warn)
+        .filter_module("naga", log::LevelFilter::Warn)
+        .filter_module("wgpu_core", log::LevelFilter::Warn)
+        .filter_module("winit", log::LevelFilter::Warn)
+        .filter_module("tracing::span", log::LevelFilter::Warn)
         .init();
 
     let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
@@ -48,5 +48,3 @@ fn startup_shader_path(shaders_dir: &Path) -> PathBuf {
     }
     shaders_dir.join("ColorCycle.fs")
 }
-
-

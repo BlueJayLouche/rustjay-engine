@@ -54,7 +54,6 @@ pub struct WaaavesEffect {
     bg_inter_c: Option<wgpu::BindGroup>,
 }
 
-
 impl EffectPlugin for WaaavesEffect {
     type State = WaaavesState;
     type Uniforms = WaaavesUniforms;
@@ -120,12 +119,27 @@ impl EffectPlugin for WaaavesEffect {
         self.sampler = Some(passes::create_sampler(device));
         self.dummy = Some(passes::create_dummy_texture(device, queue));
 
-        let buf_a = passes::create_uniform_buffer(device, std::mem::size_of::<BlockAUniforms>() as u64);
-        let buf_b = passes::create_uniform_buffer(device, std::mem::size_of::<BlockBUniforms>() as u64);
-        let buf_c = passes::create_uniform_buffer(device, std::mem::size_of::<BlockCUniforms>() as u64);
-        self.uniform_bg_a = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_a));
-        self.uniform_bg_b = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_b));
-        self.uniform_bg_c = Some(passes::create_uniform_bind_group(device, bgl_uniform, &buf_c));
+        let buf_a =
+            passes::create_uniform_buffer(device, std::mem::size_of::<BlockAUniforms>() as u64);
+        let buf_b =
+            passes::create_uniform_buffer(device, std::mem::size_of::<BlockBUniforms>() as u64);
+        let buf_c =
+            passes::create_uniform_buffer(device, std::mem::size_of::<BlockCUniforms>() as u64);
+        self.uniform_bg_a = Some(passes::create_uniform_bind_group(
+            device,
+            bgl_uniform,
+            &buf_a,
+        ));
+        self.uniform_bg_b = Some(passes::create_uniform_bind_group(
+            device,
+            bgl_uniform,
+            &buf_b,
+        ));
+        self.uniform_bg_c = Some(passes::create_uniform_bind_group(
+            device,
+            bgl_uniform,
+            &buf_c,
+        ));
         self.uniform_buf_a = Some(buf_a);
         self.uniform_buf_b = Some(buf_b);
         self.uniform_buf_c = Some(buf_c);
@@ -140,9 +154,21 @@ impl EffectPlugin for WaaavesEffect {
     ) {
         // 1. Uniform upload (every frame) — each pass gets its own buffer at offset 0.
         let uniforms = WaaavesUniforms::from_state(state, engine);
-        queue.write_buffer(self.uniform_buf_a.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_a));
-        queue.write_buffer(self.uniform_buf_b.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_b));
-        queue.write_buffer(self.uniform_buf_c.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms.block_c));
+        queue.write_buffer(
+            self.uniform_buf_a.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&uniforms.block_a),
+        );
+        queue.write_buffer(
+            self.uniform_buf_b.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&uniforms.block_b),
+        );
+        queue.write_buffer(
+            self.uniform_buf_c.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&uniforms.block_c),
+        );
 
         // Beat-sync delay: recompute fb1/fb2 delay_time from BPM when sync is on
         let bpm = engine.effective_bpm();
@@ -331,11 +357,7 @@ impl EffectPlugin for WaaavesEffect {
         WaaavesUniforms::from_state(s, engine)
     }
 
-    fn render(
-        &mut self,
-        ctx: &mut RenderHookCtx<'_>,
-        state: &mut WaaavesState,
-    ) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, state: &mut WaaavesState) -> bool {
         let dummy_view = &self.dummy.as_ref().unwrap().1;
         let sampler = self.sampler.as_ref().unwrap();
         let uniform_bg_a = self.uniform_bg_a.as_ref().unwrap();
@@ -344,7 +366,11 @@ impl EffectPlugin for WaaavesEffect {
 
         // ch1 = engine primary input; ch2 = engine second input or dummy
         let ch1_view = ctx.input.map(|i| i.view).unwrap_or(dummy_view);
-        let ch2_view = ctx.engine_state.second_input_view.as_deref().unwrap_or(dummy_view);
+        let ch2_view = ctx
+            .engine_state
+            .second_input_view
+            .as_deref()
+            .unwrap_or(dummy_view);
 
         // bg0_a is still created per-frame — engine input views may change every frame.
         let bg0_a = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -371,8 +397,16 @@ impl EffectPlugin for WaaavesEffect {
         });
 
         // Look up all other bind groups from the pre-built caches.
-        let fb1_read_idx = self.fb1.as_ref().unwrap().read_index(state.block1.fb1_delay_time as usize);
-        let fb2_read_idx = self.fb2.as_ref().unwrap().read_index(state.block2.fb2_delay_time as usize);
+        let fb1_read_idx = self
+            .fb1
+            .as_ref()
+            .unwrap()
+            .read_index(state.block1.fb1_delay_time as usize);
+        let fb2_read_idx = self
+            .fb2
+            .as_ref()
+            .unwrap()
+            .read_index(state.block2.fb2_delay_time as usize);
         let bg2_a = &self.fb1_bind_groups[fb1_read_idx];
         // block2_input_select: 0=Block1(default), 1=Input1, 2=Input2
         let bg0_b_dynamic;
@@ -382,8 +416,14 @@ impl EffectPlugin for WaaavesEffect {
                     label: Some("waaaves_b_g0_input1"),
                     layout: self.bgl_c.as_ref().unwrap(),
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(ch1_view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(ch1_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
                     ],
                 });
                 &bg0_b_dynamic
@@ -393,8 +433,14 @@ impl EffectPlugin for WaaavesEffect {
                     label: Some("waaaves_b_g0_input2"),
                     layout: self.bgl_c.as_ref().unwrap(),
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(ch2_view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(ch2_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
                     ],
                 });
                 &bg0_b_dynamic
@@ -475,7 +521,11 @@ impl EffectPlugin for WaaavesEffect {
         // ── Copy outputs to ring buffers and advance ────────────────────────
         let w = ctx.engine_state.resolution.internal_width;
         let h = ctx.engine_state.resolution.internal_height;
-        let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let extent = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
         ctx.encoder.copy_texture_to_texture(
             self.intermediate_a.as_ref().unwrap().0.as_image_copy(),
             self.fb1.as_ref().unwrap().write_texture().as_image_copy(),

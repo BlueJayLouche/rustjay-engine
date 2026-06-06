@@ -6,9 +6,12 @@
 // are consumed yet; keep them available without warning.
 #![allow(dead_code)]
 
-use grafton_ndi::{NDI, Sender, SenderOptions, VideoFrameBuilder, PixelFormat};
-use crossbeam::channel::{self, Sender as ChannelSender, Receiver};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use crossbeam::channel::{self, Receiver, Sender as ChannelSender};
+use grafton_ndi::{PixelFormat, Sender, SenderOptions, VideoFrameBuilder, NDI};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::Instant;
 
@@ -35,23 +38,27 @@ pub struct NdiOutputSender {
 
 impl NdiOutputSender {
     /// Create and start a new NDI output sender
-    pub fn new(name: impl Into<String>, width: u32, height: u32, include_alpha: bool) -> anyhow::Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        width: u32,
+        height: u32,
+        include_alpha: bool,
+    ) -> anyhow::Result<Self> {
         let name = name.into();
-        
+
         if width == 0 || height == 0 {
             return Err(anyhow::anyhow!("Invalid dimensions: {}x{}", width, height));
         }
-        
-        let ndi = NDI::new()
-            .map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {:?}", e))?;
-        
+
+        let ndi = NDI::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {:?}", e))?;
+
         let (frame_tx, frame_rx) = channel::bounded(2);
-        
+
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&running);
-        
+
         let name_clone = name.clone();
-        
+
         // Spawn send thread
         let thread_handle = thread::spawn(move || {
             Self::send_thread(
@@ -64,7 +71,7 @@ impl NdiOutputSender {
                 running_clone,
             );
         });
-        
+
         Ok(Self {
             name,
             width,
@@ -76,7 +83,7 @@ impl NdiOutputSender {
             thread_handle: Some(thread_handle),
         })
     }
-    
+
     /// Send thread that owns the NDI sender and processes frames
     fn send_thread(
         ndi: NDI,
@@ -91,7 +98,7 @@ impl NdiOutputSender {
             .clock_video(true)
             .clock_audio(false)
             .build();
-        
+
         let sender = match Sender::new(&ndi, &options) {
             Ok(s) => s,
             Err(e) => {
@@ -99,45 +106,47 @@ impl NdiOutputSender {
                 return;
             }
         };
-        
+
         let pixel_format = if include_alpha {
             PixelFormat::BGRA
         } else {
             PixelFormat::BGRX
         };
-        
+
         let mut frame_count = 0u64;
         let mut last_log = Instant::now();
-        
+
         while running.load(Ordering::SeqCst) {
             match frame_rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(frame_data) => {
                     frame_count += 1;
-                    
-                    let buffer_size = pixel_format.buffer_size(frame_data.width as i32, frame_data.height as i32);
-                    
+
+                    let buffer_size =
+                        pixel_format.buffer_size(frame_data.width as i32, frame_data.height as i32);
+
                     if frame_data.data.len() < buffer_size {
                         log::warn!("[NDI OUTPUT] Frame {} data too small", frame_count);
                         continue;
                     }
-                    
+
                     let mut frame = match VideoFrameBuilder::new()
                         .resolution(frame_data.width as i32, frame_data.height as i32)
                         .pixel_format(pixel_format)
                         .frame_rate(60, 1)
                         .aspect_ratio(frame_data.width as f32 / frame_data.height as f32)
-                        .build() {
+                        .build()
+                    {
                         Ok(f) => f,
                         Err(e) => {
                             log::error!("[NDI OUTPUT] Failed to build video frame: {:?}", e);
                             continue;
                         }
                     };
-                    
+
                     let copy_len = buffer_size.min(frame.data.len());
                     frame.data[..copy_len].copy_from_slice(&frame_data.data[..copy_len]);
                     sender.send_video(&frame);
-                    
+
                     if last_log.elapsed().as_secs() >= 30 {
                         log::info!("[NDI OUTPUT] {} frames sent to '{}'", frame_count, name);
                         last_log = Instant::now();
@@ -148,19 +157,19 @@ impl NdiOutputSender {
             }
         }
     }
-    
+
     /// Submit a frame for sending
     pub fn submit_frame(&self, bgra_data: &[u8], width: u32, height: u32) {
         if width != self.width || height != self.height {
             log::warn!("[NDI OUTPUT] Frame size mismatch");
             return;
         }
-        
+
         if bgra_data.is_empty() {
             log::warn!("[NDI OUTPUT] Empty frame data received");
             return;
         }
-        
+
         let frame = FrameData {
             width,
             height,
@@ -168,7 +177,7 @@ impl NdiOutputSender {
             has_alpha: self.include_alpha,
             timestamp: Instant::now(),
         };
-        
+
         match self.frame_tx.try_send(frame) {
             Ok(_) => {}
             Err(channel::TrySendError::Full(_)) => {
@@ -179,7 +188,7 @@ impl NdiOutputSender {
             }
         }
     }
-    
+
     /// Stop the NDI sender
     pub fn stop(&mut self) {
         if !self.is_owner {
@@ -190,7 +199,7 @@ impl NdiOutputSender {
             let _ = handle.join();
         }
     }
-    
+
     /// Check if sender is running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)

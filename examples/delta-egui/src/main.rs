@@ -125,7 +125,9 @@ impl FrameHistory {
         let mut frames = Vec::with_capacity(max_history);
         for i in 0..max_history {
             frames.push(Texture::create_render_target(
-                device, 1920, 1080,
+                device,
+                1920,
+                1080,
                 &format!("Frame History {}", i),
             ));
         }
@@ -143,7 +145,9 @@ impl FrameHistory {
             self.frames.clear();
             for i in 0..self.max_history {
                 self.frames.push(Texture::create_render_target(
-                    device, width, height,
+                    device,
+                    width,
+                    height,
                     &format!("Frame History {}", i),
                 ));
             }
@@ -169,7 +173,11 @@ impl FrameHistory {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.write_index = (self.write_index + 1) % self.max_history;
     }
@@ -211,25 +219,109 @@ impl EffectPlugin for DeltaEffect {
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         vec![
             ParameterDescriptor::int("red_delay", "Red Delay", ParamCategory::Motion, 0, 16, 0),
-            ParameterDescriptor::int("green_delay", "Green Delay", ParamCategory::Motion, 0, 16, 2),
+            ParameterDescriptor::int(
+                "green_delay",
+                "Green Delay",
+                ParamCategory::Motion,
+                0,
+                16,
+                2,
+            ),
             ParameterDescriptor::int("blue_delay", "Blue Delay", ParamCategory::Motion, 0, 16, 4),
-            ParameterDescriptor::float("intensity", "Intensity", ParamCategory::Motion, 0.0, 1.0, 1.0, 0.01),
+            ParameterDescriptor::float(
+                "intensity",
+                "Intensity",
+                ParamCategory::Motion,
+                0.0,
+                1.0,
+                1.0,
+                0.01,
+            ),
             ParameterDescriptor::enum_param(
-                "blend_mode", "Blend Mode", ParamCategory::Motion,
+                "blend_mode",
+                "Blend Mode",
+                ParamCategory::Motion,
                 vec![
-                    "Replace".into(), "Add".into(), "Multiply".into(), "Screen".into(),
-                    "Difference".into(), "Overlay".into(), "Lighten".into(), "Darken".into(),
+                    "Replace".into(),
+                    "Add".into(),
+                    "Multiply".into(),
+                    "Screen".into(),
+                    "Difference".into(),
+                    "Overlay".into(),
+                    "Lighten".into(),
+                    "Darken".into(),
                 ],
                 0,
             ),
-            ParameterDescriptor::bool("grayscale_input", "Grayscale Input", ParamCategory::Motion, true),
-            ParameterDescriptor::float("red_gain", "Red Gain", ParamCategory::Motion, -2.0, 2.0, 1.0, 0.01),
-            ParameterDescriptor::float("green_gain", "Green Gain", ParamCategory::Motion, -2.0, 2.0, 1.0, 0.01),
-            ParameterDescriptor::float("blue_gain", "Blue Gain", ParamCategory::Motion, -2.0, 2.0, 1.0, 0.01),
-            ParameterDescriptor::float("input_mix", "Input Mix", ParamCategory::Motion, 0.0, 1.0, 0.0, 0.01),
-            ParameterDescriptor::float("trail_fade", "Trail Fade", ParamCategory::Motion, 0.0, 1.0, 0.0, 0.01),
-            ParameterDescriptor::float("threshold", "Threshold", ParamCategory::Motion, 0.0, 1.0, 0.0, 0.01),
-            ParameterDescriptor::float("smoothing", "Smoothing", ParamCategory::Motion, 0.0, 1.0, 0.0, 0.01),
+            ParameterDescriptor::bool(
+                "grayscale_input",
+                "Grayscale Input",
+                ParamCategory::Motion,
+                true,
+            ),
+            ParameterDescriptor::float(
+                "red_gain",
+                "Red Gain",
+                ParamCategory::Motion,
+                -2.0,
+                2.0,
+                1.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "green_gain",
+                "Green Gain",
+                ParamCategory::Motion,
+                -2.0,
+                2.0,
+                1.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "blue_gain",
+                "Blue Gain",
+                ParamCategory::Motion,
+                -2.0,
+                2.0,
+                1.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "input_mix",
+                "Input Mix",
+                ParamCategory::Motion,
+                0.0,
+                1.0,
+                0.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "trail_fade",
+                "Trail Fade",
+                ParamCategory::Motion,
+                0.0,
+                1.0,
+                0.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "threshold",
+                "Threshold",
+                ParamCategory::Motion,
+                0.0,
+                1.0,
+                0.0,
+                0.01,
+            ),
+            ParameterDescriptor::float(
+                "smoothing",
+                "Smoothing",
+                ParamCategory::Motion,
+                0.0,
+                1.0,
+                0.0,
+                0.01,
+            ),
         ]
     }
 
@@ -248,9 +340,7 @@ impl EffectPlugin for DeltaEffect {
     fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
         let real_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Delta Motion Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/delta_real.wgsl").into()
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/delta_real.wgsl").into()),
         });
 
         let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -392,20 +482,28 @@ impl EffectPlugin for DeltaEffect {
         self.uniform_bind_group = Some(ubg);
     }
 
-    fn render(
-        &mut self,
-        ctx: &mut RenderHookCtx<'_>,
-        app_state: &mut Self::State,
-    ) -> bool {
-        let Some(pipeline) = &self.pipeline else { return false };
-        let Some(vb) = &self.vertex_buffer else { return false };
-        let Some(ub) = &self.uniform_buffer else { return false };
-        let Some(ubg) = &self.uniform_bind_group else { return false };
-        let Some(tex_bgl) = &self.texture_bind_group_layout else { return false };
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, app_state: &mut Self::State) -> bool {
+        let Some(pipeline) = &self.pipeline else {
+            return false;
+        };
+        let Some(vb) = &self.vertex_buffer else {
+            return false;
+        };
+        let Some(ub) = &self.uniform_buffer else {
+            return false;
+        };
+        let Some(ubg) = &self.uniform_bind_group else {
+            return false;
+        };
+        let Some(tex_bgl) = &self.texture_bind_group_layout else {
+            return false;
+        };
 
         let uniforms = self.build_uniforms(app_state, ctx.engine_state);
 
-        let Some(history) = &mut self.history else { return false };
+        let Some(history) = &mut self.history else {
+            return false;
+        };
 
         if let Some(src) = ctx.input.and_then(|i| i.texture) {
             history.resize(ctx.device, src.width(), src.height());
@@ -417,12 +515,9 @@ impl EffectPlugin for DeltaEffect {
         let gd = uniforms.delays[1] as usize;
         let bd = uniforms.delays[2] as usize;
 
-        let red_frame = history.get_frame(rd)
-            .or_else(|| history.get_frame(0));
-        let green_frame = history.get_frame(gd)
-            .or_else(|| history.get_frame(0));
-        let blue_frame = history.get_frame(bd)
-            .or_else(|| history.get_frame(0));
+        let red_frame = history.get_frame(rd).or_else(|| history.get_frame(0));
+        let green_frame = history.get_frame(gd).or_else(|| history.get_frame(0));
+        let blue_frame = history.get_frame(bd).or_else(|| history.get_frame(0));
 
         let default_view = history.get_frame(0).map(|t| &t.view);
         let default_sampler = history.get_frame(0).map(|t| &t.sampler);
@@ -441,11 +536,26 @@ impl EffectPlugin for DeltaEffect {
             label: Some("Delta Texture BG"),
             layout: tex_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(rv) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(gv) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(bv) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(iv) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(s) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(rv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(gv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(bv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(iv),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(s),
+                },
             ],
         });
 
@@ -486,12 +596,25 @@ impl EffectPlugin for DeltaEffect {
             };
         }
 
-        let rd = engine.get_param("red_delay").unwrap_or(s.red_delay as f32).round();
-        let gd = engine.get_param("green_delay").unwrap_or(s.green_delay as f32).round();
-        let bd = engine.get_param("blue_delay").unwrap_or(s.blue_delay as f32).round();
+        let rd = engine
+            .get_param("red_delay")
+            .unwrap_or(s.red_delay as f32)
+            .round();
+        let gd = engine
+            .get_param("green_delay")
+            .unwrap_or(s.green_delay as f32)
+            .round();
+        let bd = engine
+            .get_param("blue_delay")
+            .unwrap_or(s.blue_delay as f32)
+            .round();
         let intensity = engine.get_param("intensity").unwrap_or(s.intensity);
-        let blend_mode = engine.get_param("blend_mode").unwrap_or(s.blend_mode as i32 as f32);
-        let grayscale = engine.get_param("grayscale_input").unwrap_or(if s.grayscale_input { 1.0 } else { 0.0 });
+        let blend_mode = engine
+            .get_param("blend_mode")
+            .unwrap_or(s.blend_mode as i32 as f32);
+        let grayscale = engine
+            .get_param("grayscale_input")
+            .unwrap_or(if s.grayscale_input { 1.0 } else { 0.0 });
         let red_gain = engine.get_param("red_gain").unwrap_or(s.red_gain);
         let green_gain = engine.get_param("green_gain").unwrap_or(s.green_gain);
         let blue_gain = engine.get_param("blue_gain").unwrap_or(s.blue_gain);
@@ -516,8 +639,12 @@ impl EffectPlugin for DeltaEffect {
 struct MotionTab;
 
 impl AnyEguiTab for MotionTab {
-    fn name(&self) -> &str { "Motion" }
-    fn replaces(&self) -> Option<GuiTab> { Some(GuiTab::Motion) }
+    fn name(&self) -> &str {
+        "Motion"
+    }
+    fn replaces(&self) -> Option<GuiTab> {
+        Some(GuiTab::Motion)
+    }
 
     fn draw(
         &mut self,
@@ -541,9 +668,9 @@ impl AnyEguiTab for MotionTab {
             ui.separator();
 
             ui.label(egui::RichText::new("Channel Delays (frames)").strong());
-            param_slider_int(ui, engine, "red_delay",   "Red",   0, 16);
+            param_slider_int(ui, engine, "red_delay", "Red", 0, 16);
             param_slider_int(ui, engine, "green_delay", "Green", 0, 16);
-            param_slider_int(ui, engine, "blue_delay",  "Blue",  0, 16);
+            param_slider_int(ui, engine, "blue_delay", "Blue", 0, 16);
 
             ui.separator();
 
@@ -579,17 +706,17 @@ impl AnyEguiTab for MotionTab {
             ui.separator();
 
             ui.label(egui::RichText::new("Channel Gains").strong());
-            param_slider(ui, engine, "red_gain",   "Red",   -2.0, 2.0);
+            param_slider(ui, engine, "red_gain", "Red", -2.0, 2.0);
             param_slider(ui, engine, "green_gain", "Green", -2.0, 2.0);
-            param_slider(ui, engine, "blue_gain",  "Blue",  -2.0, 2.0);
+            param_slider(ui, engine, "blue_gain", "Blue", -2.0, 2.0);
 
             ui.separator();
 
             ui.label(egui::RichText::new("Mix & Post").strong());
-            param_slider(ui, engine, "input_mix",  "Input Mix",  0.0, 1.0);
+            param_slider(ui, engine, "input_mix", "Input Mix", 0.0, 1.0);
             param_slider(ui, engine, "trail_fade", "Trail Fade", 0.0, 1.0);
-            param_slider(ui, engine, "threshold",  "Threshold",  0.0, 1.0);
-            param_slider(ui, engine, "smoothing",  "Smoothing",  0.0, 1.0);
+            param_slider(ui, engine, "threshold", "Threshold", 0.0, 1.0);
+            param_slider(ui, engine, "smoothing", "Smoothing", 0.0, 1.0);
         });
     }
 }
@@ -607,7 +734,10 @@ fn main() -> anyhow::Result<()> {
         .filter_module("tracing::span", log::LevelFilter::Warn)
         .init();
 
-    log::info!("Starting RustJay Delta (egui edition) v{}", env!("CARGO_PKG_VERSION"));
+    log::info!(
+        "Starting RustJay Delta (egui edition) v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     rustjay_engine::run_with_egui_tabs(DeltaEffect::default(), vec![Box::new(MotionTab)])
 }

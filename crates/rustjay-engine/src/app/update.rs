@@ -30,9 +30,16 @@ impl<P: EffectPlugin> App<P> {
 
         #[cfg(feature = "ndi")]
         if manager.input_type() == InputType::Ndi && manager.is_ndi_source_lost() {
-            log::warn!("[NDI] Source lost — clearing input {} state", if is_second { 2 } else { 1 });
+            log::warn!(
+                "[NDI] Source lost — clearing input {} state",
+                if is_second { 2 } else { 1 }
+            );
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let input = if is_second { &mut state.second_input } else { &mut state.input };
+            let input = if is_second {
+                &mut state.second_input
+            } else {
+                &mut state.input
+            };
             input.is_active = false;
             input.source_name = "Signal lost".to_string();
         }
@@ -42,7 +49,9 @@ impl<P: EffectPlugin> App<P> {
         #[cfg(target_os = "macos")]
         if manager.input_type() == InputType::Syphon {
             if manager.has_frame() {
-                let dims = manager.syphon_output_texture().map(|t| (t.width(), t.height()));
+                let dims = manager
+                    .syphon_output_texture()
+                    .map(|t| (t.width(), t.height()));
                 if let Some((width, height)) = dims {
                     if upload_texture {
                         if let Some(texture) = manager.syphon_output_texture() {
@@ -57,7 +66,11 @@ impl<P: EffectPlugin> App<P> {
                     }
                     manager.clear_syphon_frame();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let input = if is_second { &mut state.second_input } else { &mut state.input };
+                    let input = if is_second {
+                        &mut state.second_input
+                    } else {
+                        &mut state.input
+                    };
                     input.width = width;
                     input.height = height;
                 }
@@ -68,14 +81,20 @@ impl<P: EffectPlugin> App<P> {
                 if upload_texture {
                     if let Some(ref mut engine) = self.output_engine {
                         if is_second {
-                            engine.second_input_texture.update(&frame_data, width, height);
+                            engine
+                                .second_input_texture
+                                .update(&frame_data, width, height);
                         } else {
                             engine.input_texture.update(&frame_data, width, height);
                         }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                let input = if is_second {
+                    &mut state.second_input
+                } else {
+                    &mut state.input
+                };
                 input.width = width;
                 input.height = height;
             }
@@ -97,7 +116,11 @@ impl<P: EffectPlugin> App<P> {
                             }
                         }
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        let input = if is_second { &mut state.second_input } else { &mut state.input };
+                        let input = if is_second {
+                            &mut state.second_input
+                        } else {
+                            &mut state.input
+                        };
                         input.width = width;
                         input.height = height;
                     }
@@ -108,14 +131,20 @@ impl<P: EffectPlugin> App<P> {
                 if upload_texture {
                     if let Some(ref mut engine) = self.output_engine {
                         if is_second {
-                            engine.second_input_texture.update(&frame_data, width, height);
+                            engine
+                                .second_input_texture
+                                .update(&frame_data, width, height);
                         } else {
                             engine.input_texture.update(&frame_data, width, height);
                         }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                let input = if is_second {
+                    &mut state.second_input
+                } else {
+                    &mut state.input
+                };
                 input.width = width;
                 input.height = height;
             }
@@ -128,14 +157,20 @@ impl<P: EffectPlugin> App<P> {
                 if upload_texture {
                     if let Some(ref mut engine) = self.output_engine {
                         if is_second {
-                            engine.second_input_texture.update(&frame_data, width, height);
+                            engine
+                                .second_input_texture
+                                .update(&frame_data, width, height);
                         } else {
                             engine.input_texture.update(&frame_data, width, height);
                         }
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                let input = if is_second { &mut state.second_input } else { &mut state.input };
+                let input = if is_second {
+                    &mut state.second_input
+                } else {
+                    &mut state.input
+                };
                 input.width = width;
                 input.height = height;
             }
@@ -149,11 +184,15 @@ impl<P: EffectPlugin> App<P> {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.audio.selected_device.clone()
                 };
-                log::warn!("[Audio] Stream error — attempting reconnect (device: {:?})", device);
+                log::warn!(
+                    "[Audio] Stream error — attempting reconnect (device: {:?})",
+                    device
+                );
                 if let Some(ref mut analyzer) = self.audio_analyzer {
                     match analyzer.start_with_device(device.as_deref()) {
                         Ok(actual_name) => {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.audio.selected_device = Some(actual_name);
                         }
                         Err(e) => log::error!("[Audio] Reconnect failed: {}", e),
@@ -204,9 +243,9 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             // Refresh cache from state so next frame's push uses current values.
-            self.cached_audio_amplitude  = state.audio.amplitude;
-            self.cached_audio_smoothing  = state.audio.smoothing;
-            self.cached_audio_normalize  = state.audio.normalize;
+            self.cached_audio_amplitude = state.audio.amplitude;
+            self.cached_audio_smoothing = state.audio.smoothing;
+            self.cached_audio_normalize = state.audio.normalize;
             self.cached_audio_pink_noise = state.audio.pink_noise_shaping;
         }
     }
@@ -248,15 +287,17 @@ impl<P: EffectPlugin> App<P> {
         let base_bri = state.hsb_param_bases.brightness;
         let (mut d_hue, mut d_sat, mut d_bri) = (0.0f32, 0.0f32, 0.0f32);
         for lfo in &state.lfo.bank.lfos {
-            if !lfo.enabled { continue; }
+            if !lfo.enabled {
+                continue;
+            }
             match lfo.target {
-                rustjay_core::LfoTarget::HueShift  => d_hue += lfo.output * 180.0,
+                rustjay_core::LfoTarget::HueShift => d_hue += lfo.output * 180.0,
                 rustjay_core::LfoTarget::Saturation => d_sat += lfo.output,
                 rustjay_core::LfoTarget::Brightness => d_bri += lfo.output,
                 _ => {}
             }
         }
-        state.hsb_params.hue_shift  = (base_hue + d_hue).clamp(-180.0, 180.0);
+        state.hsb_params.hue_shift = (base_hue + d_hue).clamp(-180.0, 180.0);
         state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
         state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
     }
@@ -280,10 +321,15 @@ impl<P: EffectPlugin> App<P> {
     pub(super) fn update_midi(&mut self) {
         if let Some(ref mut manager) = self.midi_manager {
             if let Some(false) = manager.check_device_available_if_needed() {
-                let name = manager.state().lock()
+                let name = manager
+                    .state()
+                    .lock()
                     .map(|s| s.selected_device.clone().unwrap_or_default())
                     .unwrap_or_default();
-                log::warn!("[MIDI] Device '{}' no longer available — disconnecting", name);
+                log::warn!(
+                    "[MIDI] Device '{}' no longer available — disconnecting",
+                    name
+                );
                 manager.disconnect();
                 if let Ok(mut state) = self.shared_state.lock() {
                     state.midi_selected_device = None;
@@ -300,12 +346,15 @@ impl<P: EffectPlugin> App<P> {
                 let mut midi_state = midi_state_arc.lock().unwrap_or_else(|e| e.into_inner());
                 for mapping in &mut midi_state.mappings {
                     if mapping.is_dirty() {
-                        self.midi_dirty_scratch.push((mapping.param_path.clone(), mapping.get_scaled_value()));
+                        self.midi_dirty_scratch
+                            .push((mapping.param_path.clone(), mapping.get_scaled_value()));
                     }
                 }
                 let learn_active = midi_state.learn_state != rustjay_control::LearnState::Idle;
                 let learning_name = midi_state.learning_param_name.clone();
-                let mapping_snapshot: Vec<rustjay_core::MidiMappingSnapshot> = midi_state.mappings.iter()
+                let mapping_snapshot: Vec<rustjay_core::MidiMappingSnapshot> = midi_state
+                    .mappings
+                    .iter()
                     .map(|m| rustjay_core::MidiMappingSnapshot {
                         name: m.name.clone(),
                         param_path: m.param_path.clone(),
@@ -332,16 +381,23 @@ impl<P: EffectPlugin> App<P> {
                 // Apply dirty parameter values.
                 for (path, value) in &self.midi_dirty_scratch {
                     match path.as_str() {
-                        "color/hue_shift"  => shared.hsb_params.hue_shift  = value.clamp(-180.0, 180.0),
-                        "color/saturation" => shared.hsb_params.saturation  = value.clamp(0.0, 2.0),
-                        "color/brightness" => shared.hsb_params.brightness  = value.clamp(0.0, 2.0),
-                        "audio/amplitude"  => shared.audio.amplitude         = value.clamp(0.0, 5.0),
-                        "audio/smoothing"  => shared.audio.smoothing         = value.clamp(0.0, 1.0),
+                        "color/hue_shift" => {
+                            shared.hsb_params.hue_shift = value.clamp(-180.0, 180.0)
+                        }
+                        "color/saturation" => shared.hsb_params.saturation = value.clamp(0.0, 2.0),
+                        "color/brightness" => shared.hsb_params.brightness = value.clamp(0.0, 2.0),
+                        "audio/amplitude" => shared.audio.amplitude = value.clamp(0.0, 5.0),
+                        "audio/smoothing" => shared.audio.smoothing = value.clamp(0.0, 1.0),
                         _ => {
-                            if let Some(id) = path.split('/').next_back() {
-                                if shared.param_descriptors.iter().any(|d| d.id == id) {
-                                    shared.set_param_base(id, *value);
-                                }
+                            // Try app-specific param resolver first (hierarchical paths).
+                            let resolved = shared
+                                .param_resolver
+                                .as_ref()
+                                .and_then(|r| r.resolve(path))
+                                .unwrap_or_else(|| path.clone());
+                            let id = resolved.split('/').next_back().unwrap_or(&resolved);
+                            if shared.param_descriptors.iter().any(|d| d.id == id) {
+                                shared.set_param_base(id, *value);
                             }
                         }
                     }
@@ -416,18 +472,35 @@ impl<P: EffectPlugin> App<P> {
 
     pub(super) fn update_web(&mut self) {
         if let Some(ref mut server) = self.web_server {
-            if !server.is_running() { return; }
+            if !server.is_running() {
+                return;
+            }
             if let Ok(state) = self.shared_state.lock() {
                 server.update_parameter("color/hue_shift", state.hsb_params.hue_shift);
                 server.update_parameter("color/saturation", state.hsb_params.saturation);
                 server.update_parameter("color/brightness", state.hsb_params.brightness);
-                server.update_parameter("color/enabled", if state.color_enabled { 1.0 } else { 0.0 });
+                server
+                    .update_parameter("color/enabled", if state.color_enabled { 1.0 } else { 0.0 });
                 server.update_parameter("audio/amplitude", state.audio.amplitude);
                 server.update_parameter("audio/smoothing", state.audio.smoothing);
-                server.update_parameter("audio/enabled", if state.audio.enabled { 1.0 } else { 0.0 });
-                server.update_parameter("audio/normalize", if state.audio.normalize { 1.0 } else { 0.0 });
-                server.update_parameter("audio/pink_noise", if state.audio.pink_noise_shaping { 1.0 } else { 0.0 });
-                server.update_parameter("output/fullscreen", if state.output_fullscreen { 1.0 } else { 0.0 });
+                server
+                    .update_parameter("audio/enabled", if state.audio.enabled { 1.0 } else { 0.0 });
+                server.update_parameter(
+                    "audio/normalize",
+                    if state.audio.normalize { 1.0 } else { 0.0 },
+                );
+                server.update_parameter(
+                    "audio/pink_noise",
+                    if state.audio.pink_noise_shaping {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                );
+                server.update_parameter(
+                    "output/fullscreen",
+                    if state.output_fullscreen { 1.0 } else { 0.0 },
+                );
                 // Broadcast custom param values
                 let descriptors = Arc::clone(&state.param_descriptors);
                 for (i, desc) in descriptors.iter().enumerate() {
@@ -455,9 +528,25 @@ impl<P: EffectPlugin> App<P> {
                 server.input_dirty = false;
             }
             if server.control_dirty {
-                let (osc_enabled, osc_port, midi_enabled, midi_selected_device, midi_devices, midi_learn_active, midi_learning_param_name) = {
+                let (
+                    osc_enabled,
+                    osc_port,
+                    midi_enabled,
+                    midi_selected_device,
+                    midi_devices,
+                    midi_learn_active,
+                    midi_learning_param_name,
+                ) = {
                     if let Ok(state) = self.shared_state.lock() {
-                        (state.osc_enabled, state.osc_port, state.midi_enabled, state.midi_selected_device.clone(), state.midi_available_devices.clone(), state.midi_learn_active, state.midi_learning_param_name.clone())
+                        (
+                            state.osc_enabled,
+                            state.osc_port,
+                            state.midi_enabled,
+                            state.midi_selected_device.clone(),
+                            state.midi_available_devices.clone(),
+                            state.midi_learn_active,
+                            state.midi_learning_param_name.clone(),
+                        )
                     } else {
                         (false, 9000, false, None, vec![], false, None)
                     }
@@ -465,17 +554,25 @@ impl<P: EffectPlugin> App<P> {
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
                     if let Some(ref m) = self.midi_manager {
                         if let Ok(midi_st) = m.state().lock() {
-                            midi_st.mappings.iter().map(|m| rustjay_core::MidiMappingSnapshot {
-                                name: m.name.clone(),
-                                param_path: m.param_path.clone(),
-                                kind: m.kind,
-                                selector: m.selector,
-                                channel: m.channel,
-                                min_value: m.min_value,
-                                max_value: m.max_value,
-                            }).collect()
-                        } else { vec![] }
-                    } else { vec![] };
+                            midi_st
+                                .mappings
+                                .iter()
+                                .map(|m| rustjay_core::MidiMappingSnapshot {
+                                    name: m.name.clone(),
+                                    param_path: m.param_path.clone(),
+                                    kind: m.kind,
+                                    selector: m.selector,
+                                    channel: m.channel,
+                                    min_value: m.min_value,
+                                    max_value: m.max_value,
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    };
                 server.send_control_state(&rustjay_control::ControlStateJson {
                     osc_enabled,
                     osc_port,
@@ -503,8 +600,14 @@ impl<P: EffectPlugin> App<P> {
             if server.preset_dirty {
                 if let Some(ref bank) = self.preset_bank {
                     server.send_preset_state(&rustjay_control::PresetStateJson {
-                        presets: bank.presets.iter().enumerate()
-                            .map(|(i, p)| rustjay_control::PresetInfo { index: i, name: p.name.clone() })
+                        presets: bank
+                            .presets
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| rustjay_control::PresetInfo {
+                                index: i,
+                                name: p.name.clone(),
+                            })
                             .collect(),
                     });
                 }
@@ -523,7 +626,10 @@ impl<P: EffectPlugin> App<P> {
         }
         self.last_device_poll = poll_now;
 
-        let done = self.input_manager.as_mut().is_some_and(|m| m.poll_discovery());
+        let done = self
+            .input_manager
+            .as_mut()
+            .is_some_and(|m| m.poll_discovery());
         if done {
             if let Some(manager) = self.input_manager.as_ref() {
                 if self.use_egui {
@@ -543,37 +649,48 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_preview_textures(&mut self) {
-        let show_preview = self.shared_state
+        let show_preview = self
+            .shared_state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .show_preview;
-        if !show_preview { return; }
+        if !show_preview {
+            return;
+        }
 
         if self.use_egui {
             #[cfg(feature = "egui")]
             if let (Some(ref mut renderer), Some(gui)) =
                 (self.egui_renderer.as_mut(), self.egui_control_gui.as_ref())
             {
-                let mut encoder = renderer.device().create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor { label: Some("Preview Encoder") },
-                );
+                let mut encoder =
+                    renderer
+                        .device()
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Preview Encoder"),
+                        });
                 let mut any_work = false;
 
                 {
-                    let input_src = self.output_engine
+                    let input_src = self
+                        .output_engine
                         .as_ref()
                         .and_then(|e| e.input_texture.texture.as_ref().map(|t| &t.texture));
-                    if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
+                    if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id)
+                    {
                         renderer.update_preview_texture(preview_id, tex, &mut encoder);
                         any_work = true;
                     }
                 }
 
                 {
-                    let second_input_src = self.output_engine
+                    let second_input_src = self
+                        .output_engine
                         .as_ref()
                         .and_then(|e| e.second_input_texture.texture.as_ref().map(|t| &t.texture));
-                    if let (Some(tex), Some(preview_id)) = (second_input_src, gui.second_input_preview_texture_id) {
+                    if let (Some(tex), Some(preview_id)) =
+                        (second_input_src, gui.second_input_preview_texture_id)
+                    {
                         renderer.update_preview_texture(preview_id, tex, &mut encoder);
                         any_work = true;
                     }
@@ -583,7 +700,8 @@ impl<P: EffectPlugin> App<P> {
                     if let Some(ref engine) = self.output_engine {
                         if let Some(preview_id) = gui.output_preview_texture_id {
                             if let Some(preview_tex) = renderer.get_preview_texture(preview_id) {
-                                let preview_view = preview_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                                let preview_view = preview_tex
+                                    .create_view(&wgpu::TextureViewDescriptor::default());
                                 engine.blit_output_to(&mut encoder, &preview_view);
                                 any_work = true;
                             }
@@ -598,13 +716,17 @@ impl<P: EffectPlugin> App<P> {
         } else if let (Some(ref mut renderer), Some(gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
         {
-            let mut encoder = renderer.device().create_command_encoder(
-                &wgpu::CommandEncoderDescriptor { label: Some("Preview Encoder") },
-            );
+            let mut encoder =
+                renderer
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Preview Encoder"),
+                    });
             let mut any_work = false;
 
             {
-                let input_src = self.output_engine
+                let input_src = self
+                    .output_engine
                     .as_ref()
                     .and_then(|e| e.input_texture.texture.as_ref().map(|t| &t.texture));
                 if let (Some(tex), Some(preview_id)) = (input_src, gui.input_preview_texture_id) {
@@ -614,10 +736,13 @@ impl<P: EffectPlugin> App<P> {
             }
 
             {
-                let second_input_src = self.output_engine
+                let second_input_src = self
+                    .output_engine
                     .as_ref()
                     .and_then(|e| e.second_input_texture.texture.as_ref().map(|t| &t.texture));
-                if let (Some(tex), Some(preview_id)) = (second_input_src, gui.second_input_preview_texture_id) {
+                if let (Some(tex), Some(preview_id)) =
+                    (second_input_src, gui.second_input_preview_texture_id)
+                {
                     renderer.update_preview_texture(preview_id, tex, &mut encoder);
                     any_work = true;
                 }

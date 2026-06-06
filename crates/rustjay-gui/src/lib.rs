@@ -12,20 +12,20 @@ pub mod renderer;
 pub mod tabs;
 
 #[cfg(feature = "egui")]
+/// Egui control panel.
+pub mod egui_control_gui;
+#[cfg(feature = "egui")]
 /// wgpu-based egui renderer.
 pub mod egui_renderer;
 #[cfg(feature = "egui")]
 /// Type-erased GUI tab trait for egui.
 pub mod egui_tab;
 #[cfg(feature = "egui")]
-/// Egui control panel.
-pub mod egui_control_gui;
+/// Egui tab builders.
+pub mod egui_tabs;
 #[cfg(feature = "egui")]
 /// Professional dark theme for egui.
 pub mod egui_theme;
-#[cfg(feature = "egui")]
-/// Egui tab builders.
-pub mod egui_tabs;
 #[cfg(feature = "egui")]
 /// HUD widget helpers for egui.
 pub mod egui_widgets;
@@ -34,11 +34,11 @@ pub use control_gui::ControlGui;
 pub use renderer::ImGuiRenderer;
 
 #[cfg(feature = "egui")]
+pub use egui_control_gui::EguiControlGui;
+#[cfg(feature = "egui")]
 pub use egui_renderer::EguiRenderer;
 #[cfg(feature = "egui")]
-pub use egui_tab::{AnyEguiTab, param_slider, param_slider_int};
-#[cfg(feature = "egui")]
-pub use egui_control_gui::EguiControlGui;
+pub use egui_tab::{param_slider, param_slider_int, AnyEguiTab};
 
 /// Type-erased GUI tab used by ControlGui.
 /// Implementors downcast app_state via std::any::Any.
@@ -46,7 +46,9 @@ pub trait AnyGuiTab: Send + Sync {
     /// Returns the display name of this tab.
     fn name(&self) -> &str;
     /// If Some, this tab replaces the named built-in tab instead of appending.
-    fn replaces(&self) -> Option<BuiltinTab> { None }
+    fn replaces(&self) -> Option<BuiltinTab> {
+        None
+    }
     /// Draws the tab contents.
     fn draw(
         &mut self,

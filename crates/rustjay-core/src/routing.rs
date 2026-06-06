@@ -3,9 +3,9 @@
 //! Routes audio FFT bands to various parameters for audio-reactive visuals.
 //! Adapted from rustjay-delta for HSB color parameters.
 
+use crate::params::{ParamType, ParameterDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::params::{ParameterDescriptor, ParamType};
 
 /// FFT frequency bands (8-band spectrum)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ impl FftBand {
             FftBand::Presence => "Presence",
         }
     }
-    
+
     /// Abbreviated band name for compact UIs.
     pub fn short_name(&self) -> &'static str {
         match self {
@@ -56,7 +56,7 @@ impl FftBand {
             FftBand::Presence => "Presence",
         }
     }
-    
+
     /// All frequency bands in order.
     pub fn all() -> &'static [FftBand] {
         &[
@@ -70,7 +70,7 @@ impl FftBand {
             FftBand::Presence,
         ]
     }
-    
+
     /// Convert a band index (0–7) to an `FftBand`.
     pub fn from_index(index: usize) -> Option<Self> {
         match index {
@@ -219,9 +219,9 @@ impl AudioRoute {
             smoothed_fft: 0.0,
         }
     }
-    
+
     /// Process this route with new FFT data
-    /// 
+    ///
     /// # Arguments
     /// * `fft_bands` - Array of 8 FFT band values (0.0 to 1.0)
     /// * `delta_time` - Time since last frame in seconds
@@ -231,14 +231,18 @@ impl AudioRoute {
             self.smoothed_fft *= 0.9; // Decay to 0
             return;
         }
-        
+
         // Get current FFT value for our band
         let target_value = fft_bands[self.band as usize];
-        
+
         // Apply attack/release smoothing
         let diff = target_value - self.smoothed_fft;
-        let smoothing = if diff > 0.0 { self.attack } else { self.release };
-        
+        let smoothing = if diff > 0.0 {
+            self.attack
+        } else {
+            self.release
+        };
+
         // Exponential smoothing
         let dt = delta_time.max(0.0);
         let smoothing = smoothing.max(0.001);
@@ -246,12 +250,13 @@ impl AudioRoute {
             return;
         }
         let smoothing_factor = (-dt / smoothing).exp();
-        self.smoothed_fft = self.smoothed_fft * smoothing_factor + target_value * (1.0 - smoothing_factor);
-        
+        self.smoothed_fft =
+            self.smoothed_fft * smoothing_factor + target_value * (1.0 - smoothing_factor);
+
         // Calculate modulation value
         self.current_value = self.smoothed_fft * self.amount;
     }
-    
+
     /// Reset smoothed values
     pub fn reset(&mut self) {
         self.current_value = 0.0;
@@ -276,78 +281,79 @@ impl RoutingMatrix {
             max_routes,
         }
     }
-    
+
     /// Create with default routes
     pub fn with_defaults() -> Self {
         let mut matrix = Self::new(8);
-        
+
         // Add some default routes
         matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
         matrix.add_route(FftBand::High, ModulationTarget::Saturation);
-        
+
         matrix
     }
-    
+
     /// Add a new route
-    /// 
+    ///
     /// Returns the ID of the new route, or None if at max capacity
     pub fn add_route(&mut self, band: FftBand, target: ModulationTarget) -> Option<usize> {
         if self.routes.len() >= self.max_routes {
             return None;
         }
-        
+
         let id = self.next_id;
         self.next_id += 1;
-        
+
         self.routes.push(AudioRoute::new(id, band, target));
         Some(id)
     }
-    
+
     /// Remove a route by ID
     pub fn remove_route(&mut self, id: usize) {
         self.routes.retain(|r| r.id != id);
     }
-    
+
     /// Remove a route by index
     pub fn remove_route_at(&mut self, index: usize) {
         if index < self.routes.len() {
             self.routes.remove(index);
         }
     }
-    
+
     /// Get a route by ID
     pub fn get_route(&self, id: usize) -> Option<&AudioRoute> {
         self.routes.iter().find(|r| r.id == id)
     }
-    
+
     /// Get a mutable route by ID
     pub fn get_route_mut(&mut self, id: usize) -> Option<&mut AudioRoute> {
         self.routes.iter_mut().find(|r| r.id == id)
     }
-    
+
     /// Get all routes
     pub fn routes(&self) -> &[AudioRoute] {
         &self.routes
     }
-    
+
     /// Get mutable access to all routes
     pub fn routes_mut(&mut self) -> &mut [AudioRoute] {
         &mut self.routes
     }
-    
+
     /// Process all routes with new FFT data
     pub fn process(&mut self, fft_bands: &[f32; 8], delta_time: f32) {
         for route in &mut self.routes {
             route.process(fft_bands, delta_time);
         }
     }
-    
+
     /// Get the modulation value for a specific target
     ///
     /// If multiple routes target the same parameter, their values are summed
     /// and clamped to a reasonable range.
     pub fn get_modulation(&self, target: ModulationTarget) -> f32 {
-        let total: f32 = self.routes
+        let total: f32 = self
+            .routes
             .iter()
             .filter(|r| r.target == target && r.enabled)
             .map(|r| r.current_value)
@@ -360,14 +366,15 @@ impl RoutingMatrix {
     /// Like `get_modulation` but accepts a plain string id for `Custom` targets.
     /// Avoids the `String` allocation in `ModulationTarget::Custom(id.clone())` on hot paths.
     pub fn get_modulation_for_str(&self, id: &str) -> f32 {
-        let total: f32 = self.routes
+        let total: f32 = self
+            .routes
             .iter()
             .filter(|r| r.enabled && matches!(&r.target, ModulationTarget::Custom(s) if s == id))
             .map(|r| r.current_value)
             .sum();
         total.clamp(-2.0, 2.0)
     }
-    
+
     /// Get all modulations as a map for the static targets.
     pub fn get_all_modulations(&self) -> HashMap<ModulationTarget, f32> {
         let mut map = HashMap::new();
@@ -379,7 +386,10 @@ impl RoutingMatrix {
     }
 
     /// Get all modulations as a map of `param_id → value` for dynamic targets.
-    pub fn get_all_modulations_for(&self, descriptors: &[ParameterDescriptor]) -> HashMap<String, f32> {
+    pub fn get_all_modulations_for(
+        &self,
+        descriptors: &[ParameterDescriptor],
+    ) -> HashMap<String, f32> {
         let mut map = HashMap::new();
         for target in ModulationTarget::all_for(descriptors) {
             let id = target.param_id().map(|s| s.to_string());
@@ -390,26 +400,31 @@ impl RoutingMatrix {
         }
         map
     }
-    
+
     /// Apply modulations to HSB parameters.
     #[deprecated(note = "Use `apply_to_params` for generic parameter support.")]
     pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
         let hue_mod = self.get_modulation(ModulationTarget::HueShift);
         let sat_mod = self.get_modulation(ModulationTarget::Saturation);
         let bright_mod = self.get_modulation(ModulationTarget::Brightness);
-        
+
         // Apply modulation with clamping
         let new_hue = (base_hue + hue_mod * 180.0).clamp(-180.0, 180.0);
         let new_sat = (base_sat + sat_mod * 2.0).clamp(0.0, 2.0);
         let new_bright = (base_bright + bright_mod * 2.0).clamp(0.0, 2.0);
-        
+
         (new_hue, new_sat, new_bright)
     }
 
     /// Apply modulations to a parameter slice.
     /// Reads base values from `bases`, applies audio routing modulations,
     /// and writes modulated values into `params`.
-    pub fn apply_to_params(&self, params: &mut [f32], bases: &[f32], descriptors: &[ParameterDescriptor]) {
+    pub fn apply_to_params(
+        &self,
+        params: &mut [f32],
+        bases: &[f32],
+        descriptors: &[ParameterDescriptor],
+    ) {
         for (i, desc) in descriptors.iter().enumerate() {
             if !desc.is_modulatable() {
                 continue;
@@ -424,32 +439,32 @@ impl RoutingMatrix {
             };
         }
     }
-    
+
     /// Clear all routes
     pub fn clear(&mut self) {
         self.routes.clear();
     }
-    
+
     /// Get number of routes
     pub fn len(&self) -> usize {
         self.routes.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.routes.is_empty()
     }
-    
+
     /// Get max routes
     pub fn max_routes(&self) -> usize {
         self.max_routes
     }
-    
+
     /// Check if can add more routes
     pub fn can_add_route(&self) -> bool {
         self.routes.len() < self.max_routes
     }
-    
+
     /// Reset all smoothed values
     pub fn reset(&mut self) {
         for route in &mut self.routes {
@@ -572,14 +587,14 @@ impl AudioRoutingState {
             matrix: RoutingMatrix::with_defaults(),
             enabled: false, // Disabled by default
             show_window: false,
-            selected_band: 1, // Bass
+            selected_band: 1,   // Bass
             selected_target: 1, // Saturation
             base_hue: 0.0,
             base_saturation: 1.0,
             base_brightness: 1.0,
         }
     }
-    
+
     /// Update base values from current HSB params (call when user changes values in UI)
     pub fn update_base_values(&mut self, hue: f32, saturation: f32, brightness: f32) {
         self.base_hue = hue;

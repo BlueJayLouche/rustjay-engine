@@ -6,7 +6,7 @@
 // GUI builder fns take many UI/state params by design.
 #![allow(clippy::too_many_arguments)]
 
-use rustjay_core::{AudioCommand, GuiTab, InputCommand, EngineState, ParamCategory};
+use rustjay_core::{AudioCommand, EngineState, GuiTab, InputCommand, ParamCategory};
 use rustjay_io::InputManager;
 use std::sync::{Arc, Mutex};
 
@@ -249,7 +249,10 @@ impl ControlGui {
         // Main control window
         ui.window(&window_title)
             .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-            .size([400.0, window_size[1] - 20.0], imgui::Condition::FirstUseEver)
+            .size(
+                [400.0, window_size[1] - 20.0],
+                imgui::Condition::FirstUseEver,
+            )
             .movable(true)
             .collapsible(false)
             .resizable(true)
@@ -286,14 +289,20 @@ impl ControlGui {
                     });
 
                 ui.window("Input 2 Preview")
-                    .position([420.0 + each_width + gap, 10.0], imgui::Condition::FirstUseEver)
+                    .position(
+                        [420.0 + each_width + gap, 10.0],
+                        imgui::Condition::FirstUseEver,
+                    )
                     .size([each_width, half_height], imgui::Condition::FirstUseEver)
                     .build(|| {
                         self.build_second_input_preview(ui);
                     });
 
                 ui.window("Output Preview")
-                    .position([420.0, window_size[1] / 2.0 + 5.0], imgui::Condition::FirstUseEver)
+                    .position(
+                        [420.0, window_size[1] / 2.0 + 5.0],
+                        imgui::Condition::FirstUseEver,
+                    )
                     .size([avail_width, half_height], imgui::Condition::FirstUseEver)
                     .build(|| {
                         self.build_output_preview(ui);
@@ -307,7 +316,10 @@ impl ControlGui {
                     });
 
                 ui.window("Output Preview")
-                    .position([420.0, window_size[1] / 2.0 + 5.0], imgui::Condition::FirstUseEver)
+                    .position(
+                        [420.0, window_size[1] / 2.0 + 5.0],
+                        imgui::Condition::FirstUseEver,
+                    )
                     .size([avail_width, half_height], imgui::Condition::FirstUseEver)
                     .build(|| {
                         self.build_output_preview(ui);
@@ -350,11 +362,19 @@ impl ControlGui {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.show_preview
                 };
-                if ui.menu_item_config("Show Previews").selected(show_preview).build() {
+                if ui
+                    .menu_item_config("Show Previews")
+                    .selected(show_preview)
+                    .build()
+                {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.show_preview = !state.show_preview;
                 }
-                if ui.menu_item_config("Preferences...").selected(self.show_settings).build() {
+                if ui
+                    .menu_item_config("Preferences...")
+                    .selected(self.show_settings)
+                    .build()
+                {
                     self.show_settings = !self.show_settings;
                 }
                 ui.separator();
@@ -376,37 +396,48 @@ impl ControlGui {
     fn build_tabs(&mut self, ui: &imgui::Ui, app_state: &mut dyn std::any::Any) {
         let (current_tab, hidden_tabs, has_color, has_motion) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let hc = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Color);
-            let hm = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
+            let hc = state
+                .param_descriptors
+                .iter()
+                .any(|d| d.category == ParamCategory::Color);
+            let hm = state
+                .param_descriptors
+                .iter()
+                .any(|d| d.category == ParamCategory::Motion);
             (state.current_tab, state.hidden_tabs.clone(), hc, hm)
         };
         let custom_tab_active = self.custom_tab_active;
 
         let vis = |tab: GuiTab| -> bool {
-            if hidden_tabs.contains(&tab) { return false; }
+            if hidden_tabs.contains(&tab) {
+                return false;
+            }
             match tab {
-                GuiTab::Color  => has_color,
+                GuiTab::Color => has_color,
                 GuiTab::Motion => has_motion,
                 _ => true,
             }
         };
 
         // Snapshot custom tab info to avoid borrow conflicts while mutating self.
-        let custom_info: Vec<(usize, String, Option<GuiTab>)> = self.custom_tabs
+        let custom_info: Vec<(usize, String, Option<GuiTab>)> = self
+            .custom_tabs
             .iter()
             .enumerate()
             .map(|(i, t)| (i, t.name().to_string(), t.replaces()))
             .collect();
 
         // Group membership — tabs that belong to each section.
-        const SIGNAL:     &[GuiTab] = &[GuiTab::Input, GuiTab::Output];
+        const SIGNAL: &[GuiTab] = &[GuiTab::Input, GuiTab::Output];
         const PARAMETERS: &[GuiTab] = &[GuiTab::Color, GuiTab::Motion, GuiTab::Audio, GuiTab::Lfo];
-        const CONTROL:    &[GuiTab] = &[GuiTab::Midi,  GuiTab::Osc,    GuiTab::Web];
-        const MANAGE:     &[GuiTab] = &[GuiTab::Presets];
+        const CONTROL: &[GuiTab] = &[GuiTab::Midi, GuiTab::Osc, GuiTab::Web];
+        const MANAGE: &[GuiTab] = &[GuiTab::Presets];
 
         let group_any = |tabs: &[GuiTab]| -> bool {
             tabs.iter().any(|&t| vis(t))
-            || custom_info.iter().any(|(_, _, r)| r.is_some_and(|r| tabs.contains(&r)))
+                || custom_info
+                    .iter()
+                    .any(|(_, _, r)| r.is_some_and(|r| tabs.contains(&r)))
         };
 
         if let Some(_groups) = ui.tab_bar("##groups") {
@@ -415,8 +446,15 @@ impl ControlGui {
                 if let Some(_g) = ui.tab_item("Signal") {
                     if let Some(_inner) = ui.tab_bar("##signal") {
                         for &tab in SIGNAL {
-                            self.render_inner_tab(ui, app_state, tab, &custom_info,
-                                current_tab, custom_tab_active, vis(tab));
+                            self.render_inner_tab(
+                                ui,
+                                app_state,
+                                tab,
+                                &custom_info,
+                                current_tab,
+                                custom_tab_active,
+                                vis(tab),
+                            );
                         }
                     }
                 }
@@ -427,8 +465,15 @@ impl ControlGui {
                 if let Some(_g) = ui.tab_item("Parameters") {
                     if let Some(_inner) = ui.tab_bar("##params") {
                         for &tab in PARAMETERS {
-                            self.render_inner_tab(ui, app_state, tab, &custom_info,
-                                current_tab, custom_tab_active, vis(tab));
+                            self.render_inner_tab(
+                                ui,
+                                app_state,
+                                tab,
+                                &custom_info,
+                                current_tab,
+                                custom_tab_active,
+                                vis(tab),
+                            );
                         }
                     }
                 }
@@ -439,8 +484,15 @@ impl ControlGui {
                 if let Some(_g) = ui.tab_item("Control") {
                     if let Some(_inner) = ui.tab_bar("##control") {
                         for &tab in CONTROL {
-                            self.render_inner_tab(ui, app_state, tab, &custom_info,
-                                current_tab, custom_tab_active, vis(tab));
+                            self.render_inner_tab(
+                                ui,
+                                app_state,
+                                tab,
+                                &custom_info,
+                                current_tab,
+                                custom_tab_active,
+                                vis(tab),
+                            );
                         }
                     }
                 }
@@ -451,8 +503,15 @@ impl ControlGui {
                 if let Some(_g) = ui.tab_item("Manage") {
                     if let Some(_inner) = ui.tab_bar("##manage") {
                         for &tab in MANAGE {
-                            self.render_inner_tab(ui, app_state, tab, &custom_info,
-                                current_tab, custom_tab_active, vis(tab));
+                            self.render_inner_tab(
+                                ui,
+                                app_state,
+                                tab,
+                                &custom_info,
+                                current_tab,
+                                custom_tab_active,
+                                vis(tab),
+                            );
                         }
                     }
                 }
@@ -468,7 +527,8 @@ impl ControlGui {
                             self.custom_tab_active = Some(idx);
                         }
                         if let Some(ct) = self.custom_tabs.get_mut(idx) {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             ct.draw(ui, app_state, &mut state);
                         }
                     }
@@ -491,7 +551,9 @@ impl ControlGui {
         custom_tab_active: Option<usize>,
         is_visible: bool,
     ) {
-        if !is_visible { return; }
+        if !is_visible {
+            return;
+        }
 
         // Custom tab replacing this slot?
         if let Some((ci, cname, _)) = custom_info.iter().find(|(_, _, r)| *r == Some(tab)) {
@@ -517,15 +579,15 @@ impl ControlGui {
                 self.custom_tab_active = None;
             }
             match tab {
-                GuiTab::Input   => self.build_input_tab(ui),
-                GuiTab::Output  => self.build_output_tab(ui),
-                GuiTab::Color   => self.build_param_category_tab(ui, ParamCategory::Color),
-                GuiTab::Motion  => self.build_param_category_tab(ui, ParamCategory::Motion),
-                GuiTab::Audio   => self.build_audio_tab(ui),
-                GuiTab::Lfo     => self.build_lfo_tab(ui),
-                GuiTab::Midi    => self.build_midi_tab(ui),
-                GuiTab::Osc     => self.build_osc_tab(ui),
-                GuiTab::Web     => self.build_web_tab(ui),
+                GuiTab::Input => self.build_input_tab(ui),
+                GuiTab::Output => self.build_output_tab(ui),
+                GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
+                GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
+                GuiTab::Audio => self.build_audio_tab(ui),
+                GuiTab::Lfo => self.build_lfo_tab(ui),
+                GuiTab::Midi => self.build_midi_tab(ui),
+                GuiTab::Osc => self.build_osc_tab(ui),
+                GuiTab::Web => self.build_web_tab(ui),
                 GuiTab::Presets => self.build_presets_tab(ui),
                 GuiTab::Settings | GuiTab::Sync => {}
             }
@@ -548,14 +610,12 @@ pub fn get_local_ip() -> Option<String> {
 
 /// Copy text to the system clipboard.
 pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
-    use std::process::{Command, Stdio};
     use std::io::Write;
+    use std::process::{Command, Stdio};
 
     #[cfg(target_os = "macos")]
     {
-        let mut child = Command::new("pbcopy")
-            .stdin(Stdio::piped())
-            .spawn()?;
+        let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(text.as_bytes())?;
         }
@@ -598,4 +658,3 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-

@@ -2,7 +2,9 @@
 //!
 //! Save and load parameter snapshots with quick preset selector.
 
-use rustjay_core::{HsbParams, LfoBank, EngineState, MidiCommand, MidiMappingSnapshot, RoutingMatrix};
+use rustjay_core::{
+    EngineState, HsbParams, LfoBank, MidiCommand, MidiMappingSnapshot, RoutingMatrix,
+};
 use serde::{Deserialize, Serialize};
 
 fn default_fft_size() -> usize {
@@ -22,7 +24,7 @@ pub struct Preset {
     pub timestamp: u64,
     /// Description/notes
     pub description: String,
-    
+
     // Color parameters
     /// Base HSB color parameters.
     #[serde(default)]
@@ -107,14 +109,17 @@ impl Preset {
             lfo_bank: state.lfo.bank.clone(),
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
-            custom_values: state.param_descriptors.iter().enumerate()
+            custom_values: state
+                .param_descriptors
+                .iter()
+                .enumerate()
                 .map(|(i, d)| (d.id.clone(), state.custom_param_bases[i]))
                 .collect(),
             midi_mappings: state.midi_mappings.clone(),
             plugin_state: None,
         }
     }
-    
+
     /// Apply this preset to the shared state
     pub fn apply_to_state(&self, state: &mut EngineState) {
         state.hsb_params = self.hsb_params;
@@ -140,7 +145,10 @@ impl Preset {
                 state.custom_param_bases[i] = *value;
                 state.custom_params[i] = *value;
             } else {
-                log::warn!("Preset parameter '{}' not found in current descriptors, skipping", id);
+                log::warn!(
+                    "Preset parameter '{}' not found in current descriptors, skipping",
+                    id
+                );
             }
         }
         // Restore MIDI mappings via command (engine rebuilds MidiState on next frame).
@@ -148,24 +156,27 @@ impl Preset {
             state.midi_command = MidiCommand::RestoreMappings(self.midi_mappings.clone());
         }
     }
-    
+
     /// Save preset to file
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         Ok(())
     }
-    
+
     /// Load preset from file
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let metadata = std::fs::metadata(path)?;
         // Limit file size to mitigate stack-overflow DoS from deeply nested JSON.
         if metadata.len() > 65_536 {
-            return Err(anyhow::anyhow!("Preset file too large: {} bytes (max 64 KiB)", metadata.len()));
+            return Err(anyhow::anyhow!(
+                "Preset file too large: {} bytes (max 64 KiB)",
+                metadata.len()
+            ));
         }
         let content = std::fs::read_to_string(path)?;
         let preset: Preset = serde_json::from_str(&content)?;
@@ -181,13 +192,16 @@ impl Preset {
         if self.internal_width > MAX_DIM || self.internal_height > MAX_DIM {
             return Err(anyhow::anyhow!(
                 "Preset dimensions out of range: {}x{} (max {})",
-                self.internal_width, self.internal_height, MAX_DIM
+                self.internal_width,
+                self.internal_height,
+                MAX_DIM
             ));
         }
         if !VALID_FFT_SIZES.contains(&self.audio_fft_size) {
             return Err(anyhow::anyhow!(
                 "Invalid audio_fft_size: {} (valid: {:?})",
-                self.audio_fft_size, VALID_FFT_SIZES
+                self.audio_fft_size,
+                VALID_FFT_SIZES
             ));
         }
         if self.custom_values.len() > 256 {
@@ -198,7 +212,7 @@ impl Preset {
         }
         Ok(())
     }
-    
+
     /// Get filename-safe version of name
     pub fn safe_filename(&self) -> String {
         self.name
@@ -232,30 +246,30 @@ impl PresetBank {
             current_index: None,
             presets_dir,
         };
-        
+
         // Try to load existing presets
         if let Err(e) = bank.refresh() {
             log::warn!("[PresetBank] Failed to refresh presets: {}", e);
         }
-        
+
         bank
     }
-    
+
     /// Refresh preset list from disk
     pub fn refresh(&mut self) -> anyhow::Result<()> {
         self.presets.clear();
-        
+
         if !self.presets_dir.exists() {
             std::fs::create_dir_all(&self.presets_dir)?;
             return Ok(());
         }
-        
+
         let entries = std::fs::read_dir(&self.presets_dir)?;
-        
+
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().map(|e| e == "json").unwrap_or(false) {
                 match Preset::load(&path) {
                     Ok(preset) => {
@@ -267,48 +281,56 @@ impl PresetBank {
                 }
             }
         }
-        
+
         // Sort by name
         self.presets.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         log::info!("Loaded {} presets", self.presets.len());
         Ok(())
     }
-    
+
     /// Add a new preset
     pub fn add_preset(&mut self, preset: Preset) -> anyhow::Result<usize> {
         let filename = format!("{}.json", preset.safe_filename());
         let path = self.presets_dir.join(&filename);
-        
+
         preset.save(&path)?;
-        
+
         self.presets.push(preset);
         self.presets.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         // Find the index of the new preset
-        let index = self.presets.iter().position(|p| {
-            let p_filename = format!("{}.json", p.safe_filename());
-            p_filename == filename
-        }).unwrap_or(self.presets.len() - 1);
-        
-        log::info!("Saved preset '{}' at index {}", self.presets[index].name, index);
+        let index = self
+            .presets
+            .iter()
+            .position(|p| {
+                let p_filename = format!("{}.json", p.safe_filename());
+                p_filename == filename
+            })
+            .unwrap_or(self.presets.len() - 1);
+
+        log::info!(
+            "Saved preset '{}' at index {}",
+            self.presets[index].name,
+            index
+        );
         Ok(index)
     }
-    
+
     /// Delete a preset
     pub fn delete_preset(&mut self, index: usize) -> anyhow::Result<()> {
         if index >= self.presets.len() {
             return Err(anyhow::anyhow!("Invalid preset index"));
         }
-        
+
         let preset = &self.presets[index];
         let filename = format!("{}.json", preset.safe_filename());
         let path = self.presets_dir.join(&filename);
-        
+
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
-        
+
         // Remove from quick slots
         for slot in &mut self.quick_slots {
             if *slot == Some(index) {
@@ -319,7 +341,7 @@ impl PresetBank {
                 }
             }
         }
-        
+
         // Adjust current index
         if let Some(current) = self.current_index {
             if current == index {
@@ -328,23 +350,23 @@ impl PresetBank {
                 self.current_index = Some(current - 1);
             }
         }
-        
+
         self.presets.remove(index);
-        
+
         log::info!("Deleted preset at index {}", index);
         Ok(())
     }
-    
+
     /// Get a preset by index
     pub fn get(&self, index: usize) -> Option<&Preset> {
         self.presets.get(index)
     }
-    
+
     /// Get mutable preset by index
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Preset> {
         self.presets.get_mut(index)
     }
-    
+
     /// Assign a preset to a quick slot (1-8)
     pub fn assign_to_slot(&mut self, preset_index: usize, slot: usize) -> anyhow::Result<()> {
         if !(1..=8).contains(&slot) {
@@ -353,20 +375,23 @@ impl PresetBank {
         if preset_index >= self.presets.len() {
             return Err(anyhow::anyhow!("Invalid preset index"));
         }
-        
+
         self.quick_slots[slot - 1] = Some(preset_index);
-        log::info!("Assigned preset '{}' to quick slot {}", 
-            self.presets[preset_index].name, slot);
+        log::info!(
+            "Assigned preset '{}' to quick slot {}",
+            self.presets[preset_index].name,
+            slot
+        );
         Ok(())
     }
-    
+
     /// Clear a quick slot
     pub fn clear_slot(&mut self, slot: usize) {
         if (1..=8).contains(&slot) {
             self.quick_slots[slot - 1] = None;
         }
     }
-    
+
     /// Get preset index for a quick slot
     pub fn get_slot(&self, slot: usize) -> Option<usize> {
         if (1..=8).contains(&slot) {
@@ -375,14 +400,13 @@ impl PresetBank {
             None
         }
     }
-    
+
     /// Get preset name for a quick slot
     pub fn get_slot_name(&self, slot: usize) -> Option<&str> {
-        self.get_slot(slot).and_then(|idx| {
-            self.presets.get(idx).map(|p| p.name.as_str())
-        })
+        self.get_slot(slot)
+            .and_then(|idx| self.presets.get(idx).map(|p| p.name.as_str()))
     }
-    
+
     /// Apply preset by index
     pub fn apply_preset(&mut self, index: usize, state: &mut EngineState) -> anyhow::Result<()> {
         if let Some(preset) = self.presets.get(index) {
@@ -403,14 +427,13 @@ impl PresetBank {
             Err(anyhow::anyhow!("Quick slot {} is empty", slot))
         }
     }
-    
+
     /// Get current preset name
     pub fn current_name(&self) -> Option<&str> {
-        self.current_index.and_then(|idx| {
-            self.presets.get(idx).map(|p| p.name.as_str())
-        })
+        self.current_index
+            .and_then(|idx| self.presets.get(idx).map(|p| p.name.as_str()))
     }
-    
+
     /// Export preset to a specific path
     pub fn export_preset(&self, index: usize, path: &Path) -> anyhow::Result<()> {
         if let Some(preset) = self.presets.get(index) {
@@ -420,13 +443,13 @@ impl PresetBank {
             Err(anyhow::anyhow!("Invalid preset index"))
         }
     }
-    
+
     /// Import preset from path
     pub fn import_preset(&mut self, path: &Path) -> anyhow::Result<usize> {
         let preset = Preset::load(path)?;
         self.add_preset(preset)
     }
-    
+
     /// Update existing preset with current state
     pub fn update_preset(&mut self, index: usize, state: &EngineState) -> anyhow::Result<()> {
         if index >= self.presets.len() {
@@ -438,57 +461,57 @@ impl PresetBank {
         let mut preset = Preset::from_state(&name, state);
         preset.plugin_state = plugin_state;
         preset.description = self.presets[index].description.clone();
-        
+
         // Save to disk
         let filename = format!("{}.json", preset.safe_filename());
         let path = self.presets_dir.join(&filename);
         preset.save(&path)?;
-        
+
         // Update in memory
         self.presets[index] = preset;
-        
+
         log::info!("Updated preset: {}", name);
         Ok(())
     }
-    
+
     /// Duplicate a preset
     pub fn duplicate_preset(&mut self, index: usize, new_name: &str) -> anyhow::Result<usize> {
         if index >= self.presets.len() {
             return Err(anyhow::anyhow!("Invalid preset index"));
         }
-        
+
         let mut preset = self.presets[index].clone();
         preset.name = new_name.to_string();
         preset.timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         self.add_preset(preset)
     }
-    
+
     /// Rename a preset
     pub fn rename_preset(&mut self, index: usize, new_name: &str) -> anyhow::Result<()> {
         if index >= self.presets.len() {
             return Err(anyhow::anyhow!("Invalid preset index"));
         }
-        
+
         // Delete old file
         let old_filename = format!("{}.json", self.presets[index].safe_filename());
         let old_path = self.presets_dir.join(&old_filename);
         if old_path.exists() {
             std::fs::remove_file(&old_path)?;
         }
-        
+
         // Update and save
         self.presets[index].name = new_name.to_string();
         let new_filename = format!("{}.json", self.presets[index].safe_filename());
         let new_path = self.presets_dir.join(&new_filename);
         self.presets[index].save(&new_path)?;
-        
+
         // Re-sort
         self.presets.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         log::info!("Renamed preset to: {}", new_name);
         Ok(())
     }
@@ -496,7 +519,7 @@ impl PresetBank {
 
 /// Get the presets directory for a specific app (isolated per-app).
 pub fn presets_dir_for(app_name: &str) -> anyhow::Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
     Ok(config_dir.join("rustjay").join(app_name).join("presets"))
 }

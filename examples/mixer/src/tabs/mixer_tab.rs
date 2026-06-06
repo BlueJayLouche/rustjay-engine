@@ -20,7 +20,10 @@ impl AnyGuiTab for MixerTab {
         ui.text("Crossfader");
         {
             let mut crossfader = engine.get_param("crossfader").unwrap_or(0.5);
-            if ui.slider_config("##crossfader", 0.0f32, 1.0f32).build(&mut crossfader) {
+            if ui
+                .slider_config("##crossfader", 0.0f32, 1.0f32)
+                .build(&mut crossfader)
+            {
                 engine.set_param_base("crossfader", crossfader);
             }
         }
@@ -31,7 +34,10 @@ impl AnyGuiTab for MixerTab {
         ui.text("Channel A");
         {
             let mut opacity = engine.get_param("ch_a_opacity").unwrap_or(1.0);
-            if ui.slider_config("Opacity A##opa", 0.0f32, 1.0f32).build(&mut opacity) {
+            if ui
+                .slider_config("Opacity A##opa", 0.0f32, 1.0f32)
+                .build(&mut opacity)
+            {
                 engine.set_param_base("ch_a_opacity", opacity);
             }
 
@@ -56,7 +62,10 @@ impl AnyGuiTab for MixerTab {
         ui.text("Channel B");
         {
             let mut opacity = engine.get_param("ch_b_opacity").unwrap_or(1.0);
-            if ui.slider_config("Opacity B##opb", 0.0f32, 1.0f32).build(&mut opacity) {
+            if ui
+                .slider_config("Opacity B##opb", 0.0f32, 1.0f32)
+                .build(&mut opacity)
+            {
                 engine.set_param_base("ch_b_opacity", opacity);
             }
 

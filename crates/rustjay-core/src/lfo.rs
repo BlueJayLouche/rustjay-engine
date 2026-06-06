@@ -3,10 +3,10 @@
 //! 3 LFOs - one for each HSB parameter (Hue, Saturation, Brightness)
 //! Tempo-syncable with phase offset support
 
+use crate::params::{ParamType, ParameterDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::f32::consts::PI;
-use crate::params::{ParameterDescriptor, ParamType};
 
 /// Beat division multipliers for tempo sync
 /// Represent cycle duration in beats (smaller = faster)
@@ -22,9 +22,7 @@ pub const BEAT_DIVISIONS: [f32; 8] = [
 ];
 
 /// Beat division names for UI
-pub const BEAT_DIVISION_NAMES: [&str; 8] = [
-    "1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"
-];
+pub const BEAT_DIVISION_NAMES: [&str; 8] = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"];
 
 /// Convert beat division index to frequency in Hz for a given BPM
 pub fn beat_division_to_hz(division: usize, bpm: f32) -> f32 {
@@ -36,8 +34,7 @@ pub fn beat_division_to_hz(division: usize, bpm: f32) -> f32 {
 }
 
 /// LFO Waveforms
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Waveform {
     /// Sinusoidal wave.
     #[default]
@@ -63,7 +60,7 @@ impl Waveform {
             Waveform::Square => "Square",
         }
     }
-    
+
     /// All supported waveforms.
     pub fn all() -> &'static [Waveform] {
         &[
@@ -75,7 +72,6 @@ impl Waveform {
         ]
     }
 }
-
 
 /// Target parameter for LFO modulation.
 ///
@@ -150,7 +146,6 @@ impl LfoTarget {
     }
 }
 
-
 /// Single LFO configuration and state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lfo {
@@ -192,7 +187,7 @@ impl Lfo {
             2 => LfoTarget::Brightness,
             _ => LfoTarget::None,
         };
-        
+
         Self {
             index,
             enabled: false,
@@ -208,14 +203,14 @@ impl Lfo {
             last_beat_phase: 0.0,
         }
     }
-    
+
     /// Calculate the LFO output at current phase
     pub fn calculate_value(phase: f32, waveform: Waveform) -> f32 {
         if !phase.is_finite() {
             return 0.0;
         }
         let phase = phase % 1.0;
-        
+
         match waveform {
             Waveform::Sine => (phase * 2.0 * PI).sin(),
             Waveform::Triangle => {
@@ -227,8 +222,8 @@ impl Lfo {
                     4.0 * phase - 4.0
                 }
             }
-            Waveform::Ramp => 2.0 * phase - 1.0,     // -1 to 1 upward
-            Waveform::Saw => 1.0 - 2.0 * phase,       // 1 to -1 downward
+            Waveform::Ramp => 2.0 * phase - 1.0, // -1 to 1 upward
+            Waveform::Saw => 1.0 - 2.0 * phase,  // 1 to -1 downward
             Waveform::Square => {
                 if phase < 0.5 {
                     1.0
@@ -238,7 +233,7 @@ impl Lfo {
             }
         }
     }
-    
+
     /// Update LFO phase based on time/BPM.
     ///
     /// `beat_phase` is a 0→1 ramp from the active sync source (Link quantum,
@@ -273,10 +268,12 @@ impl Lfo {
         // Snap to beat on quantum boundary crossing (beat_phase wrapped ≈ 1→0).
         // Only snap for divisions ≤ 1 beat; longer cycles accumulate freely
         // so they don't get disrupted on every bar.
-        if self.tempo_sync && beat_phase < self.last_beat_phase - 0.5
-            && BEAT_DIVISIONS[division] <= 1.0 {
-                self.phase = 0.0;
-            }
+        if self.tempo_sync
+            && beat_phase < self.last_beat_phase - 0.5
+            && BEAT_DIVISIONS[division] <= 1.0
+        {
+            self.phase = 0.0;
+        }
         self.last_beat_phase = beat_phase;
 
         // Accumulate phase at the correct rate
@@ -292,14 +289,14 @@ impl Lfo {
         let raw_value = Self::calculate_value(effective_phase, self.waveform);
         self.output = raw_value * self.amplitude;
     }
-    
+
     /// Reset phase to 0
     pub fn reset(&mut self) {
         self.phase = 0.0;
         self.output = 0.0;
         self.last_beat_phase = 0.0;
     }
-    
+
     /// Get the waveform value at a specific phase (for visualization)
     pub fn get_waveform_value_at(&self, phase: f32) -> f32 {
         Self::calculate_value(phase, self.waveform)
@@ -331,14 +328,14 @@ impl LfoBank {
             mod_accum: Vec::with_capacity(8),
         }
     }
-    
+
     /// Update all LFOs
     pub fn update(&mut self, bpm: f32, delta_time: f32, beat_phase: f32) {
         for lfo in &mut self.lfos {
             lfo.update(bpm, delta_time, beat_phase);
         }
     }
-    
+
     /// Get modulation values for all targets.
     /// Returns a map of `param_id → modulation_value`.
     ///
@@ -370,8 +367,12 @@ impl LfoBank {
             if !lfo.enabled {
                 continue;
             }
-            let LfoTarget::Custom(id) = &lfo.target else { continue };
-            let Some(idx) = descriptors.iter().position(|d| d.id == *id) else { continue };
+            let LfoTarget::Custom(id) = &lfo.target else {
+                continue;
+            };
+            let Some(idx) = descriptors.iter().position(|d| d.id == *id) else {
+                continue;
+            };
             if let Some(entry) = self.mod_accum.iter_mut().find(|(i, _)| *i == idx) {
                 entry.1 += lfo.output;
             } else {
@@ -384,19 +385,19 @@ impl LfoBank {
     pub fn mod_accum(&self) -> &[(usize, f32)] {
         &self.mod_accum
     }
-    
+
     /// Reset all LFO phases
     pub fn reset_all(&mut self) {
         for lfo in &mut self.lfos {
             lfo.reset();
         }
     }
-    
+
     /// Get LFO by index
     pub fn get(&self, index: usize) -> Option<&Lfo> {
         self.lfos.get(index)
     }
-    
+
     /// Get mutable LFO by index
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Lfo> {
         self.lfos.get_mut(index)
@@ -498,13 +499,12 @@ impl LfoState {
             show_window: false,
         }
     }
-    
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sine_waveform() {
         assert!((Lfo::calculate_value(0.0, Waveform::Sine) - 0.0).abs() < 0.001);
@@ -512,7 +512,7 @@ mod tests {
         assert!((Lfo::calculate_value(0.5, Waveform::Sine) - 0.0).abs() < 0.001);
         assert!((Lfo::calculate_value(0.75, Waveform::Sine) - (-1.0)).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_square_waveform() {
         assert_eq!(Lfo::calculate_value(0.0, Waveform::Square), 1.0);
@@ -520,14 +520,14 @@ mod tests {
         assert_eq!(Lfo::calculate_value(0.5, Waveform::Square), -1.0);
         assert_eq!(Lfo::calculate_value(0.75, Waveform::Square), -1.0);
     }
-    
+
     #[test]
     fn test_lfo_update() {
         let mut lfo = Lfo::new(0);
         lfo.enabled = true;
         lfo.tempo_sync = false;
         lfo.rate = 1.0; // 1 Hz = 1 cycle per second
-        
+
         // Update for 0.25 seconds should advance phase by 0.25
         lfo.update(120.0, 0.25, 0.0);
         assert!((lfo.phase - 0.25).abs() < 0.01);

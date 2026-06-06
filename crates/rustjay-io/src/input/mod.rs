@@ -75,6 +75,30 @@ pub mod webcam;
 #[cfg(feature = "webcam")]
 pub use webcam::{list_cameras, WebcamCapture, WebcamFrame};
 
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg;
+#[cfg(feature = "ffmpeg")]
+#[allow(unused_imports)]
+pub use ffmpeg::{FfmpegDecoder, LoopMode, VideoFrame};
+
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub struct FfmpegDecoder;
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+#[cfg(not(feature = "ffmpeg"))]
+#[allow(dead_code)]
+pub enum LoopMode {
+    None,
+    Loop,
+    PingPong,
+}
+
 #[cfg(target_os = "macos")]
 pub mod syphon_input;
 #[cfg(target_os = "macos")]
@@ -352,7 +376,10 @@ impl InputManager {
             let audio = {
                 log::info!("[InputManager] Discovering audio input devices...");
                 let devices = rustjay_audio::list_audio_devices();
-                log::info!("[InputManager] Found {} audio input device(s)", devices.len());
+                log::info!(
+                    "[InputManager] Found {} audio input device(s)",
+                    devices.len()
+                );
                 devices
             };
 
@@ -445,7 +472,13 @@ impl InputManager {
 
     /// Start webcam capture
     #[cfg(feature = "webcam")]
-    pub fn start_webcam(&mut self, device_index: usize, width: u32, height: u32, fps: u32) -> Result<()> {
+    pub fn start_webcam(
+        &mut self,
+        device_index: usize,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<()> {
         self.stop();
 
         let mut webcam = WebcamCapture::new(device_index, width, height, fps)?;
@@ -457,14 +490,28 @@ impl InputManager {
         self.webcam = Some(webcam);
         self.frame_receiver = Some(receiver);
 
-        log::info!("Started webcam {} at {}x{}@{}fps", device_index, width, height, fps);
+        log::info!(
+            "Started webcam {} at {}x{}@{}fps",
+            device_index,
+            width,
+            height,
+            fps
+        );
         Ok(())
     }
 
     /// Start webcam (placeholder when disabled)
     #[cfg(not(feature = "webcam"))]
-    pub fn start_webcam(&mut self, _device_index: usize, _width: u32, _height: u32, _fps: u32) -> Result<()> {
-        Err(anyhow::anyhow!("Webcam support not compiled. Enable the 'webcam' feature."))
+    pub fn start_webcam(
+        &mut self,
+        _device_index: usize,
+        _width: u32,
+        _height: u32,
+        _fps: u32,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Webcam support not compiled. Enable the 'webcam' feature."
+        ))
     }
 
     /// Start NDI input
@@ -487,12 +534,18 @@ impl InputManager {
     /// Start NDI input (errors; NDI feature disabled).
     #[cfg(not(feature = "ndi"))]
     pub fn start_ndi(&mut self, _source_name: impl Into<String>) -> Result<()> {
-        Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
+        Err(anyhow::anyhow!(
+            "NDI support not compiled. Enable the 'ndi' feature."
+        ))
     }
 
     /// Start Syphon input (macOS only)
     #[cfg(target_os = "macos")]
-    pub fn start_syphon(&mut self, server_name: impl Into<String>, server_uuid: impl Into<String>) -> Result<()> {
+    pub fn start_syphon(
+        &mut self,
+        server_name: impl Into<String>,
+        server_uuid: impl Into<String>,
+    ) -> Result<()> {
         let server_name = server_name.into();
         let server_uuid = server_uuid.into();
 
@@ -510,10 +563,16 @@ impl InputManager {
             self.active = true;
             self.syphon_receiver = Some(receiver);
 
-            log::info!("Started Syphon input: {} (uuid={})", server_name, server_uuid);
+            log::info!(
+                "Started Syphon input: {} (uuid={})",
+                server_name,
+                server_uuid
+            );
             Ok(())
         } else {
-            Err(anyhow::anyhow!("InputManager not initialized with wgpu device/queue"))
+            Err(anyhow::anyhow!(
+                "InputManager not initialized with wgpu device/queue"
+            ))
         }
     }
 
@@ -627,9 +686,11 @@ impl InputManager {
 
         // Handle Syphon frames (zero-copy texture path)
         #[cfg(target_os = "macos")]
-        if let (Some(ref mut syphon), Some(device), Some(queue)) =
-            (self.syphon_receiver.as_mut(), self.syphon_device.as_ref(), self.syphon_queue.as_ref())
-        {
+        if let (Some(ref mut syphon), Some(device), Some(queue)) = (
+            self.syphon_receiver.as_mut(),
+            self.syphon_device.as_ref(),
+            self.syphon_queue.as_ref(),
+        ) {
             if syphon.try_receive_texture(device, queue) {
                 self.resolution = syphon.resolution();
                 self.has_new_frame = true;
@@ -665,7 +726,9 @@ impl InputManager {
     /// Call [`clear_syphon_frame`](Self::clear_syphon_frame) after consuming it.
     #[cfg(target_os = "macos")]
     pub fn syphon_output_texture(&self) -> Option<&wgpu::Texture> {
-        self.syphon_receiver.as_ref().and_then(|r| r.output_texture())
+        self.syphon_receiver
+            .as_ref()
+            .and_then(|r| r.output_texture())
     }
 
     /// Reset the new-frame flag for the Syphon path.
@@ -707,7 +770,10 @@ impl InputManager {
     /// Returns true if the NDI source was lost (not found or too many errors)
     #[cfg(feature = "ndi")]
     pub fn is_ndi_source_lost(&self) -> bool {
-        self.ndi_receiver.as_ref().map(|r| r.is_source_lost()).unwrap_or(false)
+        self.ndi_receiver
+            .as_ref()
+            .map(|r| r.is_source_lost())
+            .unwrap_or(false)
     }
 
     /// Whether the NDI source was lost (always false; NDI feature disabled).

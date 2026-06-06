@@ -119,6 +119,19 @@ pub trait EffectInstance: Send + 'static {
         "effect"
     }
 
+    /// Downcast helper for concrete-type access (e.g. hot-reload wiring).
+    /// Default returns `None`; override with `Some(self)` when downcasting
+    /// is needed.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
+
+    /// Immutable downcast helper. Implementors that override `as_any_mut` should
+    /// also override this so read-only paths can inspect concrete state.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Declare the parameters this effect exposes (LFO / audio / OSC / MIDI / Web
     /// targets). Erased equivalent of [`EffectPlugin::parameters`](crate::EffectPlugin::parameters).
     /// Default: none.
@@ -129,13 +142,7 @@ pub trait EffectInstance: Send + 'static {
     /// Per-frame hook before rendering, for GPU resources that aren't uniforms
     /// (ping-pong textures, ring buffers, mesh rebuilds). Erased equivalent of
     /// [`EffectPlugin::prepare`](crate::EffectPlugin::prepare). Default: no-op.
-    fn prepare(
-        &mut self,
-        _engine: &EngineState,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
-    }
+    fn prepare(&mut self, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
 
     /// Set the parameter prefix used when this effect looks up engine params.
     ///

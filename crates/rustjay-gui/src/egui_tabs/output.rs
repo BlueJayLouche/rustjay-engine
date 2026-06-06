@@ -20,7 +20,11 @@ impl EguiControlGui {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.output_fullscreen = fs;
         }
-        ui.label(egui::RichText::new("Press Shift+F to toggle fullscreen").size(11.0).color(TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new("Press Shift+F to toggle fullscreen")
+                .size(11.0)
+                .color(TEXT_SECONDARY),
+        );
 
         ui.add_space(12.0);
         ui.separator();
@@ -29,7 +33,11 @@ impl EguiControlGui {
         // NDI Output
         #[cfg(feature = "ndi")]
         {
-            ui.label(egui::RichText::new("NDI Output").color(ACCENT_GREEN).strong());
+            ui.label(
+                egui::RichText::new("NDI Output")
+                    .color(ACCENT_GREEN)
+                    .strong(),
+            );
             let ndi_active = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.ndi_output.is_active
@@ -56,7 +64,11 @@ impl EguiControlGui {
         // Syphon Output (macOS)
         #[cfg(target_os = "macos")]
         {
-            ui.label(egui::RichText::new("Syphon Output (macOS)").color(ACCENT_AMBER).strong());
+            ui.label(
+                egui::RichText::new("Syphon Output (macOS)")
+                    .color(ACCENT_AMBER)
+                    .strong(),
+            );
             let syphon_enabled = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.syphon_output.enabled
@@ -83,7 +95,11 @@ impl EguiControlGui {
         // Spout Output (Windows)
         #[cfg(target_os = "windows")]
         {
-            ui.label(egui::RichText::new("Spout Output (Windows)").color(ACCENT_CYAN).strong());
+            ui.label(
+                egui::RichText::new("Spout Output (Windows)")
+                    .color(ACCENT_CYAN)
+                    .strong(),
+            );
             let spout_active = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.spout_output.enabled
@@ -111,8 +127,16 @@ impl EguiControlGui {
         // V4L2 Loopback Output (Linux)
         #[cfg(target_os = "linux")]
         {
-            ui.label(egui::RichText::new("V4L2 Loopback Output (Linux)").color(ACCENT_AMBER).strong());
-            ui.label(egui::RichText::new("Requires v4l2loopback kernel module").size(11.0).color(TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new("V4L2 Loopback Output (Linux)")
+                    .color(ACCENT_AMBER)
+                    .strong(),
+            );
+            ui.label(
+                egui::RichText::new("Requires v4l2loopback kernel module")
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+            );
 
             let v4l2_active = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -120,13 +144,25 @@ impl EguiControlGui {
             };
 
             if !self.v4l2_output_devices.is_empty() {
-                let labels: Vec<String> = self.v4l2_output_devices.iter().map(|d| d.display_name()).collect();
+                let labels: Vec<String> = self
+                    .v4l2_output_devices
+                    .iter()
+                    .map(|d| d.display_name())
+                    .collect();
                 egui::ComboBox::from_id_salt("v4l2_out_sel")
                     .width(240.0)
-                    .selected_text(labels.get(self.selected_v4l2_output).map(|s| s.as_str()).unwrap_or("?"))
+                    .selected_text(
+                        labels
+                            .get(self.selected_v4l2_output)
+                            .map(|s| s.as_str())
+                            .unwrap_or("?"),
+                    )
                     .show_ui(ui, |ui| {
                         for (i, name) in labels.iter().enumerate() {
-                            if ui.selectable_label(self.selected_v4l2_output == i, name.as_str()).clicked() {
+                            if ui
+                                .selectable_label(self.selected_v4l2_output == i, name.as_str())
+                                .clicked()
+                            {
                                 self.selected_v4l2_output = i;
                                 if let Some(d) = self.v4l2_output_devices.get(i) {
                                     self.v4l2_device_path = d.path.clone();
@@ -135,7 +171,10 @@ impl EguiControlGui {
                         }
                     });
             } else {
-                ui.label(egui::RichText::new("No v4l2loopback devices found — see README for setup").color(TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new("No v4l2loopback devices found — see README for setup")
+                        .color(TEXT_SECONDARY),
+                );
                 ui.text_edit_singleline(&mut self.v4l2_device_path);
             }
 

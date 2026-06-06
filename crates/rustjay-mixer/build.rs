@@ -32,7 +32,11 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
     let cargo_home = std::env::var("CARGO_HOME")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".cargo")));
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".cargo"))
+        });
     let cargo_home = cargo_home?;
     let checkouts = cargo_home.join("git/checkouts");
     let entries = std::fs::read_dir(&checkouts).ok()?;

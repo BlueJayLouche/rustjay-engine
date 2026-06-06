@@ -3,11 +3,11 @@
 //! Main rendering engine. Generic over `EffectPlugin` so apps can supply
 //! their own shader, uniforms, and GPU resources.
 
-use rustjay_core::{EffectInput, EffectPlugin, EngineState, Vertex};
-use rustjay_io::OutputManager;
 use crate::blit::BlitPipeline;
 use crate::plugin_renderer::PluginRenderer;
 use crate::texture::{InputTexture, PreviousFrameTexture, Texture};
+use rustjay_core::{EffectInput, EffectPlugin, EngineState, Vertex};
+use rustjay_io::OutputManager;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -83,8 +83,17 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
         let mut required_features = wgpu::Features::empty();
         #[cfg(not(target_arch = "wasm32"))]
-        if adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
+        if adapter
+            .features()
+            .contains(wgpu::Features::POLYGON_MODE_LINE)
+        {
             required_features |= wgpu::Features::POLYGON_MODE_LINE;
+        }
+        if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+        {
+            required_features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
         }
 
         let (device, queue) = adapter
@@ -106,7 +115,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             .formats
             .iter()
             .copied()
-            .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm)
+            .find(|f| {
+                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            })
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
@@ -127,7 +138,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             (s.resolution.internal_width, s.resolution.internal_height)
         };
 
-        let render_target = Texture::create_render_target(&device, render_width, render_height, "Render Target");
+        let render_target =
+            Texture::create_render_target(&device, render_width, render_height, "Render Target");
         let input_texture = InputTexture::new(Arc::clone(&device), Arc::clone(&queue));
         let second_input_texture = InputTexture::new(Arc::clone(&device), Arc::clone(&queue));
 
@@ -142,12 +154,22 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
         let blit_bind_group = blit_pipeline.create_bind_group(&device, &render_target.view);
 
-        let engine_state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
+        let mut engine_state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut plugin_renderer = PluginRenderer::new(plugin, &device, &queue, &engine_state);
+        plugin_renderer.on_engine_ready(&mut engine_state);
         drop(engine_state);
 
-        let previous_frame = if plugin_renderer.cached_graph.as_ref().map(|g| g.feedback).unwrap_or(false) {
-            Some(PreviousFrameTexture::new(&device, render_width, render_height))
+        let previous_frame = if plugin_renderer
+            .cached_graph
+            .as_ref()
+            .map(|g| g.feedback)
+            .unwrap_or(false)
+        {
+            Some(PreviousFrameTexture::new(
+                &device,
+                render_width,
+                render_height,
+            ))
         } else {
             None
         };
@@ -196,10 +218,17 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
     /// Recreate the internal render target at a new resolution.
     pub fn resize_render_target(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 { return; }
-        if self.render_target.width == width && self.render_target.height == height { return; }
-        self.render_target = Texture::create_render_target(&self.device, width, height, "Render Target");
-        self.blit_bind_group = self.blit_pipeline.create_bind_group(&self.device, &self.render_target.view);
+        if width == 0 || height == 0 {
+            return;
+        }
+        if self.render_target.width == width && self.render_target.height == height {
+            return;
+        }
+        self.render_target =
+            Texture::create_render_target(&self.device, width, height, "Render Target");
+        self.blit_bind_group = self
+            .blit_pipeline
+            .create_bind_group(&self.device, &self.render_target.view);
         if let Some(ref mut pf) = self.previous_frame {
             *pf = PreviousFrameTexture::new(&self.device, width, height);
         }
@@ -209,7 +238,12 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
     /// Start NDI output with the given name.
     pub fn start_ndi_output(&mut self, name: &str, include_alpha: bool) -> anyhow::Result<()> {
-        self.output_manager.start_ndi(name, self.render_target.width, self.render_target.height, include_alpha)?;
+        self.output_manager.start_ndi(
+            name,
+            self.render_target.width,
+            self.render_target.height,
+            include_alpha,
+        )?;
         Ok(())
     }
 
@@ -221,7 +255,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
     #[cfg(target_os = "macos")]
     /// Start Syphon output (macOS only).
     pub fn start_syphon_output(&mut self, server_name: &str) -> anyhow::Result<()> {
-        self.output_manager.start_syphon(server_name, Arc::clone(&self.device), Arc::clone(&self.queue))?;
+        self.output_manager.start_syphon(
+            server_name,
+            Arc::clone(&self.device),
+            Arc::clone(&self.queue),
+        )?;
         Ok(())
     }
 
@@ -247,7 +285,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
     #[cfg(target_os = "linux")]
     /// Start V4L2 output (Linux only).
     pub fn start_v4l2_output(&mut self, device_path: &str) -> anyhow::Result<()> {
-        self.output_manager.start_v4l2(device_path, self.render_target.width, self.render_target.height)?;
+        self.output_manager.start_v4l2(
+            device_path,
+            self.render_target.width,
+            self.render_target.height,
+        )?;
         Ok(())
     }
 
@@ -255,6 +297,38 @@ impl<P: EffectPlugin> WgpuEngine<P> {
     /// Stop V4L2 output (Linux only).
     pub fn stop_v4l2_output(&mut self) {
         self.output_manager.stop_v4l2();
+    }
+
+    /// Start disk recording.
+    pub fn start_recording(
+        &mut self,
+        path: &std::path::Path,
+        fps: f32,
+        codec: rustjay_core::RecorderCodec,
+    ) -> anyhow::Result<()> {
+        let io_codec = match codec {
+            rustjay_core::RecorderCodec::H264 => rustjay_io::RecorderCodec::H264,
+            rustjay_core::RecorderCodec::H265 => rustjay_io::RecorderCodec::H265,
+            rustjay_core::RecorderCodec::AV1 => rustjay_io::RecorderCodec::AV1,
+            rustjay_core::RecorderCodec::ProRes422 => rustjay_io::RecorderCodec::ProRes422,
+        };
+        self.output_manager.start_recording(
+            path,
+            self.render_target.width,
+            self.render_target.height,
+            fps,
+            io_codec,
+        )
+    }
+
+    /// Stop disk recording.
+    pub fn stop_recording(&mut self) {
+        self.output_manager.stop_recording();
+    }
+
+    /// Whether disk recording is currently active.
+    pub fn is_recording(&self) -> bool {
+        self.output_manager.is_recording()
     }
 
     /// Render a single frame.
@@ -267,7 +341,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.target_fps
         };
-        let target_interval = std::time::Duration::from_micros(1_000_000 / target_fps.max(1) as u64);
+        let target_interval =
+            std::time::Duration::from_micros(1_000_000 / target_fps.max(1) as u64);
         const CAP_TOLERANCE: std::time::Duration = std::time::Duration::from_micros(1_500); // 1.5 ms
         let now = std::time::Instant::now();
         if now + CAP_TOLERANCE < self.next_render_time {
@@ -296,12 +371,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         engine_state.second_input_generation = self.second_input_cached_gen;
 
         // Plugin prepare hook
-        self.plugin_renderer.plugin.prepare(
-            app_state,
-            &engine_state,
-            &self.device,
-            &self.queue,
-        );
+        self.plugin_renderer
+            .plugin
+            .prepare(app_state, &engine_state, &self.device, &self.queue);
 
         // If the plugin's parameter list changed (e.g. ISF hot reload), refresh EngineState.
         if self.plugin_renderer.plugin.parameters_dirty() {
@@ -326,15 +398,17 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                 .collect();
             let n = new_descs.len();
 
-            engine_state.param_descriptors   = std::sync::Arc::new(new_descs);
-            engine_state.custom_param_bases  = new_bases;
-            engine_state.custom_params       = vec![0.0; n];
+            engine_state.param_descriptors = std::sync::Arc::new(new_descs);
+            engine_state.custom_param_bases = new_bases;
+            engine_state.custom_params = vec![0.0; n];
             engine_state.param_osc_addresses = new_osc;
         }
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Pipeline Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Pipeline Encoder"),
+            });
 
         // Drive the root effect through the EffectInstance-aligned render path
         // (slice inputs + explicit target size) — the same API surface any
@@ -418,7 +492,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                         rows_per_image: Some(1),
                     },
                 },
-                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
             );
             buffer
         });
@@ -455,9 +533,18 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
         // Append blit to the main encoder before the single submit.
         if let Some(ref st) = surface_texture {
-            let surface_view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.blit_pipeline.upload_hsb(&self.queue, hsb_hue, hsb_sat, hsb_bri, hsb_enabled);
-            self.blit_pipeline.blit(&mut encoder, &self.blit_bind_group, &surface_view, &self.vertex_buffer, self.surface_config.format);
+            let surface_view = st
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            self.blit_pipeline
+                .upload_hsb(&self.queue, hsb_hue, hsb_sat, hsb_bri, hsb_enabled);
+            self.blit_pipeline.blit(
+                &mut encoder,
+                &self.blit_bind_group,
+                &surface_view,
+                &self.vertex_buffer,
+                self.surface_config.format,
+            );
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -492,14 +579,18 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                         None
                     }
                 };
-                self.shared_state.lock().unwrap_or_else(|e| e.into_inner()).picked_color = color;
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .picked_color = color;
             } else {
                 log::warn!("Pixel pick readback timed out after 5s");
             }
             buffer.unmap();
         }
 
-        self.output_manager.submit_frame(&self.render_target.texture, &self.device, &self.queue);
+        self.output_manager
+            .submit_frame(&self.render_target.texture, &self.device, &self.queue);
 
         if let Some(st) = surface_texture {
             st.present();
@@ -512,13 +603,15 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.fps_frame_count = 0;
             self.fps_last_time = std::time::Instant::now();
 
-            if let Ok(mut state) = self.shared_state.lock() {
-                state.performance.fps = self.fps_current;
-                state.performance.frame_time_ms = if self.fps_current > 0.0 {
-                    1000.0 / self.fps_current
-                } else {
-                    0.0
-                };
+            if let Ok(state) = self.shared_state.lock() {
+                if let Ok(mut perf) = state.performance.lock() {
+                    perf.fps = self.fps_current;
+                    perf.frame_time_ms = if self.fps_current > 0.0 {
+                        1000.0 / self.fps_current
+                    } else {
+                        0.0
+                    };
+                }
             }
         }
 
@@ -528,7 +621,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
     /// Blit the render target to `dest_view` applying current HSB settings.
     /// Intended for preview textures so the GUI shows the same colour
     /// correction as the main output window.
-    pub fn blit_output_to(&self, encoder: &mut wgpu::CommandEncoder, dest_view: &wgpu::TextureView) {
+    pub fn blit_output_to(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        dest_view: &wgpu::TextureView,
+    ) {
         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         self.blit_pipeline.upload_hsb(
             &self.queue,
@@ -554,10 +651,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.second_input_cached_gen = current_gen;
             if let Some(ref tex) = self.second_input_texture.texture {
                 self.second_input_view = Some(Arc::new(
-                    tex.texture.create_view(&wgpu::TextureViewDescriptor::default())
+                    tex.texture
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
                 ));
-                self.second_input_sampler = Some(Arc::new(
-                    self.device.create_sampler(&wgpu::SamplerDescriptor {
+                self.second_input_sampler = Some(Arc::new(self.device.create_sampler(
+                    &wgpu::SamplerDescriptor {
                         address_mode_u: wgpu::AddressMode::ClampToEdge,
                         address_mode_v: wgpu::AddressMode::ClampToEdge,
                         address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -565,8 +663,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                         min_filter: wgpu::FilterMode::Linear,
                         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
                         ..Default::default()
-                    })
-                ));
+                    },
+                )));
             } else {
                 self.second_input_view = None;
                 self.second_input_sampler = None;

@@ -1,13 +1,18 @@
 //! `IsfEffect` — loads an ISF GLSL shader at runtime, parses its inputs,
 //! transpiles to WGSL, and renders via a custom pipeline.
 
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Instant, SystemTime}};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Instant, SystemTime},
+};
 
 use isf::Isf;
 use rustjay_core::{EffectPlugin, EngineState, ParameterDescriptor, Vertex};
 use wgpu::util::DeviceExt;
 
-use crate::{transpiler, transpiler::MAX_ISF_UNIFORMS, params::isf_inputs_to_parameters};
+use crate::{params::isf_inputs_to_parameters, transpiler, transpiler::MAX_ISF_UNIFORMS};
 
 // ---------------------------------------------------------------------------
 // State (serialisable parameter values keyed by ISF input name)
@@ -53,14 +58,14 @@ pub struct IsfEffect {
     pub transpile_error: Option<String>,
 
     // GPU resources (created in init())
-    pipeline:           Option<wgpu::RenderPipeline>,
-    texture_bgl:        Option<wgpu::BindGroupLayout>,
-    vertex_buffer:      Option<wgpu::Buffer>,
-    uniform_buffer:     Option<wgpu::Buffer>,
+    pipeline: Option<wgpu::RenderPipeline>,
+    texture_bgl: Option<wgpu::BindGroupLayout>,
+    vertex_buffer: Option<wgpu::Buffer>,
+    uniform_buffer: Option<wgpu::Buffer>,
     uniform_bind_group: Option<wgpu::BindGroup>,
 
     /// Mapping from ISF input name → slot index in IsfUniforms.
-    uniform_index:   Vec<(String, usize)>,
+    uniform_index: Vec<(String, usize)>,
     has_image_input: bool,
 }
 
@@ -103,13 +108,19 @@ impl IsfEffect {
 // ---------------------------------------------------------------------------
 
 impl EffectPlugin for IsfEffect {
-    type State    = IsfState;
+    type State = IsfState;
     type Uniforms = IsfUniforms;
 
-    fn app_name(&self) -> &str { "isf-example" }
+    fn app_name(&self) -> &str {
+        "isf-example"
+    }
 
-    fn parameters_dirty(&self) -> bool { self.params_dirty }
-    fn clear_parameters_dirty(&mut self) { self.params_dirty = false; }
+    fn parameters_dirty(&self) -> bool {
+        self.params_dirty
+    }
+    fn clear_parameters_dirty(&mut self) {
+        self.params_dirty = false;
+    }
 
     fn shader_source(&self) -> &'static str {
         // The engine compiles this stub, but render() returns true so it is never used.
@@ -131,7 +142,8 @@ impl EffectPlugin for IsfEffect {
 
         for (name, idx) in &self.uniform_index {
             if *idx < MAX_ISF_UNIFORMS.saturating_sub(4) {
-                let v = engine.get_param(name)
+                let v = engine
+                    .get_param(name)
                     .or_else(|| state.values.get(name).copied())
                     .unwrap_or(0.0);
                 data[*idx] = v;
@@ -140,10 +152,14 @@ impl EffectPlugin for IsfEffect {
 
         // Built-ins: packed after scalar ISF inputs (16-byte aligned)
         let base = self.uniform_index.len();
-        let pad = if !base.is_multiple_of(4) { 4 - base % 4 } else { 0 };
+        let pad = if !base.is_multiple_of(4) {
+            4 - base % 4
+        } else {
+            0
+        };
         let bi = base + pad;
         if bi + 3 < MAX_ISF_UNIFORMS {
-            data[bi]     = engine.resolution.internal_width as f32;
+            data[bi] = engine.resolution.internal_width as f32;
             data[bi + 1] = engine.resolution.internal_height as f32;
             data[bi + 2] = self.start_time.elapsed().as_secs_f32();
             data[bi + 3] = 0.0; // frame index placeholder
@@ -168,7 +184,9 @@ impl EffectPlugin for IsfEffect {
             if let Some(new_path) = guard.take() {
                 self.shader_path = new_path;
                 // Derive and broadcast the new display name immediately.
-                let name = self.shader_path.file_stem()
+                let name = self
+                    .shader_path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("ISF Shader")
                     .to_string();
@@ -180,9 +198,13 @@ impl EffectPlugin for IsfEffect {
             }
         }
 
-        let Ok(meta) = std::fs::metadata(&self.shader_path) else { return };
+        let Ok(meta) = std::fs::metadata(&self.shader_path) else {
+            return;
+        };
         let Ok(mtime) = meta.modified() else { return };
-        if self.last_mtime == Some(mtime) { return; }
+        if self.last_mtime == Some(mtime) {
+            return;
+        }
         self.last_mtime = Some(mtime);
 
         let src = match std::fs::read_to_string(&self.shader_path) {
@@ -193,8 +215,14 @@ impl EffectPlugin for IsfEffect {
             }
         };
         match isf::parse(&src) {
-            Ok(isf) => { self.isf = isf; self.glsl_src = src; }
-            Err(e)  => { self.transpile_error = Some(format!("ISF parse error: {e}")); return; }
+            Ok(isf) => {
+                self.isf = isf;
+                self.glsl_src = src;
+            }
+            Err(e) => {
+                self.transpile_error = Some(format!("ISF parse error: {e}"));
+                return;
+            }
         }
         log::info!("Hot-reloading shader: {}", self.shader_path.display());
         self.init(device, queue);
@@ -214,10 +242,14 @@ impl EffectPlugin for IsfEffect {
             }
         };
 
-        self.uniform_index   = transpiled.uniform_index;
+        self.uniform_index = transpiled.uniform_index;
         self.has_image_input = transpiled.has_image_input;
 
-        log::debug!("ISF: Generated WGSL for {}:\n{}", self.shader_name, transpiled.wgsl);
+        log::debug!(
+            "ISF: Generated WGSL for {}:\n{}",
+            self.shader_name,
+            transpiled.wgsl
+        );
 
         // Compile shader — wgpu panics on WGSL validation errors; catch_unwind prevents crash.
         // Common cause: GLSL function overloading (two fn defs with same name, different types).
@@ -345,13 +377,13 @@ impl EffectPlugin for IsfEffect {
             }],
         });
 
-        self.pipeline           = Some(pipeline);
-        self.texture_bgl        = Some(texture_bgl);
-        self.vertex_buffer      = Some(vb);
-        self.uniform_buffer     = Some(ub);
+        self.pipeline = Some(pipeline);
+        self.texture_bgl = Some(texture_bgl);
+        self.vertex_buffer = Some(vb);
+        self.uniform_buffer = Some(ub);
         self.uniform_bind_group = Some(ubg);
-        self.transpile_error    = None;
-        self.params_dirty       = true;
+        self.transpile_error = None;
+        self.params_dirty = true;
 
         // Persist the current shader path so the next launch starts from here.
         let config = super::last_shader_config_path();
@@ -394,8 +426,14 @@ impl EffectPlugin for IsfEffect {
                 label: Some("ISF Texture BG"),
                 layout: tex_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input.view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(input.sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(input.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(input.sampler),
+                    },
                 ],
             })
         } else {
@@ -433,5 +471,4 @@ impl EffectPlugin for IsfEffect {
 
         true
     }
-
 }

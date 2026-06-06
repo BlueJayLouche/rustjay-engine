@@ -5,6 +5,7 @@
 //! - Syphon (macOS GPU texture sharing)
 //! - Spout (Windows GPU texture sharing)
 //! - v4l2loopback (Linux virtual camera) - TODO
+//! - Disk recorder (H.264, H.265, AV1, ProRes via ffmpeg subprocess)
 //!
 //! GPU readback uses a double-buffered staging pool so the render thread
 //! never blocks waiting for a GPU→CPU copy to complete.  Each frame the
@@ -28,22 +29,27 @@ pub enum OutputCommand {
     #[cfg(target_os = "macos")]
     StopSyphon,
     #[cfg(target_os = "windows")]
-    StartSpout { sender_name: String },
+    StartSpout {
+        sender_name: String,
+    },
     #[cfg(target_os = "windows")]
     StopSpout,
     #[cfg(target_os = "linux")]
-    StartV4l2 { device_path: String },
+    StartV4l2 {
+        device_path: String,
+    },
     #[cfg(target_os = "linux")]
     StopV4l2,
     ResizeOutput,
 }
 
+pub mod recorder;
 #[cfg(feature = "ndi")]
 pub mod ndi_output;
-#[cfg(target_os = "macos")]
-pub mod syphon_output;
 #[cfg(target_os = "windows")]
 pub mod spout_output;
+#[cfg(target_os = "macos")]
+pub mod syphon_output;
 #[cfg(target_os = "linux")]
 pub mod v4l2_output;
 
@@ -96,7 +102,12 @@ impl ReadbackPool {
         let slot = &mut self.slots[prev];
 
         match slot {
-            SlotState::Pending { buffer, width, height, ready } => {
+            SlotState::Pending {
+                buffer,
+                width,
+                height,
+                ready,
+            } => {
                 // Non-blocking check — is the map complete?
                 match ready.try_recv() {
                     Ok(true) => {
@@ -107,14 +118,19 @@ impl ReadbackPool {
                         // Return the unmapped buffer to the slot cache so submit_copy
                         // can reuse it next frame without a GPU allocator call.
                         let buf_size = (w as u64) * 4 * (h as u64);
-                        let buf = match std::mem::replace(slot, SlotState::Available { cached: None }) {
-                            SlotState::Pending { buffer, .. } => buffer,
-                            _ => {
-                                log::error!("[ReadbackPool] Expected Pending slot but found another state");
-                                return None;
-                            }
+                        let buf =
+                            match std::mem::replace(slot, SlotState::Available { cached: None }) {
+                                SlotState::Pending { buffer, .. } => buffer,
+                                _ => {
+                                    log::error!(
+                                    "[ReadbackPool] Expected Pending slot but found another state"
+                                );
+                                    return None;
+                                }
+                            };
+                        *slot = SlotState::Available {
+                            cached: Some((buf, buf_size)),
                         };
-                        *slot = SlotState::Available { cached: Some((buf, buf_size)) };
                         Some((data, w, h))
                     }
                     _ => None,
@@ -126,19 +142,17 @@ impl ReadbackPool {
 
     /// Submit a non-blocking copy from `texture` into the current staging
     /// slot and request an async map.
-    fn submit_copy(
-        &mut self,
-        texture: &wgpu::Texture,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
+    fn submit_copy(&mut self, texture: &wgpu::Texture, device: &wgpu::Device, queue: &wgpu::Queue) {
         let width = texture.width();
         let height = texture.height();
         let bytes_per_row = width * 4;
         let buffer_size = (bytes_per_row * height) as u64;
 
         // Extract any cached buffer from this slot (discarding Pending if GPU is too slow).
-        let cached = match std::mem::replace(&mut self.slots[self.current], SlotState::Available { cached: None }) {
+        let cached = match std::mem::replace(
+            &mut self.slots[self.current],
+            SlotState::Available { cached: None },
+        ) {
             SlotState::Available { cached } => cached,
             SlotState::Pending { .. } => {
                 log::debug!("Readback slot {} overwritten (GPU too slow)", self.current);
@@ -242,8 +256,11 @@ pub struct OutputManager {
     #[cfg(target_os = "linux")]
     v4l2_output: Option<v4l2_output::V4l2LoopbackOutput>,
 
-    /// Async readback pool for CPU-path outputs (NDI, V4L2).
+    /// Async readback pool for CPU-path outputs (NDI, V4L2, Recorder).
     readback_pool: ReadbackPool,
+
+    /// Disk recorder (ffmpeg subprocess).
+    recorder: Option<recorder::Recorder>,
 
     frame_count: u64,
 }
@@ -261,8 +278,40 @@ impl OutputManager {
             #[cfg(target_os = "linux")]
             v4l2_output: None,
             readback_pool: ReadbackPool::new(),
+            recorder: None,
             frame_count: 0,
         }
+    }
+
+    /// Start disk recording.
+    pub fn start_recording(
+        &mut self,
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        fps: f32,
+        codec: recorder::RecorderCodec,
+    ) -> anyhow::Result<()> {
+        if self.recorder.is_some() {
+            return Err(anyhow::anyhow!("Recording already in progress"));
+        }
+        let rec = recorder::Recorder::start(path, width, height, fps, codec)?;
+        self.recorder = Some(rec);
+        Ok(())
+    }
+
+    /// Stop disk recording and flush the file.
+    pub fn stop_recording(&mut self) {
+        if let Some(rec) = self.recorder.take() {
+            if let Err(e) = rec.finish() {
+                log::warn!("[OutputManager] recorder finish failed: {}", e);
+            }
+        }
+    }
+
+    /// Whether disk recording is active.
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
     }
 
     /// Start NDI output
@@ -289,7 +338,9 @@ impl OutputManager {
         _height: u32,
         _include_alpha: bool,
     ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
+        Err(anyhow::anyhow!(
+            "NDI support not compiled. Enable the 'ndi' feature."
+        ))
     }
 
     /// Stop NDI output
@@ -328,10 +379,7 @@ impl OutputManager {
 
     /// Start Spout output (Windows only)
     #[cfg(target_os = "windows")]
-    pub fn start_spout(
-        &mut self,
-        sender_name: &str,
-    ) -> anyhow::Result<()> {
+    pub fn start_spout(&mut self, sender_name: &str) -> anyhow::Result<()> {
         let spout = spout_output::SpoutOutput::new(sender_name)?;
         self.spout_output = Some(spout);
         log::info!("Spout output started: {}", sender_name);
@@ -387,8 +435,11 @@ impl OutputManager {
         false
     }
 
-    /// Returns true if any CPU-path output (NDI, V4L2, Spout) needs readback.
+    /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder) needs readback.
     fn needs_readback(&self) -> bool {
+        if self.recorder.is_some() {
+            return true;
+        }
         #[cfg(feature = "ndi")]
         if self.ndi_output.is_some() {
             return true;
@@ -409,7 +460,12 @@ impl OutputManager {
     /// GPU-path outputs (Syphon, Spout) receive the texture directly.
     /// CPU-path outputs (NDI, V4L2) use the async readback pool — the
     /// render thread never blocks waiting for a GPU→CPU copy.
-    pub fn submit_frame(&mut self, texture: &wgpu::Texture, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn submit_frame(
+        &mut self,
+        texture: &wgpu::Texture,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
         self.frame_count += 1;
 
         // CPU-path outputs: harvest previous frame's readback, then submit
@@ -437,6 +493,13 @@ impl OutputManager {
                 if let Some(ref mut v4l2) = self.v4l2_output {
                     if let Err(e) = v4l2.send_frame(&_data, _width, _height) {
                         log::error!("V4L2 output error: {}", e);
+                    }
+                }
+
+                if let Some(ref mut rec) = self.recorder {
+                    if !rec.encode_frame(&_data) {
+                        log::warn!("[OutputManager] recorder encode failed — stopping");
+                        self.stop_recording();
                     }
                 }
             }
@@ -482,6 +545,7 @@ impl OutputManager {
 
     /// Shutdown all outputs
     pub fn shutdown(&mut self) {
+        self.stop_recording();
         self.stop_ndi();
         #[cfg(target_os = "macos")]
         self.stop_syphon();

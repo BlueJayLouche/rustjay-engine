@@ -38,7 +38,9 @@ impl SurfaceOverlapZones {
             self.zones.sort_by(|a, b| {
                 let area_a = (a.uv_rect[2] - a.uv_rect[0]) * (a.uv_rect[3] - a.uv_rect[1]);
                 let area_b = (b.uv_rect[2] - b.uv_rect[0]) * (b.uv_rect[3] - b.uv_rect[1]);
-                area_b.partial_cmp(&area_a).unwrap_or(std::cmp::Ordering::Equal)
+                area_b
+                    .partial_cmp(&area_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             self.zones.truncate(MAX_OVERLAP_ZONES);
         }

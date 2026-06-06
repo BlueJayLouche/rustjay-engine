@@ -32,16 +32,34 @@ pub const KEY_ORDER_OPTS: &[&str] = &["Key FG", "Key BG"];
 pub const KEY_MODE_OPTS: &[&str] = &["Lumakey", "Chromakey"];
 pub const ROTATE_MODE_OPTS: &[&str] = &["Normal", "Mode 1", "Mode 2"];
 pub const DITHER_TYPE_OPTS: &[&str] = &[
-    "Bayer 4×4", "Bayer 8×8", "Blue Noise", "White Noise",
-    "IGN", "Scanlines", "Checkerboard", "Stripes",
-    "Bit Crush", "1-Bit", "Pixel Sort", "Atkinson", "RGB Split",
+    "Bayer 4×4",
+    "Bayer 8×8",
+    "Blue Noise",
+    "White Noise",
+    "IGN",
+    "Scanlines",
+    "Checkerboard",
+    "Stripes",
+    "Bit Crush",
+    "1-Bit",
+    "Pixel Sort",
+    "Atkinson",
+    "RGB Split",
 ];
 pub const COLORIZE_MODE_OPTS: &[&str] = &["HSB", "RGB"];
 pub const INPUT1_SELECT_OPTS: &[&str] = &["Input 1", "Input 2"];
 pub const BLOCK2_INPUT_SELECT_OPTS: &[&str] = &["Block 1", "Input 1", "Input 2"];
 
 /// Float slider that syncs the engine parameter base.
-pub fn sf(ui: &imgui::Ui, engine: &mut EngineState, label: &str, id: &str, v: &mut f32, min: f32, max: f32) {
+pub fn sf(
+    ui: &imgui::Ui,
+    engine: &mut EngineState,
+    label: &str,
+    id: &str,
+    v: &mut f32,
+    min: f32,
+    max: f32,
+) {
     if ui.slider_config(label, min, max).build(v) {
         engine.set_param_base(id, *v);
     }
@@ -51,7 +69,15 @@ pub fn sf(ui: &imgui::Ui, engine: &mut EngineState, label: &str, id: &str, v: &m
 
 /// Integer slider (state is i32, engine stores f32).
 #[allow(dead_code)] // helper kept for tabs that don't currently use an integer slider
-pub fn si(ui: &imgui::Ui, engine: &mut EngineState, label: &str, id: &str, v: &mut i32, min: i32, max: i32) {
+pub fn si(
+    ui: &imgui::Ui,
+    engine: &mut EngineState,
+    label: &str,
+    id: &str,
+    v: &mut i32,
+    min: i32,
+    max: i32,
+) {
     if ui.slider_config(label, min, max).build(v) {
         engine.set_param_base(id, *v as f32);
     }
@@ -83,7 +109,13 @@ pub fn delay_control(
     division: &mut i32,
     max_frames: u32,
 ) {
-    cb(ui, engine, &format!("Tempo Sync##{label}"), &format!("{time_id}_sync"), sync);
+    cb(
+        ui,
+        engine,
+        &format!("Tempo Sync##{label}"),
+        &format!("{time_id}_sync"),
+        sync,
+    );
     if *sync {
         let mut div = *division as usize;
         let div_names = ["1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"];
@@ -92,7 +124,10 @@ pub fn delay_control(
         }
     } else {
         let mut t = *time as i32;
-        if ui.slider_config(&format!("Delay Frames##{label}"), 1, max_frames as i32).build(&mut t) {
+        if ui
+            .slider_config(&format!("Delay Frames##{label}"), 1, max_frames as i32)
+            .build(&mut t)
+        {
             *time = t as u32;
             engine.set_param_base(time_id, *time as f32);
         }
@@ -193,14 +228,42 @@ pub fn key_color(
             engine.set_param_base(&format!("{prefix}_key_value_b"), color[2]);
         }
 
-        sf(ui, engine, &format!("R##{prefix}_kr"), &format!("{prefix}_key_value_r"), r, 0.0, 1.0);
-        sf(ui, engine, &format!("G##{prefix}_kg"), &format!("{prefix}_key_value_g"), g, 0.0, 1.0);
-        sf(ui, engine, &format!("B##{prefix}_kb"), &format!("{prefix}_key_value_b"), b, 0.0, 1.0);
+        sf(
+            ui,
+            engine,
+            &format!("R##{prefix}_kr"),
+            &format!("{prefix}_key_value_r"),
+            r,
+            0.0,
+            1.0,
+        );
+        sf(
+            ui,
+            engine,
+            &format!("G##{prefix}_kg"),
+            &format!("{prefix}_key_value_g"),
+            g,
+            0.0,
+            1.0,
+        );
+        sf(
+            ui,
+            engine,
+            &format!("B##{prefix}_kb"),
+            &format!("{prefix}_key_value_b"),
+            b,
+            0.0,
+            1.0,
+        );
     }
 
     let armed = matches!(*pick_state, PickState::Armed { target: t } if t == target);
     let pending = matches!(*pick_state, PickState::Pending { target: t } if t == target);
-    let btn = if armed { "Pick ⊘ (armed)" } else { "Pick ⊕" };
+    let btn = if armed {
+        "Pick ⊘ (armed)"
+    } else {
+        "Pick ⊕"
+    };
     if ui.button(btn) {
         *pick_state = if armed {
             PickState::Idle
@@ -235,9 +298,33 @@ pub fn geometry_section(
     v_flip: &mut bool,
     geo_overflow: &mut i32,
 ) {
-    sf(ui, engine, &format!("X Displace##{prefix}"), &format!("{prefix}_x_displace"), x, -2.0, 2.0);
-    sf(ui, engine, &format!("Y Displace##{prefix}"), &format!("{prefix}_y_displace"), y, -2.0, 2.0);
-    sf(ui, engine, &format!("Zoom##{prefix}"), &format!("{prefix}_z_displace"), z, 0.0, 4.0);
+    sf(
+        ui,
+        engine,
+        &format!("X Displace##{prefix}"),
+        &format!("{prefix}_x_displace"),
+        x,
+        -2.0,
+        2.0,
+    );
+    sf(
+        ui,
+        engine,
+        &format!("Y Displace##{prefix}"),
+        &format!("{prefix}_y_displace"),
+        y,
+        -2.0,
+        2.0,
+    );
+    sf(
+        ui,
+        engine,
+        &format!("Zoom##{prefix}"),
+        &format!("{prefix}_z_displace"),
+        z,
+        0.0,
+        4.0,
+    );
     sf(
         ui,
         engine,
@@ -265,11 +352,41 @@ pub fn geometry_section(
         -std::f32::consts::PI,
         std::f32::consts::PI,
     );
-    co(ui, engine, &format!("Overflow##{prefix}"), geo_overflow, GEO_OVERFLOW_OPTS);
-    cb(ui, engine, &format!("H Mirror##{prefix}"), &format!("{prefix}_h_mirror"), h_mirror);
-    cb(ui, engine, &format!("V Mirror##{prefix}"), &format!("{prefix}_v_mirror"), v_mirror);
-    cb(ui, engine, &format!("H Flip##{prefix}"), &format!("{prefix}_h_flip"), h_flip);
-    cb(ui, engine, &format!("V Flip##{prefix}"), &format!("{prefix}_v_flip"), v_flip);
+    co(
+        ui,
+        engine,
+        &format!("Overflow##{prefix}"),
+        geo_overflow,
+        GEO_OVERFLOW_OPTS,
+    );
+    cb(
+        ui,
+        engine,
+        &format!("H Mirror##{prefix}"),
+        &format!("{prefix}_h_mirror"),
+        h_mirror,
+    );
+    cb(
+        ui,
+        engine,
+        &format!("V Mirror##{prefix}"),
+        &format!("{prefix}_v_mirror"),
+        v_mirror,
+    );
+    cb(
+        ui,
+        engine,
+        &format!("H Flip##{prefix}"),
+        &format!("{prefix}_h_flip"),
+        h_flip,
+    );
+    cb(
+        ui,
+        engine,
+        &format!("V Flip##{prefix}"),
+        &format!("{prefix}_v_flip"),
+        v_flip,
+    );
 }
 
 /// Standard color section (HSB attenuate, inverts, posterize).
@@ -314,7 +431,13 @@ pub fn color_section(
         0.0,
         2.0,
     );
-    cb(ui, engine, &format!("Hue Invert##{prefix}"), &format!("{prefix}_hue_invert"), hue_inv);
+    cb(
+        ui,
+        engine,
+        &format!("Hue Invert##{prefix}"),
+        &format!("{prefix}_hue_invert"),
+        hue_inv,
+    );
     cb(
         ui,
         engine,
@@ -329,8 +452,20 @@ pub fn color_section(
         &format!("{prefix}_bright_invert"),
         bri_inv,
     );
-    cb(ui, engine, &format!("RGB Invert##{prefix}"), &format!("{prefix}_rgb_invert"), rgb_inv);
-    cb(ui, engine, &format!("Solarize##{prefix}"), &format!("{prefix}_solarize"), solarize);
+    cb(
+        ui,
+        engine,
+        &format!("RGB Invert##{prefix}"),
+        &format!("{prefix}_rgb_invert"),
+        rgb_inv,
+    );
+    cb(
+        ui,
+        engine,
+        &format!("Solarize##{prefix}"),
+        &format!("{prefix}_solarize"),
+        solarize,
+    );
     cb(
         ui,
         engine,
@@ -405,10 +540,34 @@ pub fn mix_key_section(
         0.0,
         1.0,
     );
-    co(ui, engine, &format!("Mix Type##{prefix}"), mix_type, MIX_TYPE_OPTS);
-    co(ui, engine, &format!("Mix Overflow##{prefix}"), mix_overflow, MIX_OVERFLOW_OPTS);
-    co(ui, engine, &format!("Key Order##{prefix}"), key_order, KEY_ORDER_OPTS);
-    co(ui, engine, &format!("Key Mode##{prefix}"), key_mode, KEY_MODE_OPTS);
+    co(
+        ui,
+        engine,
+        &format!("Mix Type##{prefix}"),
+        mix_type,
+        MIX_TYPE_OPTS,
+    );
+    co(
+        ui,
+        engine,
+        &format!("Mix Overflow##{prefix}"),
+        mix_overflow,
+        MIX_OVERFLOW_OPTS,
+    );
+    co(
+        ui,
+        engine,
+        &format!("Key Order##{prefix}"),
+        key_order,
+        KEY_ORDER_OPTS,
+    );
+    co(
+        ui,
+        engine,
+        &format!("Key Mode##{prefix}"),
+        key_mode,
+        KEY_MODE_OPTS,
+    );
     sf(
         ui,
         engine,
@@ -428,11 +587,17 @@ pub fn mix_key_section(
         1.0,
     );
     ui.text("Key Color");
-    key_color(ui, pick_state, engine, target, prefix, *key_mode, key_r, key_g, key_b);
+    key_color(
+        ui, pick_state, engine, target, prefix, *key_mode, key_r, key_g, key_b,
+    );
 }
 /// Sync all waaaves parameter bases from state to engine.
 pub fn sync_all_params(state: &WaaavesState, engine: &mut EngineState) {
-    let ids: Vec<String> = engine.param_descriptors.iter().map(|d| d.id.clone()).collect();
+    let ids: Vec<String> = engine
+        .param_descriptors
+        .iter()
+        .map(|d| d.id.clone())
+        .collect();
     for id in ids {
         let value = match id.as_str() {
             "ch1_x_displace" => state.block1.ch1_x_displace,

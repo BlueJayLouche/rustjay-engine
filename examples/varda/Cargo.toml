@@ -3,15 +3,39 @@ name = "varda"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["mixer", "egui"]
+mixer = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
+api = ["rustjay-engine/api", "dep:rustjay-api"]
+egui = ["rustjay-engine/egui", "dep:egui"]
+projection = ["rustjay-engine/projection", "dep:rustjay-projection", "rustjay-projection/surface-import"]
+ndi = ["rustjay-engine/ndi", "rustjay-io/ndi"]
+syphon = []
+streaming = []
+recording = []
+hap = ["dep:hap-wgpu"]
+ffmpeg = ["rustjay-io/ffmpeg"]
+sysmon = ["dep:sysinfo"]
+
 [dependencies]
-rustjay-engine = { workspace = true, features = ["mixer", "api"] }
-rustjay-mixer  = { workspace = true }
+rustjay-engine = { workspace = true }
+rustjay-mixer  = { workspace = true, optional = true }
 rustjay-isf    = { workspace = true }
 rustjay-core   = { workspace = true }
 rustjay-render = { workspace = true }
+rustjay-io     = { workspace = true }
+rustjay-api    = { workspace = true, optional = true }
+rustjay-projection = { workspace = true, optional = true }
 wgpu           = { workspace = true }
 bytemuck       = { workspace = true }
 anyhow         = { workspace = true }
 serde          = { workspace = true }
+serde_json     = { workspace = true }
 log            = { workspace = true }
 env_logger     = "0.11"
+image          = { workspace = true }
+notify         = "7.0"
+egui           = { workspace = true, optional = true }
+winit          = { workspace = true }
+hap-wgpu       = { path = "/Users/ac/developer/rust/hap-rs/hap-wgpu", optional = true }
+sysinfo        = { version = "0.34", optional = true, default-features = false, features = ["system"] }
