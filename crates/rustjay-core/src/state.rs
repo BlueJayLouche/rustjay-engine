@@ -4,10 +4,12 @@
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
 use crate::lfo::LfoState;
+use crate::modulation::ModulationEngine;
 use crate::params::{ParamCategory, ParameterDescriptor};
 use crate::routing::AudioRoutingState;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -872,7 +874,18 @@ pub struct EngineState {
     /// Audio-to-parameter routing matrix.
     pub audio_routing: AudioRoutingState,
 
+    /// Unified modulation engine (single source of truth for LFO, ADSR, audio band, step seq).
+    pub modulation: Arc<Mutex<ModulationEngine>>,
+    /// Pre-computed modulation offsets for each param id, updated once per frame after
+    /// `ModulationEngine::update()`. `get_param()` reads this without locking.
+    pub modulation_offsets: HashMap<String, f32>,
+
     /// LFO bank state.
+    ///
+    /// **Deprecated shim** — kept for backward compatibility with apps that read
+    /// `engine.lfo.bank.lfos[i].output` for visualization (e.g. waaaves). The engine
+    /// tick populates `.output` from the unified [`modulation`] engine; the actual
+    /// modulation logic no longer reads this field. Will be removed in a follow-up release.
     pub lfo: LfoState,
 
     /// NDI output state (NDI feature only).
@@ -1117,6 +1130,34 @@ impl EngineState {
             web_token: String::new(),
             web_full_url: String::new(),
             web_lan_trust: false,
+            modulation: {
+                let mut eng = ModulationEngine::new();
+                // Seed 8 default LFO sources so old presets expecting 8 slots find them.
+                for i in 0..8 {
+                    let source = crate::modulation::ModulationSource::LFO {
+                        waveform: crate::modulation::LFOWaveform::Sine,
+                        frequency: 1.0,
+                        phase: 0.0,
+                        amplitude: 0.5,
+                        bipolar: true,
+                        tempo_sync: true,
+                        division: 2,
+                        phase_offset_degrees: 0.0,
+                        last_beat_phase: 0.0,
+                    };
+                    let uuid = format!("lfo_{}", i);
+                    eng.add_source_with_uuid(uuid, source);
+                    // Default assignments for the first three LFOs (HSB)
+                    match i {
+                        0 => eng.assign("hue_shift", "lfo_0", 1.0, None),
+                        1 => eng.assign("saturation", "lfo_1", 1.0, None),
+                        2 => eng.assign("brightness", "lfo_2", 1.0, None),
+                        _ => {}
+                    }
+                }
+                Arc::new(Mutex::new(eng))
+            },
+            modulation_offsets: HashMap::new(),
             lfo: LfoState::new(),
             link: LinkState::default(),
             link_command: LinkCommand::None,
@@ -1215,27 +1256,79 @@ impl EngineState {
         self.param_descriptors.iter().position(|d| d.id == id)
     }
 
-    /// Get the modulated value of a custom parameter.
+    /// Get the modulated value of a parameter (custom or HSB).
+    ///
+    /// For HSB params (`hue_shift`, `saturation`, `brightness`) returns
+    /// `hsb_param_bases + modulation_offset`.
+    ///
+    /// For custom params: if a modulation assignment exists in
+    /// [`modulation_offsets`](Self::modulation_offsets), returns `base + offset * range`.
+    /// Otherwise falls back to `custom_params[i]` so audio-routing values (which are
+    /// still pre-computed in `update_audio()`) remain visible during the transition.
     ///
     /// If [`param_lookup_prefix`](Self::param_lookup_prefix) is set, the prefix
     /// is prepended to `id` first. This lets nested effects (e.g. a channel's
     /// [`EffectNode`](rustjay_render::EffectNode)) look up their parameters
     /// using bare IDs while the engine stores them under fully-qualified names.
     pub fn get_param(&self, id: &str) -> Option<f32> {
-        if let Some(prefix) = self.param_lookup_prefix.borrow().as_ref() {
+        let resolved = if let Some(prefix) = self.param_lookup_prefix.borrow().as_ref() {
             let prefixed = format!("{prefix}{id}");
-            if let Some(i) = self.param_index(&prefixed) {
-                return self.custom_params.get(i).copied();
+            if self.param_index(&prefixed).is_some() {
+                prefixed
+            } else {
+                id.to_string()
             }
+        } else {
+            id.to_string()
+        };
+
+        // HSB params — engine-owned, no descriptor lookup needed
+        match resolved.as_str() {
+            "hue_shift" => {
+                let base = self.hsb_param_bases.hue_shift;
+                let offset = self.modulation_offsets.get("hue_shift").copied().unwrap_or(0.0) * 180.0;
+                return Some((base + offset).clamp(-180.0, 180.0));
+            }
+            "saturation" => {
+                let base = self.hsb_param_bases.saturation;
+                let offset = self.modulation_offsets.get("saturation").copied().unwrap_or(0.0);
+                return Some((base + offset).clamp(0.0, 2.0));
+            }
+            "brightness" => {
+                let base = self.hsb_param_bases.brightness;
+                let offset = self.modulation_offsets.get("brightness").copied().unwrap_or(0.0);
+                return Some((base + offset).clamp(0.0, 2.0));
+            }
+            _ => {}
         }
-        self.param_index(id)
-            .and_then(|i| self.custom_params.get(i).copied())
+
+        // Custom effect params
+        let i = self.param_index(&resolved)?;
+        let desc = self.param_descriptors.get(i)?;
+        let base = self.custom_param_bases.get(i).copied()?;
+        let range = desc.max - desc.min;
+        let offset = self.modulation_offsets.get(&resolved).copied().unwrap_or(0.0);
+        if offset != 0.0 {
+            Some((base + offset * range).clamp(desc.min, desc.max))
+        } else {
+            // Fallback to pre-computed custom_params so audio routing remains visible
+            self.custom_params.get(i).copied()
+        }
     }
 
-    /// Get the base value of a custom parameter (before LFO / audio modulation).
+    /// Get the base (unmodulated) value of a parameter.
+    ///
+    /// For known engine-owned params (`hue_shift`, `saturation`, `brightness`) returns
+    /// the `hsb_param_bases` value. For custom params returns `custom_param_bases[i]`.
+    /// For unrecognised keys returns `None`.
     pub fn get_param_base(&self, id: &str) -> Option<f32> {
-        self.param_index(id)
-            .and_then(|i| self.custom_param_bases.get(i).copied())
+        match id {
+            "hue_shift" => Some(self.hsb_param_bases.hue_shift),
+            "saturation" => Some(self.hsb_param_bases.saturation),
+            "brightness" => Some(self.hsb_param_bases.brightness),
+            _ => self.param_index(id)
+                .and_then(|i| self.custom_param_bases.get(i).copied()),
+        }
     }
 
     /// Set the base value of a custom parameter.

@@ -13,7 +13,6 @@
 
 pub mod instance;
 pub mod lfo;
-#[cfg(feature = "modulation")]
 pub mod modulation;
 pub mod params;
 pub mod plugin;
@@ -26,7 +25,6 @@ pub use lfo::{
     beat_division_to_hz, Lfo, LfoBank, LfoState, LfoTarget, Waveform, BEAT_DIVISIONS,
     BEAT_DIVISION_NAMES,
 };
-#[cfg(feature = "modulation")]
 pub use modulation::{
     ADSRStage, AudioBandPreset, AudioReactMode, AudioSourceValues, AudioValues, LFOWaveform,
     ModulationEngine, ModulationSource, ModulationSourceEntry, ParamModulation, StepInterpolation,

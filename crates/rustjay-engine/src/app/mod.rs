@@ -230,6 +230,9 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) control_visible: bool,
     pub(crate) last_frame_time: std::time::Instant,
     pub(crate) frame_delta_time: f32,
+    /// Monotonic elapsed time in seconds, incremented each frame. Used to drive
+    /// the unified ModulationEngine.
+    pub(crate) elapsed_time: f32,
 
     /// Last time the control-window UI was rebuilt/rendered. The control UI is
     /// throttled to ~30 Hz independent of the output `target_fps` (perf: avoids
@@ -473,6 +476,7 @@ impl<P: EffectPlugin> App<P> {
             control_visible: true,
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,
+            elapsed_time: 0.0,
             last_ui_render: std::time::Instant::now(),
             ui_needs_redraw: true,
             last_device_poll: std::time::Instant::now(),

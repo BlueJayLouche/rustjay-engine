@@ -3,7 +3,8 @@
 //! Save and load parameter snapshots with quick preset selector.
 
 use rustjay_core::{
-    EngineState, HsbParams, LfoBank, MidiCommand, MidiMappingSnapshot, RoutingMatrix,
+    EngineState, HsbParams, LfoBank, MidiCommand, MidiMappingSnapshot, ModulationEngine,
+    RoutingMatrix,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,8 +57,12 @@ pub struct Preset {
     /// Internal render height.
     pub internal_height: u32,
 
-    // LFO settings
-    /// Bank of LFOs for modulation.
+    // Modulation settings
+    /// Unified modulation engine (LFO, ADSR, audio band, step sequencer).
+    #[serde(default)]
+    pub modulation: ModulationEngine,
+    /// Legacy LFO bank — kept for backward compatibility. If `modulation` is absent
+    /// on load, the engine migrates this into the unified `modulation` field.
     #[serde(default)]
     pub lfo_bank: LfoBank,
 
@@ -106,6 +111,10 @@ impl Preset {
             audio_fft_size: state.audio.fft_size,
             internal_width: state.resolution.internal_width,
             internal_height: state.resolution.internal_height,
+            modulation: {
+                let eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                eng.clone()
+            },
             lfo_bank: state.lfo.bank.clone(),
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
@@ -136,6 +145,15 @@ impl Preset {
         state.audio.fft_size = self.audio_fft_size;
         state.resolution.internal_width = self.internal_width;
         state.resolution.internal_height = self.internal_height;
+        // Restore modulation engine (new format), or migrate from legacy lfo_bank
+        let has_modulation = !self.modulation.sources.is_empty();
+        if has_modulation {
+            *state.modulation.lock().unwrap_or_else(|e| e.into_inner()) = self.modulation.clone();
+        } else if !self.lfo_bank.lfos.is_empty() {
+            let migrated = self.lfo_bank.to_modulation_engine(120.0);
+            *state.modulation.lock().unwrap_or_else(|e| e.into_inner()) = migrated;
+        }
+        // Also keep the legacy shim populated so old UI still compiles
         state.lfo.bank = self.lfo_bank.clone();
         state.audio_routing.matrix = self.routing_matrix.clone();
         state.audio_routing.enabled = self.audio_routing_enabled;

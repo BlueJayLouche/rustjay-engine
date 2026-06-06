@@ -740,6 +740,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
     // Main render loop
     let mut last_frame_start = std::time::Instant::now();
+    let mut elapsed = 0.0f32;
     loop {
         let frame_start = std::time::Instant::now();
         let delta_time = frame_start
@@ -747,6 +748,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             .as_secs_f32()
             .min(0.1);
         last_frame_start = frame_start;
+        elapsed += delta_time;
 
         // ── Poll engine services ──────────────────────────────────────────────
         // Audio: push latest FFT + volume into shared state
@@ -824,44 +826,45 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         {
             let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let bpm = state.effective_bpm().max(1.0);
-            let beat_phase = state.stable_beat_phase();
-            state.lfo.bank.update(bpm, delta_time, beat_phase);
-            state.reset_custom_params_to_base();
-            let mods = state.lfo.bank.get_modulations();
-            let mut any_mod = false;
-            for (param_id, mod_val) in &mods {
-                if mod_val.abs() > 0.001 {
-                    any_mod = true;
+            let beat_phase = state.effective_beat_phase();
+
+            let audio = {
+                let mut values = rustjay_core::modulation::AudioValues::default();
+                if state.audio.enabled {
+                    values.sources.insert(
+                        0,
+                        rustjay_core::modulation::AudioSourceValues {
+                            fft: state.audio.fft.to_vec(),
+                            level: state.audio.volume,
+                            sample_rate: 48000.0,
+                        },
+                    );
                 }
-                match param_id.as_str() {
-                    "hue_shift" => {
-                        let base = state.hsb_param_bases.hue_shift;
-                        state.hsb_params.hue_shift = (base + mod_val * 180.0).clamp(-180.0, 180.0);
-                    }
-                    "saturation" => {
-                        let base = state.hsb_param_bases.saturation;
-                        state.hsb_params.saturation = (base + mod_val * 1.0).clamp(0.0, 2.0);
-                    }
-                    "brightness" => {
-                        let base = state.hsb_param_bases.brightness;
-                        state.hsb_params.brightness = (base + mod_val * 1.0).clamp(0.0, 2.0);
-                    }
-                    _ => {
-                        if let Some(i) = state
-                            .param_descriptors
-                            .iter()
-                            .position(|d| d.id == *param_id)
-                        {
-                            let base = state.custom_param_bases[i];
-                            let desc = &state.param_descriptors[i];
-                            let range = desc.max - desc.min;
-                            state.custom_params[i] =
-                                (base + mod_val * range).clamp(desc.min, desc.max);
-                        }
-                    }
+                values
+            };
+
+            {
+                let mod_arc = state.modulation.clone();
+                let mut mod_eng = mod_arc.lock().unwrap();
+                mod_eng.update(elapsed, bpm, beat_phase, &audio);
+                state.modulation_offsets.clear();
+                for param_id in mod_eng.assignments.keys() {
+                    let offset = mod_eng.get_modulation(param_id);
+                    state.modulation_offsets.insert(param_id.clone(), offset);
                 }
             }
-            let _ = any_mod; // per-frame; trace only if needed
+
+            // Apply HSB modulation from the unified engine
+            let base_hue = state.hsb_param_bases.hue_shift;
+            let base_sat = state.hsb_param_bases.saturation;
+            let base_bri = state.hsb_param_bases.brightness;
+            let d_hue = state.modulation_offsets.get("hue_shift").copied().unwrap_or(0.0) * 180.0;
+            let d_sat = state.modulation_offsets.get("saturation").copied().unwrap_or(0.0);
+            let d_bri = state.modulation_offsets.get("brightness").copied().unwrap_or(0.0);
+            state.hsb_params.hue_shift = (base_hue + d_hue).clamp(-180.0, 180.0);
+            state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
+            state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
+
             let (h, s, b) = (
                 state.hsb_params.hue_shift,
                 state.hsb_params.saturation,

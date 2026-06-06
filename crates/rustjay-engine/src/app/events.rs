@@ -598,6 +598,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             .duration_since(self.last_frame_time)
             .as_secs_f32()
             .clamp(0.001, 0.1);
+        self.elapsed_time += self.frame_delta_time;
         self.last_frame_time = now;
 
         self.dispatch_commands();
