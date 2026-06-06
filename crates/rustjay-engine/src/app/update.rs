@@ -252,7 +252,7 @@ impl<P: EffectPlugin> App<P> {
 
     pub(super) fn update_lfo(&mut self) {
         // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
-        let (mod_arc, bpm, stable_beat_phase, volume, lfo_count) = {
+        let (mod_arc, bpm, stable_beat_phase, volume) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let mod_arc = state.modulation.clone();
             let bpm = state.effective_bpm();
@@ -262,7 +262,7 @@ impl<P: EffectPlugin> App<P> {
             if state.audio.enabled {
                 self.cached_fft.extend_from_slice(&state.audio.fft);
             }
-            (mod_arc, bpm, stable_beat_phase, state.audio.volume, state.lfo.bank.lfos.len())
+            (mod_arc, bpm, stable_beat_phase, state.audio.volume)
         };
 
         // Build AudioValues after dropping state (borrows from self.cached_fft).
@@ -291,31 +291,12 @@ impl<P: EffectPlugin> App<P> {
                 let offset = mod_eng.get_modulation(param_id);
                 offsets.push((param_id.clone(), offset));
             }
-
-            self.cached_lfo_outputs.clear();
-            for (i, source_entry) in mod_eng.sources.iter().enumerate() {
-                if i >= lfo_count {
-                    break;
-                }
-                if let rustjay_core::modulation::ModulationSource::LFO { .. } = &source_entry.source {
-                    if i < mod_eng.current_values().len() {
-                        self.cached_lfo_outputs.push(mod_eng.current_values()[i]);
-                    }
-                }
-            }
             offsets
         };
 
         // Re-acquire shared_state and write back.
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.modulation_offsets = offsets;
-
-        // Shim: copy unified LFO outputs into the legacy LfoBank.
-        for (i, output) in self.cached_lfo_outputs.iter().enumerate() {
-            if i < state.lfo.bank.lfos.len() {
-                state.lfo.bank.lfos[i].output = *output;
-            }
-        }
 
         // NOTE: HSB params are no longer pre-computed here.
         // get_param("hue_shift"|"saturation"|"brightness") reads modulation_offsets

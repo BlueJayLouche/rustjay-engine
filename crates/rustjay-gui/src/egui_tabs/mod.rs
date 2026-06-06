@@ -3,7 +3,6 @@
 pub mod audio;
 pub mod control;
 pub mod input;
-pub mod lfo;
 pub mod modulation;
 pub mod output;
 pub mod presets;
