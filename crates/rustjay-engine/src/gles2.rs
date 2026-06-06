@@ -824,35 +824,41 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
         // Update LFO phases and apply modulations to params (post-MIDI so LFO adds on top)
         {
-            let (mod_arc, bpm, stable_beat_phase, audio) = {
+            let (mod_arc, bpm, stable_beat_phase, fft_snapshot, volume) = {
                 let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let mod_arc = state.modulation.clone();
                 let bpm = state.effective_bpm().max(1.0);
                 let stable_beat_phase = state.stable_beat_phase();
-                let audio = {
-                    let mut values = rustjay_core::modulation::AudioValues::default();
-                    if state.audio.enabled {
-                        values.sources.insert(
-                            0,
-                            rustjay_core::modulation::AudioSourceValues {
-                                fft: state.audio.fft.to_vec(),
-                                level: state.audio.volume,
-                                sample_rate: 48000.0,
-                            },
-                        );
-                    }
-                    values
+                let volume = state.audio.volume;
+                let fft: Vec<f32> = if state.audio.enabled {
+                    state.audio.fft.clone()
+                } else {
+                    Vec::new()
                 };
-                (mod_arc, bpm, stable_beat_phase, audio)
+                (mod_arc, bpm, stable_beat_phase, fft, volume)
+            };
+            let audio = {
+                let mut values = rustjay_core::modulation::AudioValues::default();
+                if !fft_snapshot.is_empty() {
+                    values.sources.insert(
+                        0,
+                        rustjay_core::modulation::AudioSourceValues {
+                            fft: &fft_snapshot,
+                            level: volume,
+                            sample_rate: 48000.0,
+                        },
+                    );
+                }
+                values
             };
 
             let offsets = {
                 let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                 mod_eng.update(elapsed, bpm, stable_beat_phase, &audio);
-                let mut offsets = std::collections::HashMap::new();
+                let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
                 for param_id in mod_eng.assignments.keys() {
                     let offset = mod_eng.get_modulation(param_id);
-                    offsets.insert(param_id.clone(), offset);
+                    offsets.push((param_id.clone(), offset));
                 }
                 offsets
             };

@@ -252,54 +252,58 @@ impl<P: EffectPlugin> App<P> {
 
     pub(super) fn update_lfo(&mut self) {
         // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
-        let (mod_arc, bpm, stable_beat_phase, audio, lfo_count) = {
+        let (mod_arc, bpm, stable_beat_phase, volume, lfo_count) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let mod_arc = state.modulation.clone();
             let bpm = state.effective_bpm();
             let stable_beat_phase = state.stable_beat_phase();
-            let audio = {
-                let mut values = rustjay_core::modulation::AudioValues::default();
-                if state.audio.enabled {
-                    // S1 mitigation: borrow fft slice instead of to_vec() when the
-                    // modulation engine API supports it. For now clone is required
-                    // because AudioSourceValues owns a Vec<f32>.
-                    values.sources.insert(
-                        0,
-                        rustjay_core::modulation::AudioSourceValues {
-                            fft: state.audio.fft.to_vec(),
-                            level: state.audio.volume,
-                            sample_rate: 48000.0,
-                        },
-                    );
-                }
-                values
-            };
-            (mod_arc, bpm, stable_beat_phase, audio, state.lfo.bank.lfos.len())
+            // S1: copy FFT into reusable scratch buffer (avoids per-frame allocation).
+            self.cached_fft.clear();
+            if state.audio.enabled {
+                self.cached_fft.extend_from_slice(&state.audio.fft);
+            }
+            (mod_arc, bpm, stable_beat_phase, state.audio.volume, state.lfo.bank.lfos.len())
+        };
+
+        // Build AudioValues after dropping state (borrows from self.cached_fft).
+        let audio = {
+            let mut values = rustjay_core::modulation::AudioValues::default();
+            if !self.cached_fft.is_empty() {
+                values.sources.insert(
+                    0,
+                    rustjay_core::modulation::AudioSourceValues {
+                        fft: &self.cached_fft,
+                        level: volume,
+                        sample_rate: 48000.0,
+                    },
+                );
+            }
+            values
         };
 
         // Tick the unified modulation engine without holding shared_state.
-        let (offsets, lfo_outputs) = {
+        let offsets = {
             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
             mod_eng.update(self.elapsed_time, bpm, stable_beat_phase, &audio);
 
-            let mut offsets = std::collections::HashMap::new();
+            let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
             for param_id in mod_eng.assignments.keys() {
                 let offset = mod_eng.get_modulation(param_id);
-                offsets.insert(param_id.clone(), offset);
+                offsets.push((param_id.clone(), offset));
             }
 
-            let mut lfo_outputs = Vec::new();
+            self.cached_lfo_outputs.clear();
             for (i, source_entry) in mod_eng.sources.iter().enumerate() {
                 if i >= lfo_count {
                     break;
                 }
                 if let rustjay_core::modulation::ModulationSource::LFO { .. } = &source_entry.source {
                     if i < mod_eng.current_values().len() {
-                        lfo_outputs.push(mod_eng.current_values()[i]);
+                        self.cached_lfo_outputs.push(mod_eng.current_values()[i]);
                     }
                 }
             }
-            (offsets, lfo_outputs)
+            offsets
         };
 
         // Re-acquire shared_state and write back.
@@ -307,7 +311,7 @@ impl<P: EffectPlugin> App<P> {
         state.modulation_offsets = offsets;
 
         // Shim: copy unified LFO outputs into the legacy LfoBank.
-        for (i, output) in lfo_outputs.iter().enumerate() {
+        for (i, output) in self.cached_lfo_outputs.iter().enumerate() {
             if i < state.lfo.bank.lfos.len() {
                 state.lfo.bank.lfos[i].output = *output;
             }

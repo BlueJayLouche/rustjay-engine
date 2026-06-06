@@ -646,7 +646,19 @@ impl EffectPlugin for VardaRootPlugin {
             // Apply pending scene from preset load or runtime restore.
             if let Some(scene) = state.pending_scene.take() {
                 if let Ok(mut mixer) = state.mixer.lock() {
-                    scene.apply_to_mixer(&mut mixer);
+                    if let Some(legacy_mod) = scene.apply_to_mixer(&mut mixer) {
+                        // v1 scene carried modulation in the mixer; merge into unified engine.
+                        let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                        for entry in legacy_mod.sources {
+                            mod_eng.add_source_with_uuid(entry.uuid, entry.source);
+                        }
+                        for (param, assignments) in legacy_mod.assignments {
+                            for a in assignments {
+                                mod_eng.assign(&param, &a.source_id, a.amount, a.component);
+                            }
+                        }
+                        log::info!("[Scene] merged legacy modulation from v1 preset");
+                    }
                     log::info!("[Scene] applied pending scene snapshot");
                 }
             }
@@ -970,7 +982,13 @@ impl EffectPlugin for VardaRootPlugin {
                 match workspace.load_scene() {
                     Ok(scene) => {
                         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                        scene.apply_to_mixer(&mut mixer);
+                        let legacy_mod = scene.apply_to_mixer(&mut mixer);
+                        if legacy_mod.is_some() {
+                            // EngineState is not available in init(); legacy v1 modulation
+                            // cannot be merged here. Re-load the preset at runtime via the
+                            // web/MIDI interface to trigger the prepare() migration path.
+                            log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
+                        }
                         log::info!("[Workspace] restored scene onto default graph");
                     }
                     Err(e) => {

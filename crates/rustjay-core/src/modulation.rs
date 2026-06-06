@@ -106,17 +106,29 @@ pub enum StepInterpolation {
 // ─── Audio analysis values ─────────────────────────────────────────────────
 
 /// Audio analysis values for a single source, passed to the modulation engine.
-#[derive(Debug, Clone)]
-pub struct AudioSourceValues {
+///
+/// Uses a borrowed FFT slice (S1) to avoid per-frame allocation.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioSourceValues<'a> {
     /// FFT magnitude data (one-sided spectrum).
-    pub fft: Vec<f32>,
+    pub fft: &'a [f32],
     /// Overall audio level (RMS or peak).
     pub level: f32,
     /// Sample rate in Hz.
     pub sample_rate: f32,
 }
 
-impl AudioSourceValues {
+impl<'a> Default for AudioSourceValues<'a> {
+    fn default() -> Self {
+        Self {
+            fft: &[],
+            level: 0.0,
+            sample_rate: 0.0,
+        }
+    }
+}
+
+impl<'a> AudioSourceValues<'a> {
     /// Compute energy in a frequency range from the FFT data.
     ///
     /// Returns a perceptually-scaled value in roughly 0.0–1.0 range
@@ -145,14 +157,14 @@ impl AudioSourceValues {
 
 /// All audio source data for the current frame.
 #[derive(Debug, Clone, Default)]
-pub struct AudioValues {
+pub struct AudioValues<'a> {
     /// Per-source audio data, keyed by source id (`u32`).
-    pub sources: HashMap<u32, AudioSourceValues>,
+    pub sources: HashMap<u32, AudioSourceValues<'a>>,
 }
 
-impl AudioValues {
+impl<'a> AudioValues<'a> {
     /// Get the first/primary source's data (lowest id).
-    pub fn primary(&self) -> Option<&AudioSourceValues> {
+    pub fn primary(&self) -> Option<&AudioSourceValues<'a>> {
         self.sources
             .iter()
             .min_by_key(|(id, _)| **id)
@@ -469,7 +481,7 @@ impl ModulationSource {
     /// Calculate current value of this modulation source.
     ///
     /// Returns value in range `[-1, 1]` for bipolar or `[0, 1]` for unipolar.
-    pub fn calculate(&mut self, time: f32, dt: f32, bpm: f32, beat_phase: f32, audio: &AudioValues, prev_value: f32) -> f32 {
+    pub fn calculate(&mut self, time: f32, dt: f32, bpm: f32, beat_phase: f32, audio: &AudioValues<'_>, prev_value: f32) -> f32 {
         match self {
             ModulationSource::LFO {
                 waveform,
@@ -1015,7 +1027,7 @@ impl ModulationEngine {
     }
 
     /// Update all source values for the current frame.
-    pub fn update(&mut self, time: f32, bpm: f32, beat_phase: f32, audio: &AudioValues) {
+    pub fn update(&mut self, time: f32, bpm: f32, beat_phase: f32, audio: &AudioValues<'_>) {
         self.ensure_index();
         let dt = self.prev_time.map_or(0.016, |prev| time - prev);
         self.prev_time = Some(time);
@@ -1027,39 +1039,40 @@ impl ModulationEngine {
             self.current_values.push(0.0);
         }
 
-        let order = self.cached_evaluation_order.clone().unwrap_or_else(|| {
+        if self.cached_evaluation_order.is_none() {
             let o = self.evaluation_order();
-            self.cached_evaluation_order = Some(o.clone());
-            o
-        });
-        for i in order {
-            let mut effective = if self.has_mod_on_mod {
-                self.apply_mod_on_mod(i, &self.sources[i].source)
+            self.cached_evaluation_order = Some(o);
+        }
+        let order = self.cached_evaluation_order.as_ref().unwrap();
+        for &i in order {
+            let value = if self.has_mod_on_mod {
+                let mut effective = self.apply_mod_on_mod(i, &self.sources[i].source);
+                let value = effective.calculate(time, dt, bpm, beat_phase, audio, self.prev_values[i]);
+                // Copy back mutable state changes (ADSR stage progression)
+                if let (
+                    ModulationSource::ADSR {
+                        stage,
+                        stage_time,
+                        current_level,
+                        ..
+                    },
+                    ModulationSource::ADSR {
+                        stage: eff_stage,
+                        stage_time: eff_st,
+                        current_level: eff_cl,
+                        ..
+                    },
+                ) = (&mut self.sources[i].source, &effective)
+                {
+                    *stage = *eff_stage;
+                    *stage_time = *eff_st;
+                    *current_level = *eff_cl;
+                }
+                value
             } else {
-                self.sources[i].source.clone()
+                // Fast path: mutate source in place, no clone (S4).
+                self.sources[i].source.calculate(time, dt, bpm, beat_phase, audio, self.prev_values[i])
             };
-            let value = effective.calculate(time, dt, bpm, beat_phase, audio, self.prev_values[i]);
-
-            // Copy back mutable state changes (ADSR stage progression)
-            if let (
-                ModulationSource::ADSR {
-                    stage,
-                    stage_time,
-                    current_level,
-                    ..
-                },
-                ModulationSource::ADSR {
-                    stage: eff_stage,
-                    stage_time: eff_st,
-                    current_level: eff_cl,
-                    ..
-                },
-            ) = (&mut self.sources[i].source, &effective)
-            {
-                *stage = *eff_stage;
-                *stage_time = *eff_st;
-                *current_level = *eff_cl;
-            }
 
             self.current_values[i] = value;
             self.prev_values[i] = value;
@@ -1139,7 +1152,7 @@ impl ModulationEngine {
 mod tests {
     use super::*;
 
-    fn empty_audio() -> AudioValues {
+    fn empty_audio() -> AudioValues<'static> {
         AudioValues::default()
     }
 
@@ -1497,7 +1510,7 @@ mod tests {
     #[test]
     fn audio_energy_empty_fft() {
         let source = AudioSourceValues {
-            fft: vec![],
+            fft: &[],
             level: 0.0,
             sample_rate: 48000.0,
         };
@@ -1507,7 +1520,7 @@ mod tests {
     #[test]
     fn audio_energy_zero_sample_rate() {
         let source = AudioSourceValues {
-            fft: vec![0.5; 256],
+            fft: &[0.5; 256],
             level: 0.5,
             sample_rate: 0.0,
         };
@@ -1517,7 +1530,7 @@ mod tests {
     #[test]
     fn audio_energy_silent() {
         let source = AudioSourceValues {
-            fft: vec![0.0; 256],
+            fft: &[0.0; 256],
             level: 0.0,
             sample_rate: 48000.0,
         };
@@ -1527,7 +1540,7 @@ mod tests {
     #[test]
     fn audio_energy_loud_signal() {
         let source = AudioSourceValues {
-            fft: vec![1.0; 256],
+            fft: &[1.0; 256],
             level: 1.0,
             sample_rate: 48000.0,
         };
@@ -1541,7 +1554,7 @@ mod tests {
         av.sources.insert(
             5,
             AudioSourceValues {
-                fft: vec![],
+                fft: &[],
                 level: 0.5,
                 sample_rate: 48000.0,
             },
@@ -1549,7 +1562,7 @@ mod tests {
         av.sources.insert(
             2,
             AudioSourceValues {
-                fft: vec![],
+                fft: &[],
                 level: 0.8,
                 sample_rate: 48000.0,
             },
@@ -1777,7 +1790,7 @@ mod tests {
         audio.sources.insert(
             0,
             AudioSourceValues {
-                fft: vec![0.001; 256],
+                fft: &[0.001; 256],
                 level: 0.001,
                 sample_rate: 48000.0,
             },
@@ -2366,5 +2379,115 @@ mod tests {
         // with_defaults() adds Bass→Brightness and High→Saturation
         assert!(engine.has_modulation("brightness"));
         assert!(engine.has_modulation("saturation"));
+    }
+
+    // ── Enabled / web-remote integration tests (F2 + S2) ─────────────
+
+    #[test]
+    fn disabled_lfo_returns_zero() {
+        let mut lfo = ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.0,
+            amplitude: 1.0,
+            bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            enabled: false,
+            last_beat_phase: 0.0,
+        };
+        let audio = empty_audio();
+        let val = lfo.calculate(0.0, 0.1, 120.0, 0.0, &audio, 0.0);
+        assert_eq!(val, 0.0, "Disabled LFO must return 0.0");
+    }
+
+    #[test]
+    fn engine_respects_lfo_enabled_flag() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.0,
+            amplitude: 1.0,
+            bipolar: true,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            enabled: true,
+            last_beat_phase: 0.0,
+        });
+        engine.assign("test_param", &uuid, 1.0, None);
+
+        let audio = empty_audio();
+        engine.update(0.0, 120.0, 0.0, &audio);
+        let active_val = engine.get_modulation("test_param");
+        assert!(active_val.abs() > 0.01, "Enabled LFO should produce non-zero modulation");
+
+        // Disable the source (simulating web LfoEnable { slot: 0, enabled: false })
+        if let Some(entry) = engine.sources.iter_mut().find(|s| s.uuid == uuid) {
+            if let ModulationSource::LFO { ref mut enabled, .. } = entry.source {
+                *enabled = false;
+            }
+        }
+        engine.update(0.1, 120.0, 0.0, &audio);
+        let disabled_val = engine.get_modulation("test_param");
+        assert_eq!(disabled_val, 0.0, "Disabled LFO should produce zero modulation");
+    }
+
+    #[test]
+    fn web_lfo_set_replaces_source_preserving_phase() {
+        // Simulates the F2 web command handler logic: replace source at lfo_0
+        // while preserving runtime phase and last_beat_phase.
+        let mut engine = ModulationEngine::new();
+        engine.add_source_with_uuid(
+            "lfo_0".to_string(),
+            ModulationSource::LFO {
+                waveform: LFOWaveform::Sine,
+                frequency: 1.0,
+                phase: 0.5,
+                amplitude: 0.5,
+                bipolar: true,
+                tempo_sync: false,
+                division: 2,
+                phase_offset_degrees: 0.0,
+                enabled: true,
+                last_beat_phase: 0.8,
+            },
+        );
+
+        // Simulate web LfoSet replacing the source
+        let mut new_source = ModulationSource::LFO {
+            waveform: LFOWaveform::Triangle,
+            frequency: 2.0,
+            phase: 0.0, // should be overwritten with existing
+            amplitude: 1.0,
+            bipolar: true,
+            tempo_sync: false,
+            division: 4,
+            phase_offset_degrees: 90.0,
+            enabled: true,
+            last_beat_phase: 0.0, // should be overwritten with existing
+        };
+        if let Some(idx) = engine.sources.iter().position(|s| s.uuid == "lfo_0") {
+            let existing_phase = if let ModulationSource::LFO { phase, .. } = engine.sources[idx].source { phase } else { 0.0 };
+            let existing_last = if let ModulationSource::LFO { last_beat_phase, .. } = engine.sources[idx].source { last_beat_phase } else { 0.0 };
+            engine.sources[idx].source = match new_source {
+                ModulationSource::LFO { ref mut phase, ref mut last_beat_phase, .. } => {
+                    *phase = existing_phase;
+                    *last_beat_phase = existing_last;
+                    new_source
+                }
+                _ => new_source,
+            };
+        }
+
+        if let ModulationSource::LFO { phase, last_beat_phase, waveform, .. } = &engine.sources[0].source {
+            assert_eq!(*phase, 0.5, "Phase should be preserved");
+            assert_eq!(*last_beat_phase, 0.8, "last_beat_phase should be preserved");
+            assert_eq!(*waveform, LFOWaveform::Triangle, "Waveform should be updated");
+        } else {
+            panic!("Expected LFO source");
+        }
     }
 }

@@ -92,7 +92,7 @@ impl EffectPlugin for MixerPlugin {
     fn deserialize_preset_state(&self, data: &str, _state: &mut ()) {
         match crate::MixerState::from_json(data) {
             Ok(state) => {
-                let matched = self.lock().apply_state(&state);
+                let (matched, _legacy) = self.lock().apply_state(&state);
                 log::info!("mixer: restored {matched} channel(s) from preset");
             }
             Err(e) => log::error!("mixer: rejected preset state: {e}"),
