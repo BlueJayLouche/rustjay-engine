@@ -48,14 +48,16 @@ pub fn create_checkerboard_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     // 2×2 checkerboard: TL white, TR black, BL black, BR white
     let data: &[u8] = &[
         255, 255, 255, 255, // white
-        0, 0, 0, 255,       // black
-        0, 0, 0, 255,       // black
+        0, 0, 0, 255, // black
+        0, 0, 0, 255, // black
         255, 255, 255, 255, // white
     ];
     queue.write_texture(
@@ -97,7 +99,9 @@ pub fn create_solid_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let mut data = Vec::with_capacity((width * height * 4) as usize);
@@ -237,6 +241,12 @@ pub fn run_stage(
         encoder: &mut encoder,
         vertex_buffer: &dummy_vb,
     };
-    stage.render(&mut ctx, input_view, input_texture, output_view, output_size);
+    stage.render(
+        &mut ctx,
+        input_view,
+        input_texture,
+        output_view,
+        output_size,
+    );
     queue.submit(std::iter::once(encoder.finish()));
 }

@@ -52,40 +52,36 @@ impl BlitPipeline {
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Projection Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/blit.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/blit.wgsl").into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Projection Blit BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Projection Blit BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Projection Blit Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                ..Default::default()
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Projection Blit Pipeline Layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            ..Default::default()
+        });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Projection Blit Pipeline"),
@@ -222,19 +218,42 @@ impl IdentityStage {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let blit = BlitPipeline::new(device, format);
         let vertices: &[BlitVertex] = &[
-            BlitVertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
-            BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
-            BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
-            BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
-            BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
-            BlitVertex { position: [ 1.0,  1.0], texcoord: [1.0, 0.0] },
+            BlitVertex {
+                position: [-1.0, -1.0],
+                texcoord: [0.0, 1.0],
+            },
+            BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            BlitVertex {
+                position: [1.0, 1.0],
+                texcoord: [1.0, 0.0],
+            },
         ];
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Projection Identity Vertex Buffer"),
             contents: bytemuck::cast_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Self { blit, vertex_buffer, cached_bind_group: None, cached_input_ptr: None }
+        Self {
+            blit,
+            vertex_buffer,
+            cached_bind_group: None,
+            cached_input_ptr: None,
+        }
     }
 }
 
@@ -260,7 +279,8 @@ impl ProjectionStage for IdentityStage {
             self.cached_input_ptr = Some(input_ptr);
             self.cached_bind_group.as_ref().unwrap()
         };
-        self.blit.blit(ctx.encoder, bind_group, output, &self.vertex_buffer);
+        self.blit
+            .blit(ctx.encoder, bind_group, output, &self.vertex_buffer);
     }
 
     fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {
@@ -328,8 +348,8 @@ mod tests {
         // 2×2 checkerboard: TL white, TR black, BL black, BR white
         let data: &[u8] = &[
             255, 255, 255, 255, // white
-            0, 0, 0, 255,       // black
-            0, 0, 0, 255,       // black
+            0, 0, 0, 255, // black
+            0, 0, 0, 255, // black
             255, 255, 255, 255, // white
         ];
         queue.write_texture(
@@ -462,7 +482,13 @@ mod tests {
             encoder: &mut encoder,
             vertex_buffer: &dummy_vb,
         };
-        stage.render(&mut ctx, &input_view, Some(&_input_tex), &output_view, [2, 2]);
+        stage.render(
+            &mut ctx,
+            &input_view,
+            Some(&_input_tex),
+            &output_view,
+            [2, 2],
+        );
         queue.submit(std::iter::once(encoder.finish()));
 
         let pixels = readback_rgba8(&device, &queue, &_output_tex, 2, 2);

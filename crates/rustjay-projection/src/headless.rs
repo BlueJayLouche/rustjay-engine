@@ -170,7 +170,13 @@ impl HeadlessOutput {
                 vertex_buffer: &self.dummy_vb,
             };
 
-            stage.render(&mut ctx, in_view, in_tex, out_view, [self.width, self.height]);
+            stage.render(
+                &mut ctx,
+                in_view,
+                in_tex,
+                out_view,
+                [self.width, self.height],
+            );
         }
 
         // If no readback is in flight, encode the copy and start mapping.
@@ -206,13 +212,11 @@ impl HeadlessOutput {
             self.map_state = Arc::clone(&state);
             self.readback_buffer
                 .slice(..)
-                .map_async(wgpu::MapMode::Read, move |res| {
-                    match res {
-                        Ok(()) => state.store(MAP_READY, Ordering::SeqCst),
-                        Err(e) => {
-                            log::error!("headless readback map_async failed: {e:?}");
-                            state.store(MAP_FAILED, Ordering::SeqCst);
-                        }
+                .map_async(wgpu::MapMode::Read, move |res| match res {
+                    Ok(()) => state.store(MAP_READY, Ordering::SeqCst),
+                    Err(e) => {
+                        log::error!("headless readback map_async failed: {e:?}");
+                        state.store(MAP_FAILED, Ordering::SeqCst);
                     }
                 });
             self.readback_in_flight = true;
@@ -363,12 +367,16 @@ mod tests {
     fn headless_identity_readback() {
         let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
 
-        let (input_tex, input_view) = crate::test_harness::create_checkerboard_texture(&device, &queue);
+        let (input_tex, input_view) =
+            crate::test_harness::create_checkerboard_texture(&device, &queue);
         let mut output = HeadlessOutput::new(
             &device,
             2,
             2,
-            vec![Box::new(IdentityStage::new(&device, wgpu::TextureFormat::Rgba8Unorm))],
+            vec![Box::new(IdentityStage::new(
+                &device,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ))],
         );
 
         output.render(&device, &queue, &input_view, Some(&input_tex), [2, 2]);
@@ -401,7 +409,10 @@ mod tests {
             &device,
             2,
             2,
-            vec![Box::new(IdentityStage::new(&device, wgpu::TextureFormat::Rgba8Unorm))],
+            vec![Box::new(IdentityStage::new(
+                &device,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ))],
         );
 
         // Render at 2×2
@@ -453,16 +464,30 @@ mod tests {
         // bytes_per_row = 512 — exercises the un-padding logic.
         let width = 65;
         let height = 1;
-        let (input_tex, input_view) =
-            crate::test_harness::create_solid_texture(&device, &queue, width, height, [42, 43, 44, 255]);
+        let (input_tex, input_view) = crate::test_harness::create_solid_texture(
+            &device,
+            &queue,
+            width,
+            height,
+            [42, 43, 44, 255],
+        );
         let mut output = HeadlessOutput::new(
             &device,
             width,
             height,
-            vec![Box::new(IdentityStage::new(&device, wgpu::TextureFormat::Rgba8Unorm))],
+            vec![Box::new(IdentityStage::new(
+                &device,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ))],
         );
 
-        output.render(&device, &queue, &input_view, Some(&input_tex), [width, height]);
+        output.render(
+            &device,
+            &queue,
+            &input_view,
+            Some(&input_tex),
+            [width, height],
+        );
         let start = std::time::Instant::now();
         while output.latest_frame().is_none() && start.elapsed() < std::time::Duration::from_secs(5)
         {
@@ -490,7 +515,10 @@ mod tests {
             &device,
             2,
             2,
-            vec![Box::new(IdentityStage::new(&device, wgpu::TextureFormat::Rgba8Unorm))],
+            vec![Box::new(IdentityStage::new(
+                &device,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ))],
         );
 
         // Submit a readback but do NOT poll it to completion — leave it in flight.
@@ -514,7 +542,9 @@ mod tests {
             output.poll_readback(&device);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let pixels = output.latest_frame().expect("readback should complete after resize");
+        let pixels = output
+            .latest_frame()
+            .expect("readback should complete after resize");
         assert_eq!(pixels.len(), 4 * 4 * 4);
         assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
     }

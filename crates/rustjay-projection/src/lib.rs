@@ -17,22 +17,21 @@ pub use identity::{BlitPipeline, IdentityStage};
 
 /// Dome projection stage (cubemap → fisheye).
 pub mod dome;
-pub use dome::{DomeStage, DomemasterConfig, DomemasterResolution, DomemasterParams};
+pub use dome::{DomeStage, DomemasterConfig, DomemasterParams, DomemasterResolution};
 
 /// Warp projection stage (mesh / corner-pin).
 pub mod warp;
-pub use warp::{WarpStage, WarpMesh, MeshPoint, WarpMode, compute_forward_homography};
+pub use warp::{compute_forward_homography, MeshPoint, WarpMesh, WarpMode, WarpStage};
 
 /// Edge blend projection stage.
 pub mod edge_blend;
-pub use edge_blend::{EdgeBlendStage, EdgeBlendConfig, EdgeBlendEdge, blend_alpha};
+pub use edge_blend::{blend_alpha, EdgeBlendConfig, EdgeBlendEdge, EdgeBlendStage};
 
 /// Dome slicer — per-projector warp mesh generation from dome geometry.
 pub mod slicer;
 pub use slicer::{
-    DomeGeometry, DomePreset, DomeSetup, ProjectorConfig,
-    compute_projector_mesh, compute_dome_meshes,
-    SLICER_GRID_COLS, SLICER_GRID_ROWS,
+    compute_dome_meshes, compute_projector_mesh, DomeGeometry, DomePreset, DomeSetup,
+    ProjectorConfig, SLICER_GRID_COLS, SLICER_GRID_ROWS,
 };
 
 /// Surface import — SVG / DXF / raster → contours → `Surface` → `WarpMesh`.
@@ -53,7 +52,7 @@ pub use headless::HeadlessOutput;
 #[cfg(feature = "auto-edge-blend")]
 pub mod auto_blend;
 #[cfg(feature = "auto-edge-blend")]
-pub use auto_blend::{AutoBlendResult, AutoBlendComputer, compute_auto_edge_blend};
+pub use auto_blend::{compute_auto_edge_blend, AutoBlendComputer, AutoBlendResult};
 
 #[cfg(test)]
 pub(crate) mod test_harness;

@@ -106,38 +106,37 @@ pub struct EdgeBlendStage {
 impl EdgeBlendStage {
     /// Create a new edge-blend stage.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Edge Blend BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Edge Blend BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Edge Blend Params"),
@@ -153,9 +152,7 @@ impl EdgeBlendStage {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Edge Blend Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/edge_blend.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/edge_blend.wgsl").into()),
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -335,9 +332,8 @@ mod tests {
     #[test]
     fn edge_blend_left_ramp() {
         let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
-        let (_input_tex, input_view) = crate::test_harness::create_solid_texture(
-            &device, &queue, 2, 2, [255, 255, 255, 255],
-        );
+        let (_input_tex, input_view) =
+            crate::test_harness::create_solid_texture(&device, &queue, 2, 2, [255, 255, 255, 255]);
         let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, 2, 2);
 
         let mut stage = EdgeBlendStage::new(&device, wgpu::TextureFormat::Rgba8Unorm);
@@ -348,8 +344,13 @@ mod tests {
         };
 
         crate::test_harness::run_stage(
-            &device, &queue, &mut stage,
-            &input_view, Some(&_input_tex), &output_view, [2, 2],
+            &device,
+            &queue,
+            &mut stage,
+            &input_view,
+            Some(&_input_tex),
+            &output_view,
+            [2, 2],
         );
 
         let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, 2, 2);
@@ -359,9 +360,25 @@ mod tests {
         // Pixel (1,0): uv.x = 0.75 → t = 0.75/0.5 = 1.5 → clamped = 1.0 → 255
         // Pixel (0,1): uv.x = 0.25 → 128
         // Pixel (1,1): uv.x = 0.75 → 255
-        assert!((pixels[0] as i32 - 128).abs() <= 2, "left column should be ~128, got {}", pixels[0]);
-        assert!((pixels[4] as i32 - 255).abs() <= 2, "right column should be ~255, got {}", pixels[4]);
-        assert!((pixels[8] as i32 - 128).abs() <= 2, "left column should be ~128, got {}", pixels[8]);
-        assert!((pixels[12] as i32 - 255).abs() <= 2, "right column should be ~255, got {}", pixels[12]);
+        assert!(
+            (pixels[0] as i32 - 128).abs() <= 2,
+            "left column should be ~128, got {}",
+            pixels[0]
+        );
+        assert!(
+            (pixels[4] as i32 - 255).abs() <= 2,
+            "right column should be ~255, got {}",
+            pixels[4]
+        );
+        assert!(
+            (pixels[8] as i32 - 128).abs() <= 2,
+            "left column should be ~128, got {}",
+            pixels[8]
+        );
+        assert!(
+            (pixels[12] as i32 - 255).abs() <= 2,
+            "right column should be ~255, got {}",
+            pixels[12]
+        );
     }
 }

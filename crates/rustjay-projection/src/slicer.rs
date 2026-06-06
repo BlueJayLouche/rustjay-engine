@@ -275,7 +275,10 @@ impl DomePreset {
             })
             .collect();
 
-        DomeSetup { geometry, projectors }
+        DomeSetup {
+            geometry,
+            projectors,
+        }
     }
 }
 
@@ -320,12 +323,8 @@ mod tests {
 
     #[test]
     fn mesh_uvs_are_in_unit_square() {
-        let mesh = compute_projector_mesh(
-            &DomeGeometry::default(),
-            &ProjectorConfig::default(),
-            9,
-            9,
-        );
+        let mesh =
+            compute_projector_mesh(&DomeGeometry::default(), &ProjectorConfig::default(), 9, 9);
         for pt in &mesh.points {
             assert!(pt.uv[0] >= 0.0 && pt.uv[0] <= 1.0);
             assert!(pt.uv[1] >= 0.0 && pt.uv[1] <= 1.0);

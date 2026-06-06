@@ -36,7 +36,10 @@ impl WarpMesh {
             let v = r as f32 / (rows - 1).max(1) as f32;
             for c in 0..cols {
                 let u = c as f32 / (cols - 1).max(1) as f32;
-                points.push(MeshPoint { position: [u, v], uv: [u, v] });
+                points.push(MeshPoint {
+                    position: [u, v],
+                    uv: [u, v],
+                });
             }
         }
         Self { cols, rows, points }
@@ -49,10 +52,22 @@ impl WarpMesh {
             cols: 2,
             rows: 2,
             points: vec![
-                MeshPoint { position: corners[0], uv: [0.0, 0.0] }, // TL
-                MeshPoint { position: corners[1], uv: [1.0, 0.0] }, // TR
-                MeshPoint { position: corners[3], uv: [0.0, 1.0] }, // BL
-                MeshPoint { position: corners[2], uv: [1.0, 1.0] }, // BR
+                MeshPoint {
+                    position: corners[0],
+                    uv: [0.0, 0.0],
+                }, // TL
+                MeshPoint {
+                    position: corners[1],
+                    uv: [1.0, 0.0],
+                }, // TR
+                MeshPoint {
+                    position: corners[3],
+                    uv: [0.0, 1.0],
+                }, // BL
+                MeshPoint {
+                    position: corners[2],
+                    uv: [1.0, 1.0],
+                }, // BR
             ],
         }
     }
@@ -72,7 +87,7 @@ pub enum WarpMode {
     /// 4-point corner-pin warp (TL, TR, BR, BL in output space [0..1]).
     CornerPin {
         /// The four corner positions in normalized output coordinates.
-        corners: [[f32; 2]; 4]
+        corners: [[f32; 2]; 4],
     },
     /// Arbitrary XYUV mesh warp grid.
     Mesh(WarpMesh),
@@ -96,7 +111,9 @@ impl WarpMode {
         match self {
             Self::CornerPin { corners } => {
                 let id = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-                corners.iter().zip(id.iter())
+                corners
+                    .iter()
+                    .zip(id.iter())
                     .all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6)
             }
             Self::Mesh(mesh) => mesh.is_identity(),
@@ -134,9 +151,15 @@ fn solve_homography(src: &[[f32; 2]; 4], dst: &[[f32; 2]; 4]) -> [f32; 9] {
 
     let h = gauss_solve_8x8(&mut a, &mut b);
     [
-        h[0] as f32, h[1] as f32, h[2] as f32,
-        h[3] as f32, h[4] as f32, h[5] as f32,
-        h[6] as f32, h[7] as f32, 1.0,
+        h[0] as f32,
+        h[1] as f32,
+        h[2] as f32,
+        h[3] as f32,
+        h[4] as f32,
+        h[5] as f32,
+        h[6] as f32,
+        h[7] as f32,
+        1.0,
     ]
 }
 
@@ -421,38 +444,37 @@ impl WarpStage {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/warp.wgsl").into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Warp BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Warp BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Warp Pipeline Layout"),
@@ -493,11 +515,9 @@ impl WarpStage {
             ..Default::default()
         });
 
-        let h = initial_homography.copied().unwrap_or([
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 1.0,
-        ]);
+        let h = initial_homography
+            .copied()
+            .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Warp Params"),
             contents: bytemuck::bytes_of(&WarpParamsUniform {
@@ -545,18 +565,38 @@ impl WarpStage {
         self.blit = Some(crate::identity::BlitPipeline::new(device, format));
         use wgpu::util::DeviceExt;
         let vertices: &[crate::identity::BlitVertex] = &[
-            crate::identity::BlitVertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
-            crate::identity::BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
-            crate::identity::BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
-            crate::identity::BlitVertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
-            crate::identity::BlitVertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
-            crate::identity::BlitVertex { position: [ 1.0,  1.0], texcoord: [1.0, 0.0] },
+            crate::identity::BlitVertex {
+                position: [-1.0, -1.0],
+                texcoord: [0.0, 1.0],
+            },
+            crate::identity::BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            crate::identity::BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            crate::identity::BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            crate::identity::BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            crate::identity::BlitVertex {
+                position: [1.0, 1.0],
+                texcoord: [1.0, 0.0],
+            },
         ];
-        self.blit_vb = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Warp Identity Blit VB"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
+        self.blit_vb = Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Warp Identity Blit VB"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        );
     }
 
     /// Update the homography for corner-pin mode.
@@ -729,20 +769,28 @@ mod tests {
     #[test]
     fn warp_mode_identity() {
         assert!(WarpMode::identity().is_identity());
-        assert!(!WarpMode::corner_pin([[0.1, 0.0], [0.9, 0.0], [1.0, 1.0], [0.0, 1.0]]).is_identity());
+        assert!(
+            !WarpMode::corner_pin([[0.1, 0.0], [0.9, 0.0], [1.0, 1.0], [0.0, 1.0]]).is_identity()
+        );
     }
 
     #[test]
     fn warp_identity_snapshot() {
         let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
-        let (_input_tex, input_view) = crate::test_harness::create_checkerboard_texture(&device, &queue);
+        let (_input_tex, input_view) =
+            crate::test_harness::create_checkerboard_texture(&device, &queue);
         let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, 2, 2);
 
         let mesh = WarpMesh::identity(2, 2);
         let mut stage = WarpStage::from_mesh(&device, wgpu::TextureFormat::Rgba8Unorm, &mesh);
         crate::test_harness::run_stage(
-            &device, &queue, &mut stage,
-            &input_view, Some(&_input_tex), &output_view, [2, 2],
+            &device,
+            &queue,
+            &mut stage,
+            &input_view,
+            Some(&_input_tex),
+            &output_view,
+            [2, 2],
         );
 
         let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, 2, 2);
@@ -757,9 +805,8 @@ mod tests {
     #[test]
     fn warp_corner_pin_math() {
         let (device, queue) = pollster::block_on(crate::test_harness::init_wgpu());
-        let (_input_tex, input_view) = crate::test_harness::create_solid_texture(
-            &device, &queue, 4, 4, [255, 255, 255, 255],
-        );
+        let (_input_tex, input_view) =
+            crate::test_harness::create_solid_texture(&device, &queue, 4, 4, [255, 255, 255, 255]);
         let (_output_tex, output_view) = crate::test_harness::create_output_texture(&device, 4, 4);
 
         // Trapezoid: top edge narrower than bottom edge.
@@ -772,8 +819,13 @@ mod tests {
         let mode = WarpMode::CornerPin { corners };
         let mut stage = WarpStage::from_mode(&device, wgpu::TextureFormat::Rgba8Unorm, &mode);
         crate::test_harness::run_stage(
-            &device, &queue, &mut stage,
-            &input_view, Some(&_input_tex), &output_view, [4, 4],
+            &device,
+            &queue,
+            &mut stage,
+            &input_view,
+            Some(&_input_tex),
+            &output_view,
+            [4, 4],
         );
 
         let pixels = crate::test_harness::readback_rgba8(&device, &queue, &_output_tex, 4, 4);
@@ -783,10 +835,18 @@ mod tests {
 
         // The center of the top row (x≈0.5) is inside the narrow top edge.
         let top_center = &pixels[8..12];
-        assert!(top_center[0] > 200, "top-center should be white, got {:?}", top_center);
+        assert!(
+            top_center[0] > 200,
+            "top-center should be white, got {:?}",
+            top_center
+        );
 
         // Bottom row spans the full width, so bottom-left should be white.
         let bottom_left = &pixels[(3 * 4 * 4)..(3 * 4 * 4 + 4)];
-        assert!(bottom_left[0] > 200, "bottom-left should be white, got {:?}", bottom_left);
+        assert!(
+            bottom_left[0] > 200,
+            "bottom-left should be white, got {:?}",
+            bottom_left
+        );
     }
 }

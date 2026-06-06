@@ -261,8 +261,9 @@ pub fn detect_from_rgba(
             (0.299 * r + 0.587 * g + 0.114 * b) as u8
         })
         .collect();
-    let gray = image::GrayImage::from_raw(w, h, gray_pixels)
-        .ok_or_else(|| ImportError::ImageLoad("Failed to create grayscale image from RGBA".into()))?;
+    let gray = image::GrayImage::from_raw(w, h, gray_pixels).ok_or_else(|| {
+        ImportError::ImageLoad("Failed to create grayscale image from RGBA".into())
+    })?;
     run_detect_contours(&gray, params)
 }
 
@@ -390,7 +391,11 @@ pub fn detect_contours(img: &image::GrayImage, params: &DetectionParams) -> Dete
         });
     }
 
-    contours.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
+    contours.sort_by(|a, b| {
+        b.area
+            .partial_cmp(&a.area)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     DetectionResult {
         contours,
@@ -453,7 +458,11 @@ pub fn detect_from_svg(svg_data: &[u8]) -> Result<DetectionResult, ImportError> 
         });
     }
 
-    contours.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
+    contours.sort_by(|a, b| {
+        b.area
+            .partial_cmp(&a.area)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     if contours.is_empty() {
         return Err(ImportError::NoContours);
@@ -646,7 +655,11 @@ pub fn detect_from_dxf(dxf_data: &[u8]) -> Result<DetectionResult, ImportError> 
         });
     }
 
-    contours.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
+    contours.sort_by(|a, b| {
+        b.area
+            .partial_cmp(&a.area)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     if contours.is_empty() {
         return Err(ImportError::NoContours);
@@ -756,10 +769,7 @@ pub fn contour_to_warp_mesh(vertices: &[[f32; 2]]) -> WarpMesh {
     for &i in &indices {
         let v = vertices[i];
         let p = [v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0)];
-        points.push(MeshPoint {
-            position: p,
-            uv: p,
-        });
+        points.push(MeshPoint { position: p, uv: p });
     }
 
     WarpMesh {
@@ -834,7 +844,11 @@ fn threshold_binary(img: &image::GrayImage, threshold: u8, invert: bool) -> imag
     for y in 0..h {
         for x in 0..w {
             let px = img.get_pixel(x, y).0[0];
-            let is_fg = if invert { px < threshold } else { px >= threshold };
+            let is_fg = if invert {
+                px < threshold
+            } else {
+                px >= threshold
+            };
             out.put_pixel(x, y, image::Luma([if is_fg { 255 } else { 0 }]));
         }
     }
@@ -1037,7 +1051,8 @@ fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
 
     let mut lower = Vec::new();
     for &p in &sorted {
-        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], &p) <= 0.0 {
+        while lower.len() >= 2 && cross(&lower[lower.len() - 2], &lower[lower.len() - 1], &p) <= 0.0
+        {
             lower.pop();
         }
         lower.push(p);
@@ -1045,7 +1060,8 @@ fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
 
     let mut upper = Vec::new();
     for &p in sorted.iter().rev() {
-        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], &p) <= 0.0 {
+        while upper.len() >= 2 && cross(&upper[upper.len() - 2], &upper[upper.len() - 1], &p) <= 0.0
+        {
             upper.pop();
         }
         upper.push(p);
