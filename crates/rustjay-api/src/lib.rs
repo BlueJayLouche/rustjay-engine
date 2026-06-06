@@ -8,8 +8,8 @@
 
 #![warn(missing_docs)]
 
-pub mod routes;
 pub mod openapi;
+pub mod routes;
 pub mod ws;
 
 #[cfg(test)]
@@ -47,38 +47,95 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/state/midi", get(routes::system::get_state_midi))
         .route("/api/state/osc", get(routes::system::get_state_osc))
         .route("/api/state/presets", get(routes::system::get_state_presets))
-        .route("/api/state/modulation", get(routes::system::get_state_modulation))
-        .route("/api/state/performance", get(routes::system::get_state_performance))
+        .route(
+            "/api/state/modulation",
+            get(routes::system::get_state_modulation),
+        )
+        .route(
+            "/api/state/performance",
+            get(routes::system::get_state_performance),
+        )
         .route("/api/state/link", get(routes::system::get_state_link))
         .route("/api/state/prodj", get(routes::system::get_state_prodj))
         // ── Params ──────────────────────────────────────────────
         .route("/api/params", put(routes::system::set_param))
         // ── Input ───────────────────────────────────────────────
-        .route("/api/input/start-webcam", post(routes::system::input_start_webcam))
+        .route(
+            "/api/input/start-webcam",
+            post(routes::system::input_start_webcam),
+        )
         .route("/api/input/stop", post(routes::system::input_stop))
-        .route("/api/input/refresh-devices", post(routes::system::input_refresh))
+        .route(
+            "/api/input/refresh-devices",
+            post(routes::system::input_refresh),
+        )
         // ── Output ──────────────────────────────────────────────
-        .route("/api/output/start-ndi", post(routes::system::output_start_ndi))
-        .route("/api/output/stop-ndi", post(routes::system::output_stop_ndi))
+        .route(
+            "/api/output/start-ndi",
+            post(routes::system::output_start_ndi),
+        )
+        .route(
+            "/api/output/stop-ndi",
+            post(routes::system::output_stop_ndi),
+        )
         .route("/api/output/resize", post(routes::system::output_resize))
-        .route("/api/output/start-syphon", post(routes::system::output_start_syphon))
-        .route("/api/output/stop-syphon", post(routes::system::output_stop_syphon))
-        .route("/api/output/start-spout", post(routes::system::output_start_spout))
-        .route("/api/output/stop-spout", post(routes::system::output_stop_spout))
-        .route("/api/output/start-v4l2", post(routes::system::output_start_v4l2))
-        .route("/api/output/stop-v4l2", post(routes::system::output_stop_v4l2))
+        .route(
+            "/api/output/start-syphon",
+            post(routes::system::output_start_syphon),
+        )
+        .route(
+            "/api/output/stop-syphon",
+            post(routes::system::output_stop_syphon),
+        )
+        .route(
+            "/api/output/start-spout",
+            post(routes::system::output_start_spout),
+        )
+        .route(
+            "/api/output/stop-spout",
+            post(routes::system::output_stop_spout),
+        )
+        .route(
+            "/api/output/start-v4l2",
+            post(routes::system::output_start_v4l2),
+        )
+        .route(
+            "/api/output/stop-v4l2",
+            post(routes::system::output_stop_v4l2),
+        )
         // ── Audio ───────────────────────────────────────────────
         .route("/api/audio/start", post(routes::system::audio_start))
         .route("/api/audio/stop", post(routes::system::audio_stop))
-        .route("/api/audio/refresh-devices", post(routes::system::audio_refresh))
-        .route("/api/audio/select-device", post(routes::system::audio_select_device))
-        .route("/api/audio/fft-size", post(routes::system::audio_set_fft_size))
+        .route(
+            "/api/audio/refresh-devices",
+            post(routes::system::audio_refresh),
+        )
+        .route(
+            "/api/audio/select-device",
+            post(routes::system::audio_select_device),
+        )
+        .route(
+            "/api/audio/fft-size",
+            post(routes::system::audio_set_fft_size),
+        )
         // ── MIDI ────────────────────────────────────────────────
-        .route("/api/midi/refresh-devices", post(routes::system::midi_refresh))
-        .route("/api/midi/select-device", post(routes::system::midi_select_device))
-        .route("/api/midi/disconnect", post(routes::system::midi_disconnect))
+        .route(
+            "/api/midi/refresh-devices",
+            post(routes::system::midi_refresh),
+        )
+        .route(
+            "/api/midi/select-device",
+            post(routes::system::midi_select_device),
+        )
+        .route(
+            "/api/midi/disconnect",
+            post(routes::system::midi_disconnect),
+        )
         .route("/api/midi/learn", post(routes::system::midi_learn))
-        .route("/api/midi/learn-cancel", post(routes::system::midi_learn_cancel))
+        .route(
+            "/api/midi/learn-cancel",
+            post(routes::system::midi_learn_cancel),
+        )
         .route("/api/midi/unlearn", post(routes::system::midi_unlearn))
         // ── OSC ─────────────────────────────────────────────────
         .route("/api/osc/start", post(routes::system::osc_start))
@@ -96,17 +153,41 @@ pub fn build_router() -> Router<SharedState> {
         .route("/api/prodj/start", post(routes::system::prodj_start))
         .route("/api/prodj/stop", post(routes::system::prodj_stop))
         // ── Mixer ───────────────────────────────────────────────
-        .route("/api/mixer/crossfader", put(routes::system::mixer_crossfader))
-        .route("/api/mixer/master-opacity", put(routes::system::mixer_master_opacity))
+        .route(
+            "/api/mixer/crossfader",
+            put(routes::system::mixer_crossfader),
+        )
+        .route(
+            "/api/mixer/master-opacity",
+            put(routes::system::mixer_master_opacity),
+        )
         // ── Modulation (writes) ─────────────────────────────────
-        .route("/api/modulation/lfo", post(routes::system::modulation_lfo_set))
-        .route("/api/modulation/lfo-enable", post(routes::system::modulation_lfo_enable))
-        .route("/api/modulation/audio-route", post(routes::system::modulation_audio_route))
-        .route("/api/modulation/audio-unroute", post(routes::system::modulation_audio_unroute))
-        .route("/api/modulation/tap-tempo", post(routes::system::modulation_tap_tempo))
+        .route(
+            "/api/modulation/lfo",
+            post(routes::system::modulation_lfo_set),
+        )
+        .route(
+            "/api/modulation/lfo-enable",
+            post(routes::system::modulation_lfo_enable),
+        )
+        .route(
+            "/api/modulation/audio-route",
+            post(routes::system::modulation_audio_route),
+        )
+        .route(
+            "/api/modulation/audio-unroute",
+            post(routes::system::modulation_audio_unroute),
+        )
+        .route(
+            "/api/modulation/tap-tempo",
+            post(routes::system::modulation_tap_tempo),
+        )
         // ── Generic app routes (app-published state + hierarchical params) ─
         .route("/api/app/state", get(routes::app::get_app_state))
-        .route("/api/app/params", get(routes::app::list_params).put(routes::app::set_param_by_path))
+        .route(
+            "/api/app/params",
+            get(routes::app::list_params).put(routes::app::set_param_by_path),
+        )
         // ── WebSocket (JSON-Patch deltas) ─────────────────────────
         .route("/api/ws", axum::routing::get(ws::ws_upgrade))
         // ── OpenAPI / Swagger ───────────────────────────────────
@@ -470,13 +551,18 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
         },
         prodj: ProDjSnapshot {
             enabled: state.prodj.enabled,
-            devices: state.prodj.devices.iter().map(|d| ProDjDeviceSnapshot {
-                device_id: d.device_id,
-                name: d.name.clone(),
-                is_playing: d.is_playing,
-                is_master: d.is_master,
-                bpm: d.bpm,
-            }).collect(),
+            devices: state
+                .prodj
+                .devices
+                .iter()
+                .map(|d| ProDjDeviceSnapshot {
+                    device_id: d.device_id,
+                    name: d.name.clone(),
+                    is_playing: d.is_playing,
+                    is_master: d.is_master,
+                    bpm: d.bpm,
+                })
+                .collect(),
             master_bpm: state.prodj.master_bpm,
             master_beat_phase: state.prodj.master_beat_phase,
             current_track_artist: state.prodj.current_track_artist.clone(),
@@ -495,8 +581,16 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
             input_height: state.resolution.input_height,
         },
         performance: PerformanceSnapshot {
-            fps: state.performance.fps,
-            frame_time_ms: state.performance.frame_time_ms,
+            fps: state
+                .performance
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .fps,
+            frame_time_ms: state
+                .performance
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .frame_time_ms,
         },
         params: ParamsSnapshot {
             descriptors: (*state.param_descriptors).clone(),
