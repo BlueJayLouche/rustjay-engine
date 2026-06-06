@@ -142,13 +142,7 @@ pub trait EffectInstance: Send + 'static {
     /// Per-frame hook before rendering, for GPU resources that aren't uniforms
     /// (ping-pong textures, ring buffers, mesh rebuilds). Erased equivalent of
     /// [`EffectPlugin::prepare`](crate::EffectPlugin::prepare). Default: no-op.
-    fn prepare(
-        &mut self,
-        _engine: &EngineState,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
-    }
+    fn prepare(&mut self, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
 
     /// Set the parameter prefix used when this effect looks up engine params.
     ///

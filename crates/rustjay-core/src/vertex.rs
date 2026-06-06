@@ -20,13 +20,31 @@ impl Vertex {
     pub fn quad_vertices() -> [Self; 6] {
         [
             // First triangle (top-left, top-right, bottom-left)
-            Vertex { position: [-1.0, 1.0], texcoord: [0.0, 0.0] },
-            Vertex { position: [1.0, 1.0], texcoord: [1.0, 0.0] },
-            Vertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
+            Vertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0],
+                texcoord: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-1.0, -1.0],
+                texcoord: [0.0, 1.0],
+            },
             // Second triangle (bottom-left, top-right, bottom-right)
-            Vertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
-            Vertex { position: [1.0, 1.0], texcoord: [1.0, 0.0] },
-            Vertex { position: [1.0, -1.0], texcoord: [1.0, 1.0] },
+            Vertex {
+                position: [-1.0, -1.0],
+                texcoord: [0.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, 1.0],
+                texcoord: [1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
         ]
     }
 

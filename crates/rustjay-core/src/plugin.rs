@@ -3,7 +3,7 @@
 //! Core abstraction that lets app authors plug their own shader, uniforms,
 //! and GPU resources into the engine.
 
-use crate::{EngineState, EffectInput, params::ParameterDescriptor, state::GuiTab};
+use crate::{params::ParameterDescriptor, state::GuiTab, EffectInput, EngineState};
 
 /// Context for [`EffectPlugin::render`] custom render hooks.
 ///
@@ -144,11 +144,7 @@ pub trait EffectPlugin: Send + Sync + 'static {
     fn shader_source(&self) -> &'static str;
 
     /// Build uniforms from the current app + engine state, called every frame.
-    fn build_uniforms(
-        &self,
-        app_state: &Self::State,
-        engine: &EngineState,
-    ) -> Self::Uniforms;
+    fn build_uniforms(&self, app_state: &Self::State, engine: &EngineState) -> Self::Uniforms;
 
     /// Declare all parameters this effect exposes.
     ///
@@ -208,7 +204,9 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// Returns true if the plugin's parameter list has changed since the last frame.
     /// The engine re-queries `parameters()` and refreshes `EngineState` when this is true.
     /// Default: always false (static parameter lists).
-    fn parameters_dirty(&self) -> bool { false }
+    fn parameters_dirty(&self) -> bool {
+        false
+    }
 
     /// Called by the engine immediately after it reads `parameters()` in response to
     /// `parameters_dirty()` returning true. Reset the dirty flag here.
@@ -317,11 +315,7 @@ pub trait EffectPlugin: Send + Sync + 'static {
     /// paths that build their own bind groups should forward this value into
     /// [`EffectInput::generation`] so nested effects invalidate cached bind
     /// groups correctly.
-    fn render(
-        &mut self,
-        _ctx: &mut RenderHookCtx<'_>,
-        _app_state: &mut Self::State,
-    ) -> bool {
+    fn render(&mut self, _ctx: &mut RenderHookCtx<'_>, _app_state: &mut Self::State) -> bool {
         false
     }
 }
