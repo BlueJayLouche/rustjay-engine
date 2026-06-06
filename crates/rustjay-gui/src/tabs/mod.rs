@@ -6,8 +6,10 @@ pub mod tab_color;
 pub mod tab_control;
 /// Video input source tab.
 pub mod tab_input;
-/// LFO modulation window tab.
+/// LFO modulation window tab (legacy).
 pub mod tab_lfo;
+/// Unified Modulation tab (imgui).
+pub mod tab_modulation;
 /// Output configuration tab.
 pub mod tab_output;
 /// Auto-generated parameter category tab.

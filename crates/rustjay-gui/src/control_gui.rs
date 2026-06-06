@@ -85,6 +85,10 @@ pub struct ControlGui {
 
     // Settings window visibility (toggled via View > Preferences)
     pub(crate) show_settings: bool,
+
+    // ── Modulation tab state (M5.3) ──────────────────────────────────────────
+    /// UUID of the currently-expanded source in the imgui Modulation tab.
+    pub(crate) modulation_imgui_expanded: Option<String>,
 }
 
 impl ControlGui {
@@ -162,6 +166,7 @@ impl ControlGui {
             custom_tabs: Vec::new(),
             custom_tab_active: None,
             show_settings: false,
+            modulation_imgui_expanded: None,
         })
     }
 

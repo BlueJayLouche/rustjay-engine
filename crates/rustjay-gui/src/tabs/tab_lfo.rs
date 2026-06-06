@@ -6,13 +6,8 @@ use crate::control_gui::ControlGui;
 use rustjay_core::lfo::{beat_division_to_hz, LfoTarget, Waveform};
 
 impl ControlGui {
-    /// Build the Modulation tab (M5.1 — renamed from LFO).
-    /// Currently delegates to the legacy LFO bank view; full unified editor (M5.3) pending.
-    pub(crate) fn build_modulation_tab(&mut self, ui: &imgui::Ui) {
-        self.build_lfo_tab(ui);
-    }
-
-    /// Build the LFO tab with dynamically-generated targets.
+    /// Legacy LFO bank tab (deprecated — replaced by `build_modulation_tab` in M5.3).
+    /// Kept for backward compatibility until M7.3.
     pub(crate) fn build_lfo_tab(&mut self, ui: &imgui::Ui) {
         // Snapshot target list and param name lookup so we can map indices ↔ targets
         let (target_list, hsb_count, param_names) = {
