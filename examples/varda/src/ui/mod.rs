@@ -19,12 +19,21 @@ pub struct DeckTab;
 pub struct EffectsTab {
     /// Target channel UUID for "Add to channel" actions.
     selected_channel_uuid: String,
+    /// Manual stream URL input.
+    stream_url: String,
+    /// Manual stream name input.
+    stream_name: String,
+    /// Manual stream kind (srt / hls / dash / rtmp).
+    stream_kind: String,
 }
 
 impl Default for EffectsTab {
     fn default() -> Self {
         Self {
             selected_channel_uuid: String::new(),
+            stream_url: String::new(),
+            stream_name: String::new(),
+            stream_kind: "rtmp".to_string(),
         }
     }
 }
@@ -290,7 +299,7 @@ mod egui_impl {
             ui.label(egui::RichText::new("Library").strong());
             let target_uuid = self.selected_channel_uuid.clone();
             egui::ScrollArea::vertical()
-                .max_height(120.0)
+                .max_height(140.0)
                 .show(ui, |ui| {
                     let mut queue_deck: Option<crate::PendingDeck> = None;
                     for entry in state
@@ -299,6 +308,7 @@ mod egui_impl {
                         .iter()
                         .chain(&state.registry.images)
                         .chain(&state.registry.videos)
+                        .chain(&state.registry.streams)
                     {
                         ui.horizontal(|ui| {
                             let icon = match entry.kind {
@@ -307,6 +317,10 @@ mod egui_impl {
                                 crate::sources::SourceKind::Video => "🎬",
                                 crate::sources::SourceKind::SolidColor => "🎨",
                                 crate::sources::SourceKind::Camera => "📷",
+                                crate::sources::SourceKind::Srt => "📡",
+                                crate::sources::SourceKind::Hls => "📡",
+                                crate::sources::SourceKind::Dash => "📡",
+                                crate::sources::SourceKind::Rtmp => "📡",
                                 _ => "📁",
                             };
                             ui.label(format!("{} {}", icon, entry.name));
@@ -333,6 +347,50 @@ mod egui_impl {
                         );
                     }
                 });
+
+            // Manual stream input
+            ui.collapsing("Add Stream URL", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut self.stream_name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("URL:");
+                    ui.text_edit_singleline(&mut self.stream_url);
+                    egui::ComboBox::from_id_salt("stream_kind")
+                        .selected_text(&self.stream_kind)
+                        .show_ui(ui, |ui| {
+                            for kind in &["rtmp", "srt", "hls", "dash"] {
+                                ui.selectable_value(&mut self.stream_kind, kind.to_string(), *kind);
+                            }
+                        });
+                });
+                if ui.button("Add Stream").clicked() && !self.stream_url.is_empty() && !self.stream_name.is_empty() && !target_uuid.is_empty() {
+                    let kind = match self.stream_kind.as_str() {
+                        "srt" => crate::sources::SourceKind::Srt,
+                        "hls" => crate::sources::SourceKind::Hls,
+                        "dash" => crate::sources::SourceKind::Dash,
+                        _ => crate::sources::SourceKind::Rtmp,
+                    };
+                    let entry = crate::sources::SourceEntry {
+                        id: self.stream_name.to_lowercase().replace(' ', "_"),
+                        name: self.stream_name.clone(),
+                        kind,
+                        path: Some(std::path::PathBuf::from(&self.stream_url)),
+                    };
+                    state.pending_decks.push(crate::PendingDeck {
+                        channel_uuid: target_uuid.clone(),
+                        source: entry,
+                    });
+                    engine.notify(
+                        format!("Queued stream '{}' for creation", self.stream_name),
+                        rustjay_core::NotificationLevel::Info,
+                        std::time::Duration::from_secs(3),
+                    );
+                    self.stream_url.clear();
+                    self.stream_name.clear();
+                }
+            });
             ui.separator();
 
             // Live FX chains

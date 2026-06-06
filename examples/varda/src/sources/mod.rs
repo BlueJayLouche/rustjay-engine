@@ -15,12 +15,16 @@ mod watcher;
 
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg_source;
+#[cfg(feature = "ffmpeg")]
+mod stream_source;
 #[cfg(feature = "hap")]
 mod hap_source;
 
 pub use camera_source::CameraSource;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg_source::FfmpegSource;
+#[cfg(feature = "ffmpeg")]
+pub use stream_source::StreamSource;
 #[cfg(feature = "hap")]
 pub use hap_source::HapSource;
 pub use image_source::ImageSource;

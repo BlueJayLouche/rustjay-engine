@@ -18,9 +18,9 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
 | 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
 | 8 | **Sources — NDI** receive | T02.1, T09.1 | done *(engine `rustjay-io/ndi_runtime`, feature-gated)* |
-| 9 | **Sources — SRT** receive | T02.2, T09.2 | todo |
-| 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | todo |
-| 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | todo |
+| 9 | **Sources — SRT** receive | T02.2, T09.2 | done *(Phase 20: `StreamDecoder` in `rustjay-io` opens SRT/HLS/DASH/RTMP/RTMPS URLs via `ffmpeg::format::input`; `StreamSource` in Varda uploads decoded RGBA frames to GPU texture; EffectsTab shows stream library + manual URL input)* |
+| 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure as SRT; protocol auto-detected from URL or explicit kind selection in UI)* |
+| 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure; `assets/streams.txt` loads preset streams on startup)* |
 | 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images and `.mp4`/`.mov`/`.mkv`/`.avi`/`.webm` videos; HAP decode + ffmpeg decode both wired)* |
 | 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
 | 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
@@ -42,7 +42,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 30 | **Multi-output** — multiple windows / fullscreen on any display | T08.1 | done *(multi-projector config in `VardaStage.projectors`; `main.rs` loads saved stage and registers each enabled projector via `sub.add_projector()`; per-projector size/monitor config; OutputsTab add/remove/edit)* |
 | 31 | **Multi-output** — headless outputs with surface assignments + async readback | T08.2 | done *(engine `HeadlessOutput` + async readback; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; Varda `prepare()` adds enabled headless configs at runtime; OutputsTab add/remove/edit)* |
 | 32 | **Network I/O — NDI** send/receive | T09.1 | done *(engine `rustjay-io/ndi_runtime`)* |
-| 33 | **Network I/O — SRT / HLS / LL-HLS / DASH / RTMP(S)** send + receive | T09.2 | todo *(see rustjay-io probe below)* |
+| 33 | **Network I/O — SRT / HLS / LL-HLS / DASH / RTMP(S)** send + receive | T09.2 | done *(receive: Phase 20 `StreamDecoder` via ffmpeg; send: not yet implemented — would reuse ffmpeg muxer subprocess, same architecture as receive)* |
 | 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(HAP Q encode available via local `hap-rs` workspace; H.264/H.265/AV1/ProRes via ffmpeg)* |
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
 | 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.varda/scene.json` = `MixerState` + sequencer; `.varda/stage.json` = `VardaStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.varda/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
@@ -66,9 +66,9 @@ do not block core VJ functionality.
 |---|-----|-----------|------------------|
 | 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | ✅ **Done** — Phase 16. `FfmpegDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` uses `ffmpeg-next` 8.1; `FfmpegSource` in Varda exposes 6 playback params. Hardware decode and background decode thread are future optimizations. |
 | 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | ✅ **Done** — Phase 15. `HapSource` in `examples/varda/src/sources/hap_source.rs` wraps `hap-wgpu::HapPlayer`. YCoCg→RGB shader and background decode thread are future optimizations. |
-| 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | Wrap `ffmpeg` subprocess for protocol ingest (same architecture Varda uses today). |
+| 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | ✅ **Done** — Phase 20. `StreamDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` wraps `ffmpeg-next` to decode from network URLs; `StreamSource` in Varda uploads frames to GPU. Protocol auto-detected from URL or explicit kind selection. Manual URL input + `assets/streams.txt` preset loading wired in EffectsTab. |
 | 21 | **Mod-on-mod chaining** (4-deep) | Low | ✅ **Done** — engine supports 4-deep evaluation; Varda `ModulationTab` provides target/param/modulator/amount UI calling `assign_mod_on_mod()`. |
-| 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Extend `rustjay-io/output` with ffmpeg muxer subprocesses, or build per-output recorder. |
+| 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Not yet implemented — would extend `rustjay-io/output` with ffmpeg muxer subprocess (same architecture as receive). |
 | 34 | **Recording** (H.264/H.265/AV1/ProRes/HAP Q) | Low | Greenfield over `rustjay-io/output` + ffmpeg. Varda's existing recorder is a 5-LOC stub. |
 | 38 | **Notifications toast overlay** | No | ✅ **Done** — generic `EngineState::notify()` + `rustjay-gui` toast overlay; Varda posts success/error/info toasts. |
 | 39 | **Sysmon readout** (CPU/GPU/mem) | No | ✅ **Done** — `sysinfo` polled in `VardaRootPlugin::prepare()` every 60 frames; CPU % and memory used/total GB rendered in top bar. GPU readout not yet implemented. |

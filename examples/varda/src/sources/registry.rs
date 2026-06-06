@@ -51,6 +51,8 @@ pub struct Registry {
     pub images: Vec<SourceEntry>,
     /// Videos discovered on disk.
     pub videos: Vec<SourceEntry>,
+    /// Live stream URLs (loaded from assets/streams.txt).
+    pub streams: Vec<SourceEntry>,
     /// Built-in generators (solid color, camera, etc.).
     pub builtins: Vec<SourceEntry>,
 }
@@ -123,10 +125,57 @@ impl Registry {
         images.sort_by(|a, b| a.name.cmp(&b.name));
         videos.sort_by(|a, b| a.name.cmp(&b.name));
 
+        // Load stream URLs from assets/streams.txt if present.
+        let mut streams = Vec::new();
+        let streams_path = assets_dir.join("streams.txt");
+        if let Ok(content) = std::fs::read_to_string(&streams_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                // Format: name|url|kind  (kind = srt, hls, dash, rtmp)
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() >= 2 {
+                    let name = parts[0].trim().to_string();
+                    let url = parts[1].trim().to_string();
+                    let kind_str = parts.get(2).map(|s| s.trim()).unwrap_or("");
+                    let kind = match kind_str.to_lowercase().as_str() {
+                        "srt" => SourceKind::Srt,
+                        "hls" => SourceKind::Hls,
+                        "dash" => SourceKind::Dash,
+                        "rtmp" | "rtmps" => SourceKind::Rtmp,
+                        _ => {
+                            // Auto-detect from URL prefix.
+                            if url.starts_with("srt://") {
+                                SourceKind::Srt
+                            } else if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
+                                SourceKind::Rtmp
+                            } else if url.contains(".m3u8") || url.contains("/hls") {
+                                SourceKind::Hls
+                            } else if url.contains(".mpd") || url.contains("/dash") {
+                                SourceKind::Dash
+                            } else {
+                                SourceKind::Rtmp
+                            }
+                        }
+                    };
+                    let id = name.to_lowercase().replace(' ', "_");
+                    streams.push(SourceEntry {
+                        id,
+                        name,
+                        kind,
+                        path: Some(std::path::PathBuf::from(&url)),
+                    });
+                }
+            }
+        }
+
         Self {
             shaders,
             images,
             videos,
+            streams,
             builtins: vec![
                 SourceEntry {
                     id: "solid_color".to_string(),
@@ -150,6 +199,7 @@ impl Registry {
             .iter()
             .chain(&self.images)
             .chain(&self.videos)
+            .chain(&self.streams)
             .chain(&self.builtins)
             .collect()
     }

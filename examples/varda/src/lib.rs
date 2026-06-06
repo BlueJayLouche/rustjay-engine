@@ -141,6 +141,7 @@ impl Default for VardaAppState {
                 shaders: Vec::new(),
                 images: Vec::new(),
                 videos: Vec::new(),
+                streams: Vec::new(),
                 builtins: Vec::new(),
             },
             shader_watcher: None,
@@ -245,6 +246,25 @@ fn instantiate_source(
                     "Video support not enabled (hap or ffmpeg feature required)"
                 ));
             }
+        }
+        #[cfg(feature = "ffmpeg")]
+        SourceKind::Srt | SourceKind::Hls | SourceKind::Dash | SourceKind::Rtmp => {
+            let url = entry
+                .path
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Stream entry missing URL"))?;
+            return Ok(crate::graph::Deck::new(
+                format!("deck_{}_{}", channel_id, entry.id),
+                &entry.name,
+                Box::new(crate::sources::StreamSource::new(device, queue, url)?),
+            ));
+        }
+        #[cfg(not(feature = "ffmpeg"))]
+        SourceKind::Srt | SourceKind::Hls | SourceKind::Dash | SourceKind::Rtmp => {
+            return Err(anyhow::anyhow!(
+                "Stream support requires the ffmpeg feature"
+            ));
         }
         _ => {
             return Err(anyhow::anyhow!(

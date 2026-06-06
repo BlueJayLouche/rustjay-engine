@@ -453,3 +453,182 @@ impl Drop for FfmpegDecoder {
         // Context drops automatically.
     }
 }
+
+// ── StreamDecoder (live network ingest) ────────────────────────────────────
+
+/// Continuous decoder for live streams (SRT, HLS, DASH, RTMP, RTMPS).
+///
+/// Unlike `FfmpegDecoder`, this does not seek, loop, or track playback
+/// position — it simply reads the next available frame from the network
+/// and returns it.  On disconnect or EOF the last decoded frame is held
+/// so the output does not flicker.
+pub struct StreamDecoder {
+    url: String,
+    width: u32,
+    height: u32,
+    fps: f32,
+
+    context: Option<DecodeContext>,
+    last_frame: Option<VideoFrame>,
+    connected: bool,
+}
+
+unsafe impl Send for StreamDecoder {}
+
+impl StreamDecoder {
+    /// Open a network stream URL and probe its metadata.
+    pub fn new(url: &str) -> anyhow::Result<Self> {
+        let ictx = input(std::path::Path::new(url))?;
+        let stream = ictx
+            .streams()
+            .best(Type::Video)
+            .ok_or_else(|| anyhow::anyhow!("No video stream found in {}", url))?;
+
+        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        let decoder = context.decoder().video()?;
+
+        let width = decoder.width();
+        let height = decoder.height();
+
+        let fps = stream.rate();
+        let fps = fps.numerator() as f32 / fps.denominator().max(1) as f32;
+
+        drop(decoder);
+        drop(ictx);
+
+        Ok(Self {
+            url: url.to_string(),
+            width,
+            height,
+            fps,
+            context: None,
+            last_frame: None,
+            connected: false,
+        })
+    }
+
+    /// Video width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    /// Video height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    /// Frame rate in frames per second.
+    pub fn fps(&self) -> f32 {
+        self.fps
+    }
+    /// Whether the stream is currently connected.
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    /// Read and decode the next frame from the stream.
+    ///
+    /// Returns `None` only before the first successful decode.
+    /// After that, the last good frame is returned on error/EOF.
+    pub fn decode_frame(&mut self) -> Option<VideoFrame> {
+        if self.context.is_none() {
+            if let Err(e) = self.init_context() {
+                log::warn!("StreamDecoder failed to connect to {}: {}", self.url, e);
+                self.connected = false;
+                return self.last_frame.clone();
+            }
+            self.connected = true;
+        }
+
+        let ctx = self.context.as_mut().unwrap();
+
+        let mut decoded = Video::empty();
+        let mut rgba_frame = Video::empty();
+
+        loop {
+            let mut packet = ffmpeg::Packet::empty();
+            match packet.read(&mut ctx.input) {
+                Ok(()) => {
+                    if packet.stream() != ctx.stream_index {
+                        continue;
+                    }
+                    if let Err(e) = ctx.decoder.send_packet(&packet) {
+                        log::debug!("StreamDecoder send_packet error: {}", e);
+                        continue;
+                    }
+                    while ctx.decoder.receive_frame(&mut decoded).is_ok() {
+                        if let Err(e) = ctx.scaler.run(&decoded, &mut rgba_frame) {
+                            log::warn!("StreamDecoder scaler error: {}", e);
+                            continue;
+                        }
+                        let frame = VideoFrame {
+                            width: rgba_frame.width(),
+                            height: rgba_frame.height(),
+                            data: rgba_frame.data(0).to_vec(),
+                        };
+                        self.last_frame = Some(frame.clone());
+                        return Some(frame);
+                    }
+                }
+                Err(ffmpeg::Error::Eof) => {
+                    ctx.decoder.send_eof().ok();
+                    if ctx.decoder.receive_frame(&mut decoded).is_ok() {
+                        if ctx.scaler.run(&decoded, &mut rgba_frame).is_ok() {
+                            let frame = VideoFrame {
+                                width: rgba_frame.width(),
+                                height: rgba_frame.height(),
+                                data: rgba_frame.data(0).to_vec(),
+                            };
+                            self.last_frame = Some(frame.clone());
+                            return Some(frame);
+                        }
+                    }
+                    log::warn!("StreamDecoder EOF on {}", self.url);
+                    self.connected = false;
+                    return self.last_frame.clone();
+                }
+                Err(e) => {
+                    log::debug!("StreamDecoder packet read error: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn init_context(&mut self) -> anyhow::Result<()> {
+        let ictx = input(std::path::Path::new(&self.url))?;
+        let stream = ictx
+            .streams()
+            .best(Type::Video)
+            .ok_or_else(|| anyhow::anyhow!("No video stream"))?;
+        let stream_index = stream.index();
+        let time_base = stream.time_base();
+        let time_base = time_base.numerator() as f64 / time_base.denominator().max(1) as f64;
+
+        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+        let decoder = context.decoder().video()?;
+
+        let scaler = Context::get(
+            decoder.format(),
+            decoder.width(),
+            decoder.height(),
+            Pixel::RGBA,
+            decoder.width(),
+            decoder.height(),
+            Flags::BILINEAR,
+        )?;
+
+        self.context = Some(DecodeContext {
+            input: ictx,
+            decoder,
+            scaler,
+            stream_index,
+            time_base,
+        });
+        Ok(())
+    }
+}
+
+impl Drop for StreamDecoder {
+    fn drop(&mut self) {
+        // Context drops automatically.
+    }
+}
