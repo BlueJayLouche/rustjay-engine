@@ -31,8 +31,13 @@ struct WsCommandResponse {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum WsResultPayload {
-    Ok { status: &'static str },
-    Err { error: &'static str, message: String },
+    Ok {
+        status: &'static str,
+    },
+    Err {
+        error: &'static str,
+        message: String,
+    },
 }
 
 /// `GET /api/ws` — upgrade to WebSocket.
@@ -95,9 +100,8 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
 
     // ── Write task: deltas + command responses ───────────────────
     let write_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_millis(DELTA_INTERVAL_MS),
-        );
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(DELTA_INTERVAL_MS));
         let mut last_json = initial_json;
 
         loop {

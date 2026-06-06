@@ -8,8 +8,8 @@
 
 use crate::build_router;
 use axum::body::Body;
-use axum::Router;
 use axum::http::{Request, StatusCode};
+use axum::Router;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -39,9 +39,14 @@ async fn test_health_returns_ok() {
         .unwrap();
 
     let status = resp.status();
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body_str = String::from_utf8_lossy(&body);
-    assert!(status == StatusCode::OK, "Expected 200, got {status}. Body: {body_str}");
+    assert!(
+        status == StatusCode::OK,
+        "Expected 200, got {status}. Body: {body_str}"
+    );
 }
 
 #[tokio::test]

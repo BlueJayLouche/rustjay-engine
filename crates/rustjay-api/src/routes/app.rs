@@ -35,7 +35,10 @@ fn bad_request(msg: impl Into<String>) -> impl IntoResponse {
 
 fn send_command(state: &SharedState, cmd: rustjay_control::WebCommand) -> Result<(), &'static str> {
     let guard = state.lock().map_err(|_| "Server state lock poisoned")?;
-    guard.command_tx.try_send(cmd).map_err(|_| "Engine command channel full")
+    guard
+        .command_tx
+        .try_send(cmd)
+        .map_err(|_| "Engine command channel full")
 }
 
 /// Lock engine state out of the shared web-server state.
@@ -46,14 +49,27 @@ where
     let engine_arc = match state.lock() {
         Ok(guard) => match guard.engine_state.as_ref() {
             Some(engine) => engine.clone(),
-            None => return Err((StatusCode::SERVICE_UNAVAILABLE, "Engine not yet initialized")),
+            None => {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Engine not yet initialized",
+                ))
+            }
         },
-        Err(_) => return Err((StatusCode::INTERNAL_SERVER_ERROR, "Server state lock poisoned")),
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Server state lock poisoned",
+            ))
+        }
     };
     // Bind the result so the MutexGuard drops before `engine_arc`.
     let result = match engine_arc.lock() {
         Ok(e) => Ok(f(&e)),
-        Err(_) => Err((StatusCode::INTERNAL_SERVER_ERROR, "Engine state lock poisoned")),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Engine state lock poisoned",
+        )),
     };
     result
 }
@@ -171,14 +187,24 @@ pub async fn set_param_by_path(
 ) -> impl IntoResponse {
     let canonical = match try_engine(&state, |engine| resolve_path(engine, &body.path)) {
         Ok(Some(id)) => id,
-        Ok(None) => return bad_request(format!("unknown param path: {}", body.path)).into_response(),
+        Ok(None) => {
+            return bad_request(format!("unknown param path: {}", body.path)).into_response()
+        }
         Err(resp) => return resp.into_response(),
     };
-    let value = match try_engine(&state, |engine| clamp_to_descriptor(engine, &canonical, body.value)) {
+    let value = match try_engine(&state, |engine| {
+        clamp_to_descriptor(engine, &canonical, body.value)
+    }) {
         Ok(v) => v,
         Err(resp) => return resp.into_response(),
     };
-    match send_command(&state, rustjay_control::WebCommand::Set { id: canonical, value }) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Set {
+            id: canonical,
+            value,
+        },
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }

@@ -22,7 +22,9 @@ struct Resp {
 /// Send one raw HTTP/1.1 request to 127.0.0.1:port and read the full response.
 fn http(port: u16, request: &str) -> Resp {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     stream.write_all(request.as_bytes()).expect("write");
     let mut raw = Vec::new();
     let mut buf = [0u8; 4096];
@@ -101,11 +103,17 @@ fn live_consolidated_server() {
 
     // 2. /api/state requires auth (regression: it was unauthenticated when the
     //    api router was merged after route_layer).
-    let r = http(port, "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let r = http(
+        port,
+        "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(r.status, 401, "GET /api/state without token must be 401");
 
     // 3. Swagger UI is behind auth too.
-    let r = http(port, "GET /swagger-ui/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let r = http(
+        port,
+        "GET /swagger-ui/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
     assert_eq!(r.status, 401, "/swagger-ui without token must be 401");
 
     // 4. REST read with token → 200, and the body is the engine snapshot JSON.
@@ -114,7 +122,11 @@ fn live_consolidated_server() {
     );
     let r = http(port, &req);
     assert_eq!(r.status, 200, "GET /api/state with token must be 200");
-    assert!(r.body.contains("\"performance\""), "snapshot JSON expected, got: {}", r.body);
+    assert!(
+        r.body.contains("\"performance\""),
+        "snapshot JSON expected, got: {}",
+        r.body
+    );
 
     // 5. REST write round-trip: PUT /api/params with token → 200.
     let body = r#"{"id":"color/hue_shift","value":0.5}"#;
@@ -123,7 +135,11 @@ fn live_consolidated_server() {
         len = body.len()
     );
     let r = http(port, &req);
-    assert_eq!(r.status, 200, "PUT /api/params with token must be 200; body: {}", r.body);
+    assert_eq!(
+        r.status, 200,
+        "PUT /api/params with token must be 200; body: {}",
+        r.body
+    );
 
     // 6. WS upgrade with a valid token but a foreign Origin → 403 (Origin check).
     let req = format!(
@@ -173,8 +189,14 @@ fn assert_fixed_token_401() {
     }
 
     // Without the fixed token → 401.
-    let r = http(port, "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    assert_eq!(r.status, 401, "GET /api/state without fixed token must be 401");
+    let r = http(
+        port,
+        "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(
+        r.status, 401,
+        "GET /api/state without fixed token must be 401"
+    );
 
     // With the fixed token → 200.
     let req = "GET /api/state?token=my-fixed-token HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();

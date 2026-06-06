@@ -40,13 +40,31 @@ macro_rules! try_engine {
         let engine_arc = match $state.lock() {
             Ok(guard) => match guard.engine_state.as_ref() {
                 Some(engine) => engine.clone(),
-                None => return (StatusCode::SERVICE_UNAVAILABLE, "Engine not yet initialized").into_response(),
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Engine not yet initialized",
+                    )
+                        .into_response()
+                }
             },
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Server state lock poisoned").into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Server state lock poisoned",
+                )
+                    .into_response()
+            }
         };
         let snapshot = match engine_arc.lock() {
             Ok(e) => crate::build_snapshot(&e),
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Engine state lock poisoned").into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Engine state lock poisoned",
+                )
+                    .into_response()
+            }
         };
         snapshot
     }};
@@ -141,7 +159,10 @@ fn command_err(msg: impl Into<String>) -> impl IntoResponse {
 
 fn send_command(state: &SharedState, cmd: rustjay_control::WebCommand) -> Result<(), &'static str> {
     let guard = state.lock().map_err(|_| "Server state lock poisoned")?;
-    guard.command_tx.try_send(cmd).map_err(|_| "Engine command channel full")
+    guard
+        .command_tx
+        .try_send(cmd)
+        .map_err(|_| "Engine command channel full")
 }
 
 // ── Params ─────────────────────────────────────────────────────────
@@ -167,10 +188,13 @@ pub async fn set_param(
     State(state): State<SharedState>,
     Json(body): Json<SetParamBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Set {
-        id: body.id,
-        value: body.value,
-    }) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Set {
+            id: body.id,
+            value: body.value,
+        },
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -203,14 +227,12 @@ pub async fn input_start_webcam(
     State(state): State<SharedState>,
     Json(body): Json<StartWebcamBody>,
 ) -> impl IntoResponse {
-    let cmd = rustjay_control::WebCommand::Input(
-        rustjay_control::InputWebCommand::SelectDevice {
-            index: body.device_index,
-            width: body.width,
-            height: body.height,
-            fps: body.fps,
-        },
-    );
+    let cmd = rustjay_control::WebCommand::Input(rustjay_control::InputWebCommand::SelectDevice {
+        index: body.device_index,
+        width: body.width,
+        height: body.height,
+        fps: body.fps,
+    });
     match send_command(&state, cmd) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
@@ -225,9 +247,10 @@ pub async fn input_start_webcam(
     tag = "Input"
 )]
 pub async fn input_stop(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Input(
-        rustjay_control::InputWebCommand::StopInput,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Input(rustjay_control::InputWebCommand::StopInput),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -241,9 +264,10 @@ pub async fn input_stop(State(state): State<SharedState>) -> impl IntoResponse {
     tag = "Input"
 )]
 pub async fn input_refresh(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Input(
-        rustjay_control::InputWebCommand::RefreshDevices,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Input(rustjay_control::InputWebCommand::RefreshDevices),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -259,9 +283,10 @@ pub async fn input_refresh(State(state): State<SharedState>) -> impl IntoRespons
     tag = "Audio"
 )]
 pub async fn audio_start(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Audio(
-        rustjay_control::AudioWebCommand::Start,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Audio(rustjay_control::AudioWebCommand::Start),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -275,9 +300,10 @@ pub async fn audio_start(State(state): State<SharedState>) -> impl IntoResponse 
     tag = "Audio"
 )]
 pub async fn audio_stop(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Audio(
-        rustjay_control::AudioWebCommand::Stop,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Audio(rustjay_control::AudioWebCommand::Stop),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -291,9 +317,10 @@ pub async fn audio_stop(State(state): State<SharedState>) -> impl IntoResponse {
     tag = "Audio"
 )]
 pub async fn audio_refresh(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Audio(
-        rustjay_control::AudioWebCommand::RefreshDevices,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Audio(rustjay_control::AudioWebCommand::RefreshDevices),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -318,9 +345,12 @@ pub async fn audio_select_device(
     State(state): State<SharedState>,
     Json(body): Json<SelectAudioDeviceBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Audio(
-        rustjay_control::AudioWebCommand::SelectDevice { device: body.device },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Audio(rustjay_control::AudioWebCommand::SelectDevice {
+            device: body.device,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -345,9 +375,12 @@ pub async fn audio_set_fft_size(
     State(state): State<SharedState>,
     Json(body): Json<SetFftSizeBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Audio(
-        rustjay_control::AudioWebCommand::SetFftSize { size: body.size },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Audio(rustjay_control::AudioWebCommand::SetFftSize {
+            size: body.size,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -363,9 +396,10 @@ pub async fn audio_set_fft_size(
     tag = "Output"
 )]
 pub async fn output_start_ndi(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StartNdi,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StartNdi),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -379,9 +413,10 @@ pub async fn output_start_ndi(State(state): State<SharedState>) -> impl IntoResp
     tag = "Output"
 )]
 pub async fn output_stop_ndi(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StopNdi,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StopNdi),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -395,9 +430,10 @@ pub async fn output_stop_ndi(State(state): State<SharedState>) -> impl IntoRespo
     tag = "Output"
 )]
 pub async fn output_resize(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::ResizeOutput,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::ResizeOutput),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -411,9 +447,10 @@ pub async fn output_resize(State(state): State<SharedState>) -> impl IntoRespons
     tag = "Output"
 )]
 pub async fn output_start_syphon(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StartSyphon,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StartSyphon),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -427,9 +464,10 @@ pub async fn output_start_syphon(State(state): State<SharedState>) -> impl IntoR
     tag = "Output"
 )]
 pub async fn output_stop_syphon(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StopSyphon,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StopSyphon),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -454,9 +492,12 @@ pub async fn output_start_spout(
     State(state): State<SharedState>,
     Json(body): Json<StartSpoutBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StartSpout { sender_name: body.sender_name },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StartSpout {
+            sender_name: body.sender_name,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -470,9 +511,10 @@ pub async fn output_start_spout(
     tag = "Output"
 )]
 pub async fn output_stop_spout(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StopSpout,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StopSpout),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -497,9 +539,12 @@ pub async fn output_start_v4l2(
     State(state): State<SharedState>,
     Json(body): Json<StartV4l2Body>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StartV4l2 { device_path: body.device_path },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StartV4l2 {
+            device_path: body.device_path,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -513,9 +558,10 @@ pub async fn output_start_v4l2(
     tag = "Output"
 )]
 pub async fn output_stop_v4l2(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Output(
-        rustjay_control::OutputWebCommand::StopV4l2,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Output(rustjay_control::OutputWebCommand::StopV4l2),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -531,9 +577,12 @@ pub async fn output_stop_v4l2(State(state): State<SharedState>) -> impl IntoResp
     tag = "MIDI"
 )]
 pub async fn midi_refresh(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiRefreshDevices,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(
+            rustjay_control::ControlWebCommand::MidiRefreshDevices,
+        ),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -558,9 +607,14 @@ pub async fn midi_select_device(
     State(state): State<SharedState>,
     Json(body): Json<SelectMidiDeviceBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiSelectDevice { device: body.device },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(
+            rustjay_control::ControlWebCommand::MidiSelectDevice {
+                device: body.device,
+            },
+        ),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -574,9 +628,10 @@ pub async fn midi_select_device(
     tag = "MIDI"
 )]
 pub async fn midi_disconnect(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiDisconnect,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::MidiDisconnect),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -601,9 +656,12 @@ pub async fn midi_learn(
     State(state): State<SharedState>,
     Json(body): Json<MidiLearnBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiLearn { param_id: body.param_id },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::MidiLearn {
+            param_id: body.param_id,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -617,9 +675,10 @@ pub async fn midi_learn(
     tag = "MIDI"
 )]
 pub async fn midi_learn_cancel(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiLearnCancel,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::MidiLearnCancel),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -646,9 +705,13 @@ pub async fn midi_unlearn(
     State(state): State<SharedState>,
     Json(body): Json<MidiUnlearnBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::MidiUnlearn { cc: body.cc, channel: body.channel },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::MidiUnlearn {
+            cc: body.cc,
+            channel: body.channel,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -664,9 +727,12 @@ pub async fn midi_unlearn(
     tag = "OSC"
 )]
 pub async fn osc_start(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::Osc { enabled: true },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::Osc {
+            enabled: true,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -680,9 +746,12 @@ pub async fn osc_start(State(state): State<SharedState>) -> impl IntoResponse {
     tag = "OSC"
 )]
 pub async fn osc_stop(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::Osc { enabled: false },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::Osc {
+            enabled: false,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -707,9 +776,12 @@ pub async fn osc_set_port(
     State(state): State<SharedState>,
     Json(body): Json<OscPortBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Control(
-        rustjay_control::ControlWebCommand::OscSetPort { port: body.port },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Control(rustjay_control::ControlWebCommand::OscSetPort {
+            port: body.port,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -736,9 +808,12 @@ pub async fn preset_save(
     State(state): State<SharedState>,
     Json(body): Json<SavePresetBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Preset(
-        rustjay_control::PresetWebCommand::Save { name: body.name },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Preset(rustjay_control::PresetWebCommand::Save {
+            name: body.name,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -763,9 +838,12 @@ pub async fn preset_load(
     State(state): State<SharedState>,
     Json(body): Json<LoadPresetBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Preset(
-        rustjay_control::PresetWebCommand::Load { index: body.index },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Preset(rustjay_control::PresetWebCommand::Load {
+            index: body.index,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -790,9 +868,12 @@ pub async fn preset_delete(
     State(state): State<SharedState>,
     Json(body): Json<DeletePresetBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Preset(
-        rustjay_control::PresetWebCommand::Delete { index: body.index },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Preset(rustjay_control::PresetWebCommand::Delete {
+            index: body.index,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -808,9 +889,10 @@ pub async fn preset_delete(
     tag = "Link"
 )]
 pub async fn link_enable(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Link(
-        rustjay_control::LinkWebCommand::Enable,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Link(rustjay_control::LinkWebCommand::Enable),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -824,9 +906,10 @@ pub async fn link_enable(State(state): State<SharedState>) -> impl IntoResponse 
     tag = "Link"
 )]
 pub async fn link_disable(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Link(
-        rustjay_control::LinkWebCommand::Disable,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Link(rustjay_control::LinkWebCommand::Disable),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -851,9 +934,12 @@ pub async fn link_set_quantum(
     State(state): State<SharedState>,
     Json(body): Json<LinkQuantumBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Link(
-        rustjay_control::LinkWebCommand::SetQuantum { quantum: body.quantum },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Link(rustjay_control::LinkWebCommand::SetQuantum {
+            quantum: body.quantum,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -869,9 +955,10 @@ pub async fn link_set_quantum(
     tag = "ProDJ"
 )]
 pub async fn prodj_start(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::ProDj(
-        rustjay_control::ProDjWebCommand::Start,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::ProDj(rustjay_control::ProDjWebCommand::Start),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -885,9 +972,10 @@ pub async fn prodj_start(State(state): State<SharedState>) -> impl IntoResponse 
     tag = "ProDJ"
 )]
 pub async fn prodj_stop(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::ProDj(
-        rustjay_control::ProDjWebCommand::Stop,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::ProDj(rustjay_control::ProDjWebCommand::Stop),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -914,10 +1002,13 @@ pub async fn mixer_crossfader(
     State(state): State<SharedState>,
     Json(body): Json<CrossfaderBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Set {
-        id: "mixer/crossfader".to_string(),
-        value: body.position.clamp(0.0, 1.0),
-    }) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Set {
+            id: "mixer/crossfader".to_string(),
+            value: body.position.clamp(0.0, 1.0),
+        },
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -942,10 +1033,13 @@ pub async fn mixer_master_opacity(
     State(state): State<SharedState>,
     Json(body): Json<MasterOpacityBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Set {
-        id: "mixer/master_opacity".to_string(),
-        value: body.opacity.clamp(0.0, 1.0),
-    }) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Set {
+            id: "mixer/master_opacity".to_string(),
+            value: body.opacity.clamp(0.0, 1.0),
+        },
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -975,9 +1069,13 @@ pub async fn modulation_lfo_set(
     State(state): State<SharedState>,
     Json(body): Json<LfoSetBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Modulation(
-        rustjay_control::ModulationWebCommand::LfoSet { slot: body.slot, config: body.config },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Modulation(rustjay_control::ModulationWebCommand::LfoSet {
+            slot: body.slot,
+            config: body.config,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -1004,9 +1102,13 @@ pub async fn modulation_lfo_enable(
     State(state): State<SharedState>,
     Json(body): Json<LfoEnableBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Modulation(
-        rustjay_control::ModulationWebCommand::LfoEnable { slot: body.slot, enabled: body.enabled },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Modulation(rustjay_control::ModulationWebCommand::LfoEnable {
+            slot: body.slot,
+            enabled: body.enabled,
+        }),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -1036,13 +1138,16 @@ pub async fn modulation_audio_route(
     State(state): State<SharedState>,
     Json(body): Json<AudioRouteBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Modulation(
-        rustjay_control::ModulationWebCommand::AudioRoute {
-            param_id: body.param_id,
-            band: body.band,
-            depth: body.depth,
-        },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Modulation(
+            rustjay_control::ModulationWebCommand::AudioRoute {
+                param_id: body.param_id,
+                band: body.band,
+                depth: body.depth,
+            },
+        ),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -1067,9 +1172,14 @@ pub async fn modulation_audio_unroute(
     State(state): State<SharedState>,
     Json(body): Json<AudioUnrouteBody>,
 ) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Modulation(
-        rustjay_control::ModulationWebCommand::AudioUnroute { param_id: body.param_id },
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Modulation(
+            rustjay_control::ModulationWebCommand::AudioUnroute {
+                param_id: body.param_id,
+            },
+        ),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
@@ -1083,9 +1193,10 @@ pub async fn modulation_audio_unroute(
     tag = "Modulation"
 )]
 pub async fn modulation_tap_tempo(State(state): State<SharedState>) -> impl IntoResponse {
-    match send_command(&state, rustjay_control::WebCommand::Modulation(
-        rustjay_control::ModulationWebCommand::TapTempo,
-    )) {
+    match send_command(
+        &state,
+        rustjay_control::WebCommand::Modulation(rustjay_control::ModulationWebCommand::TapTempo),
+    ) {
         Ok(()) => command_ok().into_response(),
         Err(m) => command_err(m).into_response(),
     }
