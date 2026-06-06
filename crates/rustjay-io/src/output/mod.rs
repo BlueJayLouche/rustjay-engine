@@ -5,6 +5,7 @@
 //! - Syphon (macOS GPU texture sharing)
 //! - Spout (Windows GPU texture sharing)
 //! - v4l2loopback (Linux virtual camera) - TODO
+//! - Disk recorder (H.264, H.265, AV1, ProRes via ffmpeg subprocess)
 //!
 //! GPU readback uses a double-buffered staging pool so the render thread
 //! never blocks waiting for a GPU→CPU copy to complete.  Each frame the
@@ -42,6 +43,7 @@ pub enum OutputCommand {
     ResizeOutput,
 }
 
+pub mod recorder;
 #[cfg(feature = "ndi")]
 pub mod ndi_output;
 #[cfg(target_os = "windows")]
@@ -254,8 +256,11 @@ pub struct OutputManager {
     #[cfg(target_os = "linux")]
     v4l2_output: Option<v4l2_output::V4l2LoopbackOutput>,
 
-    /// Async readback pool for CPU-path outputs (NDI, V4L2).
+    /// Async readback pool for CPU-path outputs (NDI, V4L2, Recorder).
     readback_pool: ReadbackPool,
+
+    /// Disk recorder (ffmpeg subprocess).
+    recorder: Option<recorder::Recorder>,
 
     frame_count: u64,
 }
@@ -273,8 +278,40 @@ impl OutputManager {
             #[cfg(target_os = "linux")]
             v4l2_output: None,
             readback_pool: ReadbackPool::new(),
+            recorder: None,
             frame_count: 0,
         }
+    }
+
+    /// Start disk recording.
+    pub fn start_recording(
+        &mut self,
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        fps: f32,
+        codec: recorder::RecorderCodec,
+    ) -> anyhow::Result<()> {
+        if self.recorder.is_some() {
+            return Err(anyhow::anyhow!("Recording already in progress"));
+        }
+        let rec = recorder::Recorder::start(path, width, height, fps, codec)?;
+        self.recorder = Some(rec);
+        Ok(())
+    }
+
+    /// Stop disk recording and flush the file.
+    pub fn stop_recording(&mut self) {
+        if let Some(rec) = self.recorder.take() {
+            if let Err(e) = rec.finish() {
+                log::warn!("[OutputManager] recorder finish failed: {}", e);
+            }
+        }
+    }
+
+    /// Whether disk recording is active.
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
     }
 
     /// Start NDI output
@@ -398,8 +435,11 @@ impl OutputManager {
         false
     }
 
-    /// Returns true if any CPU-path output (NDI, V4L2, Spout) needs readback.
+    /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder) needs readback.
     fn needs_readback(&self) -> bool {
+        if self.recorder.is_some() {
+            return true;
+        }
         #[cfg(feature = "ndi")]
         if self.ndi_output.is_some() {
             return true;
@@ -455,6 +495,13 @@ impl OutputManager {
                         log::error!("V4L2 output error: {}", e);
                     }
                 }
+
+                if let Some(ref mut rec) = self.recorder {
+                    if !rec.encode_frame(&_data) {
+                        log::warn!("[OutputManager] recorder encode failed — stopping");
+                        self.stop_recording();
+                    }
+                }
             }
 
             // Submit a non-blocking copy for *this* frame.
@@ -498,6 +545,7 @@ impl OutputManager {
 
     /// Shutdown all outputs
     pub fn shutdown(&mut self) {
+        self.stop_recording();
         self.stop_ndi();
         #[cfg(target_os = "macos")]
         self.stop_syphon();

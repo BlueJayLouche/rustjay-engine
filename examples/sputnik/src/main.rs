@@ -326,7 +326,7 @@ impl EffectPlugin for SputnikEffect {
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
-        let dt = engine.performance.frame_time_ms / 1000.0;
+        let dt = engine.performance.lock().unwrap_or_else(|e| e.into_inner()).frame_time_ms / 1000.0;
         let bpm = engine.effective_bpm();
         let xr = if state.x_tempo_sync {
             beat_division_to_hz(state.x_beat_division, bpm)

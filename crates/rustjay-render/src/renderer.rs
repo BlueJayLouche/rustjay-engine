@@ -299,6 +299,38 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager.stop_v4l2();
     }
 
+    /// Start disk recording.
+    pub fn start_recording(
+        &mut self,
+        path: &std::path::Path,
+        fps: f32,
+        codec: rustjay_core::RecorderCodec,
+    ) -> anyhow::Result<()> {
+        let io_codec = match codec {
+            rustjay_core::RecorderCodec::H264 => rustjay_io::RecorderCodec::H264,
+            rustjay_core::RecorderCodec::H265 => rustjay_io::RecorderCodec::H265,
+            rustjay_core::RecorderCodec::AV1 => rustjay_io::RecorderCodec::AV1,
+            rustjay_core::RecorderCodec::ProRes422 => rustjay_io::RecorderCodec::ProRes422,
+        };
+        self.output_manager.start_recording(
+            path,
+            self.render_target.width,
+            self.render_target.height,
+            fps,
+            io_codec,
+        )
+    }
+
+    /// Stop disk recording.
+    pub fn stop_recording(&mut self) {
+        self.output_manager.stop_recording();
+    }
+
+    /// Whether disk recording is currently active.
+    pub fn is_recording(&self) -> bool {
+        self.output_manager.is_recording()
+    }
+
     /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
         // Frame-rate cap: skip this render if we haven't reached the target interval.

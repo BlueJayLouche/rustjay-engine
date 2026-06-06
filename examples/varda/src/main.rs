@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
             Box::new(varda::ui::ModulationTab::default()),
             Box::new(varda::ui::MidiTab),
             Box::new(varda::ui::StageTab::new()),
-            Box::new(varda::ui::OutputsTab),
+            Box::new(varda::ui::OutputsTab::new()),
             Box::new(varda::ui::SequencerTab),
             Box::new(varda::ui::InspectorTab),
         ];
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
             Box::new(varda::ui::ModulationTab::default()),
             Box::new(varda::ui::MidiTab),
             Box::new(varda::ui::StageTab::new()),
-            Box::new(varda::ui::OutputsTab),
+            Box::new(varda::ui::OutputsTab::new()),
             Box::new(varda::ui::SequencerTab),
             Box::new(varda::ui::InspectorTab),
         ];

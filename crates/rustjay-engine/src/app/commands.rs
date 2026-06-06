@@ -325,6 +325,23 @@ impl<P: EffectPlugin> App<P> {
                 }
                 lock(&self.shared_state).v4l2_output.enabled = false;
             }
+            OutputCommand::StartRecording { path, codec } => {
+                if let Some(ref mut engine) = self.output_engine {
+                    let fps = lock(&self.shared_state).target_fps as f32;
+                    let p = std::path::PathBuf::from(path);
+                    if let Err(e) = engine.start_recording(&p, fps, codec) {
+                        log::error!("Failed to start recording: {}", e);
+                    } else {
+                        lock(&self.shared_state).recording_active = true;
+                    }
+                }
+            }
+            OutputCommand::StopRecording => {
+                if let Some(ref mut engine) = self.output_engine {
+                    engine.stop_recording();
+                }
+                lock(&self.shared_state).recording_active = false;
+            }
             OutputCommand::ResizeOutput => {
                 if let (Some(output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())

@@ -89,7 +89,19 @@ impl StageTab {
 }
 
 /// Outputs tab — window/display/NDI/stream/record assignment.
-pub struct OutputsTab;
+pub struct OutputsTab {
+    recording_path: String,
+    recording_codec: rustjay_core::RecorderCodec,
+}
+
+impl OutputsTab {
+    pub fn new() -> Self {
+        Self {
+            recording_path: String::from("recording.mp4"),
+            recording_codec: rustjay_core::RecorderCodec::H264,
+        }
+    }
+}
 
 /// Inspector tab — context panel for selected node.
 pub struct InspectorTab;
@@ -1198,7 +1210,7 @@ mod egui_impl {
             &mut self,
             ui: &mut egui::Ui,
             app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
+            engine: &mut EngineState,
         ) {
             #[cfg_attr(not(feature = "projection"), allow(unused_variables))]
             let state = app_state
@@ -1357,6 +1369,40 @@ mod egui_impl {
                 ui.label("Projection feature not enabled.");
                 ui.label("Enable the 'projection' feature for multi-output support.");
             }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Recording").strong());
+            ui.horizontal(|ui| {
+                ui.label("Codec:");
+                egui::ComboBox::from_id_salt("recorder_codec")
+                    .selected_text(format!("{:?}", self.recording_codec))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.recording_codec, rustjay_core::RecorderCodec::H264, "H.264");
+                        ui.selectable_value(&mut self.recording_codec, rustjay_core::RecorderCodec::H265, "H.265");
+                        ui.selectable_value(&mut self.recording_codec, rustjay_core::RecorderCodec::AV1, "AV1");
+                        ui.selectable_value(&mut self.recording_codec, rustjay_core::RecorderCodec::ProRes422, "ProRes 422");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Path:");
+                ui.text_edit_singleline(&mut self.recording_path)
+                    .on_hover_text("Output file path (relative or absolute)");
+            });
+            ui.horizontal(|ui| {
+                let is_recording = engine.recording_active;
+                if ui.add_enabled(!is_recording, egui::Button::new("⏺ Start")).clicked() {
+                    engine.output_command = rustjay_core::OutputCommand::StartRecording {
+                        path: self.recording_path.clone(),
+                        codec: self.recording_codec,
+                    };
+                }
+                if ui.add_enabled(is_recording, egui::Button::new("⏹ Stop")).clicked() {
+                    engine.output_command = rustjay_core::OutputCommand::StopRecording;
+                }
+                if is_recording {
+                    ui.label(egui::RichText::new("● REC").color(egui::Color32::RED));
+                }
+            });
         }
     }
 

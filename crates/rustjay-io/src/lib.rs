@@ -24,6 +24,7 @@ pub use input::webcam::{WebcamCapture, WebcamFrame};
 pub use input::InputManager;
 pub use input::SpoutSenderInfo;
 pub use input::SyphonServerInfo;
+pub use output::recorder::{Recorder, RecorderCodec};
 pub use output::OutputManager;
 #[cfg(target_os = "linux")]
 pub use v4l2_devices::V4l2DeviceInfo;

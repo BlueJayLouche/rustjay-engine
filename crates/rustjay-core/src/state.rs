@@ -62,6 +62,19 @@ pub enum InputCommand {
     RefreshDevices,
 }
 
+/// Target codec for disk recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecorderCodec {
+    /// H.264 / AVC.
+    H264,
+    /// H.265 / HEVC.
+    H265,
+    /// AV1.
+    AV1,
+    /// Apple ProRes 422.
+    ProRes422,
+}
+
 /// Commands sent to the output subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum OutputCommand {
@@ -100,6 +113,15 @@ pub enum OutputCommand {
     StopV4l2,
     /// Re-initialize outputs after a resolution change.
     ResizeOutput,
+    /// Start disk recording.
+    StartRecording {
+        /// Output file path.
+        path: String,
+        /// Target codec.
+        codec: RecorderCodec,
+    },
+    /// Stop disk recording.
+    StopRecording,
 }
 
 /// Commands sent to the audio subsystem.
@@ -858,6 +880,8 @@ pub struct EngineState {
     pub ndi_output: NdiOutputState,
     /// Pending output command.
     pub output_command: OutputCommand,
+    /// Whether disk recording is currently active.
+    pub recording_active: bool,
 
     /// Syphon output state (macOS only).
     #[cfg(target_os = "macos")]
@@ -1110,6 +1134,7 @@ impl EngineState {
             app_state: Arc::new(std::sync::Mutex::new(None)),
             notifications: Arc::new(Mutex::new(Vec::new())),
             next_notification_id: AtomicU64::new(0),
+            recording_active: false,
             projection_handle: None,
         }
     }
