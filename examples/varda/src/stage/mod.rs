@@ -234,41 +234,47 @@ pub struct VardaProjector {
     /// Which surface's warp to apply (`None` = first Master surface).
     pub surface_index: Option<usize>,
     /// Use the global warp/dome/edge-blend syncs, or per-projector overrides.
-    #[cfg(feature = "projection")]
     pub use_global_warp: bool,
-    #[cfg(feature = "projection")]
     pub use_global_dome: bool,
-    #[cfg(feature = "projection")]
     pub use_global_edge_blend: bool,
     /// Per-projector overrides (only used when `use_global_*` is false).
     #[cfg(feature = "projection")]
+    #[serde(default)]
     pub warp_mode: Option<rustjay_projection::WarpMode>,
-    #[cfg(feature = "projection")]
+    #[cfg(not(feature = "projection"))]
+    #[serde(skip)]
+    pub warp_mode: Option<()>,
     pub dome_enabled: Option<bool>,
     #[cfg(feature = "projection")]
+    #[serde(default)]
     pub edge_blend_config: Option<rustjay_projection::EdgeBlendConfig>,
+    #[cfg(not(feature = "projection"))]
+    #[serde(skip)]
+    pub edge_blend_config: Option<()>,
 }
 
 impl Default for VardaProjector {
     fn default() -> Self {
         Self {
             name: "Projector".to_string(),
+            // Projectors default to enabled because a typical venue has at
+            // least one output window that should appear at startup.
             enabled: true,
             width: 1920,
             height: 1080,
             fullscreen_monitor: None,
             surface_index: None,
-            #[cfg(feature = "projection")]
             use_global_warp: true,
-            #[cfg(feature = "projection")]
             use_global_dome: true,
-            #[cfg(feature = "projection")]
             use_global_edge_blend: true,
             #[cfg(feature = "projection")]
             warp_mode: None,
-            #[cfg(feature = "projection")]
+            #[cfg(not(feature = "projection"))]
+            warp_mode: None,
             dome_enabled: None,
             #[cfg(feature = "projection")]
+            edge_blend_config: None,
+            #[cfg(not(feature = "projection"))]
             edge_blend_config: None,
         }
     }
@@ -281,15 +287,22 @@ pub struct VardaHeadlessConfig {
     pub enabled: bool,
     pub width: u32,
     pub height: u32,
+    /// Whether this headless output has already been pushed to the
+    /// projection subsystem. Not serialized — reset on app restart.
+    #[serde(skip)]
+    pub pushed: bool,
 }
 
 impl Default for VardaHeadlessConfig {
     fn default() -> Self {
         Self {
             name: "Headless".to_string(),
+            // Headless outputs default to disabled because they consume GPU
+            // memory and CPU readback bandwidth; they are opt-in per use-case.
             enabled: false,
             width: 1920,
             height: 1080,
+            pushed: false,
         }
     }
 }

@@ -64,9 +64,8 @@ pub(crate) fn run_app_with_projection<P: EffectPlugin, F: FnOnce(&mut projection
     }
 
     if let Some(sub) = app.projection_subsystem.as_ref() {
-        if let Ok(ref mut sub) = sub.lock() {
-            projection_setup(sub);
-        }
+        let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
+        projection_setup(&mut sub);
     }
 
     event_loop.run_app(&mut app)?;
@@ -149,9 +148,8 @@ pub(crate) fn run_egui_app_with_projection<P: EffectPlugin, F: FnOnce(&mut proje
     }
 
     if let Some(sub) = app.projection_subsystem.as_ref() {
-        if let Ok(ref mut sub) = sub.lock() {
-            projection_setup(sub);
-        }
+        let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
+        projection_setup(&mut sub);
     }
 
     event_loop.run_app(&mut app)?;

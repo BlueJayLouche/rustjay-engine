@@ -791,9 +791,11 @@ mod egui_impl {
                 }
                 if let Some(i) = remove_proj {
                     state.stage.projectors.remove(i);
+                    state.save_workspace();
                 }
                 if ui.button("+ Add projector").clicked() {
                     state.stage.projectors.push(crate::stage::VardaProjector::default());
+                    state.save_workspace();
                 }
                 ui.separator();
 
@@ -817,9 +819,11 @@ mod egui_impl {
                 }
                 if let Some(i) = remove_hl {
                     state.stage.headless_outputs.remove(i);
+                    state.save_workspace();
                 }
                 if ui.button("+ Add headless").clicked() {
                     state.stage.headless_outputs.push(crate::stage::VardaHeadlessConfig::default());
+                    state.save_workspace();
                 }
                 ui.separator();
 

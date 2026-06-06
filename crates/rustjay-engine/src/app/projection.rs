@@ -280,10 +280,10 @@ impl ProjectionSubsystem {
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
         instance: &wgpu::Instance,
-        device: &wgpu::Device,
+        device: Arc<wgpu::Device>,
         adapter: &wgpu::Adapter,
     ) {
-        self.device = Some(Arc::new(device.clone()));
+        self.device = Some(Arc::clone(&device));
 
         for pending in self.pending.drain(..) {
             let window = match event_loop.create_window(pending.window_attrs) {
@@ -312,8 +312,8 @@ impl ProjectionSubsystem {
                 .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
             drop(temp_surface);
 
-            let stages = (pending.stage_factory)(device, format);
-            match ProjectorOutput::new(window, instance, device, adapter, stages) {
+            let stages = (pending.stage_factory)(&device, format);
+            match ProjectorOutput::new(window, instance, &device, adapter, stages) {
                 Ok(proj) => {
                     log::info!(
                         "Projector window created ({}x{})",
@@ -369,8 +369,10 @@ impl ProjectionSubsystem {
         height: u32,
         stages: Vec<Box<dyn ProjectionStage>>,
     ) {
-        let device = self.device.as_ref()
-            .expect("add_headless_output called before create_pending");
+        let Some(device) = self.device.as_ref() else {
+            log::error!("add_headless_output called before create_pending — no GPU device available");
+            return;
+        };
         self.headless_outputs
             .push(HeadlessOutput::new(device, width, height, stages));
     }

@@ -77,10 +77,7 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "projection")]
     pub projection_handle: Option<std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send>>>,
-    /// Number of headless outputs already pushed to the projection subsystem.
-    #[serde(skip)]
-    #[cfg(feature = "projection")]
-    pub headless_pushed_count: usize,
+    // (removed: headless_pushed_count replaced by per-config pushed flag)
 }
 
 impl VardaAppState {
@@ -130,8 +127,6 @@ impl Default for VardaAppState {
             keymap: crate::keymap::Keymap::default_bindings(),
             #[cfg(feature = "projection")]
             projection_handle: None,
-            #[cfg(feature = "projection")]
-            headless_pushed_count: 0,
         }
     }
 }
@@ -548,25 +543,24 @@ impl EffectPlugin for VardaRootPlugin {
         // Sync headless outputs: add any newly-enabled configs.
         #[cfg(feature = "projection")]
         {
-            let enabled_count = state.stage.headless_outputs.iter()
-                .filter(|h| h.enabled)
-                .count();
-            if enabled_count > state.headless_pushed_count {
+            let needs_push = state.stage.headless_outputs.iter().any(|h| h.enabled && !h.pushed);
+            if needs_push {
                 if let Some(handle) = &state.projection_handle {
-                    if let Ok(mut any_guard) = handle.lock() {
-                        if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
-                            for (i, cfg) in state.stage.headless_outputs.iter().enumerate() {
-                                if cfg.enabled && i >= state.headless_pushed_count {
-                                    sub.add_headless_output(
-                                        cfg.width,
-                                        cfg.height,
-                                        vec![Box::new(rustjay_projection::IdentityStage::new(device, wgpu::TextureFormat::Rgba8Unorm))],
-                                    );
-                                    log::info!("[Headless] added {}x{} output '{}'", cfg.width, cfg.height, cfg.name);
-                                }
+                    let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                        for cfg in state.stage.headless_outputs.iter_mut() {
+                            if cfg.enabled && !cfg.pushed {
+                                sub.add_headless_output(
+                                    cfg.width,
+                                    cfg.height,
+                                    vec![Box::new(rustjay_projection::IdentityStage::new(device, wgpu::TextureFormat::Rgba8Unorm))],
+                                );
+                                cfg.pushed = true;
+                                log::info!("[Headless] added {}x{} output '{}'", cfg.width, cfg.height, cfg.name);
                             }
-                            state.headless_pushed_count = enabled_count;
                         }
+                    } else {
+                        log::warn!("[Headless] projection_handle downcast failed — headless outputs not created");
                     }
                 }
             }
