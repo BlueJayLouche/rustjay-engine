@@ -38,31 +38,6 @@ impl Default for EffectsTab {
     }
 }
 
-/// Modulation tab — stubbed during Phase 4; will be re-implemented in Phase 6
-/// using the unified engine (EngineState.modulation).
-#[allow(dead_code)]
-pub struct ModulationTab {
-    /// Target source UUID for mod-on-mod assignment.
-    mom_target_uuid: String,
-    /// Target parameter name within the selected source.
-    mom_param: String,
-    /// Modulator source UUID for mod-on-mod assignment.
-    mom_modulator_uuid: String,
-    /// Modulation amount (-1 to 1).
-    mom_amount: f32,
-}
-
-impl Default for ModulationTab {
-    fn default() -> Self {
-        Self {
-            mom_target_uuid: String::new(),
-            mom_param: String::new(),
-            mom_modulator_uuid: String::new(),
-            mom_amount: 0.5,
-        }
-    }
-}
-
 /// Sequencer tab — transition sequences.
 pub struct SequencerTab;
 
@@ -485,34 +460,6 @@ mod egui_impl {
                     }
                 });
             }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // ModulationTab
-    // ─────────────────────────────────────────────────────────────────────────
-    impl AnyEguiTab for ModulationTab {
-        fn name(&self) -> &str {
-            "Modulation"
-        }
-
-        fn draw(
-            &mut self,
-            ui: &mut egui::Ui,
-            app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
-        ) {
-            let _state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("ModulationTab expects VardaAppState");
-
-            ui.heading("Modulation");
-            ui.separator();
-
-            ui.label(
-                "Modulation has moved to the unified engine. \
-                 Use the built-in Modulation tab (M5) or create assignments via the API."
-            );
         }
     }
 

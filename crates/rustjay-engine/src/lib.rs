@@ -249,8 +249,8 @@ pub mod prelude {
     pub use rustjay_core::{
         beat_division_to_hz, AudioCommand, EffectPlugin, EngineState, GuiTab, HsbParams,
         InputCommand, InputType, Lfo, LfoBank, LfoState, LfoTarget, LinkCommand, MeshDescriptor,
-        MeshTopology, MidiCommand, OscCommand, OutputCommand, ParamCategory, ParamType,
-        ParameterDescriptor, Pass, PassInput, PresetCommand, ProDjCommand, RenderGraph,
+        MeshTopology, MidiCommand, ModulationSource, OscCommand, OutputCommand, ParamCategory,
+        ParamType, ParameterDescriptor, Pass, PassInput, PresetCommand, ProDjCommand, RenderGraph,
         RenderHookCtx, Vertex, Waveform, WebCommand, BEAT_DIVISIONS, BEAT_DIVISION_NAMES,
     };
     #[cfg(feature = "egui")]
