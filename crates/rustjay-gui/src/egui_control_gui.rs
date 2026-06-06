@@ -3,8 +3,10 @@
 // Internal panel fields and per-section build_* helpers; not part of a documented API.
 #![allow(missing_docs)]
 
+use rustjay_core::{
+    EngineState, GuiTab, NotificationLevel, ParamCategory, ParamType, ParameterDescriptor,
+};
 use std::sync::Arc;
-use rustjay_core::{EngineState, GuiTab, ParameterDescriptor, ParamCategory, ParamType};
 
 /// Egui-based control GUI.
 pub struct EguiControlGui {
@@ -253,6 +255,7 @@ impl EguiControlGui {
         self.build_left_sidebar(ctx);
         self.build_preview_panel(ctx);
         self.build_central_panel(ctx, app_state);
+        self.build_toast_overlay(ctx);
 
         if self.show_preferences {
             self.build_preferences_window(ctx);
@@ -268,12 +271,16 @@ impl EguiControlGui {
         use crate::egui_theme::colors::*;
         use crate::egui_widgets::{status_pill, PillState};
 
-        let (app_name, bpm, fps, volume, show_preview, audio_enabled) = {
+        let (app_name, bpm, fps, cpu, mem_used, mem_total, volume, show_preview, audio_enabled) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.web_app_name.clone(),
                 state.effective_bpm(),
-                state.performance.fps,
+                perf.fps,
+                perf.cpu_percent,
+                perf.mem_used_mb,
+                perf.mem_total_mb,
                 state.audio.volume,
                 state.show_preview,
                 state.audio.enabled,
@@ -285,7 +292,11 @@ impl EguiControlGui {
         #[allow(deprecated)]
         egui::Panel::top("top_bar")
             .exact_size(56.0)
-            .frame(egui::Frame::NONE.fill(SURFACE_2).stroke(egui::Stroke::new(1.0, HAIR_2)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE_2)
+                    .stroke(egui::Stroke::new(1.0, HAIR_2)),
+            )
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -296,7 +307,9 @@ impl EguiControlGui {
                     let (head, tail) = upper.split_once(' ').unwrap_or((upper.as_str(), ""));
                     ui.label(
                         egui::RichText::new(head)
-                            .strong().size(18.0).color(INK)
+                            .strong()
+                            .size(18.0)
+                            .color(INK)
                             .monospace(),
                     );
                     ui.label(egui::RichText::new("/").color(AMBER).size(18.0).monospace());
@@ -306,7 +319,9 @@ impl EguiControlGui {
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("CONTROL · v1.0")
-                            .size(10.0).color(INK_4).monospace(),
+                            .size(10.0)
+                            .color(INK_4)
+                            .monospace(),
                     );
 
                     ui.add_space(24.0);
@@ -316,7 +331,10 @@ impl EguiControlGui {
                         ui.label(egui::RichText::new("BPM").size(9.5).color(INK_4));
                         ui.label(
                             egui::RichText::new(format!("{:>5.1}", bpm))
-                                .size(15.0).color(AMBER).strong().monospace(),
+                                .size(15.0)
+                                .color(AMBER)
+                                .strong()
+                                .monospace(),
                         );
                     });
 
@@ -327,7 +345,39 @@ impl EguiControlGui {
                         ui.label(egui::RichText::new("FPS").size(9.5).color(INK_4));
                         ui.label(
                             egui::RichText::new(format!("{:>4.0}", fps))
-                                .size(15.0).color(INK).monospace(),
+                                .size(15.0)
+                                .color(INK)
+                                .monospace(),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+
+                    // CPU readout
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("CPU").size(9.5).color(INK_4));
+                        ui.label(
+                            egui::RichText::new(format!("{:>4.0}%", cpu))
+                                .size(15.0)
+                                .color(INK)
+                                .monospace(),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Memory readout
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("MEM").size(9.5).color(INK_4));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.2}/{:.2} GB",
+                                mem_used as f32 / 1024.0,
+                                mem_total as f32 / 1024.0
+                            ))
+                            .size(15.0)
+                            .color(INK)
+                            .monospace(),
                         );
                     });
 
@@ -336,12 +386,21 @@ impl EguiControlGui {
                     // Mini volume meter — flat bar w/ amber fill, square edges
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new("VOL").size(9.5).color(INK_4));
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 10.0), egui::Sense::hover());
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(72.0, 10.0), egui::Sense::hover());
                         let p = ui.painter();
-                        p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, HAIR_2), egui::StrokeKind::Inside);
+                        p.rect_stroke(
+                            rect,
+                            0.0,
+                            egui::Stroke::new(1.0, HAIR_2),
+                            egui::StrokeKind::Inside,
+                        );
                         let fill_w = rect.width() * volume.clamp(0.0, 1.0);
                         if fill_w > 0.5 {
-                            let fr = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
+                            let fr = egui::Rect::from_min_size(
+                                rect.min,
+                                egui::vec2(fill_w, rect.height()),
+                            );
                             let col = if volume > 0.8 { ALERT } else { SIGNAL };
                             p.rect_filled(fr, 0.0, col);
                         }
@@ -349,7 +408,10 @@ impl EguiControlGui {
                         for i in 1..10 {
                             let x = rect.left() + rect.width() * (i as f32 / 10.0);
                             p.line_segment(
-                                [egui::pos2(x, rect.bottom() - 2.0), egui::pos2(x, rect.bottom())],
+                                [
+                                    egui::pos2(x, rect.bottom() - 2.0),
+                                    egui::pos2(x, rect.bottom()),
+                                ],
                                 egui::Stroke::new(1.0, HAIR_3),
                             );
                         }
@@ -358,27 +420,104 @@ impl EguiControlGui {
                     // Right side: status pill + global toggles
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        if ui.button(egui::RichText::new("⚙  PREFS").size(11.0).color(
-                            if self.show_preferences { AMBER } else { INK_2 }
-                        )).clicked() {
+                        if ui
+                            .button(
+                                egui::RichText::new("⚙  PREFS")
+                                    .size(11.0)
+                                    .color(if self.show_preferences { AMBER } else { INK_2 }),
+                            )
+                            .clicked()
+                        {
                             self.show_preferences = !self.show_preferences;
                         }
                         ui.add_space(6.0);
-                        if ui.button(egui::RichText::new(if show_preview { "● PREVIEW" } else { "○ PREVIEW" }).size(11.0).color(
-                            if show_preview { AMBER } else { INK_2 }
-                        )).clicked() {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if ui
+                            .button(
+                                egui::RichText::new(if show_preview {
+                                    "● PREVIEW"
+                                } else {
+                                    "○ PREVIEW"
+                                })
+                                .size(11.0)
+                                .color(if show_preview {
+                                    AMBER
+                                } else {
+                                    INK_2
+                                }),
+                            )
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.show_preview = !state.show_preview;
                         }
                         ui.add_space(6.0);
-                        if ui.button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2)).clicked() {
-                            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        if ui
+                            .button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2))
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.save_settings_requested = true;
                         }
                         ui.add_space(12.0);
-                        status_pill(ui, if audio_enabled { "ONLINE" } else { "OFFLINE" },
-                            if audio_enabled { PillState::Online } else { PillState::Offline });
+                        status_pill(
+                            ui,
+                            if audio_enabled { "ONLINE" } else { "OFFLINE" },
+                            if audio_enabled {
+                                PillState::Online
+                            } else {
+                                PillState::Offline
+                            },
+                        );
                     });
+                });
+            });
+    }
+
+    // ── Toast overlay ────────────────────────────────────────────────────────
+
+    fn build_toast_overlay(&mut self, ctx: &egui::Context) {
+        use crate::egui_theme::colors::*;
+
+        let now = std::time::Instant::now();
+        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let notifs: Vec<rustjay_core::Notification> = {
+            if let Ok(mut guard) = state.notifications.lock() {
+                guard.retain(|n| n.expires_at > now);
+                guard.clone()
+            } else {
+                Vec::new()
+            }
+        };
+        drop(state);
+
+        if notifs.is_empty() {
+            return;
+        }
+
+        egui::Area::new(egui::Id::new("toast_overlay"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 72.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    for n in notifs {
+                        let (bg, text) = match n.level {
+                            NotificationLevel::Error => (ALERT, INK),
+                            NotificationLevel::Warning => (AMBER, INK),
+                            NotificationLevel::Success => (SIGNAL, INK),
+                            NotificationLevel::Info => (SURFACE, INK_2),
+                        };
+                        egui::Frame::NONE
+                            .fill(bg)
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.set_max_width(280.0);
+                                ui.label(egui::RichText::new(&n.message).size(12.0).color(text));
+                            });
+                        ui.add_space(6.0);
+                    }
                 });
             });
     }
@@ -391,12 +530,20 @@ impl EguiControlGui {
 
         let (hidden_tabs, has_color, has_motion) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let hc = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Color);
-            let hm = state.param_descriptors.iter().any(|d| d.category == ParamCategory::Motion);
+            let hc = state
+                .param_descriptors
+                .iter()
+                .any(|d| d.category == ParamCategory::Color);
+            let hm = state
+                .param_descriptors
+                .iter()
+                .any(|d| d.category == ParamCategory::Motion);
             (state.hidden_tabs.clone(), hc, hm)
         };
         let vis = |tab: GuiTab| -> bool {
-            if hidden_tabs.contains(&tab) { return false; }
+            if hidden_tabs.contains(&tab) {
+                return false;
+            }
             match tab {
                 GuiTab::Color => has_color,
                 GuiTab::Motion => has_motion,
@@ -409,27 +556,31 @@ impl EguiControlGui {
         egui::Panel::left("sidebar")
             .exact_size(150.0)
             .resizable(false)
-            .frame(egui::Frame::NONE.fill(BG).stroke(egui::Stroke::new(1.0, HAIR_2)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(BG)
+                    .stroke(egui::Stroke::new(1.0, HAIR_2)),
+            )
             .show(ctx, |ui| {
                 ui.add_space(10.0);
 
-                hud_section_header(ui, "SIGNAL",  Some("02 CH"));
-                self.sidebar_button(ui, GuiTab::Input,  "INPUT",   vis(GuiTab::Input));
-                self.sidebar_button(ui, GuiTab::Output, "OUTPUT",  vis(GuiTab::Output));
+                hud_section_header(ui, "SIGNAL", Some("02 CH"));
+                self.sidebar_button(ui, GuiTab::Input, "INPUT", vis(GuiTab::Input));
+                self.sidebar_button(ui, GuiTab::Output, "OUTPUT", vis(GuiTab::Output));
 
-                hud_section_header(ui, "PARAMS",  Some("04 CH"));
-                self.sidebar_button(ui, GuiTab::Color,  "COLOR",   vis(GuiTab::Color));
-                self.sidebar_button(ui, GuiTab::Motion, "MOTION",  vis(GuiTab::Motion));
-                self.sidebar_button(ui, GuiTab::Audio,  "AUDIO",   vis(GuiTab::Audio));
-                self.sidebar_button(ui, GuiTab::Lfo,    "LFO",     vis(GuiTab::Lfo));
+                hud_section_header(ui, "PARAMS", Some("04 CH"));
+                self.sidebar_button(ui, GuiTab::Color, "COLOR", vis(GuiTab::Color));
+                self.sidebar_button(ui, GuiTab::Motion, "MOTION", vis(GuiTab::Motion));
+                self.sidebar_button(ui, GuiTab::Audio, "AUDIO", vis(GuiTab::Audio));
+                self.sidebar_button(ui, GuiTab::Lfo, "LFO", vis(GuiTab::Lfo));
 
                 hud_section_header(ui, "CONTROL", Some("03 CH"));
-                self.sidebar_button(ui, GuiTab::Midi,   "MIDI",    vis(GuiTab::Midi));
-                self.sidebar_button(ui, GuiTab::Osc,    "OSC",     vis(GuiTab::Osc));
-                self.sidebar_button(ui, GuiTab::Web,    "WEB",     vis(GuiTab::Web));
+                self.sidebar_button(ui, GuiTab::Midi, "MIDI", vis(GuiTab::Midi));
+                self.sidebar_button(ui, GuiTab::Osc, "OSC", vis(GuiTab::Osc));
+                self.sidebar_button(ui, GuiTab::Web, "WEB", vis(GuiTab::Web));
 
-                hud_section_header(ui, "MANAGE",  Some("02 CH"));
-                self.sidebar_button(ui, GuiTab::Presets,  "PRESETS",  vis(GuiTab::Presets));
+                hud_section_header(ui, "MANAGE", Some("02 CH"));
+                self.sidebar_button(ui, GuiTab::Presets, "PRESETS", vis(GuiTab::Presets));
                 self.sidebar_button(ui, GuiTab::Settings, "SETTINGS", true);
 
                 // App-provided custom tabs that don't replace a builtin get their
@@ -453,7 +604,9 @@ impl EguiControlGui {
     }
 
     fn sidebar_button(&mut self, ui: &mut egui::Ui, tab: GuiTab, label: &str, visible: bool) {
-        if !visible { return; }
+        if !visible {
+            return;
+        }
         // A builtin button reads as active only when no custom tab is open.
         let active = self.active_tab == tab && self.custom_tab_active.is_none();
         if Self::draw_sidebar_button(ui, label, active) {
@@ -484,9 +637,13 @@ impl EguiControlGui {
         let p = ui.painter();
 
         // Background
-        let bg = if active { SURFACE_2 }
-                 else if resp.hovered() { egui::Color32::from_rgba_premultiplied(8, 12, 16, 24) }
-                 else { egui::Color32::TRANSPARENT };
+        let bg = if active {
+            SURFACE_2
+        } else if resp.hovered() {
+            egui::Color32::from_rgba_premultiplied(8, 12, 16, 24)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
         p.rect_filled(rect, 0.0, bg);
 
         // Left accent bar — amber on active
@@ -494,7 +651,8 @@ impl EguiControlGui {
         let accent_color = if active { AMBER } else { HAIR_2 };
         p.rect_filled(
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(accent_w, rect.height())),
-            0.0, accent_color,
+            0.0,
+            accent_color,
         );
 
         // Label
@@ -512,13 +670,12 @@ impl EguiControlGui {
 
         // Tab index on the right when active
         if active {
-            let idx_g = p.layout_no_wrap(
-                "▶".to_string(),
-                egui::FontId::monospace(11.0),
-                AMBER,
-            );
+            let idx_g = p.layout_no_wrap("▶".to_string(), egui::FontId::monospace(11.0), AMBER);
             p.galley(
-                egui::pos2(rect.right() - idx_g.size().x - 10.0, rect.center().y - idx_g.size().y / 2.0),
+                egui::pos2(
+                    rect.right() - idx_g.size().x - 10.0,
+                    rect.center().y - idx_g.size().y / 2.0,
+                ),
                 idx_g,
                 AMBER,
             );
@@ -547,7 +704,11 @@ impl EguiControlGui {
                 }
 
                 // Check if a custom tab replaces the currently active built-in tab
-                let custom_replacement = self.custom_tabs.iter().enumerate().find(|(_, t)| t.replaces() == Some(self.active_tab));
+                let custom_replacement = self
+                    .custom_tabs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.replaces() == Some(self.active_tab));
 
                 if let Some((idx, _t)) = custom_replacement {
                     if let Some(ct) = self.custom_tabs.get_mut(idx) {
@@ -582,7 +743,9 @@ impl EguiControlGui {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.show_preview
         };
-        if !show_preview { return; }
+        if !show_preview {
+            return;
+        }
 
         let has_input2 = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -602,20 +765,36 @@ impl EguiControlGui {
 
                 ui.vertical(|ui| {
                     if has_input2 {
-                        self.preview_image(ui, "Input 1", self.input_preview_texture_id, preview_size, |s| {
-                            (s.input.width, s.input.height)
-                        });
-                        self.preview_image(ui, "Input 2", self.second_input_preview_texture_id, preview_size, |s| {
-                            (s.second_input.width, s.second_input.height)
-                        });
+                        self.preview_image(
+                            ui,
+                            "Input 1",
+                            self.input_preview_texture_id,
+                            preview_size,
+                            |s| (s.input.width, s.input.height),
+                        );
+                        self.preview_image(
+                            ui,
+                            "Input 2",
+                            self.second_input_preview_texture_id,
+                            preview_size,
+                            |s| (s.second_input.width, s.second_input.height),
+                        );
                     } else {
-                        self.preview_image(ui, "Input", self.input_preview_texture_id, preview_size, |s| {
-                            (s.input.width, s.input.height)
-                        });
+                        self.preview_image(
+                            ui,
+                            "Input",
+                            self.input_preview_texture_id,
+                            preview_size,
+                            |s| (s.input.width, s.input.height),
+                        );
                     }
-                    self.preview_image(ui, "Output", self.output_preview_texture_id, preview_size, |s| {
-                        (s.resolution.internal_width, s.resolution.internal_height)
-                    });
+                    self.preview_image(
+                        ui,
+                        "Output",
+                        self.output_preview_texture_id,
+                        preview_size,
+                        |s| (s.resolution.internal_width, s.resolution.internal_height),
+                    );
                 });
             });
     }
@@ -629,13 +808,14 @@ impl EguiControlGui {
         get_size: impl FnOnce(&EngineState) -> (u32, u32),
     ) {
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new(label).size(11.0).color(crate::egui_theme::colors::TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new(label)
+                    .size(11.0)
+                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+            );
 
             // Allocate space for the image (label already consumed its portion)
-            let image_area = egui::vec2(
-                (size.x - 8.0).max(10.0),
-                (size.y - 20.0).max(10.0),
-            );
+            let image_area = egui::vec2((size.x - 8.0).max(10.0), (size.y - 20.0).max(10.0));
             let (rect, _) = ui.allocate_exact_size(image_area, egui::Sense::hover());
 
             if let Some(id) = texture_id {
@@ -662,7 +842,8 @@ impl EguiControlGui {
                 let image = egui::Image::new(egui::load::SizedTexture::new(id, display_size));
                 ui.put(image_rect, image);
             } else {
-                ui.painter().rect_filled(rect, 4.0, crate::egui_theme::colors::BG_WIDGET);
+                ui.painter()
+                    .rect_filled(rect, 4.0, crate::egui_theme::colors::BG_WIDGET);
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -711,7 +892,11 @@ impl EguiControlGui {
                 let (can_add, route_count, max_routes) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     let routing = &state.audio_routing;
-                    (routing.matrix.can_add_route(), routing.matrix.len(), routing.matrix.max_routes())
+                    (
+                        routing.matrix.can_add_route(),
+                        routing.matrix.len(),
+                        routing.matrix.max_routes(),
+                    )
                 };
 
                 ui.label(format!("Routes: {}/{}", route_count, max_routes));
@@ -722,11 +907,18 @@ impl EguiControlGui {
                 }
 
                 ui.separator();
-                ui.label(egui::RichText::new("Add New Route").color(crate::egui_theme::colors::ACCENT_CYAN).strong());
+                ui.label(
+                    egui::RichText::new("Add New Route")
+                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .strong(),
+                );
 
                 let (mut band_idx, mut target_idx) = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    (state.audio_routing.selected_band, state.audio_routing.selected_target)
+                    (
+                        state.audio_routing.selected_band,
+                        state.audio_routing.selected_target,
+                    )
                 };
 
                 if target_idx >= target_list.len() && !target_list.is_empty() {
@@ -746,10 +938,18 @@ impl EguiControlGui {
                     });
                 egui::ComboBox::from_id_salt("route_target")
                     .width(180.0)
-                    .selected_text(target_names.get(target_idx).map(|s| s.as_str()).unwrap_or("?"))
+                    .selected_text(
+                        target_names
+                            .get(target_idx)
+                            .map(|s| s.as_str())
+                            .unwrap_or("?"),
+                    )
                     .show_ui(ui, |ui| {
                         for (i, name) in target_names.iter().enumerate() {
-                            if ui.selectable_label(target_idx == i, name.as_str()).clicked() {
+                            if ui
+                                .selectable_label(target_idx == i, name.as_str())
+                                .clicked()
+                            {
                                 target_idx = i;
                             }
                         }
@@ -761,81 +961,157 @@ impl EguiControlGui {
                     state.audio_routing.selected_target = target_idx;
                 }
 
-                let can_add = can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
+                let can_add =
+                    can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
                     if ui.button("Add Route").clicked() {
                         if let Some(band) = FftBand::from_index(band_idx) {
                             if let Some(target) = target_list.get(target_idx) {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio_routing.matrix.add_route(band, target.clone());
                             }
                         }
                     }
                 } else {
-                    ui.label(egui::RichText::new("Max routes reached").color(crate::egui_theme::colors::TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new("Max routes reached")
+                            .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                    );
                 }
 
                 ui.separator();
-                ui.label(egui::RichText::new("Active Routes").color(crate::egui_theme::colors::ACCENT_CYAN).strong());
+                ui.label(
+                    egui::RichText::new("Active Routes")
+                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .strong(),
+                );
 
                 let routes_data: Vec<_> = {
                     let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio_routing.matrix.routes().iter().map(|r| {
-                        (r.id, r.band, r.target.clone(), r.amount, r.attack, r.release, r.enabled, r.current_value)
-                    }).collect()
+                    state
+                        .audio_routing
+                        .matrix
+                        .routes()
+                        .iter()
+                        .map(|r| {
+                            (
+                                r.id,
+                                r.band,
+                                r.target.clone(),
+                                r.amount,
+                                r.attack,
+                                r.release,
+                                r.enabled,
+                                r.current_value,
+                            )
+                        })
+                        .collect()
                 };
 
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    for (id, band, target, amount, attack, release, enabled, current) in &routes_data {
-                        ui.group(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                let mut is_enabled = *enabled;
-                                if ui.checkbox(&mut is_enabled, "").changed() {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(route) = state.audio_routing.matrix.get_route_mut(*id) {
-                                        route.enabled = is_enabled;
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (id, band, target, amount, attack, release, enabled, current) in
+                            &routes_data
+                        {
+                            ui.group(|ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    let mut is_enabled = *enabled;
+                                    if ui.checkbox(&mut is_enabled, "").changed() {
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(route) =
+                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        {
+                                            route.enabled = is_enabled;
+                                        }
+                                    }
+                                    ui.label(format!("{} → {}", band.short_name(), target.name()));
+                                    ui.colored_label(
+                                        crate::egui_theme::colors::ACCENT_GREEN,
+                                        format!("{:.2}", current),
+                                    );
+                                    if ui.button("✕").clicked() {
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        state.audio_routing.matrix.remove_route(*id);
+                                    }
+                                });
+
+                                let mut amt = *amount;
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut amt, -1.0..=1.0)
+                                            .text("Amount")
+                                            .trailing_fill(true),
+                                    )
+                                    .changed()
+                                {
+                                    let mut state =
+                                        self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(route) =
+                                        state.audio_routing.matrix.get_route_mut(*id)
+                                    {
+                                        route.amount = amt;
                                     }
                                 }
-                                ui.label(format!("{} → {}", band.short_name(), target.name()));
-                                ui.colored_label(crate::egui_theme::colors::ACCENT_GREEN, format!("{:.2}", current));
-                                if ui.button("✕").clicked() {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    state.audio_routing.matrix.remove_route(*id);
-                                }
+
+                                ui.columns(2, |cols| {
+                                    let mut atk = *attack;
+                                    if cols[0]
+                                        .add(
+                                            egui::Slider::new(&mut atk, 0.001..=1.0)
+                                                .text("Attack")
+                                                .trailing_fill(true),
+                                        )
+                                        .changed()
+                                    {
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(route) =
+                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        {
+                                            route.attack = atk;
+                                        }
+                                    }
+                                    let mut rel = *release;
+                                    if cols[1]
+                                        .add(
+                                            egui::Slider::new(&mut rel, 0.001..=1.0)
+                                                .text("Release")
+                                                .trailing_fill(true),
+                                        )
+                                        .changed()
+                                    {
+                                        let mut state = self
+                                            .shared_state
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(route) =
+                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        {
+                                            route.release = rel;
+                                        }
+                                    }
+                                });
                             });
+                        }
 
-                            let mut amt = *amount;
-                            if ui.add(egui::Slider::new(&mut amt, -1.0..=1.0).text("Amount").trailing_fill(true)).changed() {
-                                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                if let Some(route) = state.audio_routing.matrix.get_route_mut(*id) {
-                                    route.amount = amt;
-                                }
-                            }
-
-                            ui.columns(2, |cols| {
-                                let mut atk = *attack;
-                                if cols[0].add(egui::Slider::new(&mut atk, 0.001..=1.0).text("Attack").trailing_fill(true)).changed() {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(route) = state.audio_routing.matrix.get_route_mut(*id) {
-                                        route.attack = atk;
-                                    }
-                                }
-                                let mut rel = *release;
-                                if cols[1].add(egui::Slider::new(&mut rel, 0.001..=1.0).text("Release").trailing_fill(true)).changed() {
-                                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(route) = state.audio_routing.matrix.get_route_mut(*id) {
-                                        route.release = rel;
-                                    }
-                                }
-                            });
-                        });
-                    }
-
-                    if routes_data.is_empty() {
-                        ui.label(egui::RichText::new("No routes configured. Add one above.").color(crate::egui_theme::colors::TEXT_SECONDARY));
-                    }
-                });
+                        if routes_data.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No routes configured. Add one above.")
+                                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                            );
+                        }
+                    });
             });
 
         self.show_routing_window = is_open;
@@ -846,11 +1122,19 @@ impl EguiControlGui {
     fn build_param_category_tab(&mut self, ui: &mut egui::Ui, category: ParamCategory) {
         let descriptors: Vec<ParameterDescriptor> = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            state.param_descriptors.iter().filter(|d| d.category == category).cloned().collect()
+            state
+                .param_descriptors
+                .iter()
+                .filter(|d| d.category == category)
+                .cloned()
+                .collect()
         };
 
         if descriptors.is_empty() {
-            ui.label(egui::RichText::new("No parameters declared for this category.").color(crate::egui_theme::colors::TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new("No parameters declared for this category.")
+                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+            );
             return;
         }
 
@@ -890,21 +1174,39 @@ impl EguiControlGui {
             };
             if active_lfos > 0 {
                 ui.horizontal(|ui| {
-                    ui.colored_label(crate::egui_theme::colors::ACCENT_GREEN, format!("({} active)", active_lfos));
+                    ui.colored_label(
+                        crate::egui_theme::colors::ACCENT_GREEN,
+                        format!("({} active)", active_lfos),
+                    );
                 });
             }
         }
     }
 
-    fn draw_param_control(&self, ui: &mut egui::Ui, desc: &ParameterDescriptor, state: &mut std::sync::MutexGuard<'_, EngineState>) {
+    fn draw_param_control(
+        &self,
+        ui: &mut egui::Ui,
+        desc: &ParameterDescriptor,
+        state: &mut std::sync::MutexGuard<'_, EngineState>,
+    ) {
         let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
-        log::trace!("GUI draw {}: {} (base={:?})", desc.id, value, state.get_param_base(&desc.id));
+        log::trace!(
+            "GUI draw {}: {} (base={:?})",
+            desc.id,
+            value,
+            state.get_param_base(&desc.id)
+        );
         match desc.param_type {
             ParamType::Float => {
                 let mut v = value;
                 let id_tag = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
                 let (changed, reset) = crate::egui_widgets::parameter_card_f32(
-                    ui, &desc.name, &id_tag, &mut v, desc.min..=desc.max, ""
+                    ui,
+                    &desc.name,
+                    &id_tag,
+                    &mut v,
+                    desc.min..=desc.max,
+                    "",
                 );
                 if reset {
                     state.set_param_base(&desc.id, desc.default);
@@ -917,7 +1219,14 @@ impl EguiControlGui {
                 let min = desc.min as i32;
                 let max = desc.max as i32;
                 log::trace!("Int slider {}: {} (range {}..{})", desc.id, v, min, max);
-                if ui.add(egui::Slider::new(&mut v, min..=max).show_value(true).trailing_fill(true)).changed() {
+                if ui
+                    .add(
+                        egui::Slider::new(&mut v, min..=max)
+                            .show_value(true)
+                            .trailing_fill(true),
+                    )
+                    .changed()
+                {
                     state.set_param_base(&desc.id, v as f32);
                 }
             }
@@ -958,7 +1267,11 @@ impl EguiControlGui {
         status_pill(
             ui,
             text,
-            if active { PillState::Online } else { PillState::Offline },
+            if active {
+                PillState::Online
+            } else {
+                PillState::Offline
+            },
         );
     }
 }
