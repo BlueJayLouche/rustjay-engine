@@ -17,8 +17,8 @@ fn main() -> anyhow::Result<()> {
         let tabs = vec![
             Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
             Box::new(varda::ui::DeckTab),
-            Box::new(varda::ui::EffectsTab),
-            Box::new(varda::ui::ModulationTab),
+            Box::new(varda::ui::EffectsTab::default()),
+            Box::new(varda::ui::ModulationTab::default()),
             Box::new(varda::ui::MidiTab),
             Box::new(varda::ui::StageTab::new()),
             Box::new(varda::ui::OutputsTab),
@@ -39,57 +39,57 @@ fn main() -> anyhow::Result<()> {
         if let Ok(loaded) = workspace.load_stage() {
             stage.projectors = loaded.projectors;
             stage.headless_outputs = loaded.headless_outputs;
-            log::info!("[Main] loaded stage with {} projector(s), {} headless output(s)",
-                stage.projectors.len(), stage.headless_outputs.len());
+            log::info!(
+                "[Main] loaded stage with {} projector(s), {} headless output(s)",
+                stage.projectors.len(),
+                stage.headless_outputs.len()
+            );
         }
 
-        rustjay_engine::run_with_projection_egui_tabs(
-            plugin,
-            tabs,
-            move |sub| {
-                use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
-                use winit::window::WindowAttributes;
-                for (i, proj) in stage.projectors.iter().enumerate() {
-                    if !proj.enabled {
-                        continue;
-                    }
-                    let attrs = WindowAttributes::default()
-                        .with_title(format!("Varda Projector {} - {}", i + 1, proj.name))
-                        .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
-                    if let Some(monitor_idx) = proj.fullscreen_monitor {
-                        // winit monitor selection — iterate available monitors
-                        // and pick the Nth one.  If the index is out of range,
-                        // fall back to windowed.
-                        // NOTE: event_loop is not available here; fullscreen
-                        // is applied after window creation in a follow-up.
-                        // For now we just size the window to the display.
-                        log::info!("[Projector {}] requested fullscreen on monitor {}", i, monitor_idx);
-                    }
-                    let w = warp_sync.clone();
-                    let d = dome_sync.clone();
-                    let e = edge_blend_sync.clone();
-                    sub.add_projector(
-                        attrs,
-                        move |device, format| {
-                            vec![
-                                Box::new(VardaDomeStage::new(device, format, d.clone())),
-                                Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
-                                Box::new(VardaWarpStage::new(device, format, w.clone())),
-                            ]
-                        },
+        rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
+            use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
+            use winit::window::WindowAttributes;
+            for (i, proj) in stage.projectors.iter().enumerate() {
+                if !proj.enabled {
+                    continue;
+                }
+                let attrs = WindowAttributes::default()
+                    .with_title(format!("Varda Projector {} - {}", i + 1, proj.name))
+                    .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
+                if let Some(monitor_idx) = proj.fullscreen_monitor {
+                    // winit monitor selection — iterate available monitors
+                    // and pick the Nth one.  If the index is out of range,
+                    // fall back to windowed.
+                    // NOTE: event_loop is not available here; fullscreen
+                    // is applied after window creation in a follow-up.
+                    // For now we just size the window to the display.
+                    log::info!(
+                        "[Projector {}] requested fullscreen on monitor {}",
+                        i,
+                        monitor_idx
                     );
                 }
-                log::info!("Queued {} projector window(s)", sub.pending_len());
-            },
-        )
+                let w = warp_sync.clone();
+                let d = dome_sync.clone();
+                let e = edge_blend_sync.clone();
+                sub.add_projector(attrs, move |device, format| {
+                    vec![
+                        Box::new(VardaDomeStage::new(device, format, d.clone())),
+                        Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
+                        Box::new(VardaWarpStage::new(device, format, w.clone())),
+                    ]
+                });
+            }
+            log::info!("Queued {} projector window(s)", sub.pending_len());
+        })
     }
     #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
     {
         let tabs = vec![
             Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
             Box::new(varda::ui::DeckTab),
-            Box::new(varda::ui::EffectsTab),
-            Box::new(varda::ui::ModulationTab),
+            Box::new(varda::ui::EffectsTab::default()),
+            Box::new(varda::ui::ModulationTab::default()),
             Box::new(varda::ui::MidiTab),
             Box::new(varda::ui::StageTab::new()),
             Box::new(varda::ui::OutputsTab),

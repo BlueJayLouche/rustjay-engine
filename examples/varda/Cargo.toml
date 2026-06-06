@@ -15,6 +15,7 @@ streaming = []
 recording = []
 hap = ["dep:hap-wgpu"]
 ffmpeg = ["rustjay-io/ffmpeg"]
+sysmon = ["dep:sysinfo"]
 
 [dependencies]
 rustjay-engine = { workspace = true }
@@ -37,3 +38,4 @@ notify         = "7.0"
 egui           = { workspace = true, optional = true }
 winit          = { workspace = true }
 hap-wgpu       = { path = "/Users/ac/developer/rust/hap-rs/hap-wgpu", optional = true }
+sysinfo        = { version = "0.34", optional = true, default-features = false, features = ["system"] }

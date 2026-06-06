@@ -17,9 +17,9 @@ pub mod stage;
 use stage::VardaStage;
 pub mod ui;
 
-use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 #[cfg(feature = "mixer")]
 use rustjay_core::{EffectInput, EffectInstance, RenderCtx, RenderTarget};
+use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 #[cfg(feature = "mixer")]
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
@@ -38,15 +38,15 @@ use crate::control::param_router::ParamRouter;
 
 #[cfg(feature = "mixer")]
 use crate::graph::{Deck, DeckCompositor};
-use crate::sources::{Registry, ShaderWatcher};
-#[cfg(feature = "mixer")]
-use crate::sources::{CameraSource, SolidColorSource};
-#[cfg(all(feature = "mixer", feature = "hap"))]
-use crate::sources::HapSource;
-#[cfg(all(feature = "mixer", feature = "ffmpeg"))]
-use crate::sources::FfmpegSource;
 #[cfg(feature = "mixer")]
 use crate::scene::Scene;
+#[cfg(all(feature = "mixer", feature = "ffmpeg"))]
+use crate::sources::FfmpegSource;
+#[cfg(all(feature = "mixer", feature = "hap"))]
+use crate::sources::HapSource;
+#[cfg(feature = "mixer")]
+use crate::sources::{CameraSource, SolidColorSource};
+use crate::sources::{Registry, ShaderWatcher};
 
 // ---------------------------------------------------------------------------
 // App state
@@ -81,7 +81,29 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "projection")]
     pub projection_handle: Option<std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send>>>,
+    /// Runtime deck creation queue (processed in `prepare()` where GPU resources are available).
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_decks: Vec<PendingDeck>,
+    /// Sysinfo state for CPU/memory readout (sysmon feature only).
+    #[serde(skip)]
+    #[cfg(feature = "sysmon")]
+    pub sys: sysinfo::System,
+    /// Frame counter for throttling sysinfo refresh.
+    #[serde(skip)]
+    #[cfg(feature = "sysmon")]
+    pub sysmon_frame: u64,
     // (removed: headless_pushed_count replaced by per-config pushed flag)
+}
+
+/// One deck queued for creation by the UI and materialized in `prepare()`.
+#[derive(Debug, Clone)]
+#[cfg(feature = "mixer")]
+pub struct PendingDeck {
+    /// Target channel UUID.
+    pub channel_uuid: String,
+    /// Source entry from the library registry.
+    pub source: crate::sources::SourceEntry,
 }
 
 impl VardaAppState {
@@ -131,8 +153,119 @@ impl Default for VardaAppState {
             keymap: crate::keymap::Keymap::default_bindings(),
             #[cfg(feature = "projection")]
             projection_handle: None,
+            #[cfg(feature = "mixer")]
+            pending_decks: Vec::new(),
+            #[cfg(feature = "sysmon")]
+            sys: sysinfo::System::new_all(),
+            #[cfg(feature = "sysmon")]
+            sysmon_frame: 0,
         }
     }
+}
+
+/// Build an `EffectInstance` + `Deck` from a library `SourceEntry`.
+#[cfg(feature = "mixer")]
+fn instantiate_source(
+    entry: &crate::sources::SourceEntry,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    _engine: &EngineState,
+    channel_id: &str,
+) -> anyhow::Result<crate::graph::Deck> {
+    use crate::sources::{CameraSource, ImageSource, SolidColorSource, SourceKind};
+    let dummy_engine = EngineState::new();
+    let format = wgpu::TextureFormat::Bgra8Unorm;
+
+    let mut source: Box<dyn EffectInstance> = match entry.kind {
+        SourceKind::Isf => {
+            let path = entry
+                .path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("ISF entry missing path"))?;
+            let isf = rustjay_isf::IsfEffect::from_path(path)?;
+            let node = EffectNode::new(isf, &entry.name, device, queue, &dummy_engine);
+            Box::new(node)
+        }
+        SourceKind::Image => {
+            let path = entry
+                .path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Image entry missing path"))?;
+            Box::new(ImageSource::new(device, queue, format, path)?)
+        }
+        SourceKind::SolidColor => {
+            Box::new(SolidColorSource::new(device, format, [1.0, 0.0, 1.0, 1.0]))
+        }
+        SourceKind::Camera => Box::new(CameraSource::new(device, 0)),
+        SourceKind::Video => {
+            let path = entry
+                .path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Video entry missing path"))?;
+            #[cfg(all(feature = "hap", not(feature = "ffmpeg")))]
+            {
+                return Ok(crate::graph::Deck::new(
+                    format!("deck_{}_{}", channel_id, entry.id),
+                    &entry.name,
+                    Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                ));
+            }
+            #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
+            {
+                return Ok(crate::graph::Deck::new(
+                    format!("deck_{}_{}", channel_id, entry.id),
+                    &entry.name,
+                    Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                ));
+            }
+            #[cfg(all(feature = "hap", feature = "ffmpeg"))]
+            {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if ext == "mov" || ext == "hap" {
+                    return Ok(crate::graph::Deck::new(
+                        format!("deck_{}_{}", channel_id, entry.id),
+                        &entry.name,
+                        Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                    ));
+                } else {
+                    return Ok(crate::graph::Deck::new(
+                        format!("deck_{}_{}", channel_id, entry.id),
+                        &entry.name,
+                        Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                    ));
+                }
+            }
+            #[cfg(not(any(feature = "hap", feature = "ffmpeg")))]
+            {
+                let _ = path;
+                return Err(anyhow::anyhow!(
+                    "Video support not enabled (hap or ffmpeg feature required)"
+                ));
+            }
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Source kind {:?} not yet supported for runtime creation",
+                entry.kind
+            ));
+        }
+    };
+
+    let prefix = format!("ch_{}_deck_{}_{}_", channel_id, entry.id, entry.id);
+    source.set_param_prefix(&prefix);
+    let mut deck = crate::graph::Deck::new(
+        format!("deck_{}_{}", channel_id, entry.id),
+        &entry.name,
+        source,
+    );
+    if entry.kind == SourceKind::Isf {
+        deck.source_path = entry.path.clone();
+    }
+    Ok(deck)
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +299,9 @@ impl VardaRootPlugin {
             #[cfg(feature = "projection")]
             dome_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::DomeSync::default())),
             #[cfg(feature = "projection")]
-            edge_blend_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::EdgeBlendSync::default())),
+            edge_blend_sync: std::sync::Arc::new(std::sync::Mutex::new(
+                stage::EdgeBlendSync::default(),
+            )),
         }
     }
 
@@ -214,8 +349,14 @@ impl VardaRootPlugin {
         } else {
             log::warn!("Failed to load ColorCycle.fs");
         }
-        let solid = SolidColorSource::new(device, wgpu::TextureFormat::Bgra8Unorm, [1.0, 0.0, 0.0, 1.0]);
-        comp_a.decks.push(Deck::new("a2", "Solid Red", Box::new(solid)));
+        let solid = SolidColorSource::new(
+            device,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        comp_a
+            .decks
+            .push(Deck::new("a2", "Solid Red", Box::new(solid)));
 
         #[cfg(feature = "hap")]
         {
@@ -227,7 +368,8 @@ impl VardaRootPlugin {
                         if ext == "mov" || ext == "hap" {
                             match HapSource::new(device, queue, &path) {
                                 Ok(hap) => {
-                                    let name = path.file_stem()
+                                    let name = path
+                                        .file_stem()
                                         .and_then(|s| s.to_str())
                                         .unwrap_or("HAP Video")
                                         .to_string();
@@ -265,7 +407,9 @@ impl VardaRootPlugin {
             log::warn!("Failed to load AuroraWaves.fs");
         }
         let camera = CameraSource::new(device, 0);
-        comp_b.decks.push(Deck::new("b2", "Camera", Box::new(camera)));
+        comp_b
+            .decks
+            .push(Deck::new("b2", "Camera", Box::new(camera)));
 
         #[cfg(feature = "ffmpeg")]
         {
@@ -277,7 +421,8 @@ impl VardaRootPlugin {
                         if ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" {
                             match FfmpegSource::new(device, queue, &path) {
                                 Ok(src) => {
-                                    let name = path.file_stem()
+                                    let name = path
+                                        .file_stem()
                                         .and_then(|s| s.to_str())
                                         .unwrap_or("Video")
                                         .to_string();
@@ -289,7 +434,11 @@ impl VardaRootPlugin {
                                     log::info!("Loaded video source: {}", path.display());
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to open video file {}: {}", path.display(), e);
+                                    log::warn!(
+                                        "Failed to open video file {}: {}",
+                                        path.display(),
+                                        e
+                                    );
                                 }
                             }
                             break;
@@ -327,7 +476,10 @@ impl VardaRootPlugin {
             rustjay_mixer::TransitionStep::hold(4.0),
         ];
         mixer.sequencer.looping = true;
-        log::info!("Sequencer pre-loaded with {} beat-synced steps", mixer.sequencer.steps.len());
+        log::info!(
+            "Sequencer pre-loaded with {} beat-synced steps",
+            mixer.sequencer.steps.len()
+        );
 
         // FX demo exercise: add a channel FX to Channel B (end-to-end)
         let ch_fx_path = shaders_dir.join("brightness_contrast.fs");
@@ -404,12 +556,13 @@ impl VardaRootPlugin {
             });
             mod_eng.assign("crossfader", &adsr, 0.3, None);
 
-            let step_seq = mod_eng.add_source(rustjay_core::modulation::ModulationSource::StepSequencer {
-                steps: vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25],
-                rate: 4.0,
-                interpolation: rustjay_core::modulation::StepInterpolation::Linear,
-                bipolar: false,
-            });
+            let step_seq =
+                mod_eng.add_source(rustjay_core::modulation::ModulationSource::StepSequencer {
+                    steps: vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25],
+                    rate: 4.0,
+                    interpolation: rustjay_core::modulation::StepInterpolation::Linear,
+                    bipolar: false,
+                });
             mod_eng.assign("crossfader", &step_seq, 0.2, None);
         }
 
@@ -458,7 +611,13 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
-    fn prepare(&mut self, state: &mut VardaAppState, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
+    fn prepare(
+        &mut self,
+        state: &mut VardaAppState,
+        engine: &EngineState,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
         if !state.ready {
             state.ready = true;
 
@@ -497,9 +656,18 @@ impl EffectPlugin for VardaRootPlugin {
                             state.stage.publish_warp();
                             // Dome/edge-blend runtime state lives in the Sync structs and is
                             // not serialized, so publish defaults here — ephemeral by design.
-                            state.stage.publish_dome(false, rustjay_projection::DomemasterConfig::default(), [0.0; 3]);
-                            state.stage.publish_edge_blend(rustjay_projection::EdgeBlendConfig::default());
-                            log::info!("[Workspace] loaded stage with {} surfaces", state.stage.surfaces.len());
+                            state.stage.publish_dome(
+                                false,
+                                rustjay_projection::DomemasterConfig::default(),
+                                [0.0; 3],
+                            );
+                            state
+                                .stage
+                                .publish_edge_blend(rustjay_projection::EdgeBlendConfig::default());
+                            log::info!(
+                                "[Workspace] loaded stage with {} surfaces",
+                                state.stage.surfaces.len()
+                            );
                         }
                         Err(e) => {
                             log::warn!("[Workspace] failed to load stage: {}", e);
@@ -512,7 +680,10 @@ impl EffectPlugin for VardaRootPlugin {
                 match state.workspace.load_keymap() {
                     Ok(km) => {
                         state.keymap = km;
-                        log::info!("[Workspace] loaded keymap with {} bindings", state.keymap.bindings.len());
+                        log::info!(
+                            "[Workspace] loaded keymap with {} bindings",
+                            state.keymap.bindings.len()
+                        );
                     }
                     Err(e) => {
                         log::warn!("[Workspace] failed to load keymap: {}", e);
@@ -539,23 +710,37 @@ impl EffectPlugin for VardaRootPlugin {
                         if let Ok(mut mixer) = state.mixer.lock() {
                             for ch in mixer.channels.iter_mut() {
                                 if let Some(compositor) = ch.effect.as_any_mut() {
-                                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                                    if let Some(compositor) =
+                                        compositor.downcast_mut::<DeckCompositor>()
+                                    {
                                         for deck in compositor.decks.iter_mut() {
                                             if deck.source_path.as_ref() == Some(path) {
-                                                let name = path.file_stem()
+                                                let name = path
+                                                    .file_stem()
                                                     .and_then(|s| s.to_str())
                                                     .unwrap_or("ISF Shader")
                                                     .to_string();
                                                 match rustjay_isf::IsfEffect::from_path(path) {
                                                     Ok(isf) => {
-                                                        let node = EffectNode::new(isf, &name, device, queue, engine);
+                                                        let node = EffectNode::new(
+                                                            isf, &name, device, queue, engine,
+                                                        );
                                                         deck.source = Box::new(node);
-                                                        deck.source.set_param_prefix(&deck.full_prefix);
+                                                        deck.source
+                                                            .set_param_prefix(&deck.full_prefix);
                                                         self.params_dirty = true;
-                                                        log::info!("[HotReload] Reloaded {} for deck {}", path.display(), deck.uuid);
+                                                        log::info!(
+                                                            "[HotReload] Reloaded {} for deck {}",
+                                                            path.display(),
+                                                            deck.uuid
+                                                        );
                                                     }
                                                     Err(e) => {
-                                                        log::warn!("[HotReload] Failed to reload {}: {}", path.display(), e);
+                                                        log::warn!(
+                                                            "[HotReload] Failed to reload {}: {}",
+                                                            path.display(),
+                                                            e
+                                                        );
                                                     }
                                                 }
                                             }
@@ -586,7 +771,8 @@ impl EffectPlugin for VardaRootPlugin {
 
         // Auto-save workspace every 30 seconds (wall-clock, not frame-count).
         let now = std::time::Instant::now();
-        let auto_save_elapsed = state.auto_save_last
+        let auto_save_elapsed = state
+            .auto_save_last
             .map_or(f32::MAX, |t| now.duration_since(t).as_secs_f32());
         if auto_save_elapsed >= 30.0 {
             state.auto_save_last = Some(now);
@@ -610,23 +796,113 @@ impl EffectPlugin for VardaRootPlugin {
             }
         }
 
+        // Refresh CPU / memory readout every 60 frames (~1 s at 60 fps).
+        #[cfg(feature = "sysmon")]
+        {
+            state.sysmon_frame = state.sysmon_frame.wrapping_add(1);
+            if state.sysmon_frame % 60 == 0 {
+                state.sys.refresh_memory();
+                state.sys.refresh_cpu_usage();
+                let cpu_avg = if state.sys.cpus().is_empty() {
+                    0.0
+                } else {
+                    state.sys.cpus().iter().map(|c| c.cpu_usage()).sum::<f32>()
+                        / state.sys.cpus().len() as f32
+                };
+                let mem_total = state.sys.total_memory();
+                let mem_used = state.sys.used_memory();
+                if let Ok(mut perf) = engine.performance.lock() {
+                    perf.cpu_percent = cpu_avg.clamp(0.0, 100.0);
+                    perf.mem_used_mb = mem_used / 1_048_576;
+                    perf.mem_total_mb = mem_total / 1_048_576;
+                }
+            }
+        }
+
+        // Materialise runtime deck-creation requests queued by the UI.
+        #[cfg(feature = "mixer")]
+        {
+            let pending: Vec<PendingDeck> = std::mem::take(&mut state.pending_decks);
+            for req in pending {
+                let Ok(mut mixer) = state.mixer.lock() else {
+                    continue;
+                };
+                let channel = mixer
+                    .channels
+                    .iter_mut()
+                    .find(|c| c.uuid == req.channel_uuid || c.name == req.channel_uuid);
+                let Some(channel) = channel else {
+                    engine.notify(
+                        format!("Channel '{}' not found", req.channel_uuid),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(4),
+                    );
+                    continue;
+                };
+                let result = instantiate_source(&req.source, device, queue, engine, &channel.uuid);
+                match result {
+                    Ok(deck) => {
+                        let name = deck.name.clone();
+                        if let Some(compositor) = channel.effect.as_any_mut() {
+                            if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                                compositor.decks.push(deck);
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added deck '{}' to {}", name, channel.name),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            } else {
+                                engine.notify(
+                                    "Channel does not use DeckCompositor".to_string(),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        engine.notify(
+                            format!("Failed to create deck: {}", e),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(4),
+                        );
+                    }
+                }
+            }
+        }
+
         // Sync headless outputs: add any newly-enabled configs.
         #[cfg(feature = "projection")]
         {
-            let needs_push = state.stage.headless_outputs.iter().any(|h| h.enabled && !h.pushed);
+            let needs_push = state
+                .stage
+                .headless_outputs
+                .iter()
+                .any(|h| h.enabled && !h.pushed);
             if needs_push {
                 if let Some(handle) = &state.projection_handle {
                     let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                    if let Some(sub) =
+                        any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>()
+                    {
                         for cfg in state.stage.headless_outputs.iter_mut() {
                             if cfg.enabled && !cfg.pushed {
                                 sub.add_headless_output(
                                     cfg.width,
                                     cfg.height,
-                                    vec![Box::new(rustjay_projection::IdentityStage::new(device, wgpu::TextureFormat::Rgba8Unorm))],
+                                    vec![Box::new(rustjay_projection::IdentityStage::new(
+                                        device,
+                                        wgpu::TextureFormat::Rgba8Unorm,
+                                    ))],
                                 );
                                 cfg.pushed = true;
-                                log::info!("[Headless] added {}x{} output '{}'", cfg.width, cfg.height, cfg.name);
+                                log::info!(
+                                    "[Headless] added {}x{} output '{}'",
+                                    cfg.width,
+                                    cfg.height,
+                                    cfg.name
+                                );
                             }
                         }
                     } else {
@@ -687,7 +963,9 @@ impl EffectPlugin for VardaRootPlugin {
                 // explicit registration needed.
                 log::info!("[ParamRouter] populated with {} mappings", router.len());
             }
-            engine.param_resolver = Some(rustjay_core::ParamResolver(std::sync::Arc::new(move |path| router.resolve(path))));
+            engine.param_resolver = Some(rustjay_core::ParamResolver(std::sync::Arc::new(
+                move |path| router.resolve(path),
+            )));
             // The app-state snapshot is published every frame in `prepare`
             // (with live values) — no one-time publish needed here.
         }
@@ -752,11 +1030,7 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
-    fn render(
-        &mut self,
-        ctx: &mut RenderHookCtx<'_>,
-        _app_state: &mut VardaAppState,
-    ) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _app_state: &mut VardaAppState) -> bool {
         #[cfg(feature = "mixer")]
         {
             let mut render_ctx = RenderCtx {
@@ -953,7 +1227,8 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
             SourceKind::Hls => "hls",
             SourceKind::Dash => "dash",
             SourceKind::Rtmp => "rtmp",
-        }.to_string(),
+        }
+        .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
     }
 }

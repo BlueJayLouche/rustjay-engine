@@ -16,10 +16,41 @@ pub struct MixerTab;
 pub struct DeckTab;
 
 /// Effects / Library tab — registry list + add/enable/reorder.
-pub struct EffectsTab;
+pub struct EffectsTab {
+    /// Target channel UUID for "Add to channel" actions.
+    selected_channel_uuid: String,
+}
+
+impl Default for EffectsTab {
+    fn default() -> Self {
+        Self {
+            selected_channel_uuid: String::new(),
+        }
+    }
+}
 
 /// Modulation tab — LFO/audio/ADSR/step assignment + chaining graph.
-pub struct ModulationTab;
+pub struct ModulationTab {
+    /// Target source UUID for mod-on-mod assignment.
+    mom_target_uuid: String,
+    /// Target parameter name within the selected source.
+    mom_param: String,
+    /// Modulator source UUID for mod-on-mod assignment.
+    mom_modulator_uuid: String,
+    /// Modulation amount (-1 to 1).
+    mom_amount: f32,
+}
+
+impl Default for ModulationTab {
+    fn default() -> Self {
+        Self {
+            mom_target_uuid: String::new(),
+            mom_param: String::new(),
+            mom_modulator_uuid: String::new(),
+            mom_amount: 0.5,
+        }
+    }
+}
 
 /// Sequencer tab — transition sequences.
 pub struct SequencerTab;
@@ -57,11 +88,11 @@ pub struct InspectorTab;
 #[cfg(all(feature = "mixer", feature = "egui"))]
 mod egui_impl {
     use super::*;
-    use rustjay_engine::prelude::*;
-    use rustjay_core::EngineState;
-    use rustjay_mixer::BlendMode;
     use crate::graph::DeckCompositor;
     use crate::VardaAppState;
+    use rustjay_core::EngineState;
+    use rustjay_engine::prelude::*;
+    use rustjay_mixer::BlendMode;
 
     /// Helper: draw a blend-mode combo bound to a canonical engine param key.
     fn blend_combo(ui: &mut egui::Ui, engine: &mut EngineState, key: &str, label: &str) {
@@ -163,8 +194,12 @@ mod egui_impl {
 
             for ch in &mut mixer.channels {
                 ui.collapsing(&ch.name, |ui| {
-                    let Some(compositor) = ch.effect.as_any_mut() else { return; };
-                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else { return; };
+                    let Some(compositor) = ch.effect.as_any_mut() else {
+                        return;
+                    };
+                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
+                        return;
+                    };
 
                     for deck in &mut compositor.decks {
                         ui.push_id(deck.uuid.clone(), |ui| {
@@ -205,28 +240,99 @@ mod egui_impl {
             &mut self,
             ui: &mut egui::Ui,
             app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
+            engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_ref::<VardaAppState>()
+                .downcast_mut::<VardaAppState>()
                 .expect("EffectsTab expects VardaAppState");
 
             ui.heading("Effects / Library");
             ui.separator();
 
-            // Library listing (read-only — no device/queue in draw() for runtime creation)
-            ui.label(egui::RichText::new("Library").strong());
-            egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                for entry in &state.registry.shaders {
-                    ui.label(format!("🎨 {}", entry.name));
+            // Channel selector for runtime deck creation.
+            let channel_names: Vec<(String, String)> = {
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                mixer
+                    .channels
+                    .iter()
+                    .map(|c| (c.uuid.clone(), c.name.clone()))
+                    .collect()
+            };
+            if self.selected_channel_uuid.is_empty() {
+                if let Some((uuid, _)) = channel_names.first() {
+                    self.selected_channel_uuid = uuid.clone();
                 }
-                for entry in &state.registry.images {
-                    ui.label(format!("🖼 {}", entry.name));
-                }
-                for entry in &state.registry.videos {
-                    ui.label(format!("🎬 {}", entry.name));
-                }
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Add to:");
+                egui::ComboBox::from_id_salt("effects_target_channel")
+                    .selected_text(
+                        channel_names
+                            .iter()
+                            .find(|(u, _)| u == &self.selected_channel_uuid)
+                            .map(|(_, n)| n.as_str())
+                            .unwrap_or("--"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (uuid, name) in &channel_names {
+                            ui.selectable_value(
+                                &mut self.selected_channel_uuid,
+                                uuid.clone(),
+                                name,
+                            );
+                        }
+                    });
             });
+            ui.add_space(4.0);
+
+            // Library listing — clicking "➕" queues a PendingDeck for materialisation in prepare().
+            ui.label(egui::RichText::new("Library").strong());
+            let target_uuid = self.selected_channel_uuid.clone();
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    let mut queue_deck: Option<crate::PendingDeck> = None;
+                    for entry in state
+                        .registry
+                        .shaders
+                        .iter()
+                        .chain(&state.registry.images)
+                        .chain(&state.registry.videos)
+                    {
+                        ui.horizontal(|ui| {
+                            let icon = match entry.kind {
+                                crate::sources::SourceKind::Isf => "🎨",
+                                crate::sources::SourceKind::Image => "🖼",
+                                crate::sources::SourceKind::Video => "🎬",
+                                crate::sources::SourceKind::SolidColor => "🎨",
+                                crate::sources::SourceKind::Camera => "📷",
+                                _ => "📁",
+                            };
+                            ui.label(format!("{} {}", icon, entry.name));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("➕").clicked() && !target_uuid.is_empty() {
+                                        queue_deck = Some(crate::PendingDeck {
+                                            channel_uuid: target_uuid.clone(),
+                                            source: entry.clone(),
+                                        });
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(req) = queue_deck {
+                        let name = req.source.name.clone();
+                        state.pending_decks.push(req);
+                        engine.notify(
+                            format!("Queued '{}' for creation", name),
+                            rustjay_core::NotificationLevel::Info,
+                            std::time::Duration::from_secs(3),
+                        );
+                    }
+                });
             ui.separator();
 
             // Live FX chains
@@ -236,42 +342,56 @@ mod egui_impl {
 
             for ch in &mut mixer.channels {
                 ui.push_id(ch.uuid.clone(), |ui| {
-                ui.collapsing(format!("Channel: {}", ch.name), |ui| {
-                    // Channel FX
-                    if !ch.chain.is_empty() {
-                        ui.label("Channel FX:");
-                        let mut fx_i = 0;
-                        while fx_i < ch.chain.len() {
-                            let mut enabled = ch.chain[fx_i].enabled;
-                            let fx_label = ch.chain[fx_i].effect.label();
-                            if ui.push_id(("ch_fx", fx_i), |ui| ui.checkbox(&mut enabled, fx_label).changed()).inner {
-                                ch.chain[fx_i].enabled = enabled;
-                            }
-                            fx_i += 1;
-                        }
-                    }
-
-                    // Deck FX
-                    let Some(compositor) = ch.effect.as_any_mut() else { return; };
-                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else { return; };
-                    for deck in &mut compositor.decks {
-                        if deck.chain.is_empty() {
-                            continue;
-                        }
-                        ui.push_id(deck.uuid.clone(), |ui| {
-                            ui.label(format!("Deck {} FX:", deck.name));
+                    ui.collapsing(format!("Channel: {}", ch.name), |ui| {
+                        // Channel FX
+                        if !ch.chain.is_empty() {
+                            ui.label("Channel FX:");
                             let mut fx_i = 0;
-                            while fx_i < deck.chain.len() {
-                                let mut enabled = deck.chain[fx_i].enabled;
-                                let fx_label = deck.chain[fx_i].effect.label();
-                                if ui.push_id(fx_i, |ui| ui.checkbox(&mut enabled, fx_label).changed()).inner {
-                                    deck.set_effect_enabled(fx_i, enabled);
+                            while fx_i < ch.chain.len() {
+                                let mut enabled = ch.chain[fx_i].enabled;
+                                let fx_label = ch.chain[fx_i].effect.label();
+                                if ui
+                                    .push_id(("ch_fx", fx_i), |ui| {
+                                        ui.checkbox(&mut enabled, fx_label).changed()
+                                    })
+                                    .inner
+                                {
+                                    ch.chain[fx_i].enabled = enabled;
                                 }
                                 fx_i += 1;
                             }
-                        });
-                    }
-                });
+                        }
+
+                        // Deck FX
+                        let Some(compositor) = ch.effect.as_any_mut() else {
+                            return;
+                        };
+                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
+                            return;
+                        };
+                        for deck in &mut compositor.decks {
+                            if deck.chain.is_empty() {
+                                continue;
+                            }
+                            ui.push_id(deck.uuid.clone(), |ui| {
+                                ui.label(format!("Deck {} FX:", deck.name));
+                                let mut fx_i = 0;
+                                while fx_i < deck.chain.len() {
+                                    let mut enabled = deck.chain[fx_i].enabled;
+                                    let fx_label = deck.chain[fx_i].effect.label();
+                                    if ui
+                                        .push_id(fx_i, |ui| {
+                                            ui.checkbox(&mut enabled, fx_label).changed()
+                                        })
+                                        .inner
+                                    {
+                                        deck.set_effect_enabled(fx_i, enabled);
+                                    }
+                                    fx_i += 1;
+                                }
+                            });
+                        }
+                    });
                 });
             }
 
@@ -281,7 +401,12 @@ mod egui_impl {
                     while fx_i < mixer.master.len() {
                         let mut enabled = mixer.master[fx_i].enabled;
                         let fx_label = mixer.master[fx_i].effect.label();
-                        if ui.push_id(("master_fx", fx_i), |ui| ui.checkbox(&mut enabled, fx_label).changed()).inner {
+                        if ui
+                            .push_id(("master_fx", fx_i), |ui| {
+                                ui.checkbox(&mut enabled, fx_label).changed()
+                            })
+                            .inner
+                        {
                             mixer.master[fx_i].enabled = enabled;
                         }
                         fx_i += 1;
@@ -303,54 +428,215 @@ mod egui_impl {
             &mut self,
             ui: &mut egui::Ui,
             app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
+            engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_ref::<VardaAppState>()
+                .downcast_mut::<VardaAppState>()
                 .expect("ModulationTab expects VardaAppState");
 
             ui.heading("Modulation");
             ui.separator();
 
-            let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-            let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            // Snapshot source list so we can release the immutable lock before mutation.
+            let sources: Vec<(String, rustjay_core::modulation::ModulationSource)> = {
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng
+                    .sources
+                    .iter()
+                    .map(|s| (s.uuid.clone(), s.source.clone()))
+                    .collect()
+            };
 
-            if mod_eng.sources.is_empty() {
+            if sources.is_empty() {
                 ui.label("No modulation sources active.");
                 return;
             }
 
             ui.label(egui::RichText::new("Sources").strong());
-            for src in &mod_eng.sources {
-                let kind = match &src.source {
-                    rustjay_core::modulation::ModulationSource::LFO { waveform, frequency, .. } => {
+            for (uuid, src) in &sources {
+                let kind = match src {
+                    rustjay_core::modulation::ModulationSource::LFO {
+                        waveform,
+                        frequency,
+                        ..
+                    } => {
                         format!("LFO ({:?}) @ {:.2} Hz", waveform, frequency)
                     }
-                    rustjay_core::modulation::ModulationSource::AudioBand { freq_low, freq_high, .. } => {
+                    rustjay_core::modulation::ModulationSource::AudioBand {
+                        freq_low,
+                        freq_high,
+                        ..
+                    } => {
                         format!("Audio [{:.0}–{:.0} Hz]", freq_low, freq_high)
                     }
                     rustjay_core::modulation::ModulationSource::ADSR { .. } => "ADSR".to_string(),
                     rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
                         "Step Seq".to_string()
                     }
-
                 };
-                ui.label(format!("{} — {}", &src.uuid[..8.min(src.uuid.len())], kind));
+                ui.label(format!("{} — {}", &uuid[..8.min(uuid.len())], kind));
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Mod-on-Mod").strong());
+
+            // Ensure defaults track the first available source.
+            if self.mom_target_uuid.is_empty() {
+                if let Some((uuid, _)) = sources.first() {
+                    self.mom_target_uuid = uuid.clone();
+                }
+            }
+            if self.mom_modulator_uuid.is_empty() {
+                if let Some((uuid, _)) = sources.first() {
+                    self.mom_modulator_uuid = uuid.clone();
+                }
+            }
+
+            // Determine available params for the selected target source.
+            let target_params: Vec<&'static str> = sources
+                .iter()
+                .find(|(u, _)| u == &self.mom_target_uuid)
+                .map(|(_, src)| match src {
+                    rustjay_core::modulation::ModulationSource::LFO { .. } => {
+                        vec!["frequency", "phase", "amplitude"]
+                    }
+                    rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
+                        vec!["gain", "smoothing"]
+                    }
+                    rustjay_core::modulation::ModulationSource::ADSR { .. } => {
+                        vec!["attack", "decay", "sustain", "release"]
+                    }
+                    rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
+                        vec!["rate"]
+                    }
+                })
+                .unwrap_or_default();
+
+            if self.mom_param.is_empty()
+                || !target_params.iter().any(|p| *p == self.mom_param.as_str())
+            {
+                if let Some(p) = target_params.first() {
+                    self.mom_param = p.to_string();
+                }
+            }
+
+            let source_labels: Vec<(String, String)> = sources
+                .iter()
+                .map(|(u, src)| {
+                    let label = match src {
+                        rustjay_core::modulation::ModulationSource::LFO { .. } => {
+                            format!("{} — LFO", &u[..8.min(u.len())])
+                        }
+                        rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
+                            format!("{} — Audio", &u[..8.min(u.len())])
+                        }
+                        rustjay_core::modulation::ModulationSource::ADSR { .. } => {
+                            format!("{} — ADSR", &u[..8.min(u.len())])
+                        }
+                        rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
+                            format!("{} — Seq", &u[..8.min(u.len())])
+                        }
+                    };
+                    (u.clone(), label)
+                })
+                .collect();
+
+            ui.horizontal(|ui| {
+                ui.label("Target:");
+                egui::ComboBox::from_id_salt("mom_target")
+                    .selected_text(
+                        source_labels
+                            .iter()
+                            .find(|(u, _)| u == &self.mom_target_uuid)
+                            .map(|(_, n)| n.as_str())
+                            .unwrap_or("--"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (uuid, name) in &source_labels {
+                            ui.selectable_value(&mut self.mom_target_uuid, uuid.clone(), name);
+                        }
+                    });
+
+                ui.label("Param:");
+                egui::ComboBox::from_id_salt("mom_param")
+                    .selected_text(self.mom_param.clone())
+                    .show_ui(ui, |ui| {
+                        for p in &target_params {
+                            ui.selectable_value(&mut self.mom_param, p.to_string(), *p);
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Modulator:");
+                egui::ComboBox::from_id_salt("mom_modulator")
+                    .selected_text(
+                        source_labels
+                            .iter()
+                            .find(|(u, _)| u == &self.mom_modulator_uuid)
+                            .map(|(_, n)| n.as_str())
+                            .unwrap_or("--"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (uuid, name) in &source_labels {
+                            ui.selectable_value(&mut self.mom_modulator_uuid, uuid.clone(), name);
+                        }
+                    });
+
+                ui.label("Amount:");
+                ui.add(
+                    egui::DragValue::new(&mut self.mom_amount)
+                        .speed(0.01)
+                        .range(-1.0..=1.0),
+                );
+            });
+
+            let can_assign = !self.mom_target_uuid.is_empty()
+                && !self.mom_modulator_uuid.is_empty()
+                && !self.mom_param.is_empty()
+                && self.mom_target_uuid != self.mom_modulator_uuid;
+
+            if ui.button("Assign").clicked() && can_assign {
+                let target = self.mom_target_uuid.clone();
+                let param = self.mom_param.clone();
+                let modulator = self.mom_modulator_uuid.clone();
+                let amount = self.mom_amount;
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                let mut mod_eng = mixer.modulation.lock().unwrap();
+                mod_eng.assign_mod_on_mod(&target, &param, &modulator, amount);
+                drop(mod_eng);
+                drop(mixer);
+                engine.notify(
+                    format!(
+                        "Mod-on-mod: {}.{} ← {} @ {:.2}",
+                        &target[..8.min(target.len())],
+                        param,
+                        &modulator[..8.min(modulator.len())],
+                        amount
+                    ),
+                    rustjay_core::NotificationLevel::Success,
+                    std::time::Duration::from_secs(3),
+                );
             }
 
             ui.separator();
             ui.label(egui::RichText::new("Assignments").strong());
-            if mod_eng.assignments.is_empty() {
-                ui.label("No active assignments.");
-            } else {
-                for (param, mods) in &mod_eng.assignments {
-                    for m in mods {
-                        ui.label(format!(
-                            "{} ← {} @ {:.2}",
-                            param,
-                            &m.source_id[..8.min(m.source_id.len())],
-                            m.amount
-                        ));
+            {
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                if mod_eng.assignments.is_empty() {
+                    ui.label("No active assignments.");
+                } else {
+                    for (param, mods) in &mod_eng.assignments {
+                        for m in mods {
+                            ui.label(format!(
+                                "{} ← {} @ {:.2}",
+                                param,
+                                &m.source_id[..8.min(m.source_id.len())],
+                                m.amount
+                            ));
+                        }
                     }
                 }
             }
@@ -413,7 +699,7 @@ mod egui_impl {
     impl StageTab {
         fn draw_stage_tab(ui: &mut egui::Ui, state: &mut VardaAppState, import_path: &mut String) {
             use crate::stage::{SurfaceSource, VardaSurface};
-            use egui::{Color32, Rect, Pos2, Vec2, Stroke, CornerRadius};
+            use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
 
             // Collect channel/deck names for source selector
             let source_options: Vec<(String, SurfaceSource)> = {
@@ -425,10 +711,16 @@ mod egui_impl {
                             SurfaceSource::Channel(ch.uuid.clone()),
                         ));
                         if let Some(compositor) = ch.effect.as_any() {
-                            if let Some(compositor) = compositor.downcast_ref::<crate::graph::DeckCompositor>() {
+                            if let Some(compositor) =
+                                compositor.downcast_ref::<crate::graph::DeckCompositor>()
+                            {
                                 for deck in &compositor.decks {
                                     opts.push((
-                                        format!("  {} ({})", deck.name, &deck.uuid[..deck.uuid.len().min(4)]),
+                                        format!(
+                                            "  {} ({})",
+                                            deck.name,
+                                            &deck.uuid[..deck.uuid.len().min(4)]
+                                        ),
                                         SurfaceSource::Deck {
                                             channel_uuid: ch.uuid.clone(),
                                             deck_uuid: deck.uuid.clone(),
@@ -486,11 +778,16 @@ mod egui_impl {
                     ui.separator();
                     ui.label("Import:");
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(import_path).hint_text("Path to SVG/DXF..."));
+                        ui.add(
+                            egui::TextEdit::singleline(import_path).hint_text("Path to SVG/DXF..."),
+                        );
                         if ui.button("Import").clicked() && !import_path.is_empty() {
                             let path = std::path::Path::new(&*import_path);
-                            let params = rustjay_projection::surface_import::DetectionParams::default();
-                            match rustjay_projection::surface_import::detect_from_file(path, &params) {
+                            let params =
+                                rustjay_projection::surface_import::DetectionParams::default();
+                            match rustjay_projection::surface_import::detect_from_file(
+                                path, &params,
+                            ) {
                                 Ok(result) => {
                                     for (i, contour) in result.contours.iter().enumerate() {
                                         let s = contour.to_surface(i);
@@ -499,12 +796,19 @@ mod egui_impl {
                                             uuid: format!("import{}", i),
                                             vertices: s.vertices,
                                             is_circular: s.is_circular,
-                                            radius: contour.circle_fit.map(|(_, r)| r).unwrap_or(0.1),
+                                            radius: contour
+                                                .circle_fit
+                                                .map(|(_, r)| r)
+                                                .unwrap_or(0.1),
                                             source: SurfaceSource::Master,
                                             warp: rustjay_projection::WarpMode::identity(),
                                         });
                                     }
-                                    log::info!("Imported {} contours from {}", result.contours.len(), import_path);
+                                    log::info!(
+                                        "Imported {} contours from {}",
+                                        result.contours.len(),
+                                        import_path
+                                    );
                                 }
                                 Err(e) => {
                                     log::warn!("Import failed for {}: {}", import_path, e);
@@ -519,17 +823,23 @@ mod egui_impl {
                 // Center: 2D canvas
                 let canvas_rect = ui.available_rect_before_wrap();
                 let canvas_size = canvas_rect.size().min_elem();
-                let canvas_rect = Rect::from_min_size(
-                    canvas_rect.min,
-                    Vec2::splat(canvas_size),
-                );
+                let canvas_rect = Rect::from_min_size(canvas_rect.min, Vec2::splat(canvas_size));
 
-                let response = ui.interact(canvas_rect, ui.id().with("stage_canvas"), egui::Sense::click());
+                let response = ui.interact(
+                    canvas_rect,
+                    ui.id().with("stage_canvas"),
+                    egui::Sense::click(),
+                );
                 let painter = ui.painter_at(canvas_rect);
 
                 // Background
                 painter.rect_filled(canvas_rect, CornerRadius::ZERO, Color32::from_gray(30));
-                painter.rect_stroke(canvas_rect, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    canvas_rect,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, Color32::from_gray(80)),
+                    egui::StrokeKind::Inside,
+                );
 
                 // Grid
                 for i in 0..=10 {
@@ -537,11 +847,17 @@ mod egui_impl {
                     let x = canvas_rect.min.x + t * canvas_rect.width();
                     let y = canvas_rect.min.y + t * canvas_rect.height();
                     painter.line_segment(
-                        [Pos2::new(x, canvas_rect.min.y), Pos2::new(x, canvas_rect.max.y)],
+                        [
+                            Pos2::new(x, canvas_rect.min.y),
+                            Pos2::new(x, canvas_rect.max.y),
+                        ],
                         Stroke::new(0.5, Color32::from_gray(50)),
                     );
                     painter.line_segment(
-                        [Pos2::new(canvas_rect.min.x, y), Pos2::new(canvas_rect.max.x, y)],
+                        [
+                            Pos2::new(canvas_rect.min.x, y),
+                            Pos2::new(canvas_rect.max.x, y),
+                        ],
                         Stroke::new(0.5, Color32::from_gray(50)),
                     );
                 }
@@ -568,20 +884,26 @@ mod egui_impl {
                             Color32::WHITE,
                         );
                     } else if surf.vertices.len() >= 3 {
-                        let points: Vec<Pos2> = surf.vertices.iter().map(|v| {
-                            Pos2::new(
-                                canvas_rect.min.x + v[0] * canvas_rect.width(),
-                                canvas_rect.min.y + v[1] * canvas_rect.height(),
-                            )
-                        }).collect();
+                        let points: Vec<Pos2> = surf
+                            .vertices
+                            .iter()
+                            .map(|v| {
+                                Pos2::new(
+                                    canvas_rect.min.x + v[0] * canvas_rect.width(),
+                                    canvas_rect.min.y + v[1] * canvas_rect.height(),
+                                )
+                            })
+                            .collect();
                         painter.add(egui::Shape::convex_polygon(
                             points.clone(),
                             color.linear_multiply(0.3),
                             Stroke::new(2.0, color),
                         ));
                         // Label at centroid
-                        let centroid_x: f32 = surf.vertices.iter().map(|v| v[0]).sum::<f32>() / surf.vertices.len() as f32;
-                        let centroid_y: f32 = surf.vertices.iter().map(|v| v[1]).sum::<f32>() / surf.vertices.len() as f32;
+                        let centroid_x: f32 = surf.vertices.iter().map(|v| v[0]).sum::<f32>()
+                            / surf.vertices.len() as f32;
+                        let centroid_y: f32 = surf.vertices.iter().map(|v| v[1]).sum::<f32>()
+                            / surf.vertices.len() as f32;
                         painter.text(
                             Pos2::new(
                                 canvas_rect.min.x + centroid_x * canvas_rect.width(),
@@ -631,13 +953,31 @@ mod egui_impl {
                         egui::ComboBox::from_id_salt("warp_mode")
                             .selected_text(warp_label)
                             .show_ui(ui, |ui| {
-                                if ui.selectable_label(matches!(surf.warp, rustjay_projection::WarpMode::CornerPin { .. }), "Corner Pin").clicked() {
+                                if ui
+                                    .selectable_label(
+                                        matches!(
+                                            surf.warp,
+                                            rustjay_projection::WarpMode::CornerPin { .. }
+                                        ),
+                                        "Corner Pin",
+                                    )
+                                    .clicked()
+                                {
                                     surf.warp = rustjay_projection::WarpMode::corner_pin([
-                                        [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+                                        [0.0, 0.0],
+                                        [1.0, 0.0],
+                                        [1.0, 1.0],
+                                        [0.0, 1.0],
                                     ]);
                                     warp_dirty = true;
                                 }
-                                if ui.selectable_label(matches!(surf.warp, rustjay_projection::WarpMode::Mesh(_)), "Mesh").clicked() {
+                                if ui
+                                    .selectable_label(
+                                        matches!(surf.warp, rustjay_projection::WarpMode::Mesh(_)),
+                                        "Mesh",
+                                    )
+                                    .clicked()
+                                {
                                     surf.warp = rustjay_projection::WarpMode::Mesh(
                                         rustjay_projection::WarpMesh::identity(4, 4),
                                     );
@@ -645,15 +985,30 @@ mod egui_impl {
                                 }
                             });
 
-                        if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
+                        if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp
+                        {
                             ui.label("Corners (normalized):");
                             for (i, corner) in corners.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.label(["TL", "TR", "BR", "BL"][i]);
-                                    if ui.add(egui::DragValue::new(&mut corner[0]).speed(0.01).range(0.0..=1.0)).changed() {
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut corner[0])
+                                                .speed(0.01)
+                                                .range(0.0..=1.0),
+                                        )
+                                        .changed()
+                                    {
                                         warp_dirty = true;
                                     }
-                                    if ui.add(egui::DragValue::new(&mut corner[1]).speed(0.01).range(0.0..=1.0)).changed() {
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut corner[1])
+                                                .speed(0.01)
+                                                .range(0.0..=1.0),
+                                        )
+                                        .changed()
+                                    {
                                         warp_dirty = true;
                                     }
                                 });
@@ -706,26 +1061,57 @@ mod egui_impl {
                             });
                             ui.horizontal(|ui| {
                                 ui.label("FOV°:");
-                                if ui.add(egui::DragValue::new(&mut dome_config.fov_degrees).speed(1.0).range(90.0..=220.0)).changed() {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut dome_config.fov_degrees)
+                                            .speed(1.0)
+                                            .range(90.0..=220.0),
+                                    )
+                                    .changed()
+                                {
                                     dirty = true;
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Tilt°:");
-                                if ui.add(egui::DragValue::new(&mut dome_config.tilt_degrees).speed(1.0).range(-90.0..=90.0)).changed() {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut dome_config.tilt_degrees)
+                                            .speed(1.0)
+                                            .range(-90.0..=90.0),
+                                    )
+                                    .changed()
+                                {
                                     dirty = true;
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Az:");
-                                if ui.add(egui::DragValue::new(&mut dome_rotation[0]).speed(0.01)).changed() { dirty = true; }
+                                if ui
+                                    .add(egui::DragValue::new(&mut dome_rotation[0]).speed(0.01))
+                                    .changed()
+                                {
+                                    dirty = true;
+                                }
                                 ui.label("El:");
-                                if ui.add(egui::DragValue::new(&mut dome_rotation[1]).speed(0.01)).changed() { dirty = true; }
+                                if ui
+                                    .add(egui::DragValue::new(&mut dome_rotation[1]).speed(0.01))
+                                    .changed()
+                                {
+                                    dirty = true;
+                                }
                                 ui.label("Roll:");
-                                if ui.add(egui::DragValue::new(&mut dome_rotation[2]).speed(0.01)).changed() { dirty = true; }
+                                if ui
+                                    .add(egui::DragValue::new(&mut dome_rotation[2]).speed(0.01))
+                                    .changed()
+                                {
+                                    dirty = true;
+                                }
                             });
                             if dirty {
-                                state.stage.publish_dome(dome_enabled, dome_config, dome_rotation);
+                                state
+                                    .stage
+                                    .publish_dome(dome_enabled, dome_config, dome_rotation);
                             }
                         }
                     } else {
@@ -775,13 +1161,29 @@ mod egui_impl {
                             ui.checkbox(&mut proj.enabled, "");
                             ui.text_edit_singleline(&mut proj.name);
                             ui.label("size:");
-                            ui.add(egui::DragValue::new(&mut proj.width).speed(10).range(1..=8192));
+                            ui.add(
+                                egui::DragValue::new(&mut proj.width)
+                                    .speed(10)
+                                    .range(1..=8192),
+                            );
                             ui.label("×");
-                            ui.add(egui::DragValue::new(&mut proj.height).speed(10).range(1..=8192));
+                            ui.add(
+                                egui::DragValue::new(&mut proj.height)
+                                    .speed(10)
+                                    .range(1..=8192),
+                            );
                             ui.label("monitor:");
-                            let mut monitor = proj.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
-                            if ui.add(egui::DragValue::new(&mut monitor).speed(1).range(-1..=16)).changed() {
-                                proj.fullscreen_monitor = if monitor < 0 { None } else { Some(monitor as usize) };
+                            let mut monitor =
+                                proj.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
+                            if ui
+                                .add(egui::DragValue::new(&mut monitor).speed(1).range(-1..=16))
+                                .changed()
+                            {
+                                proj.fullscreen_monitor = if monitor < 0 {
+                                    None
+                                } else {
+                                    Some(monitor as usize)
+                                };
                             }
                             if ui.button("🗑").clicked() {
                                 remove_proj = Some(i);
@@ -794,7 +1196,10 @@ mod egui_impl {
                     state.save_workspace();
                 }
                 if ui.button("+ Add projector").clicked() {
-                    state.stage.projectors.push(crate::stage::VardaProjector::default());
+                    state
+                        .stage
+                        .projectors
+                        .push(crate::stage::VardaProjector::default());
                     state.save_workspace();
                 }
                 ui.separator();
@@ -808,9 +1213,17 @@ mod egui_impl {
                             ui.checkbox(&mut hl.enabled, "");
                             ui.text_edit_singleline(&mut hl.name);
                             ui.label("size:");
-                            ui.add(egui::DragValue::new(&mut hl.width).speed(10).range(1..=8192));
+                            ui.add(
+                                egui::DragValue::new(&mut hl.width)
+                                    .speed(10)
+                                    .range(1..=8192),
+                            );
                             ui.label("×");
-                            ui.add(egui::DragValue::new(&mut hl.height).speed(10).range(1..=8192));
+                            ui.add(
+                                egui::DragValue::new(&mut hl.height)
+                                    .speed(10)
+                                    .range(1..=8192),
+                            );
                             if ui.button("🗑").clicked() {
                                 remove_hl = Some(i);
                             }
@@ -822,7 +1235,10 @@ mod egui_impl {
                     state.save_workspace();
                 }
                 if ui.button("+ Add headless").clicked() {
-                    state.stage.headless_outputs.push(crate::stage::VardaHeadlessConfig::default());
+                    state
+                        .stage
+                        .headless_outputs
+                        .push(crate::stage::VardaHeadlessConfig::default());
                     state.save_workspace();
                 }
                 ui.separator();
@@ -836,18 +1252,34 @@ mod egui_impl {
                     }
                 }
                 let mut dirty = false;
-                let mut edge_ui = |ui: &mut egui::Ui, edge: &mut rustjay_projection::EdgeBlendEdge, label: &str| {
+                let mut edge_ui = |ui: &mut egui::Ui,
+                                   edge: &mut rustjay_projection::EdgeBlendEdge,
+                                   label: &str| {
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut edge.enabled, label).changed() {
                             dirty = true;
                         }
                         if edge.enabled {
                             ui.label("width:");
-                            if ui.add(egui::DragValue::new(&mut edge.width).speed(0.001).range(0.0..=0.5)).changed() {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut edge.width)
+                                        .speed(0.001)
+                                        .range(0.0..=0.5),
+                                )
+                                .changed()
+                            {
                                 dirty = true;
                             }
                             ui.label("γ:");
-                            if ui.add(egui::DragValue::new(&mut edge.gamma).speed(0.1).range(0.5..=4.0)).changed() {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut edge.gamma)
+                                        .speed(0.1)
+                                        .range(0.5..=4.0),
+                                )
+                                .changed()
+                            {
                                 dirty = true;
                             }
                         }
@@ -914,20 +1346,32 @@ mod egui_impl {
                     ui.horizontal(|ui| {
                         let label = match &step.kind {
                             rustjay_mixer::StepKind::Crossfade { target, beats } => {
-                                format!("Crossfade → {:.0}% over {:.1} beats", target * 100.0, beats)
+                                format!(
+                                    "Crossfade → {:.0}% over {:.1} beats",
+                                    target * 100.0,
+                                    beats
+                                )
                             }
                             rustjay_mixer::StepKind::Hold { beats } => {
                                 format!("Hold {:.1} beats", beats)
                             }
                             rustjay_mixer::StepKind::TimedCrossfade { target, seconds } => {
-                                format!("Timed Crossfade → {:.0}% over {:.1}s", target * 100.0, seconds)
+                                format!(
+                                    "Timed Crossfade → {:.0}% over {:.1}s",
+                                    target * 100.0,
+                                    seconds
+                                )
                             }
                             rustjay_mixer::StepKind::TimedHold { seconds } => {
                                 format!("Timed Hold {:.1}s", seconds)
                             }
                             rustjay_mixer::StepKind::Effect(_) => "Effect".to_string(),
                         };
-                        let marker = if seq.playing && seq.index == i { "▶ " } else { "  " };
+                        let marker = if seq.playing && seq.index == i {
+                            "▶ "
+                        } else {
+                            "  "
+                        };
                         ui.label(format!("{}{}", marker, label));
                         if ui.small_button("✖").clicked() {
                             remove_idx = Some(i);
@@ -948,7 +1392,8 @@ mod egui_impl {
             // Add step controls
             ui.horizontal(|ui| {
                 if ui.button("+ Crossfade (beats)").clicked() {
-                    seq.steps.push(rustjay_mixer::TransitionStep::crossfade(1.0, 4.0));
+                    seq.steps
+                        .push(rustjay_mixer::TransitionStep::crossfade(1.0, 4.0));
                 }
                 if ui.button("+ Hold (beats)").clicked() {
                     seq.steps.push(rustjay_mixer::TransitionStep::hold(4.0));
@@ -956,10 +1401,12 @@ mod egui_impl {
             });
             ui.horizontal(|ui| {
                 if ui.button("+ Crossfade (timed)").clicked() {
-                    seq.steps.push(rustjay_mixer::TransitionStep::timed_crossfade(1.0, 2.0));
+                    seq.steps
+                        .push(rustjay_mixer::TransitionStep::timed_crossfade(1.0, 2.0));
                 }
                 if ui.button("+ Hold (timed)").clicked() {
-                    seq.steps.push(rustjay_mixer::TransitionStep::timed_hold(3.0));
+                    seq.steps
+                        .push(rustjay_mixer::TransitionStep::timed_hold(3.0));
                 }
             });
 
@@ -968,12 +1415,18 @@ mod egui_impl {
             ui.horizontal(|ui| {
                 if ui.button("Auto → A").clicked() {
                     mixer.auto = Some(rustjay_mixer::AutoCrossfade::new(
-                        mixer.crossfader, 0.0, 1.0, rustjay_mixer::Easing::EaseInOut,
+                        mixer.crossfader,
+                        0.0,
+                        1.0,
+                        rustjay_mixer::Easing::EaseInOut,
                     ));
                 }
                 if ui.button("Auto → B").clicked() {
                     mixer.auto = Some(rustjay_mixer::AutoCrossfade::new(
-                        mixer.crossfader, 1.0, 1.0, rustjay_mixer::Easing::EaseInOut,
+                        mixer.crossfader,
+                        1.0,
+                        1.0,
+                        rustjay_mixer::Easing::EaseInOut,
                     ));
                 }
                 if ui.button("Beat-Sync → A").clicked() {
