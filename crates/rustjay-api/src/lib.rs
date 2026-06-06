@@ -456,6 +456,12 @@ pub struct PerformanceSnapshot {
     pub fps: f32,
     /// Average frame time ms.
     pub frame_time_ms: f32,
+    /// CPU usage percentage (sysmon feature only; zero otherwise).
+    pub cpu_percent: f32,
+    /// Used memory in megabytes (sysmon feature only; zero otherwise).
+    pub mem_used_mb: u64,
+    /// Total memory in megabytes (sysmon feature only; zero otherwise).
+    pub mem_total_mb: u64,
 }
 
 /// Parameter snapshot.
@@ -580,17 +586,18 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
             input_width: state.resolution.input_width,
             input_height: state.resolution.input_height,
         },
-        performance: PerformanceSnapshot {
-            fps: state
+        performance: {
+            let perf = state
                 .performance
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .fps,
-            frame_time_ms: state
-                .performance
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .frame_time_ms,
+                .unwrap_or_else(|e| e.into_inner());
+            PerformanceSnapshot {
+                fps: perf.fps,
+                frame_time_ms: perf.frame_time_ms,
+                cpu_percent: perf.cpu_percent,
+                mem_used_mb: perf.mem_used_mb,
+                mem_total_mb: perf.mem_total_mb,
+            }
         },
         params: ParamsSnapshot {
             descriptors: (*state.param_descriptors).clone(),

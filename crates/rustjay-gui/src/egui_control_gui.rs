@@ -496,6 +496,13 @@ impl EguiControlGui {
             return;
         }
 
+        // Ensure toasts vanish on idle windows by requesting a repaint
+        // when the soonest notification expires.
+        if let Some(soonest) = notifs.iter().map(|n| n.expires_at).min() {
+            let remaining = soonest.saturating_duration_since(now);
+            ctx.request_repaint_after(remaining);
+        }
+
         egui::Area::new(egui::Id::new("toast_overlay"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 72.0))
             .order(egui::Order::Foreground)

@@ -603,7 +603,7 @@ mod egui_impl {
                 let modulator = self.mom_modulator_uuid.clone();
                 let amount = self.mom_amount;
                 let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mut mod_eng = mixer.modulation.lock().unwrap();
+                let mut mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
                 mod_eng.assign_mod_on_mod(&target, &param, &modulator, amount);
                 drop(mod_eng);
                 drop(mixer);

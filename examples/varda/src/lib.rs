@@ -169,11 +169,10 @@ fn instantiate_source(
     entry: &crate::sources::SourceEntry,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    _engine: &EngineState,
+    engine: &EngineState,
     channel_id: &str,
 ) -> anyhow::Result<crate::graph::Deck> {
     use crate::sources::{CameraSource, ImageSource, SolidColorSource, SourceKind};
-    let dummy_engine = EngineState::new();
     let format = wgpu::TextureFormat::Bgra8Unorm;
 
     let mut source: Box<dyn EffectInstance> = match entry.kind {
@@ -183,7 +182,7 @@ fn instantiate_source(
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("ISF entry missing path"))?;
             let isf = rustjay_isf::IsfEffect::from_path(path)?;
-            let node = EffectNode::new(isf, &entry.name, device, queue, &dummy_engine);
+            let node = EffectNode::new(isf, &entry.name, device, queue, engine);
             Box::new(node)
         }
         SourceKind::Image => {
@@ -764,7 +763,10 @@ impl EffectPlugin for VardaRootPlugin {
             if let Ok(mixer) = self.mixer.lock() {
                 let snapshot = build_varda_snapshot(&mixer, &state.registry, engine);
                 if let Ok(mut guard) = engine.app_state.lock() {
-                    *guard = Some(serde_json::to_value(&snapshot).unwrap_or_default());
+                    match serde_json::to_value(&snapshot) {
+                        Ok(val) => *guard = Some(val),
+                        Err(e) => log::warn!("[API] snapshot serialization failed: {}", e),
+                    }
                 }
             }
         }

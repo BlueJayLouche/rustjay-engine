@@ -672,11 +672,14 @@ pub struct PerformanceMetrics {
     pub fps: f32,
     /// Average frame time in milliseconds.
     pub frame_time_ms: f32,
-    /// Global CPU usage percentage (populated externally, e.g. via sysinfo).
+    /// Global CPU usage percentage (populated externally via sysinfo).
+    /// Zero when the sysmon feature is disabled or not yet polled.
     pub cpu_percent: f32,
-    /// Used memory in megabytes.
+    /// Used memory in megabytes (populated externally via sysinfo).
+    /// Zero when the sysmon feature is disabled or not yet polled.
     pub mem_used_mb: u64,
-    /// Total memory in megabytes.
+    /// Total memory in megabytes (populated externally via sysinfo).
+    /// Zero when the sysmon feature is disabled or not yet polled.
     pub mem_total_mb: u64,
 }
 
@@ -1135,8 +1138,9 @@ impl EngineState {
             level,
             expires_at: std::time::Instant::now() + duration,
         };
-        if let Ok(mut guard) = self.notifications.lock() {
-            guard.push(n);
+        match self.notifications.lock() {
+            Ok(mut guard) => guard.push(n),
+            Err(e) => log::warn!("[notify] notification mutex poisoned: {}", e),
         }
     }
 
