@@ -3,18 +3,18 @@
 //! [`EngineState`] is the central mutable state that the engine manages and
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
+use crate::lfo::LfoState;
+use crate::params::{ParamCategory, ParameterDescriptor};
+use crate::routing::AudioRoutingState;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::sync::Arc;
-use crate::lfo::LfoState;
-use crate::routing::AudioRoutingState;
-use crate::params::{ParameterDescriptor, ParamCategory};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ── Command enums ──────────────────────────────────────────────────────────
 
 /// Commands sent to the input subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum InputCommand {
     /// No-op.
     #[default]
@@ -62,10 +62,8 @@ pub enum InputCommand {
     RefreshDevices,
 }
 
-
 /// Commands sent to the output subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum OutputCommand {
     /// No-op.
     #[default]
@@ -104,10 +102,8 @@ pub enum OutputCommand {
     ResizeOutput,
 }
 
-
 /// Commands sent to the audio subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum AudioCommand {
     /// No-op.
     #[default]
@@ -123,7 +119,6 @@ pub enum AudioCommand {
     /// Change the FFT analysis window size.
     SetFftSize(usize),
 }
-
 
 /// The type of MIDI message used in a CC/Note/AT mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,8 +151,7 @@ pub struct MidiMappingSnapshot {
 }
 
 /// Commands sent to the MIDI subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum MidiCommand {
     /// No-op.
     #[default]
@@ -187,10 +181,8 @@ pub enum MidiCommand {
     RestoreMappings(Vec<MidiMappingSnapshot>),
 }
 
-
 /// Commands sent to the OSC subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum OscCommand {
     /// No-op.
     #[default]
@@ -205,10 +197,8 @@ pub enum OscCommand {
     RefreshAddresses,
 }
 
-
 /// Commands sent to the preset subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum PresetCommand {
     /// No-op.
     #[default]
@@ -235,10 +225,8 @@ pub enum PresetCommand {
     Refresh,
 }
 
-
 /// Commands sent to the web remote subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum WebCommand {
     /// No-op.
     #[default]
@@ -253,10 +241,8 @@ pub enum WebCommand {
     SetLanTrust(bool),
 }
 
-
 /// Commands sent to the Ableton Link subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum LinkCommand {
     /// No-op.
     #[default]
@@ -269,10 +255,8 @@ pub enum LinkCommand {
     SetQuantum(f64),
 }
 
-
 /// Commands sent to the ProDJ Link subsystem.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ProDjCommand {
     /// No-op.
     #[default]
@@ -283,12 +267,10 @@ pub enum ProDjCommand {
     Stop,
 }
 
-
 // ── Input type ─────────────────────────────────────────────────────────────
 
 /// Discriminant for the active video input source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum InputType {
     /// No input active.
     #[default]
@@ -309,21 +291,20 @@ pub enum InputType {
     V4l2,
 }
 
-
 impl InputType {
     /// Human-readable name for display in the UI.
     pub fn name(&self) -> &'static str {
         match self {
-            InputType::None   => "None",
+            InputType::None => "None",
             InputType::Webcam => "Webcam",
             #[cfg(feature = "ndi")]
-            InputType::Ndi    => "NDI",
+            InputType::Ndi => "NDI",
             #[cfg(target_os = "macos")]
             InputType::Syphon => "Syphon",
             #[cfg(target_os = "windows")]
-            InputType::Spout  => "Spout",
+            InputType::Spout => "Spout",
             #[cfg(target_os = "linux")]
-            InputType::V4l2   => "V4L2",
+            InputType::V4l2 => "V4L2",
         }
     }
 }
@@ -375,13 +356,19 @@ pub struct HsbParams {
 
 impl Default for HsbParams {
     fn default() -> Self {
-        Self { hue_shift: 0.0, saturation: 1.0, brightness: 1.0 }
+        Self {
+            hue_shift: 0.0,
+            saturation: 1.0,
+            brightness: 1.0,
+        }
     }
 }
 
 impl HsbParams {
     /// Reset to defaults (no shift, unity saturation and brightness).
-    pub fn reset(&mut self) { *self = Self::default(); }
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Selects which external source drives the engine's tempo and beat phase.
@@ -400,9 +387,9 @@ impl SyncSource {
     /// Human-readable label for UI display.
     pub fn name(self) -> &'static str {
         match self {
-            SyncSource::Audio       => "Audio / Tap Tempo",
+            SyncSource::Audio => "Audio / Tap Tempo",
             SyncSource::AbletonLink => "Ableton Link",
-            SyncSource::ProDj       => "ProDJ Link",
+            SyncSource::ProDj => "ProDJ Link",
         }
     }
 }
@@ -453,8 +440,7 @@ pub struct CdjDevice {
 }
 
 /// SMPTE frame rate reported by an MTC source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MtcFrameRate {
     /// 24 frames per second.
     Fps24,
@@ -471,24 +457,23 @@ impl MtcFrameRate {
     /// Nominal frames per second as a float.
     pub fn fps(self) -> f32 {
         match self {
-            MtcFrameRate::Fps24       => 24.0,
-            MtcFrameRate::Fps25       => 25.0,
+            MtcFrameRate::Fps24 => 24.0,
+            MtcFrameRate::Fps25 => 25.0,
             MtcFrameRate::Fps2997Drop => 29.97,
-            MtcFrameRate::Fps30       => 30.0,
+            MtcFrameRate::Fps30 => 30.0,
         }
     }
 
     /// Short human-readable label.
     pub fn name(self) -> &'static str {
         match self {
-            MtcFrameRate::Fps24       => "24fps",
-            MtcFrameRate::Fps25       => "25fps",
+            MtcFrameRate::Fps24 => "24fps",
+            MtcFrameRate::Fps25 => "25fps",
             MtcFrameRate::Fps2997Drop => "29.97fps DF",
-            MtcFrameRate::Fps30       => "30fps",
+            MtcFrameRate::Fps30 => "30fps",
         }
     }
 }
-
 
 /// A SMPTE HH:MM:SS:FF timecode position.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -518,13 +503,16 @@ impl SmpteTime {
 
 impl std::fmt::Display for SmpteTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:02}:{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds, self.frames)
+        write!(
+            f,
+            "{:02}:{:02}:{:02}:{:02}",
+            self.hours, self.minutes, self.seconds, self.frames
+        )
     }
 }
 
 /// Live state of MIDI Timecode (MTC) receive.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MtcState {
     /// `true` once any MTC message has been received on any MIDI port.
     pub running: bool,
@@ -535,7 +523,6 @@ pub struct MtcState {
     /// Name of the MIDI port currently sending MTC (empty string if none yet).
     pub source_device: String,
 }
-
 
 /// Live state of ProDJ Link sync.
 #[derive(Debug, Clone, Default)]
@@ -669,7 +656,12 @@ pub struct ResolutionState {
 
 impl Default for ResolutionState {
     fn default() -> Self {
-        Self { internal_width: 1920, internal_height: 1080, input_width: 1920, input_height: 1080 }
+        Self {
+            internal_width: 1920,
+            internal_height: 1080,
+            input_width: 1920,
+            input_height: 1080,
+        }
     }
 }
 
@@ -680,6 +672,38 @@ pub struct PerformanceMetrics {
     pub fps: f32,
     /// Average frame time in milliseconds.
     pub frame_time_ms: f32,
+    /// Global CPU usage percentage (populated externally, e.g. via sysinfo).
+    pub cpu_percent: f32,
+    /// Used memory in megabytes.
+    pub mem_used_mb: u64,
+    /// Total memory in megabytes.
+    pub mem_total_mb: u64,
+}
+
+/// Severity level of a notification toast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationLevel {
+    /// Neutral informational message.
+    Info,
+    /// Successful action completed.
+    Success,
+    /// Warning that may need attention.
+    Warning,
+    /// Error or failure.
+    Error,
+}
+
+/// One transient toast notification.
+#[derive(Debug, Clone)]
+pub struct Notification {
+    /// Stable identifier for egui keys.
+    pub id: u64,
+    /// Human-readable message.
+    pub message: String,
+    /// Visual severity.
+    pub level: NotificationLevel,
+    /// When the toast should be removed.
+    pub expires_at: std::time::Instant,
 }
 
 /// Built-in tabs rendered by the engine's control GUI.
@@ -716,18 +740,18 @@ impl GuiTab {
     /// Human-readable tab label.
     pub fn name(&self) -> &'static str {
         match self {
-            GuiTab::Input    => "Input",
-            GuiTab::Color    => "Color",
-            GuiTab::Motion   => "Motion",
-            GuiTab::Audio    => "Audio",
-            GuiTab::Output   => "Output",
-            GuiTab::Presets  => "Presets",
-            GuiTab::Midi     => "MIDI",
-            GuiTab::Osc      => "OSC",
-            GuiTab::Web      => "Web",
+            GuiTab::Input => "Input",
+            GuiTab::Color => "Color",
+            GuiTab::Motion => "Motion",
+            GuiTab::Audio => "Audio",
+            GuiTab::Output => "Output",
+            GuiTab::Presets => "Presets",
+            GuiTab::Midi => "MIDI",
+            GuiTab::Osc => "OSC",
+            GuiTab::Web => "Web",
             GuiTab::Settings => "Settings",
-            GuiTab::Sync     => "Sync",
-            GuiTab::Lfo      => "LFO",
+            GuiTab::Sync => "Sync",
+            GuiTab::Lfo => "LFO",
         }
     }
 
@@ -847,7 +871,7 @@ pub struct EngineState {
     /// Rendering resolution.
     pub resolution: ResolutionState,
     /// Performance metrics.
-    pub performance: PerformanceMetrics,
+    pub performance: Mutex<PerformanceMetrics>,
 
     /// If set, the engine will start this webcam device on the first frame
     /// after the InputManager is ready.  Cleared once the command is issued.
@@ -932,7 +956,6 @@ pub struct EngineState {
     pub sync_source: SyncSource,
 
     // ── Effect-declared parameters ───────────────────────────────────────────
-
     /// Effect-declared parameter descriptors (populated at init).
     /// Wrapped in Arc so cloning is a pointer copy.
     pub param_descriptors: Arc<Vec<ParameterDescriptor>>,
@@ -972,6 +995,12 @@ pub struct EngineState {
     /// the WebSocket delta stream.
     pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
 
+    /// Transient toast notifications posted by the app or engine.
+    /// Rendered globally by the control GUI and expired automatically.
+    pub notifications: Arc<Mutex<Vec<Notification>>>,
+    /// Monotonically increasing ID for notification egui keys.
+    pub next_notification_id: AtomicU64,
+
     /// Opaque handle to the engine's projection subsystem, when the
     /// `projection` feature is enabled.  The app can downcast this to
     /// `Arc<std::sync::Mutex<ProjectionSubsystem>>` to add/remove headless
@@ -999,20 +1028,38 @@ impl EngineState {
             hsb_params: HsbParams::default(),
             hsb_param_bases: HsbParams::default(),
             color_enabled: true,
-            audio: AudioState { enabled: true, amplitude: 1.0, smoothing: 0.5, normalize: true, ..Default::default() },
+            audio: AudioState {
+                enabled: true,
+                amplitude: 1.0,
+                smoothing: 0.5,
+                normalize: true,
+                ..Default::default()
+            },
             audio_command: AudioCommand::None,
             audio_routing: AudioRoutingState::new(),
             #[cfg(feature = "ndi")]
-            ndi_output: NdiOutputState { stream_name: "RustJay".to_string(), ..Default::default() },
+            ndi_output: NdiOutputState {
+                stream_name: "RustJay".to_string(),
+                ..Default::default()
+            },
             output_command: OutputCommand::None,
             #[cfg(target_os = "macos")]
-            syphon_output: SyphonOutputState { server_name: "RustJay".to_string(), enabled: false },
+            syphon_output: SyphonOutputState {
+                server_name: "RustJay".to_string(),
+                enabled: false,
+            },
             #[cfg(target_os = "windows")]
-            spout_output: SpoutOutputState { sender_name: "RustJay".to_string(), enabled: false },
+            spout_output: SpoutOutputState {
+                sender_name: "RustJay".to_string(),
+                enabled: false,
+            },
             #[cfg(target_os = "linux")]
-            v4l2_output: V4l2OutputState { device_path: "/dev/video12".to_string(), enabled: false },
+            v4l2_output: V4l2OutputState {
+                device_path: "/dev/video12".to_string(),
+                enabled: false,
+            },
             resolution: ResolutionState::default(),
-            performance: PerformanceMetrics::default(),
+            performance: Mutex::new(PerformanceMetrics::default()),
             startup_webcam_device: None,
             show_preview: true,
             target_fps: 60,
@@ -1058,6 +1105,8 @@ impl EngineState {
             param_lookup_prefix: RefCell::new(None),
             param_resolver: None,
             app_state: Arc::new(std::sync::Mutex::new(None)),
+            notifications: Arc::new(Mutex::new(Vec::new())),
+            next_notification_id: AtomicU64::new(0),
             projection_handle: None,
         }
     }
@@ -1067,6 +1116,28 @@ impl EngineState {
     /// Toggle fullscreen mode on the output window.
     pub fn toggle_fullscreen(&mut self) {
         self.output_fullscreen = !self.output_fullscreen;
+    }
+
+    /// Post a transient toast notification.
+    ///
+    /// Toasts auto-dismiss after `duration`; the GUI render loop is responsible
+    /// for culling expired entries.
+    pub fn notify(
+        &self,
+        message: impl Into<String>,
+        level: NotificationLevel,
+        duration: std::time::Duration,
+    ) {
+        let id = self.next_notification_id.fetch_add(1, Ordering::Relaxed);
+        let n = Notification {
+            id,
+            message: message.into(),
+            level,
+            expires_at: std::time::Instant::now() + duration,
+        };
+        if let Ok(mut guard) = self.notifications.lock() {
+            guard.push(n);
+        }
     }
 
     /// BPM from the user-selected sync source.
@@ -1128,12 +1199,14 @@ impl EngineState {
                 return self.custom_params.get(i).copied();
             }
         }
-        self.param_index(id).and_then(|i| self.custom_params.get(i).copied())
+        self.param_index(id)
+            .and_then(|i| self.custom_params.get(i).copied())
     }
 
     /// Get the base value of a custom parameter (before LFO / audio modulation).
     pub fn get_param_base(&self, id: &str) -> Option<f32> {
-        self.param_index(id).and_then(|i| self.custom_param_bases.get(i).copied())
+        self.param_index(id)
+            .and_then(|i| self.custom_param_bases.get(i).copied())
     }
 
     /// Set the base value of a custom parameter.
@@ -1179,5 +1252,7 @@ impl EngineState {
 }
 
 impl Default for EngineState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
