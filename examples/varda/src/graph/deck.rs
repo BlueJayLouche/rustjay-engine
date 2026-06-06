@@ -48,7 +48,11 @@ pub struct Deck {
 
 impl Deck {
     /// Create a deck from a source effect.
-    pub fn new(uuid: impl Into<String>, name: impl Into<String>, mut source: Box<dyn EffectInstance>) -> Self {
+    pub fn new(
+        uuid: impl Into<String>,
+        name: impl Into<String>,
+        mut source: Box<dyn EffectInstance>,
+    ) -> Self {
         let uuid = uuid.into();
         let name = name.into();
         // Bare default prefix; upgraded to include the channel component once the
@@ -86,7 +90,8 @@ impl Deck {
         self.blend_key = format!("{}blend", self.full_prefix);
         self.source.set_param_prefix(&self.full_prefix);
         for slot in self.chain.iter_mut() {
-            slot.effect.set_param_prefix(&format!("{}fx{}_", self.full_prefix, slot.uuid));
+            slot.effect
+                .set_param_prefix(&format!("{}fx{}_", self.full_prefix, slot.uuid));
         }
     }
 
@@ -169,11 +174,7 @@ impl Deck {
             if !slot.enabled {
                 continue;
             }
-            let (src_tex, dst_tex) = if is_ping {
-                (ping, tex)
-            } else {
-                (tex, ping)
-            };
+            let (src_tex, dst_tex) = if is_ping { (ping, tex) } else { (tex, ping) };
             let input = EffectInput {
                 view: &src_tex.view,
                 sampler: &src_tex.sampler,

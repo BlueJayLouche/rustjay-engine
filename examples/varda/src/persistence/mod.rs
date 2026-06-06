@@ -25,7 +25,9 @@ impl Default for Workspace {
 
 impl Workspace {
     pub fn new(dir: impl AsRef<Path>) -> Self {
-        Self { dir: dir.as_ref().to_path_buf() }
+        Self {
+            dir: dir.as_ref().to_path_buf(),
+        }
     }
 
     pub fn scene_path(&self) -> PathBuf {

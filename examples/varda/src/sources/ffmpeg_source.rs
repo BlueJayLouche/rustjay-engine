@@ -10,7 +10,10 @@
 //!   high-complexity files may drop frames.
 //! - Seeking lands on the nearest keyframe and decodes forward.
 
-use rustjay_core::{EffectInput, EffectInstance, EngineState, ParameterDescriptor, ParamCategory, RenderCtx, RenderTarget};
+use rustjay_core::{
+    EffectInput, EffectInstance, EngineState, ParamCategory, ParameterDescriptor, RenderCtx,
+    RenderTarget,
+};
 use rustjay_io::{FfmpegDecoder, LoopMode};
 use std::path::Path;
 
@@ -241,7 +244,11 @@ impl EffectInstance for FfmpegSource {
                 format!("{p}loop"),
                 "Loop Mode",
                 ParamCategory::Custom("Playback".to_string()),
-                vec!["None".to_string(), "Loop".to_string(), "PingPong".to_string()],
+                vec![
+                    "None".to_string(),
+                    "Loop".to_string(),
+                    "PingPong".to_string(),
+                ],
                 1,
             ),
             ParameterDescriptor::float(
@@ -274,12 +281,7 @@ impl EffectInstance for FfmpegSource {
         ]
     }
 
-    fn prepare(
-        &mut self,
-        engine: &EngineState,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
+    fn prepare(&mut self, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Sync playback params.
         let speed = engine.get_param(&self.speed_key).unwrap_or(1.0);
         if (speed - self.last_speed).abs() > f32::EPSILON {

@@ -23,7 +23,8 @@ impl ShaderWatcher {
             watcher,
             rx: std::sync::Mutex::new(rx),
         };
-        this.watcher.watch(shaders_dir, RecursiveMode::NonRecursive)?;
+        this.watcher
+            .watch(shaders_dir, RecursiveMode::NonRecursive)?;
         log::info!("[ShaderWatcher] watching {}", shaders_dir.display());
         Ok(this)
     }

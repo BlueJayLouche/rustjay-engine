@@ -3,11 +3,11 @@
 //! Reuses `rustjay_mixer::CompositePipeline` and `BlitPipeline` so deck blending
 //! uses the same shader path as channel blending.
 
+use rustjay_core::modulation::ModulationEngine;
 use rustjay_core::{
-    EffectInput, EffectInstance, EngineState, ParameterDescriptor, ParamCategory, RenderCtx,
+    EffectInput, EffectInstance, EngineState, ParamCategory, ParameterDescriptor, RenderCtx,
     RenderTarget,
 };
-use rustjay_core::modulation::ModulationEngine;
 use rustjay_mixer::{BlendMode, BlitPipeline, CompositePipeline};
 use rustjay_render::Texture;
 use std::sync::{Arc, Mutex};
@@ -251,7 +251,9 @@ impl EffectInstance for DeckCompositor {
             if self.eff_opacity[i] < 0.001 {
                 continue;
             }
-            let Some(src) = self.decks[i].output_texture() else { continue };
+            let Some(src) = self.decks[i].output_texture() else {
+                continue;
+            };
 
             let (read_acc, write_acc) = match written_acc {
                 None => (acc_a, acc_b),

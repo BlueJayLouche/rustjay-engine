@@ -11,7 +11,10 @@
 //! - Decoding happens synchronously on the render thread inside `prepare()`.
 //!   High-resolution files may cause frame drops.
 
-use rustjay_core::{EffectInput, EffectInstance, EngineState, ParameterDescriptor, ParamCategory, RenderCtx, RenderTarget};
+use rustjay_core::{
+    EffectInput, EffectInstance, EngineState, ParamCategory, ParameterDescriptor, RenderCtx,
+    RenderTarget,
+};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -36,11 +39,8 @@ pub struct HapSource {
 
 impl HapSource {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, path: &Path) -> anyhow::Result<Self> {
-        let player = hap_wgpu::HapPlayer::open(
-            path,
-            Arc::new(device.clone()),
-            Arc::new(queue.clone()),
-        )?;
+        let player =
+            hap_wgpu::HapPlayer::open(path, Arc::new(device.clone()), Arc::new(queue.clone()))?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("HapSource Shader"),
@@ -189,7 +189,11 @@ impl EffectInstance for HapSource {
                 format!("{p}loop"),
                 "Loop Mode",
                 ParamCategory::Custom("Playback".to_string()),
-                vec!["None".to_string(), "Loop".to_string(), "Palindrome".to_string()],
+                vec![
+                    "None".to_string(),
+                    "Loop".to_string(),
+                    "Palindrome".to_string(),
+                ],
                 1,
             ),
             ParameterDescriptor::float(
@@ -204,12 +208,7 @@ impl EffectInstance for HapSource {
         ]
     }
 
-    fn prepare(
-        &mut self,
-        engine: &EngineState,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
+    fn prepare(&mut self, engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
         // Pull next frame from the player.
         self.current_frame = self.player.update();
 

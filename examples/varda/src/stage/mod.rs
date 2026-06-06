@@ -27,7 +27,10 @@ impl SurfaceSource {
         match self {
             SurfaceSource::Master => "Master".to_string(),
             SurfaceSource::Channel(uuid) => format!("Channel {}", &uuid[..uuid.len().min(6)]),
-            SurfaceSource::Deck { channel_uuid: _, deck_uuid } => {
+            SurfaceSource::Deck {
+                channel_uuid: _,
+                deck_uuid,
+            } => {
                 format!("Deck {}", &deck_uuid[..deck_uuid.len().min(6)])
             }
             SurfaceSource::Domemaster => "Domemaster".to_string(),
@@ -67,12 +70,7 @@ impl VardaSurface {
         Self {
             name: name.into(),
             uuid: uuid.into(),
-            vertices: vec![
-                [0.0, 0.0],
-                [1.0, 0.0],
-                [1.0, 1.0],
-                [0.0, 1.0],
-            ],
+            vertices: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             is_circular: false,
             radius: 0.0,
             source: SurfaceSource::Master,
@@ -170,7 +168,9 @@ impl VardaStage {
 
     pub fn with_default_surface() -> Self {
         let mut stage = Self::new();
-        stage.surfaces.push(VardaSurface::full_frame("Main", "main"));
+        stage
+            .surfaces
+            .push(VardaSurface::full_frame("Main", "main"));
         // One default projector
         stage.projectors.push(VardaProjector::default());
         stage
@@ -179,7 +179,12 @@ impl VardaStage {
     /// Push dome config into the shared [`DomeSync`] so the projector's
     /// [`VardaDomeStage`] picks it up on the next frame.
     #[cfg(feature = "projection")]
-    pub fn publish_dome(&self, enabled: bool, config: rustjay_projection::DomemasterConfig, rotation: [f32; 3]) {
+    pub fn publish_dome(
+        &self,
+        enabled: bool,
+        config: rustjay_projection::DomemasterConfig,
+        rotation: [f32; 3],
+    ) {
         if let Some(sync) = &self.dome_sync {
             if let Ok(mut g) = sync.lock() {
                 g.enabled = enabled;
@@ -350,10 +355,15 @@ impl VardaWarpStage {
             let g = sync.lock().unwrap_or_else(|e| e.into_inner());
             (g.mode.clone(), g.version)
         };
-        let inner_is_corner_pin =
-            matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
+        let inner_is_corner_pin = matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
         let inner = rustjay_projection::WarpStage::from_mode(device, format, &mode);
-        Self { inner, format, sync, last_version: version, inner_is_corner_pin }
+        Self {
+            inner,
+            format,
+            sync,
+            last_version: version,
+            inner_is_corner_pin,
+        }
     }
 }
 
@@ -386,13 +396,15 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
                 }
                 // Mode switch or mesh edit → rebuild the warp stage.
                 _ => {
-                    self.inner = rustjay_projection::WarpStage::from_mode(ctx.device, self.format, &mode);
+                    self.inner =
+                        rustjay_projection::WarpStage::from_mode(ctx.device, self.format, &mode);
                     self.inner_is_corner_pin =
                         matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
                 }
             }
         }
-        self.inner.render(ctx, input, input_texture, output, output_size);
+        self.inner
+            .render(ctx, input, input_texture, output, output_size);
     }
 
     fn on_input_changed(&mut self, device: &wgpu::Device, size: [u32; 2]) {
@@ -446,7 +458,12 @@ impl VardaDomeStage {
         };
         let inner = rustjay_projection::DomeStage::new(device, format, config);
         let bypass = rustjay_projection::IdentityStage::new(device, format);
-        Self { inner, bypass, sync, last_version: 0 }
+        Self {
+            inner,
+            bypass,
+            sync,
+            last_version: 0,
+        }
     }
 }
 
@@ -476,9 +493,11 @@ impl rustjay_projection::ProjectionStage for VardaDomeStage {
         }
 
         if enabled {
-            self.inner.render(ctx, input, input_texture, output, output_size);
+            self.inner
+                .render(ctx, input, input_texture, output, output_size);
         } else {
-            self.bypass.render(ctx, input, input_texture, output, output_size);
+            self.bypass
+                .render(ctx, input, input_texture, output, output_size);
         }
     }
 
@@ -525,7 +544,12 @@ impl VardaEdgeBlendStage {
     ) -> Self {
         let inner = rustjay_projection::EdgeBlendStage::new(device, format);
         let bypass = rustjay_projection::IdentityStage::new(device, format);
-        Self { inner, bypass, sync, last_version: 0 }
+        Self {
+            inner,
+            bypass,
+            sync,
+            last_version: 0,
+        }
     }
 }
 
@@ -554,9 +578,11 @@ impl rustjay_projection::ProjectionStage for VardaEdgeBlendStage {
         }
 
         if self.inner.config.any_enabled() {
-            self.inner.render(ctx, input, input_texture, output, output_size);
+            self.inner
+                .render(ctx, input, input_texture, output, output_size);
         } else {
-            self.bypass.render(ctx, input, input_texture, output, output_size);
+            self.bypass
+                .render(ctx, input, input_texture, output, output_size);
         }
     }
 

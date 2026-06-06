@@ -129,7 +129,8 @@ impl EffectInstance for SolidColorSource {
         _engine: &EngineState,
     ) {
         let uniforms = Uniforms { color: self.color };
-        ctx.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        ctx.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("SolidColor Pass"),

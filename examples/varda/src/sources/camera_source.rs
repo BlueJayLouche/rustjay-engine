@@ -199,20 +199,20 @@ impl CameraSource {
 }
 
 impl EffectInstance for CameraSource {
-    fn prepare(
-        &mut self,
-        _engine: &EngineState,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-    ) {
+    fn prepare(&mut self, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
         let mut session = self.session.lock().unwrap();
         if !self.started {
             if !session.manager.is_active() {
-                if let Err(e) = session
-                    .manager
-                    .start_webcam(self.device_index, self.width, self.height, 30)
+                if let Err(e) =
+                    session
+                        .manager
+                        .start_webcam(self.device_index, self.width, self.height, 30)
                 {
-                    log::warn!("CameraSource failed to start webcam {}: {}", self.device_index, e);
+                    log::warn!(
+                        "CameraSource failed to start webcam {}: {}",
+                        self.device_index,
+                        e
+                    );
                 } else {
                     self.started = true;
                     log::info!("CameraSource started webcam {}", self.device_index);

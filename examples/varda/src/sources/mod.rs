@@ -13,17 +13,17 @@ pub mod registry;
 mod solid_color_source;
 mod watcher;
 
-#[cfg(feature = "hap")]
-mod hap_source;
 #[cfg(feature = "ffmpeg")]
 mod ffmpeg_source;
+#[cfg(feature = "hap")]
+mod hap_source;
 
 pub use camera_source::CameraSource;
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg_source::FfmpegSource;
+#[cfg(feature = "hap")]
+pub use hap_source::HapSource;
 pub use image_source::ImageSource;
 pub use registry::{Registry, SourceEntry, SourceKind};
 pub use solid_color_source::SolidColorSource;
 pub use watcher::ShaderWatcher;
-#[cfg(feature = "hap")]
-pub use hap_source::HapSource;
-#[cfg(feature = "ffmpeg")]
-pub use ffmpeg_source::FfmpegSource;
