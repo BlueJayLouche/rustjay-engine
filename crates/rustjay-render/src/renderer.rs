@@ -86,6 +86,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         if adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE) {
             required_features |= wgpu::Features::POLYGON_MODE_LINE;
         }
+        if adapter.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
+            required_features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
+        }
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

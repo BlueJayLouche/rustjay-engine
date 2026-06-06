@@ -13,6 +13,7 @@ ndi = ["rustjay-engine/ndi", "rustjay-io/ndi"]
 syphon = []
 streaming = []
 recording = []
+hap = ["dep:hap-wgpu"]
 
 [dependencies]
 rustjay-engine = { workspace = true }
@@ -34,3 +35,4 @@ image          = { workspace = true }
 notify         = "7.0"
 egui           = { workspace = true, optional = true }
 winit          = { workspace = true }
+hap-wgpu       = { path = "/Users/ac/developer/rust/hap-rs/hap-wgpu", optional = true }

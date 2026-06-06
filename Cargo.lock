@@ -2252,6 +2252,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "hap-parser"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "snap",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "hap-qt"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "hap-parser",
+ "memmap2",
+ "snap",
+ "texpresso",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "hap-wgpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "hap-parser",
+ "hap-qt",
+ "image",
+ "parking_lot",
+ "thiserror 1.0.69",
+ "wgpu",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5490,6 +5524,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5711,6 +5751,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "texpresso"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8550677e2259d675a7841cb1403db35f330cc9e58674c8c5caa12dd12c51dc71"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
@@ -6281,6 +6330,7 @@ dependencies = [
  "bytemuck",
  "egui",
  "env_logger",
+ "hap-wgpu",
  "image",
  "log",
  "notify",

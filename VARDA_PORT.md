@@ -62,7 +62,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 |-------|-------|-------|
 | **0 — Scaffolding & parity harness** | ✅ done (T00.4 golden-image harness deferred) | Module tree, feature flags, parity tracker, rustjay-io coverage probe all in place. Golden-image diff harness (T00.4) not yet wired. |
 | **1 — Routing graph core** | ✅ done | Deck → DeckCompositor → `rustjay_mixer::Channel` → Mixer spine runs. Zero-opacity culling **verified to skip the GPU pass** (`compositor.rs`, not multiply-by-zero). Deck opacity/blend now read through `engine.get_param` (post-review fix). |
-| **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, registry (ISF + image + video stubs), `notify` watcher + hot-reload all wired. Video/HAP/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — port required, see PARITY probe). |
+| **2 — Sources** | ✅ done | ISF (rustjay-isf + `EffectNode`), camera (shared `InputManager`), image (PNG/JPG scan), solid color, HAP (GPU-native via `hap-wgpu`), registry (ISF + image + video), `notify` watcher + hot-reload all wired. ffmpeg/SRT/HLS/DASH/RTMP remain absent (rustjay-io gap — see PARITY probe). |
 | **3 — Effect chains** | ✅ done | 3-level hierarchy (deck / channel / master) with `add_effect` + `set_effect_enabled`; stable FX UUID prefixes (`fx<uuid>_`); `reorder_fx`/`move_fx` APIs on `Deck`; per-effect enable honored in all render paths; params reachable via canonical prefixes. GUI wiring and demo assembly FX exercise are follow-ups. |
 | **4 — Modulation** | ✅ done | Mixer `ModulationEngine` wired to crossfader, channel opacities, and deck opacities. `Arc<Mutex<ModulationEngine>>` shared with `DeckCompositor` so mixer-level modulation reaches deck-level params. Demo: LFO on crossfader + deck opacities; audio-band (bass) on crossfader; ADSR + step-sequencer on crossfader (ModulationTab shows these sources). |
 | **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema into the opaque `EngineState::app_state`; WS JSON-Patch deltas carry it. |
@@ -74,6 +74,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | **12 — Transitions & sequencer** | ✅ done | `StepKind::TimedCrossfade` / `TimedHold` (seconds-based); SequencerTab play/stop/loop controls; pre-populated demo sequence with beat-synced and timed steps. |
 | **13 — Dome & edge-blend** | ✅ done *(display smoke-test pending)* | `VardaDomeStage` + `VardaEdgeBlendStage` wired into projector chain via `Arc<Mutex>` bridge; StageTab dome config; OutputsTab manual edge-blend controls; auto-detect for multi-output. |
 | **14 — Parity audit** | ✅ done | Tracker walked to 100%; gaps filed as follow-ups (ffmpeg video/HAP, SRT/HLS/DASH/RTMP streaming, recording, mod-on-mod, notifications, sysmon). Perf pass: no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature only) noted as alloc-heavy. Docs updated. |
+| **15 — HAP video source** | ✅ done | `HapSource` wraps `hap-wgpu::HapPlayer` for GPU-native HAP decode (BCn textures). Playback params (`speed`, `playing`, `loop`, `position`) exposed via engine. `TEXTURE_COMPRESSION_BC` enabled in `rustjay-render` when adapter supports it. Feature-gated behind `hap` (off by default). YCoCg→RGB shader and background decode thread are future optimizations. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
@@ -230,13 +231,13 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - *Acceptance:* 2 channels × 2 ISF decks each, crossfader + per-deck opacity, all
   6 blend modes, zero-opacity culling verified by golden image.
 
-### Phase 2 — Sources 🟡 *(runnable: every source type on a deck)*
+### Phase 2 — Sources ✅ *(runnable: every source type on a deck)*
 - **T02.1 [Reuse]** ISF generators/filters via `rustjay-isf` + hot-reload (`notify`).
 - **T02.2 [Extend]** Video decode (ffmpeg) + loop/ping-pong/one-shot, speed, scrub,
   in/out — via `rustjay-io/input`. **Confirm/port HAP** GPU-native path (BC/YCoCg).
 - **T02.3 [Reuse]** Camera (nokhwa, shared across decks), Image (PNG/JPG), Solid color.
 - **T02.4 [Port]** `registry` — source/effect library that the GUI + API enumerate.
-- *Acceptance:* each source type renders on a deck; HAP plays GPU-native; camera
+- *Acceptance:* each source type renders on a deck; HAP plays GPU-native ✅; camera
   shared by 2 decks without double-open.
 
 ### Phase 3 — Effect chains 🟡
@@ -356,6 +357,17 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
   StagingBelt, per-frame allocs; opacity-cull verified to skip GPU work).
 - **T14.3** Update `guide/` (mdBook, [[project_guide]]) + the `rustjay` skill's
   Varda case study to match the shipped assembly.
+
+### Phase 15 — HAP video source ✅
+- **T15.1 [Extend]** Integrate local `hap-rs` workspace (`hap-wgpu`) into Varda as a
+  deck source. `HapSource` implements `EffectInstance` with textured-quad rendering
+  of BC-compressed frames.
+- **T15.2 [Extend]** Expose playback params (`speed`, `playing`, `loop`, `position`)
+  through the engine param system for modulation + GUI control.
+- **T15.3 [Extend]** Enable `TEXTURE_COMPRESSION_BC` in `rustjay-render` when the
+  adapter supports it.
+- *Acceptance:* `cargo build -p varda --features hap` compiles clean; a `.mov` file
+  in `assets/` auto-loads as a HAP deck; playback params are modulatable.
 
 ---
 

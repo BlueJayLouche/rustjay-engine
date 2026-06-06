@@ -41,6 +41,8 @@ use crate::graph::{Deck, DeckCompositor};
 use crate::sources::{Registry, ShaderWatcher};
 #[cfg(feature = "mixer")]
 use crate::sources::{CameraSource, SolidColorSource};
+#[cfg(all(feature = "mixer", feature = "hap"))]
+use crate::sources::HapSource;
 #[cfg(feature = "mixer")]
 use crate::scene::Scene;
 
@@ -212,6 +214,39 @@ impl VardaRootPlugin {
         }
         let solid = SolidColorSource::new(device, wgpu::TextureFormat::Bgra8Unorm, [1.0, 0.0, 0.0, 1.0]);
         comp_a.decks.push(Deck::new("a2", "Solid Red", Box::new(solid)));
+
+        #[cfg(feature = "hap")]
+        {
+            let assets_dir = manifest_dir.join("assets");
+            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(ext) = path.extension() {
+                        if ext == "mov" || ext == "hap" {
+                            match HapSource::new(device, queue, &path) {
+                                Ok(hap) => {
+                                    let name = path.file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("HAP Video")
+                                        .to_string();
+                                    comp_a.decks.push(Deck::new(
+                                        format!("a_hap_{}", comp_a.decks.len()),
+                                        &name,
+                                        Box::new(hap),
+                                    ));
+                                    log::info!("Loaded HAP source: {}", path.display());
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to open HAP file {}: {}", path.display(), e);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
             log::warn!("Failed to add channel A: {}", e);
         }

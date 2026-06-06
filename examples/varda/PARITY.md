@@ -13,7 +13,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
 | 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher + hot-reload recreates `EffectNode` on `.fs` change in `lib.rs::prepare`)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | todo |
-| 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | todo *(local `hap-rs` workspace at `~/developer/rust/hap-rs` provides `hap-parser` + `hap-qt` + `hap-wgpu`; integrates with wgpu for direct DXT1/DXT5/YCoCg/BC4/BC7/BC6H GPU upload)* |
+| 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | done *(Phase 15: `HapSource` wraps `hap-wgpu::HapPlayer`; BC-compressed textures uploaded directly to GPU; playback params `speed`/`playing`/`loop`/`position` exposed via engine. YCoCg→RGB conversion shader is a future polish item.)* |
 | 5 | **Sources — camera** (shared across decks, no double-open) | T02.3 | done *(rustjay-io `InputManager`; `CameraSource` uses a global `Arc<Mutex<CameraSession>>` cache keyed by device index, preventing double-open)* |
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
 | 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
@@ -65,7 +65,7 @@ do not block core VJ functionality.
 | # | Gap | Blocking? | Recommended path |
 |---|-----|-----------|------------------|
 | 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | Add `ffmpeg` feature to `rustjay-io` with `input/ffmpeg.rs` (~400 LOC). Reuse `ffmpeg-next` or `rust-ffmpeg`. |
-| 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | Port Varda's `internal/video/hap.rs` (~200 LOC) into `rustjay-io/input/hap.rs` behind `hap` feature. |
+| 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | ✅ **Done** — Phase 15. `HapSource` in `examples/varda/src/sources/hap_source.rs` wraps `hap-wgpu::HapPlayer`. YCoCg→RGB shader and background decode thread are future optimizations. |
 | 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | Wrap `ffmpeg` subprocess for protocol ingest (same architecture Varda uses today). |
 | 21 | **Mod-on-mod chaining** (4-deep) | Low | Engine `rustjay-core` gap — `ModulationEngine` needs depth-budgeted recursion in `get_modulation()`. |
 | 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Extend `rustjay-io/output` with ffmpeg muxer subprocesses, or build per-output recorder. |
