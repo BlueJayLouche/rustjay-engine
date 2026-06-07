@@ -587,16 +587,25 @@ impl<P: EffectPlugin> App<P> {
                 server.control_dirty = false;
             }
             if server.modulation_dirty {
-                if let Ok(state) = self.shared_state.lock() {
-                    let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                    server.send_modulation_state(&rustjay_control::ModulationStateJson {
-                        lfos: mod_eng.to_lfo_vec(),
-                        audio_routes: state.audio_routing.matrix.routes().to_vec(),
-                        audio_routing_enabled: state.audio_routing.enabled,
-                        bpm: state.audio.bpm,
-                        tap_tempo_info: state.audio.tap_tempo_info.clone(),
-                    });
-                }
+                // F1 fix: clone Arc out of shared_state, drop guard, then lock modulation alone.
+                let (mod_arc, audio_routes, audio_routing_enabled, bpm, tap_tempo_info) = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        Arc::clone(&state.modulation),
+                        state.audio_routing.matrix.routes().to_vec(),
+                        state.audio_routing.enabled,
+                        state.audio.bpm,
+                        state.audio.tap_tempo_info.clone(),
+                    )
+                };
+                let mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                server.send_modulation_state(&rustjay_control::ModulationStateJson {
+                    lfos: mod_eng.to_lfo_vec(),
+                    audio_routes,
+                    audio_routing_enabled,
+                    bpm,
+                    tap_tempo_info,
+                });
                 server.modulation_dirty = false;
             }
             if server.preset_dirty {

@@ -133,6 +133,7 @@ impl Preset {
     /// Apply this preset to the shared state
     pub fn apply_to_state(&self, state: &mut EngineState) {
         state.hsb_params = self.hsb_params;
+        state.hsb_param_bases = self.hsb_params;
         state.audio_routing.update_base_values(
             self.hsb_params.hue_shift,
             self.hsb_params.saturation,

@@ -60,9 +60,7 @@ impl ControlGui {
         if let Some(uuid) = self.modulation_imgui_expanded.clone() {
             ui.separator();
             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(source) = mod_eng.source_mut(&uuid) {
-                self.draw_modulation_source_imgui(ui, source, bpm);
-            }
+            self.draw_modulation_source_imgui(ui, &mut mod_eng, &uuid, bpm);
         }
 
         ui.separator();
@@ -99,94 +97,127 @@ impl ControlGui {
         }
     }
 
-    fn draw_modulation_source_imgui(&mut self, ui: &imgui::Ui, source: &mut ModulationSource, bpm: f32) {
-        match source {
-            ModulationSource::LFO {
-                waveform,
-                frequency,
-                amplitude,
-                bipolar,
-                tempo_sync,
-                division,
-                phase_offset_degrees,
-                enabled,
-                ..
-            } => {
-                let mut en = *enabled;
-                ui.checkbox("Enabled", &mut en);
-                *enabled = en;
+    fn draw_modulation_source_imgui(
+        &mut self,
+        ui: &imgui::Ui,
+        mod_eng: &mut rustjay_core::modulation::ModulationEngine,
+        uuid: &str,
+        bpm: f32,
+    ) {
+        // LFO
+        if let Some(ModulationSource::LFO {
+            waveform,
+            frequency,
+            amplitude,
+            bipolar,
+            tempo_sync,
+            division,
+            phase_offset_degrees,
+            enabled,
+            ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            let mut en = *enabled;
+            ui.checkbox("Enabled", &mut en);
+            *enabled = en;
 
-                let mut bp = *bipolar;
-                ui.checkbox("Bipolar", &mut bp);
-                *bipolar = bp;
+            let mut bp = *bipolar;
+            ui.checkbox("Bipolar", &mut bp);
+            *bipolar = bp;
 
-                let mut ts = *tempo_sync;
-                ui.checkbox("Tempo Sync", &mut ts);
-                *tempo_sync = ts;
+            let mut ts = *tempo_sync;
+            ui.checkbox("Tempo Sync", &mut ts);
+            *tempo_sync = ts;
 
-                // Waveform combo
-                let wave_labels = ["Sine", "Square", "Triangle", "Sawtooth", "Random"];
-                let mut wf_idx = *waveform as usize;
-                if ui.combo("Waveform", &mut wf_idx, &wave_labels, |s| (*s).into()) {
-                    *waveform = match wf_idx {
-                        0 => LFOWaveform::Sine,
-                        1 => LFOWaveform::Square,
-                        2 => LFOWaveform::Triangle,
-                        3 => LFOWaveform::Sawtooth,
-                        4 => LFOWaveform::Random,
-                        _ => LFOWaveform::Sine,
-                    };
+            let wave_labels = ["Sine", "Square", "Triangle", "Sawtooth", "Random"];
+            let mut wf_idx = *waveform as usize;
+            if ui.combo("Waveform", &mut wf_idx, &wave_labels, |s| (*s).into()) {
+                *waveform = match wf_idx {
+                    0 => LFOWaveform::Sine,
+                    1 => LFOWaveform::Square,
+                    2 => LFOWaveform::Triangle,
+                    3 => LFOWaveform::Sawtooth,
+                    4 => LFOWaveform::Random,
+                    _ => LFOWaveform::Sine,
+                };
+            }
+
+            if *tempo_sync {
+                let div_labels = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"];
+                let mut div = *division;
+                if ui.combo("Division", &mut div, &div_labels, |s| (*s).into()) {
+                    *division = div;
                 }
+                ui.text_disabled(format!("= {:.2} Hz", beat_division_to_hz(*division, bpm)));
+            } else {
+                ui.input_float("Frequency (Hz)", frequency)
+                    .step(0.1)
+                    .build();
+                *frequency = frequency.clamp(0.01, 20.0);
+            }
 
-                if *tempo_sync {
-                    let div_labels = ["1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"];
-                    let mut div = *division;
-                    if ui.combo("Division", &mut div, &div_labels, |s| (*s).into()) {
-                        *division = div;
-                    }
-                    ui.text_disabled(format!("= {:.2} Hz", beat_division_to_hz(*division, bpm)));
+            ui.input_float("Amplitude", amplitude)
+                .step(0.05)
+                .build();
+            *amplitude = amplitude.clamp(0.0, 1.0);
+
+            ui.input_float("Phase Offset (°)", phase_offset_degrees)
+                .step(1.0)
+                .build();
+            *phase_offset_degrees = phase_offset_degrees.clamp(0.0, 360.0);
+        }
+
+        // ADSR
+        if let Some(ModulationSource::ADSR {
+            attack, decay, sustain, release, ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.input_float("Attack", attack).step(0.01).build();
+            *attack = attack.max(0.001);
+            ui.input_float("Decay", decay).step(0.01).build();
+            *decay = decay.max(0.001);
+            ui.slider("Sustain", 0.0, 1.0, sustain);
+            ui.input_float("Release", release).step(0.01).build();
+            *release = release.max(0.001);
+        }
+        // F3: gate toggle must go through trigger_adsr/release_adsr, not direct mutation.
+        let is_gated = mod_eng
+            .source_mut(uuid)
+            .and_then(|s| {
+                if let ModulationSource::ADSR { gate, .. } = s {
+                    Some(*gate)
                 } else {
-                    ui.input_float("Frequency (Hz)", frequency)
-                        .step(0.1)
-                        .build();
-                    *frequency = frequency.clamp(0.01, 20.0);
+                    None
                 }
+            })
+            .unwrap_or(false);
+        let label = if is_gated { "Release Gate" } else { "Trigger Gate" };
+        if ui.button(label) {
+            if is_gated {
+                mod_eng.release_adsr(uuid);
+            } else {
+                mod_eng.trigger_adsr(uuid);
+            }
+        }
 
-                ui.input_float("Amplitude", amplitude)
-                    .step(0.05)
-                    .build();
-                *amplitude = amplitude.clamp(0.0, 1.0);
+        // Step Sequencer
+        if let Some(ModulationSource::StepSequencer { steps, rate, .. }) = mod_eng.source_mut(uuid)
+        {
+            ui.input_float("Rate", rate).step(0.1).build();
+            *rate = rate.max(0.01);
+            for (i, step) in steps.iter_mut().enumerate() {
+                ui.slider(format!("Step {}", i + 1), -1.0, 1.0, step);
+            }
+        }
 
-                ui.input_float("Phase Offset (°)", phase_offset_degrees)
-                    .step(1.0)
-                    .build();
-                *phase_offset_degrees = phase_offset_degrees.clamp(0.0, 360.0);
-            }
-            ModulationSource::ADSR {
-                attack, decay, sustain, release, gate, ..
-            } => {
-                ui.input_float("Attack", attack).step(0.01).build();
-                *attack = attack.max(0.001);
-                ui.input_float("Decay", decay).step(0.01).build();
-                *decay = decay.max(0.001);
-                ui.slider("Sustain", 0.0, 1.0, sustain);
-                ui.input_float("Release", release).step(0.01).build();
-                *release = release.max(0.001);
-                let label = if *gate { "Release Gate" } else { "Trigger Gate" };
-                if ui.button(label) {
-                    *gate = !*gate;
-                }
-            }
-            ModulationSource::StepSequencer { steps, rate, .. } => {
-                ui.input_float("Rate", rate).step(0.1).build();
-                *rate = rate.max(0.01);
-                for (i, step) in steps.iter_mut().enumerate() {
-                    ui.slider(format!("Step {}", i + 1), -1.0, 1.0, step);
-                }
-            }
-            ModulationSource::AudioBand { .. } => {
-                ui.text_disabled("Audio Band configuration not yet available in imgui tab.");
-            }
+        // Audio Band
+        if mod_eng.find_source_by_uuid(uuid).is_some()
+            && matches!(
+                mod_eng.find_source_by_uuid(uuid).unwrap().source,
+                ModulationSource::AudioBand { .. }
+            )
+        {
+            ui.text_disabled("Audio Band configuration not yet available in imgui tab.");
         }
     }
 }

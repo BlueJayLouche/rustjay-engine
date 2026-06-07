@@ -112,9 +112,7 @@ impl EguiControlGui {
                         ui.separator();
                         {
                             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(source) = mod_eng.source_mut(uuid) {
-                                self.draw_source_editor(ui, source, bpm);
-                            }
+                            self.draw_source_editor(ui, &mut mod_eng, &uuid, bpm);
                         }
                         // Assignments are drawn outside the mod_eng lock so we can re-lock
                         // for the assignment buttons/sliders (Mutex is not reentrant).
@@ -176,135 +174,159 @@ impl EguiControlGui {
     fn draw_source_editor(
         &mut self,
         ui: &mut egui::Ui,
-        source: &mut ModulationSource,
+        mod_eng: &mut rustjay_core::modulation::ModulationEngine,
+        uuid: &str,
         bpm: f32,
     ) {
-        match source {
-            ModulationSource::LFO {
-                waveform,
-                frequency,
-                phase,
-                amplitude,
-                bipolar,
-                tempo_sync,
-                division,
-                phase_offset_degrees,
-                enabled,
-                ..
-            } => {
-                ui.horizontal(|ui| {
-                    ui.checkbox(enabled, "Enabled");
-                    ui.checkbox(bipolar, "Bipolar");
-                    ui.checkbox(tempo_sync, "Tempo Sync");
-                    if *tempo_sync {
-                        ui.label(
-                            egui::RichText::new(format!("BPM: {:.1}", bpm))
-                                .size(11.0)
-                                .color(TEXT_SECONDARY),
-                        );
-                    }
-                });
-
-                // Waveform buttons
-                ui.horizontal(|ui| {
-                    ui.label("Waveform:");
-                    for (name, wf) in WAVE_NAMES {
-                        let selected = *waveform == *wf;
-                        let btn = if selected {
-                            egui::Button::new(egui::RichText::new(*name).strong().color(Color32::BLACK))
-                                .fill(ACCENT_CYAN)
-                        } else {
-                            egui::Button::new(egui::RichText::new(*name).color(TEXT_PRIMARY))
-                                .fill(BG_HOVER)
-                        };
-                        if ui.add_sized(egui::vec2(64.0, 22.0), btn).clicked() && !selected {
-                            *waveform = *wf;
-                        }
-                    }
-                });
-
-                // Rate or division
+        // ── LFO ──────────────────────────────────────────────────────────────
+        if let Some(ModulationSource::LFO {
+            waveform,
+            frequency,
+            phase: _,
+            amplitude,
+            bipolar,
+            tempo_sync,
+            division,
+            phase_offset_degrees,
+            enabled,
+            ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.horizontal(|ui| {
+                ui.checkbox(enabled, "Enabled");
+                ui.checkbox(bipolar, "Bipolar");
+                ui.checkbox(tempo_sync, "Tempo Sync");
                 if *tempo_sync {
-                    let mut div = *division;
-                    egui::ComboBox::from_id_salt("mod_div")
-                        .width(80.0)
-                        .selected_text(DIVISION_LABELS[div.min(DIVISION_LABELS.len() - 1)])
-                        .show_ui(ui, |ui| {
-                            for (j, label) in DIVISION_LABELS.iter().enumerate() {
-                                if ui.selectable_label(div == j, *label).clicked() {
-                                    div = j;
-                                }
-                            }
-                        });
-                    if div != *division {
-                        *division = div;
-                    }
                     ui.label(
-                        egui::RichText::new(format!(
-                            "= {:.2} Hz",
-                            beat_division_to_hz(*division, bpm)
-                        ))
-                        .size(11.0)
-                        .color(TEXT_SECONDARY),
-                    );
-                } else {
-                    ui.add(
-                        egui::Slider::new(frequency, 0.01..=20.0)
-                            .text("Frequency (Hz)")
-                            .trailing_fill(true),
+                        egui::RichText::new(format!("BPM: {:.1}", bpm))
+                            .size(11.0)
+                            .color(TEXT_SECONDARY),
                     );
                 }
+            });
 
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::Slider::new(phase_offset_degrees, 0.0..=360.0)
-                            .text("Phase Offset (°)")
-                            .trailing_fill(true),
-                    );
-                    ui.add(
-                        egui::Slider::new(amplitude, 0.0..=1.0)
-                            .text("Amplitude")
-                            .trailing_fill(true),
-                    );
-                });
-
-                // Assignments for this source
-            }
-            ModulationSource::ADSR {
-                attack, decay, sustain, release, gate, ..
-            } => {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(attack, 0.001..=5.0).text("Attack").logarithmic(true));
-                    ui.add(egui::Slider::new(decay, 0.001..=5.0).text("Decay").logarithmic(true));
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(sustain, 0.0..=1.0).text("Sustain"));
-                    ui.add(egui::Slider::new(release, 0.001..=5.0).text("Release").logarithmic(true));
-                });
-                let gate_label = if *gate { "Release Gate" } else { "Trigger Gate" };
-                if ui.button(gate_label).clicked() {
-                    *gate = !*gate;
-                }
-            }
-            ModulationSource::StepSequencer {
-                steps, rate, interpolation, bipolar, ..
-            } => {
-                ui.horizontal(|ui| {
-                    ui.checkbox(bipolar, "Bipolar");
-                    ui.add(egui::Slider::new(rate, 0.1..=20.0).text("Rate (steps/s)"));
-                });
-                ui.horizontal(|ui| {
-                    for (i, step) in steps.iter_mut().enumerate() {
-                        ui.vertical(|ui| {
-                            ui.label(format!("{}", i + 1));
-                            ui.add(egui::DragValue::new(step).speed(0.01).clamp_range(-1.0..=1.0));
-                        });
+            // Waveform buttons
+            ui.horizontal(|ui| {
+                ui.label("Waveform:");
+                for (name, wf) in WAVE_NAMES {
+                    let selected = *waveform == *wf;
+                    let btn = if selected {
+                        egui::Button::new(egui::RichText::new(*name).strong().color(Color32::BLACK))
+                            .fill(ACCENT_CYAN)
+                    } else {
+                        egui::Button::new(egui::RichText::new(*name).color(TEXT_PRIMARY))
+                            .fill(BG_HOVER)
+                    };
+                    if ui.add_sized(egui::vec2(64.0, 22.0), btn).clicked() && !selected {
+                        *waveform = *wf;
                     }
-                });
+                }
+            });
+
+            // Rate or division
+            if *tempo_sync {
+                let mut div = *division;
+                egui::ComboBox::from_id_salt("mod_div")
+                    .width(80.0)
+                    .selected_text(DIVISION_LABELS[div.min(DIVISION_LABELS.len() - 1)])
+                    .show_ui(ui, |ui| {
+                        for (j, label) in DIVISION_LABELS.iter().enumerate() {
+                            if ui.selectable_label(div == j, *label).clicked() {
+                                div = j;
+                            }
+                        }
+                    });
+                if div != *division {
+                    *division = div;
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "= {:.2} Hz",
+                        beat_division_to_hz(*division, bpm)
+                    ))
+                    .size(11.0)
+                    .color(TEXT_SECONDARY),
+                );
+            } else {
+                ui.add(
+                    egui::Slider::new(frequency, 0.01..=20.0)
+                        .text("Frequency (Hz)")
+                        .trailing_fill(true),
+                );
             }
-            ModulationSource::AudioBand { .. } => {
-                ui.label("Audio Band configuration coming soon.");
+
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Slider::new(phase_offset_degrees, 0.0..=360.0)
+                        .text("Phase Offset (°)")
+                        .trailing_fill(true),
+                );
+                ui.add(
+                    egui::Slider::new(amplitude, 0.0..=1.0)
+                        .text("Amplitude")
+                        .trailing_fill(true),
+                );
+            });
+        }
+
+        // ── ADSR ─────────────────────────────────────────────────────────────
+        if let Some(ModulationSource::ADSR {
+            attack, decay, sustain, release, ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(attack, 0.001..=5.0).text("Attack").logarithmic(true));
+                ui.add(egui::Slider::new(decay, 0.001..=5.0).text("Decay").logarithmic(true));
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::Slider::new(sustain, 0.0..=1.0).text("Sustain"));
+                ui.add(egui::Slider::new(release, 0.001..=5.0).text("Release").logarithmic(true));
+            });
+        }
+        // F3: gate toggle must go through trigger_adsr/release_adsr, not direct mutation.
+        let is_gated = mod_eng
+            .source_mut(uuid)
+            .and_then(|s| {
+                if let ModulationSource::ADSR { gate, .. } = s {
+                    Some(*gate)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(false);
+        let gate_label = if is_gated { "Release Gate" } else { "Trigger Gate" };
+        if ui.button(gate_label).clicked() {
+            if is_gated {
+                mod_eng.release_adsr(uuid);
+            } else {
+                mod_eng.trigger_adsr(uuid);
             }
+        }
+
+        // ── Step Sequencer ───────────────────────────────────────────────────
+        if let Some(ModulationSource::StepSequencer {
+            steps, rate, interpolation, bipolar, ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.horizontal(|ui| {
+                ui.checkbox(bipolar, "Bipolar");
+                ui.add(egui::Slider::new(rate, 0.1..=20.0).text("Rate (steps/s)"));
+            });
+            ui.horizontal(|ui| {
+                for (i, step) in steps.iter_mut().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.label(format!("{}", i + 1));
+                        ui.add(egui::DragValue::new(step).speed(0.01).clamp_range(-1.0..=1.0));
+                    });
+                }
+            });
+        }
+
+        // ── Audio Band ───────────────────────────────────────────────────────
+        if mod_eng.find_source_by_uuid(uuid).is_some()
+            && matches!(mod_eng.find_source_by_uuid(uuid).unwrap().source, ModulationSource::AudioBand { .. })
+        {
+            ui.label("Audio Band configuration coming soon.");
         }
     }
 
