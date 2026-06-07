@@ -92,7 +92,10 @@ impl EffectPlugin for MixerPlugin {
     fn deserialize_preset_state(&self, data: &str, _state: &mut ()) {
         match crate::MixerState::from_json(data) {
             Ok(state) => {
-                let (matched, _legacy) = self.lock().apply_state(&state);
+                let (matched, legacy) = self.lock().apply_state(&state);
+                if legacy.is_some() {
+                    log::warn!("mixer: preset contained v1 modulation state that was discarded. Reload via EngineState to migrate into the unified ModulationEngine.");
+                }
                 log::info!("mixer: restored {matched} channel(s) from preset");
             }
             Err(e) => log::error!("mixer: rejected preset state: {e}"),

@@ -650,7 +650,10 @@ impl EffectPlugin for VardaRootPlugin {
                         // v1 scene carried modulation in the mixer; merge into unified engine.
                         let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
                         for entry in legacy_mod.sources {
-                            mod_eng.add_source_with_uuid(entry.uuid, entry.source);
+                            // S3: guard against duplicate UUIDs if the workflow ever allows queued scenes.
+                            if !mod_eng.has_source(&entry.uuid) {
+                                mod_eng.add_source_with_uuid(entry.uuid, entry.source);
+                            }
                         }
                         for (param, assignments) in legacy_mod.assignments {
                             for a in assignments {

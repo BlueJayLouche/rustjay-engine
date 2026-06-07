@@ -308,6 +308,22 @@ mod tests {
     }
 
     #[test]
+    fn v1_preset_with_empty_modulation_returns_no_legacy() {
+        // S2: v1 preset with an empty modulation block should return None,
+        // exercising the version < VERSION && source_count() == 0 branch.
+        let json_v1_empty = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ],"modulation":{"sources":[],"assignments":{}}}"#;
+        let state = MixerState::from_json(json_v1_empty).unwrap();
+        let mut m = mixer_ab();
+        let (_, legacy) = m.apply_state(&state);
+        assert!(
+            legacy.is_none(),
+            "v1 preset with zero modulation sources should not return legacy engine"
+        );
+    }
+
+    #[test]
     fn backward_compat_missing_modulation_field() {
         // Old presets without the modulation field should deserialize cleanly.
         let json = r#"{"version":1,"crossfader":0.5,"channels":[

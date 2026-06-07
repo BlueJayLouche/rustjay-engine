@@ -949,15 +949,11 @@ impl<P: EffectPlugin> App<P> {
                             };
                             let uuid = format!("lfo_{slot}");
                             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-                            // Preserve runtime phase state so the LFO doesn't jump on config change.
-                            let existing_phase = mod_eng.sources.iter()
+                            // Preserve runtime phase state so the LFO doesn't jump on config change (S1).
+                            let (existing_phase, existing_last_beat) = mod_eng.sources.iter()
                                 .find(|s| s.uuid == uuid)
-                                .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { phase, .. } = s.source { Some(phase) } else { None })
-                                .unwrap_or(0.0);
-                            let existing_last_beat = mod_eng.sources.iter()
-                                .find(|s| s.uuid == uuid)
-                                .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { last_beat_phase, .. } = s.source { Some(last_beat_phase) } else { None })
-                                .unwrap_or(0.0);
+                                .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = s.source { Some((phase, last_beat_phase)) } else { None })
+                                .unwrap_or((0.0, 0.0));
                             let waveform = match config.waveform {
                                 rustjay_core::lfo::Waveform::Sine => rustjay_core::modulation::LFOWaveform::Sine,
                                 rustjay_core::lfo::Waveform::Triangle => rustjay_core::modulation::LFOWaveform::Triangle,
