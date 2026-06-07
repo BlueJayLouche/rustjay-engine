@@ -5,6 +5,24 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Assignment of a surface to an output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SurfaceAssignment {
+    /// UUID of the assigned surface.
+    pub surface_uuid: String,
+    /// Whether this assignment is active.
+    pub enabled: bool,
+}
+
+impl SurfaceAssignment {
+    pub fn new(surface_uuid: String) -> Self {
+        Self {
+            surface_uuid,
+            enabled: true,
+        }
+    }
+}
+
 /// Which graph output a surface samples from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SurfaceSource {
@@ -236,8 +254,14 @@ pub struct VardaProjector {
     pub height: u32,
     /// `None` = windowed; `Some(index)` = fullscreen on monitor N.
     pub fullscreen_monitor: Option<usize>,
-    /// Which surface's warp to apply (`None` = first Master surface).
-    pub surface_index: Option<usize>,
+    /// Surface assignments — which surfaces this output renders.
+    /// Empty = render all surfaces (fallback to first Master surface).
+    #[serde(default)]
+    pub surface_assignments: Vec<SurfaceAssignment>,
+    /// Per-projector warp sync (injected at runtime, not serialized).
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub warp_sync: Option<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
     /// Use the global warp/dome/edge-blend syncs, or per-projector overrides.
     pub use_global_warp: bool,
     pub use_global_dome: bool,
@@ -268,7 +292,9 @@ impl Default for VardaProjector {
             width: 1920,
             height: 1080,
             fullscreen_monitor: None,
-            surface_index: None,
+            surface_assignments: Vec::new(),
+            #[cfg(feature = "projection")]
+            warp_sync: None,
             use_global_warp: true,
             use_global_dome: true,
             use_global_edge_blend: true,
@@ -292,6 +318,13 @@ pub struct VardaHeadlessConfig {
     pub enabled: bool,
     pub width: u32,
     pub height: u32,
+    /// Surface assignments — which surfaces this output renders.
+    #[serde(default)]
+    pub surface_assignments: Vec<SurfaceAssignment>,
+    /// Per-output warp sync (injected at runtime, not serialized).
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub warp_sync: Option<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
     /// Whether this headless output has already been pushed to the
     /// projection subsystem. Not serialized — reset on app restart.
     #[serde(skip)]
@@ -307,6 +340,9 @@ impl Default for VardaHeadlessConfig {
             enabled: false,
             width: 1920,
             height: 1080,
+            surface_assignments: Vec::new(),
+            #[cfg(feature = "projection")]
+            warp_sync: None,
             pushed: false,
         }
     }

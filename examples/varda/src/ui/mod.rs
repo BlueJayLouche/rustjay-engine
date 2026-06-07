@@ -1016,6 +1016,40 @@ mod egui_impl {
                                 remove_proj = Some(i);
                             }
                         });
+                        // Surface assignments
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Surfaces:").small());
+                            egui::ComboBox::from_id_salt(format!("assign_surf_proj_{}", i))
+                                .selected_text("+ Assign")
+                                .width(120.0)
+                                .show_ui(ui, |ui| {
+                                    for surf in state.stage.surfaces.iter() {
+                                        let already = proj.surface_assignments.iter().any(|a| a.surface_uuid == surf.uuid);
+                                        if !already && ui.selectable_label(false, &surf.name).clicked() {
+                                            proj.surface_assignments.push(crate::stage::SurfaceAssignment::new(surf.uuid.clone()));
+                                            state.save_workspace();
+                                        }
+                                    }
+                                });
+                        });
+                        let mut unassign: Option<usize> = None;
+                        for (ai, assignment) in proj.surface_assignments.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut assignment.enabled, "");
+                                let name = state.stage.surfaces.iter()
+                                    .find(|s| s.uuid == assignment.surface_uuid)
+                                    .map(|s| s.name.as_str())
+                                    .unwrap_or("?");
+                                ui.label(egui::RichText::new(name).small());
+                                if ui.small_button("x").on_hover_text("Unassign").clicked() {
+                                    unassign = Some(ai);
+                                }
+                            });
+                        }
+                        if let Some(ai) = unassign {
+                            proj.surface_assignments.remove(ai);
+                            state.save_workspace();
+                        }
                     });
                 }
                 if let Some(i) = remove_proj {
@@ -1055,6 +1089,40 @@ mod egui_impl {
                                 remove_hl = Some(i);
                             }
                         });
+                        // Surface assignments
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Surfaces:").small());
+                            egui::ComboBox::from_id_salt(format!("assign_surf_hl_{}", i))
+                                .selected_text("+ Assign")
+                                .width(120.0)
+                                .show_ui(ui, |ui| {
+                                    for surf in state.stage.surfaces.iter() {
+                                        let already = hl.surface_assignments.iter().any(|a| a.surface_uuid == surf.uuid);
+                                        if !already && ui.selectable_label(false, &surf.name).clicked() {
+                                            hl.surface_assignments.push(crate::stage::SurfaceAssignment::new(surf.uuid.clone()));
+                                            state.save_workspace();
+                                        }
+                                    }
+                                });
+                        });
+                        let mut unassign: Option<usize> = None;
+                        for (ai, assignment) in hl.surface_assignments.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut assignment.enabled, "");
+                                let name = state.stage.surfaces.iter()
+                                    .find(|s| s.uuid == assignment.surface_uuid)
+                                    .map(|s| s.name.as_str())
+                                    .unwrap_or("?");
+                                ui.label(egui::RichText::new(name).small());
+                                if ui.small_button("x").on_hover_text("Unassign").clicked() {
+                                    unassign = Some(ai);
+                                }
+                            });
+                        }
+                        if let Some(ai) = unassign {
+                            hl.surface_assignments.remove(ai);
+                            state.save_workspace();
+                        }
                     });
                 }
                 if let Some(i) = remove_hl {
