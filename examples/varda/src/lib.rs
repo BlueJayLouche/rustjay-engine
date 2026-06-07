@@ -598,10 +598,18 @@ impl EffectPlugin for VardaRootPlugin {
                     match state.workspace.load_stage() {
                         Ok(loaded_stage) => {
                             state.stage = loaded_stage;
-                            // Re-inject Arc handles wiped by serde(skip) on deserialize.
+                            // Re-inject global Arc handles wiped by serde(skip) on deserialize.
                             state.stage.warp_sync = Some(self.warp_sync.clone());
                             state.stage.dome_sync = Some(self.dome_sync.clone());
                             state.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
+                            // Inject per-projector warp syncs for outputs loaded from disk.
+                            for proj in state.stage.projectors.iter_mut() {
+                                if proj.warp_sync.is_none() {
+                                    proj.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                                        crate::stage::WarpSync::default(),
+                                    )));
+                                }
+                            }
                             state.stage.publish_warp();
                             // Dome/edge-blend runtime state lives in the Sync structs and is
                             // not serialized, so publish defaults here — ephemeral by design.
@@ -855,13 +863,21 @@ impl EffectPlugin for VardaRootPlugin {
                     {
                         for cfg in state.stage.headless_outputs.iter_mut() {
                             if cfg.enabled && !cfg.pushed {
+                                // Per-headless warp sync so assignments can drive warp.
+                                cfg.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                                    crate::stage::WarpSync::default(),
+                                )));
+                                let w = cfg.warp_sync.clone().unwrap();
+                                let d = self.dome_sync.clone();
+                                let e = self.edge_blend_sync.clone();
                                 sub.add_headless_output(
                                     cfg.width,
                                     cfg.height,
-                                    vec![Box::new(rustjay_projection::IdentityStage::new(
-                                        device,
-                                        wgpu::TextureFormat::Rgba8Unorm,
-                                    ))],
+                                    vec![
+                                        Box::new(crate::stage::VardaDomeStage::new(device, wgpu::TextureFormat::Rgba8Unorm, d)),
+                                        Box::new(crate::stage::VardaEdgeBlendStage::new(device, wgpu::TextureFormat::Rgba8Unorm, e)),
+                                        Box::new(crate::stage::VardaWarpStage::new(device, wgpu::TextureFormat::Rgba8Unorm, w)),
+                                    ],
                                 );
                                 cfg.pushed = true;
                                 log::info!(
@@ -875,6 +891,41 @@ impl EffectPlugin for VardaRootPlugin {
                     } else {
                         log::warn!("[Headless] projection_handle downcast failed — headless outputs not created");
                     }
+                }
+            }
+        }
+
+        // ── Per-output render path iteration ─────────────────────────────────
+        // For each output, resolve its surface assignments and publish the
+        // appropriate warp into the per-output WarpSync so the stage chain
+        // renders the correct surface geometry.
+        #[cfg(feature = "projection")]
+        {
+            let surfaces = &state.stage.surfaces;
+            let fallback_warp = surfaces
+                .iter()
+                .find(|s| s.source == crate::stage::SurfaceSource::Master)
+                .or_else(|| surfaces.first())
+                .map(|s| &s.warp);
+
+            for proj in &state.stage.projectors {
+                if let Some(sync) = &proj.warp_sync {
+                    crate::stage::resolve_and_publish_warp(
+                        sync,
+                        Some(&proj.surface_assignments),
+                        surfaces,
+                        fallback_warp,
+                    );
+                }
+            }
+            for hl in &state.stage.headless_outputs {
+                if let Some(sync) = &hl.warp_sync {
+                    crate::stage::resolve_and_publish_warp(
+                        sync,
+                        Some(&hl.surface_assignments),
+                        surfaces,
+                        fallback_warp,
+                    );
                 }
             }
         }

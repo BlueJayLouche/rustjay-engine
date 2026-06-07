@@ -45,6 +45,14 @@ fn main() -> anyhow::Result<()> {
             );
         }
 
+        // Create per-projector warp syncs so each output can render a
+        // different assigned surface with its own warp.
+        for proj in stage.projectors.iter_mut() {
+            proj.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                varda::stage::WarpSync::default(),
+            )));
+        }
+
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
             use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
             use winit::window::WindowAttributes;
@@ -68,7 +76,12 @@ fn main() -> anyhow::Result<()> {
                         monitor_idx
                     );
                 }
-                let w = warp_sync.clone();
+                // Use per-projector warp sync if available, otherwise fall back
+                // to the global warp sync (backward compatibility).
+                let w = proj
+                    .warp_sync
+                    .clone()
+                    .unwrap_or_else(|| warp_sync.clone());
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
                 sub.add_projector(attrs, move |device, format| {
