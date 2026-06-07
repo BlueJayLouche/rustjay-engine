@@ -229,6 +229,23 @@ impl Preset {
                 self.custom_values.len()
             ));
         }
+        const MAX_MOD_SOURCES: usize = 64;
+        const MAX_MOD_ASSIGNMENTS: usize = 256;
+        if self.modulation.sources.len() > MAX_MOD_SOURCES {
+            return Err(anyhow::anyhow!(
+                "Too many modulation sources: {} (max {})",
+                self.modulation.sources.len(),
+                MAX_MOD_SOURCES
+            ));
+        }
+        let total_assignments: usize = self.modulation.assignments.values().map(|v| v.len()).sum();
+        if total_assignments > MAX_MOD_ASSIGNMENTS {
+            return Err(anyhow::anyhow!(
+                "Too many modulation assignments: {} (max {})",
+                total_assignments,
+                MAX_MOD_ASSIGNMENTS
+            ));
+        }
         Ok(())
     }
 

@@ -66,6 +66,15 @@ impl EguiControlGui {
                 .collect()
         };
 
+        // S5: Guard stale expanded-source UUID (source may have been deleted via
+        // ModulationCommand or another tab while this tab was not rendered).
+        let source_uuids: std::collections::HashSet<_> = sources_snapshot.iter().map(|(u, _, _, _)| u.clone()).collect();
+        if let Some(ref u) = self.modulation_expanded_source {
+            if !source_uuids.contains(u) {
+                self.modulation_expanded_source = None;
+            }
+        }
+
         // Track which source is expanded (persisted in gui state)
         let expanded_uuid = self
             .modulation_expanded_source

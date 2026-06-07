@@ -498,13 +498,18 @@ impl ModulationSource {
                 if !*enabled {
                     return 0.0;
                 }
-                let effective_freq = if *tempo_sync {
+                let raw_freq = if *tempo_sync {
                     let div = (*division).min(BEAT_DIVISIONS.len() - 1);
                     beat_division_to_hz(div, bpm)
                 } else {
                     *frequency
-                }
-                .clamp(0.01, 20.0);
+                };
+                // S3: NaN propagates through f32::clamp; guard it explicitly.
+                let effective_freq = if raw_freq.is_finite() {
+                    raw_freq.clamp(0.01, 20.0)
+                } else {
+                    1.0 // safe fallback
+                };
 
                 // Quantum-boundary phase snap: when beat_phase wraps from ~1 back to ~0,
                 // reset phase for sub-beat/single-beat divisions so the LFO stays musically in phase.
