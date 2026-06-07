@@ -33,6 +33,7 @@ pub struct AudioAnalyzer {
     output: Arc<AudioOutput>,
     config: Arc<AudioConfig>,
     fft_size: usize,
+    sample_rate: f32,
 }
 
 impl AudioAnalyzer {
@@ -42,9 +43,10 @@ impl AudioAnalyzer {
             stream: None,
             running: Arc::new(AtomicBool::new(false)),
             stream_error: Arc::new(AtomicBool::new(false)),
-            output: Arc::new(AudioOutput::new()),
+            output: Arc::new(AudioOutput::new(DEFAULT_FFT_SIZE)),
             config: Arc::new(AudioConfig::new()),
             fft_size: DEFAULT_FFT_SIZE,
+            sample_rate: 48000.0,
         }
     }
 
@@ -88,7 +90,7 @@ impl AudioAnalyzer {
             self.stream = None;
         }
         self.running = Arc::new(AtomicBool::new(false));
-        self.output = Arc::new(AudioOutput::new());
+        self.output = Arc::new(AudioOutput::new(self.fft_size));
         self.stream_error = Arc::new(AtomicBool::new(false));
 
         let host = cpal::default_host();
@@ -110,6 +112,7 @@ impl AudioAnalyzer {
         let actual_name = device.description()?.name().to_string();
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate() as f32;
+        self.sample_rate = sample_rate;
         let channels = config.channels() as usize;
         let fft_size = self.fft_size;
 
@@ -172,6 +175,35 @@ impl AudioAnalyzer {
     /// Latest 8-band FFT magnitudes (0–1).
     pub fn get_fft(&self) -> [f32; 8] {
         std::array::from_fn(|i| f32::from_bits(self.output.fft[i].load(Ordering::Relaxed)))
+    }
+
+    /// Write the full per-bin FFT spectrum into `buf` (0–1, length = fft_size/2+1).
+    ///
+    /// Clears and resizes `buf` to match the spectrum length. Reuses the
+    /// caller's allocation — zero-allocation path for the hot frame loop.
+    pub fn get_spectrum_into(&self, buf: &mut Vec<f32>) {
+        buf.clear();
+        buf.extend(
+            self.output
+                .spectrum
+                .iter()
+                .map(|s| f32::from_bits(s.load(Ordering::Relaxed))),
+        );
+    }
+
+    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
+    ///
+    /// Convenience wrapper around [`get_spectrum_into`](Self::get_spectrum_into)
+    /// that allocates a fresh Vec. Prefer `get_spectrum_into` on the hot path.
+    pub fn get_spectrum(&self) -> Vec<f32> {
+        let mut buf = Vec::new();
+        self.get_spectrum_into(&mut buf);
+        buf
+    }
+
+    /// Sample rate of the running audio stream in Hz.
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 
     /// Current overall volume (0–1).

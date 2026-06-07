@@ -121,12 +121,21 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
+        let present_mode = {
+            let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            match s.present_mode {
+                rustjay_core::PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
+                rustjay_core::PresentMode::Immediate => wgpu::PresentMode::Immediate,
+                rustjay_core::PresentMode::Fifo => wgpu::PresentMode::Fifo,
+                rustjay_core::PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+            }
+        };
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -333,6 +342,22 @@ impl<P: EffectPlugin> WgpuEngine<P> {
 
     /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
+        // Reconfigure surface if present_mode changed at runtime.
+        {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let desired = match state.present_mode {
+                rustjay_core::PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
+                rustjay_core::PresentMode::Immediate => wgpu::PresentMode::Immediate,
+                rustjay_core::PresentMode::Fifo => wgpu::PresentMode::Fifo,
+                rustjay_core::PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+            };
+            if self.surface_config.present_mode != desired {
+                self.surface_config.present_mode = desired;
+                self.surface.configure(&self.device, &self.surface_config);
+                log::info!("Output present_mode changed to {:?}", desired);
+            }
+        }
+
         // Frame-rate cap: skip this render if we haven't reached the target interval.
         // Uses a small tolerance to avoid missing frames due to timer jitter on
         // high-refresh displays (e.g. 120 Hz ProMotion) where wake-ups may land
@@ -399,10 +424,12 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             let n = new_descs.len();
 
             engine_state.param_descriptors = std::sync::Arc::new(new_descs);
-            engine_state.custom_param_bases = new_bases;
-            engine_state.custom_params = vec![0.0; n];
+            engine_state.custom_param_bases = new_bases.clone();
+            engine_state.custom_params = new_bases;
             engine_state.param_osc_addresses = new_osc;
         }
+
+        let render_start = std::time::Instant::now();
 
         let mut encoder = self
             .device
@@ -592,9 +619,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager
             .submit_frame(&self.render_target.texture, &self.device, &self.queue);
 
+        let pre_present = std::time::Instant::now();
         if let Some(st) = surface_texture {
             st.present();
         }
+        let post_present = std::time::Instant::now();
 
         self.fps_frame_count += 1;
         let elapsed = self.fps_last_time.elapsed();
@@ -611,6 +640,14 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                     } else {
                         0.0
                     };
+                    perf.gpu_encode_ms = pre_present
+                        .duration_since(render_start)
+                        .as_secs_f32()
+                        * 1000.0;
+                    perf.present_wait_ms = post_present
+                        .duration_since(pre_present)
+                        .as_secs_f32()
+                        * 1000.0;
                 }
             }
         }

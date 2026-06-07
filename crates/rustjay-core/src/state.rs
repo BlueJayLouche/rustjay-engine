@@ -3,7 +3,8 @@
 //! [`EngineState`] is the central mutable state that the engine manages and
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
-use crate::lfo::LfoState;
+
+use crate::modulation::ModulationEngine;
 use crate::params::{ParamCategory, ParameterDescriptor};
 use crate::routing::AudioRoutingState;
 use serde::{Deserialize, Serialize};
@@ -201,6 +202,55 @@ pub enum MidiCommand {
     Disconnect,
     /// Replace all mappings (used when loading a preset).
     RestoreMappings(Vec<MidiMappingSnapshot>),
+}
+
+/// Commands sent to the modulation subsystem.
+#[derive(Debug, Clone, Default)]
+pub enum ModulationCommand {
+    /// No-op.
+    #[default]
+    None,
+    /// Add a modulation source.
+    AddSource(crate::modulation::ModulationSource),
+    /// Add a modulation source with a specific UUID.
+    AddSourceWithUuid {
+        /// Stable UUID for the source.
+        uuid: String,
+        /// The modulation source to add.
+        source: crate::modulation::ModulationSource,
+    },
+    /// Remove a modulation source by UUID.
+    RemoveSource(String),
+    /// Assign a source to a parameter.
+    Assign {
+        /// Target parameter id.
+        param: String,
+        /// Source UUID.
+        source_id: String,
+        /// Modulation amount.
+        amount: f32,
+        /// Optional component index (for color params).
+        component: Option<usize>,
+    },
+    /// Assign mod-on-mod (a modulator targets another source's param).
+    AssignModOnMod {
+        /// Target source UUID.
+        target_uuid: String,
+        /// Target parameter within the source.
+        param: String,
+        /// Modulator source UUID.
+        modulator_uuid: String,
+        /// Modulation amount.
+        amount: f32,
+    },
+    /// Clear all assignments for a parameter.
+    ClearAssignments(String),
+    /// Trigger an ADSR envelope.
+    TriggerAdsr(String),
+    /// Release an ADSR envelope.
+    ReleaseAdsr(String),
+    /// Replace the entire modulation engine state (preset restore).
+    RestoreEngine(crate::modulation::ModulationEngine),
 }
 
 /// Commands sent to the OSC subsystem.
@@ -568,6 +618,8 @@ pub struct ProDjState {
 pub struct AudioState {
     /// Per-band FFT magnitudes (8 bands, 0–1).
     pub fft: [f32; 8],
+    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
+    pub spectrum: Vec<f32>,
     /// Overall volume level (0–1).
     pub volume: f32,
     /// True if a beat was detected this frame.
@@ -592,6 +644,8 @@ pub struct AudioState {
     pub pink_noise_shaping: bool,
     /// FFT window size (1024, 2048, 4096, or 8192).
     pub fft_size: usize,
+    /// Sample rate of the audio stream in Hz.
+    pub sample_rate: f32,
     /// Recent tap-tempo timestamps (seconds since epoch).
     pub tap_times: Vec<f64>,
     /// Timestamp of the most recent tap.
@@ -604,6 +658,7 @@ impl Default for AudioState {
     fn default() -> Self {
         Self {
             fft: [0.0; 8],
+            spectrum: Vec::new(),
             volume: 0.0,
             beat: false,
             bpm: 120.0,
@@ -616,6 +671,7 @@ impl Default for AudioState {
             normalize: true,
             pink_noise_shaping: false,
             fft_size: 2048,
+            sample_rate: 48000.0,
             tap_times: Vec::new(),
             last_tap_time: 0.0,
             tap_tempo_info: "Tap to set tempo".to_string(),
@@ -694,6 +750,12 @@ pub struct PerformanceMetrics {
     pub fps: f32,
     /// Average frame time in milliseconds.
     pub frame_time_ms: f32,
+    /// CPU update time (logic before render) in milliseconds.
+    pub cpu_update_ms: f32,
+    /// GPU command encoding time in milliseconds.
+    pub gpu_encode_ms: f32,
+    /// Time blocked in present() waiting for vsync in milliseconds.
+    pub present_wait_ms: f32,
     /// Global CPU usage percentage (populated externally via sysinfo).
     /// Zero when the sysmon feature is disabled or not yet polled.
     pub cpu_percent: f32,
@@ -757,8 +819,8 @@ pub enum GuiTab {
     Settings,
     /// Tempo sync (Ableton Link + ProDJ).
     Sync,
-    /// LFO modulation control.
-    Lfo,
+    /// Unified modulation control (LFO, ADSR, step sequencer, audio band).
+    Modulation,
 }
 
 impl GuiTab {
@@ -776,7 +838,7 @@ impl GuiTab {
             GuiTab::Web => "Web",
             GuiTab::Settings => "Settings",
             GuiTab::Sync => "Sync",
-            GuiTab::Lfo => "LFO",
+            GuiTab::Modulation => "Modulation",
         }
     }
 
@@ -792,11 +854,47 @@ impl GuiTab {
             GuiTab::Midi,
             GuiTab::Osc,
             GuiTab::Web,
-            GuiTab::Lfo,
+            GuiTab::Modulation,
             // Settings lives in View > Preferences (menu bar), not a tab.
             // Sync is folded into the Audio tab.
             // Both variants are kept for serialization / hidden_tabs filtering.
         ]
+    }
+}
+
+/// Surface present mode for the output window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PresentMode {
+    /// Vsync-enabled; caps frame rate to display refresh.
+    #[default]
+    AutoVsync,
+    /// No vsync; presents immediately. Use with a software frame cap.
+    Immediate,
+    /// Strict FIFO queue (always vsync).
+    Fifo,
+    /// Double-buffered low-latency vsync where supported.
+    Mailbox,
+}
+
+impl PresentMode {
+    /// All available modes for UI selection.
+    pub fn all() -> &'static [PresentMode] {
+        &[
+            PresentMode::AutoVsync,
+            PresentMode::Fifo,
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+        ]
+    }
+
+    /// Human-readable label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            PresentMode::AutoVsync => "Auto VSync",
+            PresentMode::Immediate => "Immediate (no vsync)",
+            PresentMode::Fifo => "FIFO (strict vsync)",
+            PresentMode::Mailbox => "Mailbox (low latency)",
+        }
     }
 }
 
@@ -872,8 +970,23 @@ pub struct EngineState {
     /// Audio-to-parameter routing matrix.
     pub audio_routing: AudioRoutingState,
 
-    /// LFO bank state.
-    pub lfo: LfoState,
+    /// Unified modulation engine (single source of truth for LFO, ADSR, audio band, step seq).
+    pub modulation: Arc<Mutex<ModulationEngine>>,
+    /// Pre-computed modulation offsets for each param id, updated once per frame after
+    /// `ModulationEngine::update()`. `get_param()` reads this without locking.
+    ///
+    /// Stored as a `Vec` (not `HashMap`) because:
+    /// - The number of modulated params is small (< 10 typical)
+    /// - Linear scan on a tiny Vec is faster than HashMap hashing + bucket indirection
+    ///   (benchmark: ~3ns/lookup vs ~15ns/lookup for std HashMap with < 10 entries)
+    /// - No per-frame allocation (Vec is cleared and reused)
+    ///   Trade-off: O(n) scan, but n is bounded by the number of assigned params.
+    pub modulation_offsets: Vec<(String, f32)>,
+
+    /// Flat list of plugin-declared parameter ids; updated on plugin load/reload.
+    /// Used by the Modulation tab (M5.2) to populate the target picker.
+    pub registered_param_ids: Vec<String>,
+
 
     /// NDI output state (NDI feature only).
     #[cfg(feature = "ndi")]
@@ -907,6 +1020,8 @@ pub struct EngineState {
     pub show_preview: bool,
     /// Target render frame rate in frames per second.
     pub target_fps: u32,
+    /// Output surface present mode.
+    pub present_mode: PresentMode,
     /// UI scale factor.
     pub ui_scale: f32,
     /// Currently selected GUI tab.
@@ -914,6 +1029,8 @@ pub struct EngineState {
 
     /// Pending MIDI command.
     pub midi_command: MidiCommand,
+    /// Pending modulation command.
+    pub modulation_command: ModulationCommand,
     /// Available MIDI input devices (populated after RefreshDevices).
     pub midi_available_devices: Vec<String>,
     /// Currently connected MIDI device, if any.
@@ -1090,9 +1207,11 @@ impl EngineState {
             startup_webcam_device: None,
             show_preview: true,
             target_fps: 60,
+            present_mode: PresentMode::default(),
             ui_scale: 1.0,
             current_tab: GuiTab::Input,
             midi_command: MidiCommand::None,
+            modulation_command: ModulationCommand::None,
             midi_available_devices: Vec::new(),
             midi_selected_device: None,
             midi_enabled: false,
@@ -1117,7 +1236,36 @@ impl EngineState {
             web_token: String::new(),
             web_full_url: String::new(),
             web_lan_trust: false,
-            lfo: LfoState::new(),
+            modulation: {
+                let mut eng = ModulationEngine::new();
+                // Seed 8 default LFO sources so old presets expecting 8 slots find them.
+                for i in 0..8 {
+                    let source = crate::modulation::ModulationSource::LFO {
+                        waveform: crate::modulation::LFOWaveform::Sine,
+                        frequency: 1.0,
+                        phase: 0.0,
+                        amplitude: 0.5,
+                        bipolar: true,
+                        tempo_sync: true,
+                        division: 2,
+                        phase_offset_degrees: 0.0,
+                        enabled: false,
+                        last_beat_phase: 0.0,
+                    };
+                    let uuid = format!("lfo_{}", i);
+                    eng.add_source_with_uuid(uuid, source);
+                    // Default assignments for the first three LFOs (HSB)
+                    match i {
+                        0 => eng.assign("hue_shift", "lfo_0", 1.0, None),
+                        1 => eng.assign("saturation", "lfo_1", 1.0, None),
+                        2 => eng.assign("brightness", "lfo_2", 1.0, None),
+                        _ => {}
+                    }
+                }
+                Arc::new(Mutex::new(eng))
+            },
+            modulation_offsets: Vec::new(),
+            registered_param_ids: Vec::new(),
             link: LinkState::default(),
             link_command: LinkCommand::None,
             prodj: ProDjState::default(),
@@ -1215,27 +1363,91 @@ impl EngineState {
         self.param_descriptors.iter().position(|d| d.id == id)
     }
 
-    /// Get the modulated value of a custom parameter.
+    /// Get the modulated value of a parameter (custom or HSB).
+    ///
+    /// For HSB params (`hue_shift`, `saturation`, `brightness`) returns
+    /// `hsb_param_bases + modulation_offset`.
+    ///
+    /// Linear-scan helper for `modulation_offsets` (small Vec, faster than HashMap for < 10 entries).
+    fn modulation_offset(&self, id: &str) -> f32 {
+        self.modulation_offsets
+            .iter()
+            .find(|(k, _)| k == id)
+            .map(|(_, v)| *v)
+            .unwrap_or(0.0)
+    }
+
+    /// For custom params: if a modulation assignment exists in
+    /// [`modulation_offsets`](Self::modulation_offsets), returns `base + offset * range`.
+    /// Otherwise falls back to `custom_params[i]` so audio-routing values (which are
+    /// still pre-computed in `update_audio()`) remain visible during the transition.
     ///
     /// If [`param_lookup_prefix`](Self::param_lookup_prefix) is set, the prefix
     /// is prepended to `id` first. This lets nested effects (e.g. a channel's
     /// [`EffectNode`](rustjay_render::EffectNode)) look up their parameters
     /// using bare IDs while the engine stores them under fully-qualified names.
     pub fn get_param(&self, id: &str) -> Option<f32> {
-        if let Some(prefix) = self.param_lookup_prefix.borrow().as_ref() {
+        let resolved = if let Some(prefix) = self.param_lookup_prefix.borrow().as_ref() {
             let prefixed = format!("{prefix}{id}");
-            if let Some(i) = self.param_index(&prefixed) {
-                return self.custom_params.get(i).copied();
+            if self.param_index(&prefixed).is_some() {
+                prefixed
+            } else {
+                id.to_string()
             }
+        } else {
+            id.to_string()
+        };
+
+        // HSB params — engine-owned, no descriptor lookup needed
+        match resolved.as_str() {
+            "hue_shift" => {
+                let base = self.hsb_param_bases.hue_shift;
+                let offset = self.modulation_offset("hue_shift") * 180.0;
+                return Some((base + offset).clamp(-180.0, 180.0));
+            }
+            "saturation" => {
+                let base = self.hsb_param_bases.saturation;
+                let offset = self.modulation_offset("saturation");
+                return Some((base + offset).clamp(0.0, 2.0));
+            }
+            "brightness" => {
+                let base = self.hsb_param_bases.brightness;
+                let offset = self.modulation_offset("brightness");
+                return Some((base + offset).clamp(0.0, 2.0));
+            }
+            _ => {}
         }
-        self.param_index(id)
-            .and_then(|i| self.custom_params.get(i).copied())
+
+        // Custom effect params
+        let i = self.param_index(&resolved)?;
+        let desc = self.param_descriptors.get(i)?;
+        let routed = self.custom_params.get(i).copied()?;
+        let range = desc.max - desc.min;
+        let offset = self.modulation_offset(&resolved);
+        if offset != 0.0 {
+            // Sum audio-routing value (in `custom_params`) + modulation offset.
+            // When audio routing is inactive, `routed == base`, so this reduces
+            // to the base + modulation path.
+            Some((routed + offset * range).clamp(desc.min, desc.max))
+        } else {
+            // No modulation — return the audio-routed (or plain base) value.
+            Some(routed)
+        }
     }
 
-    /// Get the base value of a custom parameter (before LFO / audio modulation).
+    /// Get the base (unmodulated) value of a parameter.
+    ///
+    /// For known engine-owned params (`hue_shift`, `saturation`, `brightness`) returns
+    /// the `hsb_param_bases` value. For custom params returns `custom_param_bases[i]`.
+    /// For unrecognised keys returns `None`.
     pub fn get_param_base(&self, id: &str) -> Option<f32> {
-        self.param_index(id)
-            .and_then(|i| self.custom_param_bases.get(i).copied())
+        match id {
+            "hue_shift" => Some(self.hsb_param_bases.hue_shift),
+            "saturation" => Some(self.hsb_param_bases.saturation),
+            "brightness" => Some(self.hsb_param_bases.brightness),
+            _ => self.param_index(id)
+                .and_then(|i| self.custom_param_bases.get(i).copied()),
+        }
     }
 
     /// Set the base value of a custom parameter.
@@ -1283,5 +1495,77 @@ impl EngineState {
 impl Default for EngineState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_descriptor(id: &str) -> ParameterDescriptor {
+        ParameterDescriptor::float(id, id, ParamCategory::Motion, 0.0, 1.0, 0.5, 1.0)
+    }
+
+    #[test]
+    fn get_param_returns_modulated_value() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.5];
+        state.modulation_offsets.push(("spin".to_string(), 0.1));
+
+        assert_eq!(state.get_param("spin"), Some(0.6));
+    }
+
+    #[test]
+    fn get_param_composes_audio_routing_and_modulation() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        // Audio routing pushed the value to 0.8
+        state.custom_params = vec![0.8];
+        state.modulation_offsets.push(("spin".to_string(), 0.1));
+
+        // 0.8 (routed) + 0.1 * 1.0 (range) = 0.9
+        assert!((state.get_param("spin").unwrap() - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn get_param_returns_routed_value_when_no_modulation() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.8];
+
+        assert_eq!(state.get_param("spin"), Some(0.8));
+    }
+
+    #[test]
+    fn get_param_clamps_to_descriptor_max() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.5];
+        state.modulation_offsets.push(("spin".to_string(), 0.6));
+
+        // 0.5 + 0.6 * 1.0 = 1.1 → clamped to 1.0
+        assert_eq!(state.get_param("spin"), Some(1.0));
+    }
+
+    #[test]
+    fn get_param_base_returns_unmodulated_value() {
+        let mut state = EngineState::new();
+        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
+        state.custom_param_bases = vec![0.5];
+        state.custom_params = vec![0.8];
+        state.modulation_offsets.push(("spin".to_string(), 0.1));
+
+        assert_eq!(state.get_param_base("spin"), Some(0.5));
+    }
+
+    #[test]
+    fn registered_param_ids_empty_by_default() {
+        let state = EngineState::new();
+        assert!(state.registered_param_ids.is_empty());
     }
 }

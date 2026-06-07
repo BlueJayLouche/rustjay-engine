@@ -478,8 +478,12 @@ pub struct ParamsSnapshot {
 /// Modulation snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModulationSnapshot {
-    /// LFO bank state.
+    /// Legacy LFO bank state (shim).
     pub lfos: Vec<rustjay_core::lfo::Lfo>,
+    /// Unified modulation engine sources.
+    pub sources: Vec<rustjay_core::modulation::ModulationSourceEntry>,
+    /// Unified modulation engine assignments.
+    pub assignments: std::collections::HashMap<String, Vec<rustjay_core::modulation::ParamModulation>>,
     /// Audio routing matrix routes.
     pub audio_routes: Vec<rustjay_core::routing::AudioRoute>,
     /// Audio routing enabled.
@@ -602,14 +606,27 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
         params: ParamsSnapshot {
             descriptors: (*state.param_descriptors).clone(),
             bases: state.custom_param_bases.clone(),
-            values: state.custom_params.clone(),
+            values: state
+                .param_descriptors
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    state.get_param(&d.id)
+                        .unwrap_or(state.custom_param_bases.get(i).copied().unwrap_or(d.default))
+                })
+                .collect(),
         },
-        modulation: ModulationSnapshot {
-            lfos: state.lfo.bank.lfos.clone(),
-            audio_routes: state.audio_routing.matrix.routes().to_vec(),
-            audio_routing_enabled: state.audio_routing.enabled,
-            bpm: state.audio.bpm,
-            tap_tempo_info: state.audio.tap_tempo_info.clone(),
+        modulation: {
+            let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            ModulationSnapshot {
+                lfos: mod_eng.to_lfo_vec(),
+                sources: mod_eng.sources.clone(),
+                assignments: mod_eng.assignments.clone(),
+                audio_routes: state.audio_routing.matrix.routes().to_vec(),
+                audio_routing_enabled: state.audio_routing.enabled,
+                bpm: state.audio.bpm,
+                tap_tempo_info: state.audio.tap_tempo_info.clone(),
+            }
         },
         target_fps: state.target_fps,
         current_tab: state.current_tab.name().to_string(),

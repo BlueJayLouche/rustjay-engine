@@ -211,6 +211,7 @@ impl<P: EffectPlugin> App<P> {
             analyzer.set_pink_noise_shaping(self.cached_audio_pink_noise);
 
             let fft = analyzer.get_fft();
+            analyzer.get_spectrum_into(&mut self.cached_spectrum);
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
@@ -218,9 +219,11 @@ impl<P: EffectPlugin> App<P> {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if state.audio.enabled {
                 state.audio.fft = fft;
+                std::mem::swap(&mut state.audio.spectrum, &mut self.cached_spectrum);
                 state.audio.volume = volume;
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;
+                state.audio.sample_rate = analyzer.sample_rate();
 
                 // Always reset modulated params to their base values before applying
                 // this frame's modulations — prevents accumulation across frames.
@@ -251,55 +254,56 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_lfo(&mut self) {
-        let delta_time = self.frame_delta_time;
-        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let bpm = state.effective_bpm();
-        let beat_phase = state.stable_beat_phase();
-        state.lfo.bank.update(bpm, delta_time, beat_phase);
-
-        // Apply LFO modulations to custom params — allocation-free after first frame.
-        // fill_modulations writes into the pre-allocated Vec inside LfoBank.
-        // We then snapshot the results onto the stack (max 8 entries × 16 B = 128 B)
-        // to release the borrow on state.lfo before the apply loop mutates state.custom_params.
-        let descriptors = Arc::clone(&state.param_descriptors);
-        state.lfo.bank.fill_modulations(&descriptors);
-        let mut accum = [(0usize, 0.0f32); 8];
-        let n = {
-            let src = state.lfo.bank.mod_accum();
-            let n = src.len().min(accum.len());
-            accum[..n].copy_from_slice(&src[..n]);
-            n
+        // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
+        let (mod_arc, bpm, stable_beat_phase, volume, sample_rate) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mod_arc = state.modulation.clone();
+            let bpm = state.effective_bpm();
+            let stable_beat_phase = state.stable_beat_phase();
+            // S1: copy full spectrum into reusable scratch buffer (avoids per-frame allocation).
+            self.cached_fft.clear();
+            if state.audio.enabled {
+                self.cached_fft.extend_from_slice(&state.audio.spectrum);
+            }
+            (mod_arc, bpm, stable_beat_phase, state.audio.volume, state.audio.sample_rate)
         };
-        for &(idx, mod_val) in &accum[..n] {
-            if idx >= state.custom_params.len() {
-                continue;
-            }
-            let base = state.custom_param_bases[idx];
-            let desc = &descriptors[idx];
-            let range = desc.max - desc.min;
-            state.custom_params[idx] = (base + mod_val * range).clamp(desc.min, desc.max);
-        }
 
-        // Apply HSB-targeting LFOs (post-fader: base is the fader position, LFO adds on top).
-        // Accumulate deltas from all LFOs so multiple sources sum — same pattern as custom params.
-        let base_hue = state.hsb_param_bases.hue_shift;
-        let base_sat = state.hsb_param_bases.saturation;
-        let base_bri = state.hsb_param_bases.brightness;
-        let (mut d_hue, mut d_sat, mut d_bri) = (0.0f32, 0.0f32, 0.0f32);
-        for lfo in &state.lfo.bank.lfos {
-            if !lfo.enabled {
-                continue;
+        // Build AudioValues after dropping state (borrows from self.cached_fft).
+        let audio = {
+            let mut values = rustjay_core::modulation::AudioValues::default();
+            if !self.cached_fft.is_empty() {
+                values.sources.insert(
+                    0,
+                    rustjay_core::modulation::AudioSourceValues {
+                        fft: &self.cached_fft,
+                        level: volume,
+                        sample_rate,
+                    },
+                );
             }
-            match lfo.target {
-                rustjay_core::LfoTarget::HueShift => d_hue += lfo.output * 180.0,
-                rustjay_core::LfoTarget::Saturation => d_sat += lfo.output,
-                rustjay_core::LfoTarget::Brightness => d_bri += lfo.output,
-                _ => {}
+            values
+        };
+
+        // Tick the unified modulation engine without holding shared_state.
+        let offsets = {
+            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+            mod_eng.update(self.elapsed_time, bpm, stable_beat_phase, &audio);
+
+            let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
+            for param_id in mod_eng.assignments.keys() {
+                let offset = mod_eng.get_modulation(param_id);
+                offsets.push((param_id.clone(), offset));
             }
-        }
-        state.hsb_params.hue_shift = (base_hue + d_hue).clamp(-180.0, 180.0);
-        state.hsb_params.saturation = (base_sat + d_sat).clamp(0.0, 2.0);
-        state.hsb_params.brightness = (base_bri + d_bri).clamp(0.0, 2.0);
+            offsets
+        };
+
+        // Re-acquire shared_state and write back.
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        state.modulation_offsets = offsets;
+
+        // NOTE: HSB params are no longer pre-computed here.
+        // get_param("hue_shift"|"saturation"|"brightness") reads modulation_offsets
+        // on demand, eliminating the double-modulation bug (F4).
     }
 
     #[cfg(feature = "link")]
@@ -586,15 +590,25 @@ impl<P: EffectPlugin> App<P> {
                 server.control_dirty = false;
             }
             if server.modulation_dirty {
-                if let Ok(state) = self.shared_state.lock() {
-                    server.send_modulation_state(&rustjay_control::ModulationStateJson {
-                        lfos: state.lfo.bank.lfos.clone(),
-                        audio_routes: state.audio_routing.matrix.routes().to_vec(),
-                        audio_routing_enabled: state.audio_routing.enabled,
-                        bpm: state.audio.bpm,
-                        tap_tempo_info: state.audio.tap_tempo_info.clone(),
-                    });
-                }
+                // F1 fix: clone Arc out of shared_state, drop guard, then lock modulation alone.
+                let (mod_arc, audio_routes, audio_routing_enabled, bpm, tap_tempo_info) = {
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        Arc::clone(&state.modulation),
+                        state.audio_routing.matrix.routes().to_vec(),
+                        state.audio_routing.enabled,
+                        state.audio.bpm,
+                        state.audio.tap_tempo_info.clone(),
+                    )
+                };
+                let mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                server.send_modulation_state(&rustjay_control::ModulationStateJson {
+                    lfos: mod_eng.to_lfo_vec(),
+                    audio_routes,
+                    audio_routing_enabled,
+                    bpm,
+                    tap_tempo_info,
+                });
                 server.modulation_dirty = false;
             }
             if server.preset_dirty {

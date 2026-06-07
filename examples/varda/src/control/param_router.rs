@@ -167,7 +167,7 @@ mod tests {
 
         let mut comp = DeckCompositor::new();
         comp.decks
-            .push(Deck::new("d1", "Deck", Box::new(StubSource)));
+            .push(Deck::new("d1", "Deck", Box::new(StubSource), crate::sources::SourceKind::Isf));
         let mut mixer = Mixer::new();
         mixer
             .add_channel(Channel::new("c1", "Ch", Box::new(comp)))

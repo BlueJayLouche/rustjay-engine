@@ -29,4 +29,11 @@ pub trait ProjectionStage: Send + 'static {
 
     /// Called when the input texture generation changes (resize, reallocation).
     fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {}
+
+    /// Whether this stage should be rendered this frame.
+    /// Stages that return `false` are skipped entirely — their input is passed
+    /// directly to the next active stage, avoiding a bypass blit.
+    fn is_active(&self) -> bool {
+        true
+    }
 }

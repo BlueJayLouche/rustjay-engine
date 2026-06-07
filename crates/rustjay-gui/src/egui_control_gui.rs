@@ -80,6 +80,12 @@ pub struct EguiControlGui {
 
     // QR code cache: (url that was encoded, matrix of dark/light modules)
     pub(crate) qr_cache: Option<(String, Vec<Vec<bool>>)>,
+
+    // ── Modulation tab state (M5.2) ──────────────────────────────────────────
+    /// UUID of the currently-expanded source in the Modulation tab.
+    pub(crate) modulation_expanded_source: Option<String>,
+    /// Param id selected in the "Add assignment" dropdown.
+    pub(crate) modulation_new_assignment_param: Option<String>,
 }
 
 impl EguiControlGui {
@@ -159,6 +165,8 @@ impl EguiControlGui {
             saving_preset: false,
             active_tab: GuiTab::Input,
             qr_cache: None,
+            modulation_expanded_source: None,
+            modulation_new_assignment_param: None,
         })
     }
 
@@ -186,7 +194,13 @@ impl EguiControlGui {
         let is_first_tap = now - state.audio.last_tap_time > 2.0;
         if is_first_tap {
             state.audio.tap_times.clear();
-            state.lfo.bank.reset_all();
+            let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in mod_eng.sources.iter_mut() {
+                if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = &mut entry.source {
+                    *phase = 0.0;
+                    *last_beat_phase = 0.0;
+                }
+            }
         }
         state.audio.tap_times.push(now);
         state.audio.last_tap_time = now;
@@ -579,7 +593,7 @@ impl EguiControlGui {
                 self.sidebar_button(ui, GuiTab::Color, "COLOR", vis(GuiTab::Color));
                 self.sidebar_button(ui, GuiTab::Motion, "MOTION", vis(GuiTab::Motion));
                 self.sidebar_button(ui, GuiTab::Audio, "AUDIO", vis(GuiTab::Audio));
-                self.sidebar_button(ui, GuiTab::Lfo, "LFO", vis(GuiTab::Lfo));
+                self.sidebar_button(ui, GuiTab::Modulation, "Modulation", vis(GuiTab::Modulation));
 
                 hud_section_header(ui, "CONTROL", Some("03 CH"));
                 self.sidebar_button(ui, GuiTab::Midi, "MIDI", vis(GuiTab::Midi));
@@ -730,7 +744,7 @@ impl EguiControlGui {
                         GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
                         GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
                         GuiTab::Audio => self.build_audio_tab(ui),
-                        GuiTab::Lfo => self.build_lfo_tab(ui),
+                        GuiTab::Modulation => self.build_modulation_tab(ui),
                         GuiTab::Midi => self.build_midi_tab(ui),
                         GuiTab::Osc => self.build_osc_tab(ui),
                         GuiTab::Web => self.build_web_tab(ui),
@@ -1169,15 +1183,16 @@ impl EguiControlGui {
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(8.0);
-            ui.label("LFO Modulation");
-            if ui.button("Open LFO Window").clicked() {
-                if let Ok(mut state) = self.shared_state.lock() {
-                    state.lfo.show_window = true;
-                }
+            ui.label("Modulation");
+            if ui.button("Open Modulation Tab").clicked() {
+                self.active_tab = GuiTab::Modulation;
             }
             let active_lfos = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.bank.lfos.iter().filter(|b| b.enabled).count()
+                let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.sources.iter().filter(|e| {
+                    matches!(e.source, rustjay_core::modulation::ModulationSource::LFO { enabled: true, .. })
+                }).count()
             };
             if active_lfos > 0 {
                 ui.horizontal(|ui| {

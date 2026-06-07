@@ -102,7 +102,7 @@ pub enum LoopMode {
 #[cfg(target_os = "macos")]
 pub mod syphon_input;
 #[cfg(target_os = "macos")]
-pub use syphon_input::{SyphonInputReceiver, SyphonServerInfo};
+pub use syphon_input::{SyphonDiscovery, SyphonInputReceiver, SyphonServerInfo};
 
 #[cfg(target_os = "windows")]
 pub mod spout_input;

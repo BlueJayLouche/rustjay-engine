@@ -18,6 +18,8 @@ struct WarpParams {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
+    // UV crop rect: [min_u, min_v, max_u, max_v]
+    uv_crop: vec4<f32>,
 };
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
@@ -48,5 +50,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(source_tex, source_sampler, in.uv);
+    let crop_min = params.uv_crop.xy;
+    let crop_max = params.uv_crop.zw;
+    let size = crop_max - crop_min;
+    let uv = in.uv * size + crop_min;
+    return textureSample(source_tex, source_sampler, uv);
 }

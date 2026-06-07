@@ -134,8 +134,8 @@ impl HeadlessOutput {
         // Try to collect a previously-submitted readback first.
         self.poll_readback(device);
 
-        let n = self.stages.len();
-        if n == 0 {
+        let active_count = self.stages.iter().filter(|s| s.is_active()).count();
+        if active_count == 0 {
             return;
         }
 
@@ -143,24 +143,20 @@ impl HeadlessOutput {
             label: Some("Headless Stage Chain"),
         });
 
-        for (i, stage) in self.stages.iter_mut().enumerate() {
-            let is_first = i == 0;
-            let is_last = i == n - 1;
+        let mut active_idx = 0;
+        let mut current_input_view = input_view;
+        let mut current_input_texture = input_texture;
 
-            let in_view: &wgpu::TextureView = if is_first {
-                input_view
-            } else {
-                &self.ping_views[(i - 1) % self.ping_views.len()]
-            };
-            let in_tex: Option<&wgpu::Texture> = if is_first {
-                input_texture
-            } else {
-                Some(&self.ping_textures[(i - 1) % self.ping_textures.len()])
-            };
-            let out_view: &wgpu::TextureView = if is_last {
+        for stage in self.stages.iter_mut() {
+            if !stage.is_active() {
+                continue;
+            }
+
+            let is_last_active = active_idx == active_count - 1;
+            let out_view: &wgpu::TextureView = if is_last_active {
                 &self.offscreen_view
             } else {
-                &self.ping_views[i % self.ping_views.len()]
+                &self.ping_views[active_idx % self.ping_views.len()]
             };
 
             let mut ctx = RenderCtx {
@@ -172,11 +168,17 @@ impl HeadlessOutput {
 
             stage.render(
                 &mut ctx,
-                in_view,
-                in_tex,
+                current_input_view,
+                current_input_texture,
                 out_view,
                 [self.width, self.height],
             );
+
+            current_input_view = out_view;
+            if !is_last_active {
+                current_input_texture = Some(&self.ping_textures[active_idx % self.ping_textures.len()]);
+            }
+            active_idx += 1;
         }
 
         // If no readback is in flight, encode the copy and start mapping.

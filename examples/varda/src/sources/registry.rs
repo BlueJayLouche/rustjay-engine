@@ -15,6 +15,8 @@ pub struct SourceEntry {
     pub kind: SourceKind,
     /// Absolute path, if applicable.
     pub path: Option<PathBuf>,
+    /// Device index for camera/NDI sources.
+    pub device_index: usize,
 }
 
 /// Classification of a source entry.
@@ -32,6 +34,8 @@ pub enum SourceKind {
     Camera,
     /// NDI stream.
     Ndi,
+    /// Syphon server (macOS).
+    Syphon,
     /// SRT stream.
     Srt,
     /// HLS stream.
@@ -80,6 +84,7 @@ impl Registry {
                         name,
                         kind: SourceKind::Isf,
                         path: Some(path),
+                        device_index: 0,
                     });
                 }
             }
@@ -107,6 +112,7 @@ impl Registry {
                                 name,
                                 kind: SourceKind::Image,
                                 path: Some(path),
+                                device_index: 0,
                             });
                         }
                         "mp4" | "mov" | "avi" | "mkv" | "webm" => {
@@ -115,6 +121,7 @@ impl Registry {
                                 name,
                                 kind: SourceKind::Video,
                                 path: Some(path),
+                                device_index: 0,
                             });
                         }
                         _ => {}
@@ -166,6 +173,7 @@ impl Registry {
                         name,
                         kind,
                         path: Some(std::path::PathBuf::from(&url)),
+                        device_index: 0,
                     });
                 }
             }
@@ -176,20 +184,59 @@ impl Registry {
             images,
             videos,
             streams,
-            builtins: vec![
-                SourceEntry {
-                    id: "solid_color".to_string(),
-                    name: "Solid Color".to_string(),
-                    kind: SourceKind::SolidColor,
-                    path: None,
-                },
-                SourceEntry {
-                    id: "camera".to_string(),
-                    name: "Camera".to_string(),
-                    kind: SourceKind::Camera,
-                    path: None,
-                },
-            ],
+            builtins: {
+                let mut builtins = vec![
+                    SourceEntry {
+                        id: "solid_color".to_string(),
+                        name: "Solid Color".to_string(),
+                        kind: SourceKind::SolidColor,
+                        path: None,
+                        device_index: 0,
+                    },
+                ];
+                // Discover webcams via the engine's nokhwa backend.
+                for (idx, name) in rustjay_io::list_cameras().into_iter().enumerate() {
+                    let id = format!("camera_{}", idx);
+                    builtins.push(SourceEntry {
+                        id: id.clone(),
+                        name,
+                        kind: SourceKind::Camera,
+                        path: None,
+                        device_index: idx,
+                    });
+                }
+                #[cfg(feature = "ndi")]
+                {
+                    for (idx, name) in rustjay_io::list_ndi_sources(500).into_iter().enumerate() {
+                        let id = format!("ndi_{}", idx);
+                        builtins.push(SourceEntry {
+                            id: id.clone(),
+                            name: name.clone(),
+                            kind: SourceKind::Ndi,
+                            path: None,
+                            device_index: 0,
+                        });
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    for (idx, info) in rustjay_io::SyphonDiscovery::new()
+                        .discover_servers()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let id = format!("syphon_{}", idx);
+                        builtins.push(SourceEntry {
+                            id: id.clone(),
+                            name: info.name.clone(),
+                            kind: SourceKind::Syphon,
+                            path: Some(std::path::PathBuf::from(&info.uuid)),
+                            device_index: 0,
+                        });
+                    }
+                }
+                builtins
+            },
         }
     }
 

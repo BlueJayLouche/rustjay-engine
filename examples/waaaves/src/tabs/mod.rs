@@ -63,7 +63,7 @@ pub fn sf(
     if ui.slider_config(label, min, max).build(v) {
         engine.set_param_base(id, *v);
     }
-    draw_lfo_dots(ui, id, &engine.lfo.bank);
+    draw_lfo_dots(ui, id, engine);
     lfo_context_menu(ui, id, label, engine);
 }
 
@@ -211,7 +211,7 @@ pub fn key_color(
             engine.set_param_base(&format!("{prefix}_key_value_g"), val);
             engine.set_param_base(&format!("{prefix}_key_value_b"), val);
         }
-        draw_lfo_dots(ui, id, &engine.lfo.bank);
+        draw_lfo_dots(ui, id, engine);
         lfo_context_menu(ui, id, label, engine);
 
         ui.same_line();

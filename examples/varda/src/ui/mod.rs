@@ -12,8 +12,38 @@
 /// Mixer tab — crossfader, per-channel opacity, master FX.
 pub struct MixerTab;
 
+/// Active tab in the Add Source section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddSourceTab {
+    File,
+    Camera,
+    Ndi,
+    Syphon,
+}
+
 /// Deck tab — source picker, opacity/blend/scaling, deck FX.
-pub struct DeckTab;
+pub struct DeckTab {
+    /// Target channel UUID for "Add to channel" actions.
+    selected_channel_uuid: String,
+    add_tab: AddSourceTab,
+    file_path: String,
+    selected_camera_index: usize,
+    selected_ndi_index: usize,
+    selected_syphon_index: usize,
+}
+
+impl Default for DeckTab {
+    fn default() -> Self {
+        Self {
+            selected_channel_uuid: String::new(),
+            add_tab: AddSourceTab::File,
+            file_path: String::new(),
+            selected_camera_index: 0,
+            selected_ndi_index: 0,
+            selected_syphon_index: 0,
+        }
+    }
+}
 
 /// Effects / Library tab — registry list + add/enable/reorder.
 pub struct EffectsTab {
@@ -34,29 +64,6 @@ impl Default for EffectsTab {
             stream_url: String::new(),
             stream_name: String::new(),
             stream_kind: "rtmp".to_string(),
-        }
-    }
-}
-
-/// Modulation tab — LFO/audio/ADSR/step assignment + chaining graph.
-pub struct ModulationTab {
-    /// Target source UUID for mod-on-mod assignment.
-    mom_target_uuid: String,
-    /// Target parameter name within the selected source.
-    mom_param: String,
-    /// Modulator source UUID for mod-on-mod assignment.
-    mom_modulator_uuid: String,
-    /// Modulation amount (-1 to 1).
-    mom_amount: f32,
-}
-
-impl Default for ModulationTab {
-    fn default() -> Self {
-        Self {
-            mom_target_uuid: String::new(),
-            mom_param: String::new(),
-            mom_modulator_uuid: String::new(),
-            mom_amount: 0.5,
         }
     }
 }
@@ -88,10 +95,31 @@ impl StageTab {
     }
 }
 
+/// Geometry tab — properties panel for the selected surface.
+pub struct GeometryTab;
+
+impl Default for GeometryTab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GeometryTab {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 /// Outputs tab — window/display/NDI/stream/record assignment.
 pub struct OutputsTab {
     recording_path: String,
     recording_codec: rustjay_core::RecorderCodec,
+}
+
+impl Default for OutputsTab {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OutputsTab {
@@ -205,46 +233,260 @@ mod egui_impl {
             engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_ref::<VardaAppState>()
+                .downcast_mut::<VardaAppState>()
                 .expect("DeckTab expects VardaAppState");
 
             ui.heading("Decks");
             ui.separator();
 
-            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut removals: Vec<crate::PendingRemoval> = Vec::new();
 
-            for ch in &mut mixer.channels {
-                ui.collapsing(&ch.name, |ui| {
-                    let Some(compositor) = ch.effect.as_any_mut() else {
-                        return;
-                    };
-                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
-                        return;
-                    };
+            {
+                let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
-                    for deck in &mut compositor.decks {
-                        ui.push_id(deck.uuid.clone(), |ui| {
-                            ui.group(|ui| {
-                                ui.label(egui::RichText::new(&deck.name).strong());
-                                param_slider(ui, engine, &deck.opacity_key, "Opacity", 0.0, 1.0);
-                                blend_combo(ui, engine, &deck.blend_key, "Blend:");
+                for ch in &mut mixer.channels {
+                    ui.collapsing(&ch.name, |ui| {
+                        let Some(compositor) = ch.effect.as_any_mut() else {
+                            return;
+                        };
+                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
+                            return;
+                        };
 
-                                if !deck.chain.is_empty() {
-                                    ui.label("FX:");
-                                    let mut fx_i = 0;
-                                    while fx_i < deck.chain.len() {
-                                        let mut enabled = deck.chain[fx_i].enabled;
-                                        let fx_label = deck.chain[fx_i].effect.label();
-                                        if ui.checkbox(&mut enabled, fx_label).changed() {
-                                            deck.set_effect_enabled(fx_i, enabled);
+                        for deck in &mut compositor.decks {
+                            ui.push_id(deck.uuid.clone(), |ui| {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(&deck.name).strong());
+                                        ui.label(
+                                            egui::RichText::new(format!("[{:?}]", deck.source_kind))
+                                                .monospace()
+                                                .color(ui.visuals().weak_text_color()),
+                                        );
+                                        if ui.small_button("✖").clicked() {
+                                            removals.push(crate::PendingRemoval {
+                                                channel_uuid: ch.uuid.clone(),
+                                                deck_uuid: deck.uuid.clone(),
+                                            });
                                         }
-                                        fx_i += 1;
+                                    });
+                                    param_slider(ui, engine, &deck.opacity_key, "Opacity", 0.0, 1.0);
+                                    blend_combo(ui, engine, &deck.blend_key, "Blend:");
+
+                                    if !deck.chain.is_empty() {
+                                        ui.label("FX:");
+                                        let mut fx_i = 0;
+                                        while fx_i < deck.chain.len() {
+                                            let mut enabled = deck.chain[fx_i].enabled;
+                                            let fx_label = deck.chain[fx_i].effect.label();
+                                            if ui.checkbox(&mut enabled, fx_label).changed() {
+                                                deck.set_effect_enabled(fx_i, enabled);
+                                            }
+                                            fx_i += 1;
+                                        }
                                     }
+                                });
+                            });
+                        }
+                    });
+                }
+            }
+
+            for req in removals {
+                state.pending_removals.push(req);
+            }
+
+            ui.separator();
+            ui.heading("Add Source");
+
+            // Channel selector.
+            let channel_names: Vec<(String, String)> = {
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                mixer.channels.iter().map(|c| (c.uuid.clone(), c.name.clone())).collect()
+            };
+            if self.selected_channel_uuid.is_empty() {
+                if let Some((uuid, _)) = channel_names.first() {
+                    self.selected_channel_uuid = uuid.clone();
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("Channel:");
+                egui::ComboBox::from_id_salt("deck_add_channel")
+                    .selected_text(
+                        channel_names
+                            .iter()
+                            .find(|(u, _)| u == &self.selected_channel_uuid)
+                            .map(|(_, n)| n.as_str())
+                            .unwrap_or("--"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (uuid, name) in &channel_names {
+                            ui.selectable_value(&mut self.selected_channel_uuid, uuid.clone(), name);
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::File, "📁 File");
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera");
+                #[cfg(feature = "ndi")]
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Ndi, "📡 NDI");
+                #[cfg(target_os = "macos")]
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Syphon, "🖥 Syphon");
+            });
+            ui.separator();
+
+            let target_uuid = self.selected_channel_uuid.clone();
+            if target_uuid.is_empty() {
+                ui.label("No channel available.");
+                return;
+            }
+
+            match self.add_tab {
+                AddSourceTab::File => {
+                    ui.horizontal(|ui| {
+                        ui.label("Path:");
+                        ui.text_edit_singleline(&mut self.file_path);
+                    });
+                    let path = std::path::PathBuf::from(&self.file_path);
+                    let exists = path.exists();
+                    if !exists && !self.file_path.is_empty() {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            "File not found",
+                        );
+                    }
+                    if ui.button("Add File").clicked() && exists {
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("File")
+                            .to_string();
+                        let kind = match ext.as_str() {
+                            "mp4" | "mov" | "avi" | "mkv" | "webm" => crate::sources::SourceKind::Video,
+                            "png" | "jpg" | "jpeg" => crate::sources::SourceKind::Image,
+                            "fs" => crate::sources::SourceKind::Isf,
+                            _ => crate::sources::SourceKind::Video,
+                        };
+                        let id = name.to_lowercase().replace(' ', "_");
+                        state.pending_decks.push(crate::PendingDeck {
+                            channel_uuid: target_uuid.clone(),
+                            source: crate::sources::SourceEntry {
+                                id,
+                                name,
+                                kind,
+                                path: Some(path),
+                                device_index: 0,
+                            },
+                        });
+                        self.file_path.clear();
+                    }
+                }
+                AddSourceTab::Camera => {
+                    let cameras: Vec<&crate::sources::SourceEntry> = state
+                        .registry
+                        .builtins
+                        .iter()
+                        .filter(|e| e.kind == crate::sources::SourceKind::Camera)
+                        .collect();
+                    if cameras.is_empty() {
+                        ui.label("No cameras found.");
+                    } else {
+                        let names: Vec<String> = cameras.iter().map(|c| c.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("deck_add_camera")
+                            .selected_text(
+                                names.get(self.selected_camera_index).map(|s| s.as_str()).unwrap_or("--"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_camera_index, i, name);
                                 }
                             });
-                        });
+                        if ui.button("Add Camera").clicked() {
+                            if let Some(entry) = cameras.get(self.selected_camera_index) {
+                                state.pending_decks.push(crate::PendingDeck {
+                                    channel_uuid: target_uuid.clone(),
+                                    source: (*entry).clone(),
+                                });
+                            }
+                        }
                     }
-                });
+                }
+                #[cfg(feature = "ndi")]
+                AddSourceTab::Ndi => {
+                    let sources: Vec<&crate::sources::SourceEntry> = state
+                        .registry
+                        .builtins
+                        .iter()
+                        .filter(|e| e.kind == crate::sources::SourceKind::Ndi)
+                        .collect();
+                    if sources.is_empty() {
+                        ui.label("No NDI sources found.");
+                    } else {
+                        let names: Vec<String> = sources.iter().map(|s| s.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("deck_add_ndi")
+                            .selected_text(
+                                names.get(self.selected_ndi_index).map(|s| s.as_str()).unwrap_or("--"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_ndi_index, i, name);
+                                }
+                            });
+                        if ui.button("Add NDI").clicked() {
+                            if let Some(entry) = sources.get(self.selected_ndi_index) {
+                                state.pending_decks.push(crate::PendingDeck {
+                                    channel_uuid: target_uuid.clone(),
+                                    source: (*entry).clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(feature = "ndi"))]
+                AddSourceTab::Ndi => {
+                    ui.label("NDI support not enabled.");
+                }
+                #[cfg(target_os = "macos")]
+                AddSourceTab::Syphon => {
+                    let servers: Vec<&crate::sources::SourceEntry> = state
+                        .registry
+                        .builtins
+                        .iter()
+                        .filter(|e| e.kind == crate::sources::SourceKind::Syphon)
+                        .collect();
+                    if servers.is_empty() {
+                        ui.label("No Syphon servers found.");
+                    } else {
+                        let names: Vec<String> = servers.iter().map(|s| s.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("deck_add_syphon")
+                            .selected_text(
+                                names.get(self.selected_syphon_index).map(|s| s.as_str()).unwrap_or("--"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_syphon_index, i, name);
+                                }
+                            });
+                        if ui.button("Add Syphon").clicked() {
+                            if let Some(entry) = servers.get(self.selected_syphon_index) {
+                                state.pending_decks.push(crate::PendingDeck {
+                                    channel_uuid: target_uuid.clone(),
+                                    source: (*entry).clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                AddSourceTab::Syphon => {
+                    ui.label("Syphon is only available on macOS.");
+                }
             }
         }
     }
@@ -389,6 +631,7 @@ mod egui_impl {
                         name: self.stream_name.clone(),
                         kind,
                         path: Some(std::path::PathBuf::from(&self.stream_url)),
+                        device_index: 0,
                     };
                     state.pending_decks.push(crate::PendingDeck {
                         channel_uuid: target_uuid.clone(),
@@ -487,233 +730,6 @@ mod egui_impl {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ModulationTab
-    // ─────────────────────────────────────────────────────────────────────────
-    impl AnyEguiTab for ModulationTab {
-        fn name(&self) -> &str {
-            "Modulation"
-        }
-
-        fn draw(
-            &mut self,
-            ui: &mut egui::Ui,
-            app_state: &mut dyn std::any::Any,
-            engine: &mut EngineState,
-        ) {
-            let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("ModulationTab expects VardaAppState");
-
-            ui.heading("Modulation");
-            ui.separator();
-
-            // Snapshot source list so we can release the immutable lock before mutation.
-            let sources: Vec<(String, rustjay_core::modulation::ModulationSource)> = {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                mod_eng
-                    .sources
-                    .iter()
-                    .map(|s| (s.uuid.clone(), s.source.clone()))
-                    .collect()
-            };
-
-            if sources.is_empty() {
-                ui.label("No modulation sources active.");
-                return;
-            }
-
-            ui.label(egui::RichText::new("Sources").strong());
-            for (uuid, src) in &sources {
-                let kind = match src {
-                    rustjay_core::modulation::ModulationSource::LFO {
-                        waveform,
-                        frequency,
-                        ..
-                    } => {
-                        format!("LFO ({:?}) @ {:.2} Hz", waveform, frequency)
-                    }
-                    rustjay_core::modulation::ModulationSource::AudioBand {
-                        freq_low,
-                        freq_high,
-                        ..
-                    } => {
-                        format!("Audio [{:.0}–{:.0} Hz]", freq_low, freq_high)
-                    }
-                    rustjay_core::modulation::ModulationSource::ADSR { .. } => "ADSR".to_string(),
-                    rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                        "Step Seq".to_string()
-                    }
-                };
-                ui.label(format!("{} — {}", &uuid[..8.min(uuid.len())], kind));
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new("Mod-on-Mod").strong());
-
-            // Ensure defaults track the first available source.
-            if self.mom_target_uuid.is_empty() {
-                if let Some((uuid, _)) = sources.first() {
-                    self.mom_target_uuid = uuid.clone();
-                }
-            }
-            if self.mom_modulator_uuid.is_empty() {
-                if let Some((uuid, _)) = sources.first() {
-                    self.mom_modulator_uuid = uuid.clone();
-                }
-            }
-
-            // Determine available params for the selected target source.
-            let target_params: Vec<&'static str> = sources
-                .iter()
-                .find(|(u, _)| u == &self.mom_target_uuid)
-                .map(|(_, src)| match src {
-                    rustjay_core::modulation::ModulationSource::LFO { .. } => {
-                        vec!["frequency", "phase", "amplitude"]
-                    }
-                    rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
-                        vec!["gain", "smoothing"]
-                    }
-                    rustjay_core::modulation::ModulationSource::ADSR { .. } => {
-                        vec!["attack", "decay", "sustain", "release"]
-                    }
-                    rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                        vec!["rate"]
-                    }
-                })
-                .unwrap_or_default();
-
-            if self.mom_param.is_empty()
-                || !target_params.iter().any(|p| *p == self.mom_param.as_str())
-            {
-                if let Some(p) = target_params.first() {
-                    self.mom_param = p.to_string();
-                }
-            }
-
-            let source_labels: Vec<(String, String)> = sources
-                .iter()
-                .map(|(u, src)| {
-                    let label = match src {
-                        rustjay_core::modulation::ModulationSource::LFO { .. } => {
-                            format!("{} — LFO", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::AudioBand { .. } => {
-                            format!("{} — Audio", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::ADSR { .. } => {
-                            format!("{} — ADSR", &u[..8.min(u.len())])
-                        }
-                        rustjay_core::modulation::ModulationSource::StepSequencer { .. } => {
-                            format!("{} — Seq", &u[..8.min(u.len())])
-                        }
-                    };
-                    (u.clone(), label)
-                })
-                .collect();
-
-            ui.horizontal(|ui| {
-                ui.label("Target:");
-                egui::ComboBox::from_id_salt("mom_target")
-                    .selected_text(
-                        source_labels
-                            .iter()
-                            .find(|(u, _)| u == &self.mom_target_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &source_labels {
-                            ui.selectable_value(&mut self.mom_target_uuid, uuid.clone(), name);
-                        }
-                    });
-
-                ui.label("Param:");
-                egui::ComboBox::from_id_salt("mom_param")
-                    .selected_text(self.mom_param.clone())
-                    .show_ui(ui, |ui| {
-                        for p in &target_params {
-                            ui.selectable_value(&mut self.mom_param, p.to_string(), *p);
-                        }
-                    });
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Modulator:");
-                egui::ComboBox::from_id_salt("mom_modulator")
-                    .selected_text(
-                        source_labels
-                            .iter()
-                            .find(|(u, _)| u == &self.mom_modulator_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &source_labels {
-                            ui.selectable_value(&mut self.mom_modulator_uuid, uuid.clone(), name);
-                        }
-                    });
-
-                ui.label("Amount:");
-                ui.add(
-                    egui::DragValue::new(&mut self.mom_amount)
-                        .speed(0.01)
-                        .range(-1.0..=1.0),
-                );
-            });
-
-            let can_assign = !self.mom_target_uuid.is_empty()
-                && !self.mom_modulator_uuid.is_empty()
-                && !self.mom_param.is_empty()
-                && self.mom_target_uuid != self.mom_modulator_uuid;
-
-            if ui.button("Assign").clicked() && can_assign {
-                let target = self.mom_target_uuid.clone();
-                let param = self.mom_param.clone();
-                let modulator = self.mom_modulator_uuid.clone();
-                let amount = self.mom_amount;
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mut mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                mod_eng.assign_mod_on_mod(&target, &param, &modulator, amount);
-                drop(mod_eng);
-                drop(mixer);
-                engine.notify(
-                    format!(
-                        "Mod-on-mod: {}.{} ← {} @ {:.2}",
-                        &target[..8.min(target.len())],
-                        param,
-                        &modulator[..8.min(modulator.len())],
-                        amount
-                    ),
-                    rustjay_core::NotificationLevel::Success,
-                    std::time::Duration::from_secs(3),
-                );
-            }
-
-            ui.separator();
-            ui.label(egui::RichText::new("Assignments").strong());
-            {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                let mod_eng = mixer.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                if mod_eng.assignments.is_empty() {
-                    ui.label("No active assignments.");
-                } else {
-                    for (param, mods) in &mod_eng.assignments {
-                        for m in mods {
-                            ui.label(format!(
-                                "{} ← {} @ {:.2}",
-                                param,
-                                &m.source_id[..8.min(m.source_id.len())],
-                                m.amount
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     // MidiTab
     // ─────────────────────────────────────────────────────────────────────────
     impl AnyEguiTab for MidiTab {
@@ -767,43 +783,13 @@ mod egui_impl {
 
     #[cfg(feature = "projection")]
     impl StageTab {
-        fn draw_stage_tab(ui: &mut egui::Ui, state: &mut VardaAppState, import_path: &mut String) {
-            use crate::stage::{SurfaceSource, VardaSurface};
+        fn draw_stage_tab(
+            ui: &mut egui::Ui,
+            state: &mut VardaAppState,
+            import_path: &mut String,
+        ) {
+            use crate::stage::{ContentMapping, SurfaceSource, VardaSurface};
             use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
-
-            // Collect channel/deck names for source selector
-            let source_options: Vec<(String, SurfaceSource)> = {
-                let mut opts = vec![("Master".to_string(), SurfaceSource::Master)];
-                if let Ok(mixer) = state.mixer.try_lock() {
-                    for ch in &mixer.channels {
-                        opts.push((
-                            format!("{} ({})", ch.name, &ch.uuid[..ch.uuid.len().min(4)]),
-                            SurfaceSource::Channel(ch.uuid.clone()),
-                        ));
-                        if let Some(compositor) = ch.effect.as_any() {
-                            if let Some(compositor) =
-                                compositor.downcast_ref::<crate::graph::DeckCompositor>()
-                            {
-                                for deck in &compositor.decks {
-                                    opts.push((
-                                        format!(
-                                            "  {} ({})",
-                                            deck.name,
-                                            &deck.uuid[..deck.uuid.len().min(4)]
-                                        ),
-                                        SurfaceSource::Deck {
-                                            channel_uuid: ch.uuid.clone(),
-                                            deck_uuid: deck.uuid.clone(),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                opts.push(("Domemaster".to_string(), SurfaceSource::Domemaster));
-                opts
-            };
 
             // Set when a surface warp is edited this frame, so we publish to the
             // projector only on change (avoids per-frame mesh rebuilds).
@@ -819,7 +805,14 @@ mod egui_impl {
                     let mut to_remove: Option<usize> = None;
                     for (i, surf) in state.stage.surfaces.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            ui.label(surf.name.to_string());
+                            let label = if i == state.stage.selected_surface_index {
+                                egui::RichText::new(&surf.name).strong()
+                            } else {
+                                egui::RichText::new(&surf.name)
+                            };
+                            if ui.selectable_label(i == state.stage.selected_surface_index, label).clicked() {
+                                state.stage.selected_surface_index = i;
+                            }
                             if ui.small_button("✖").clicked() {
                                 to_remove = Some(i);
                             }
@@ -827,6 +820,9 @@ mod egui_impl {
                     }
                     if let Some(i) = to_remove {
                         state.stage.surfaces.remove(i);
+                        if state.stage.selected_surface_index >= state.stage.surfaces.len() && !state.stage.surfaces.is_empty() {
+                            state.stage.selected_surface_index = state.stage.surfaces.len() - 1;
+                        }
                     }
 
                     if ui.button("+ Add Rectangle").clicked() {
@@ -859,11 +855,14 @@ mod egui_impl {
                                 path, &params,
                             ) {
                                 Ok(result) => {
-                                    for (i, contour) in result.contours.iter().enumerate() {
-                                        let s = contour.to_surface(i);
+                                    if result.contours.is_empty() {
+                                        log::warn!("No contours found in {}", import_path);
+                                    } else if result.contours.len() == 1 {
+                                        let contour = &result.contours[0];
+                                        let s = contour.to_surface(0);
                                         state.stage.surfaces.push(VardaSurface {
                                             name: s.name,
-                                            uuid: format!("import{}", i),
+                                            uuid: "import0".to_string(),
                                             vertices: s.vertices,
                                             is_circular: s.is_circular,
                                             radius: contour
@@ -871,11 +870,35 @@ mod egui_impl {
                                                 .map(|(_, r)| r)
                                                 .unwrap_or(0.1),
                                             source: SurfaceSource::Master,
+                                            content_mapping: ContentMapping::Fill,
+                                            extra_contours: Vec::new(),
+                                            warp: rustjay_projection::WarpMode::identity(),
+                                        });
+                                    } else {
+                                        // Multi-contour import: largest = primary, rest = extra_contours
+                                        let primary = &result.contours[0];
+                                        let s = primary.to_surface(0);
+                                        let extra_contours: Vec<Vec<[f32; 2]>> = result.contours[1..]
+                                            .iter()
+                                            .map(|c| c.vertices.clone())
+                                            .collect();
+                                        state.stage.surfaces.push(VardaSurface {
+                                            name: s.name,
+                                            uuid: "import0".to_string(),
+                                            vertices: s.vertices,
+                                            is_circular: s.is_circular,
+                                            radius: primary
+                                                .circle_fit
+                                                .map(|(_, r)| r)
+                                                .unwrap_or(0.1),
+                                            source: SurfaceSource::Master,
+                                            content_mapping: ContentMapping::Fill,
+                                            extra_contours,
                                             warp: rustjay_projection::WarpMode::identity(),
                                         });
                                     }
                                     log::info!(
-                                        "Imported {} contours from {}",
+                                        "Imported {} contour(s) from {}",
                                         result.contours.len(),
                                         import_path
                                     );
@@ -933,8 +956,9 @@ mod egui_impl {
                 }
 
                 // Draw surfaces
-                for surf in state.stage.surfaces.iter() {
-                    let color = if response.clicked_by(egui::PointerButton::Primary) {
+                for (i, surf) in state.stage.surfaces.iter().enumerate() {
+                    let is_selected = i == state.stage.selected_surface_index;
+                    let color = if is_selected {
                         Color32::from_rgb(100, 150, 255)
                     } else {
                         Color32::from_rgb(200, 100, 100)
@@ -967,7 +991,7 @@ mod egui_impl {
                         painter.add(egui::Shape::convex_polygon(
                             points.clone(),
                             color.linear_multiply(0.3),
-                            Stroke::new(2.0, color),
+                            Stroke::new(if is_selected { 3.0 } else { 2.0 }, color),
                         ));
                         // Label at centroid
                         let centroid_x: f32 = surf.vertices.iter().map(|v| v[0]).sum::<f32>()
@@ -985,216 +1009,547 @@ mod egui_impl {
                             Color32::WHITE,
                         );
                     }
+
+                    // Extra contours: dashed outlines
+                    if is_selected {
+                        for contour in &surf.extra_contours {
+                            if contour.len() >= 2 {
+                                let pts: Vec<Pos2> = contour
+                                    .iter()
+                                    .map(|v| {
+                                        Pos2::new(
+                                            canvas_rect.min.x + v[0] * canvas_rect.width(),
+                                            canvas_rect.min.y + v[1] * canvas_rect.height(),
+                                        )
+                                    })
+                                    .collect();
+                                // Draw dashed polyline
+                                let dash_len = 6.0;
+                                let gap_len = 3.0;
+                                let dash_color = Color32::from_rgb(180, 180, 180);
+                                for seg in pts.windows(2) {
+                                    let a = seg[0];
+                                    let b = seg[1];
+                                    let dx = b.x - a.x;
+                                    let dy = b.y - a.y;
+                                    let len = (dx * dx + dy * dy).sqrt();
+                                    if len < 0.1 {
+                                        continue;
+                                    }
+                                    let steps = (len / (dash_len + gap_len)).ceil() as usize;
+                                    for s in 0..steps {
+                                        let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
+                                        let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
+                                        painter.line_segment(
+                                            [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
+                                            Stroke::new(1.5, dash_color),
+                                        );
+                                    }
+                                }
+                                // Close the contour with a dashed line
+                                if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                                    let a = *last;
+                                    let b = *first;
+                                    let dx = b.x - a.x;
+                                    let dy = b.y - a.y;
+                                    let len = (dx * dx + dy * dy).sqrt();
+                                    if len >= 0.1 {
+                                        let steps = (len / (dash_len + gap_len)).ceil() as usize;
+                                        for s in 0..steps {
+                                            let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
+                                            let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
+                                            painter.line_segment(
+                                                [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
+                                                Stroke::new(1.5, dash_color),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Warp drag handles ────────────────────────────────────────
+                let mut handle_dragged = false;
+
+                // Clone handle positions to avoid borrow issues during interaction
+                let corner_handles: Option<[[f32; 2]; 4]> = state.stage.surfaces
+                    .get(state.stage.selected_surface_index)
+                    .and_then(|s| match &s.warp {
+                        rustjay_projection::WarpMode::CornerPin { corners } => Some(*corners),
+                        _ => None,
+                    });
+
+                let mesh_handle_positions: Option<Vec<[f32; 2]>> = state.stage.surfaces
+                    .get(state.stage.selected_surface_index)
+                    .and_then(|s| match &s.warp {
+                        rustjay_projection::WarpMode::Mesh(mesh) => {
+                            Some(mesh.points.iter().map(|p| p.position).collect())
+                        }
+                        _ => None,
+                    });
+
+                // Draw corner-pin handles
+                if let Some(corners) = corner_handles {
+                    for (i, corner) in corners.iter().enumerate() {
+                        let pos = Pos2::new(
+                            canvas_rect.min.x + corner[0] * canvas_rect.width(),
+                            canvas_rect.min.y + corner[1] * canvas_rect.height(),
+                        );
+                        let handle_rect = Rect::from_center_size(pos, Vec2::splat(12.0));
+                        let handle_id = ui.id().with(("warp_handle", i));
+                        let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
+
+                        let handle_color = if handle_response.dragged() {
+                            Color32::YELLOW
+                        } else if handle_response.hovered() {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(200, 200, 200)
+                        };
+                        painter.circle_filled(pos, 5.0, handle_color);
+
+                        if handle_response.dragged() {
+                            handle_dragged = true;
+                            let dx = handle_response.drag_delta().x / canvas_rect.width();
+                            let dy = handle_response.drag_delta().y / canvas_rect.height();
+                            if let Some(surf) = state.stage.surfaces.get_mut(state.stage.selected_surface_index) {
+                                if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
+                                    corners[i][0] = (corners[i][0] + dx).clamp(0.0, 1.0);
+                                    corners[i][1] = (corners[i][1] + dy).clamp(0.0, 1.0);
+                                }
+                            }
+                            warp_dirty = true;
+                        }
+                    }
+                }
+
+                // Draw mesh handles
+                if let Some(positions) = mesh_handle_positions {
+                    for (i, pos_norm) in positions.iter().enumerate() {
+                        let pos = Pos2::new(
+                            canvas_rect.min.x + pos_norm[0] * canvas_rect.width(),
+                            canvas_rect.min.y + pos_norm[1] * canvas_rect.height(),
+                        );
+                        let handle_rect = Rect::from_center_size(pos, Vec2::splat(8.0));
+                        let handle_id = ui.id().with(("mesh_handle", i));
+                        let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
+
+                        let handle_color = if handle_response.dragged() {
+                            Color32::YELLOW
+                        } else if handle_response.hovered() {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(200, 200, 200)
+                        };
+                        painter.circle_filled(pos, 3.0, handle_color);
+
+                        if handle_response.dragged() {
+                            handle_dragged = true;
+                            let dx = handle_response.drag_delta().x / canvas_rect.width();
+                            let dy = handle_response.drag_delta().y / canvas_rect.height();
+                            if let Some(surf) = state.stage.surfaces.get_mut(state.stage.selected_surface_index) {
+                                if let rustjay_projection::WarpMode::Mesh(mesh) = &mut surf.warp {
+                                    mesh.points[i].position[0] = (mesh.points[i].position[0] + dx).clamp(0.0, 1.0);
+                                    mesh.points[i].position[1] = (mesh.points[i].position[1] + dy).clamp(0.0, 1.0);
+                                }
+                            }
+                            warp_dirty = true;
+                        }
+                    }
+                }
+
+                // Surface selection via canvas click (skip if a handle is being dragged)
+                if !handle_dragged && response.clicked_by(egui::PointerButton::Primary) {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
+                        let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
+                        // Find top-most surface containing the click point
+                        for (i, surf) in state.stage.surfaces.iter().enumerate().rev() {
+                            let [min_x, min_y, max_x, max_y] = surf.bounding_box();
+                            if norm_x >= min_x && norm_x <= max_x && norm_y >= min_y && norm_y <= max_y {
+                                state.stage.selected_surface_index = i;
+                                break;
+                            }
+                        }
+                    }
                 }
 
                 ui.allocate_rect(canvas_rect, egui::Sense::hover());
 
                 ui.separator();
 
-                // Right panel: selected surface properties
-                ui.vertical(|ui| {
-                    ui.set_width(220.0);
-                    ui.label(egui::RichText::new("Properties").strong());
-                    ui.separator();
-
-                    if let Some(surf) = state.stage.surfaces.first_mut() {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut surf.name);
-                        ui.separator();
-
-                        ui.label("Source:");
-                        let current_label = surf.source.label();
-                        egui::ComboBox::from_id_salt("source_sel")
-                            .selected_text(&current_label)
-                            .show_ui(ui, |ui| {
-                                for (label, src) in &source_options {
-                                    if ui.selectable_label(surf.source == *src, label).clicked() {
-                                        surf.source = src.clone();
-                                    }
-                                }
-                            });
-                        ui.separator();
-
-                        ui.label("Warp Mode:");
-                        let warp_label = match &surf.warp {
-                            rustjay_projection::WarpMode::CornerPin { .. } => "Corner Pin",
-                            rustjay_projection::WarpMode::Mesh(_) => "Mesh",
-                        };
-                        egui::ComboBox::from_id_salt("warp_mode")
-                            .selected_text(warp_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        matches!(
-                                            surf.warp,
-                                            rustjay_projection::WarpMode::CornerPin { .. }
-                                        ),
-                                        "Corner Pin",
-                                    )
-                                    .clicked()
-                                {
-                                    surf.warp = rustjay_projection::WarpMode::corner_pin([
-                                        [0.0, 0.0],
-                                        [1.0, 0.0],
-                                        [1.0, 1.0],
-                                        [0.0, 1.0],
-                                    ]);
-                                    warp_dirty = true;
-                                }
-                                if ui
-                                    .selectable_label(
-                                        matches!(surf.warp, rustjay_projection::WarpMode::Mesh(_)),
-                                        "Mesh",
-                                    )
-                                    .clicked()
-                                {
-                                    surf.warp = rustjay_projection::WarpMode::Mesh(
-                                        rustjay_projection::WarpMesh::identity(4, 4),
-                                    );
-                                    warp_dirty = true;
-                                }
-                            });
-
-                        if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp
-                        {
-                            ui.label("Corners (normalized):");
-                            for (i, corner) in corners.iter_mut().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.label(["TL", "TR", "BR", "BL"][i]);
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(&mut corner[0])
-                                                .speed(0.01)
-                                                .range(0.0..=1.0),
-                                        )
-                                        .changed()
-                                    {
-                                        warp_dirty = true;
-                                    }
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(&mut corner[1])
-                                                .speed(0.01)
-                                                .range(0.0..=1.0),
-                                        )
-                                        .changed()
-                                    {
-                                        warp_dirty = true;
-                                    }
-                                });
+                // Bounding box overlay for Mapped mode
+                if let Some(surf) = state.stage.surfaces.get(state.stage.selected_surface_index) {
+                    if surf.content_mapping == ContentMapping::Mapped {
+                        let [min_x, min_y, max_x, max_y] = surf.bounding_box();
+                        let min = Pos2::new(
+                            canvas_rect.min.x + min_x * canvas_rect.width(),
+                            canvas_rect.min.y + min_y * canvas_rect.height(),
+                        );
+                        let max = Pos2::new(
+                            canvas_rect.min.x + max_x * canvas_rect.width(),
+                            canvas_rect.min.y + max_y * canvas_rect.height(),
+                        );
+                        let _bbox_rect = Rect::from_min_max(min, max);
+                        // Dashed stroke effect using multiple short segments
+                        let dash_len = 8.0;
+                        let gap_len = 4.0;
+                        let dash_color = Color32::from_rgb(255, 255, 0);
+                        let sides = [
+                            (min, Pos2::new(max.x, min.y)), // top
+                            (Pos2::new(max.x, min.y), max), // right
+                            (max, Pos2::new(min.x, max.y)), // bottom
+                            (Pos2::new(min.x, max.y), min), // left
+                        ];
+                        for (a, b) in sides {
+                            let dx = b.x - a.x;
+                            let dy = b.y - a.y;
+                            let len = (dx * dx + dy * dy).sqrt();
+                            let steps = (len / (dash_len + gap_len)).ceil() as usize;
+                            for s in 0..steps {
+                                let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
+                                let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
+                                painter.line_segment(
+                                    [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
+                                    Stroke::new(1.5, dash_color),
+                                );
                             }
                         }
-
-                        // Dome config when this surface is routed to Domemaster
-                        if surf.source == crate::stage::SurfaceSource::Domemaster {
-                            ui.separator();
-                            ui.label(egui::RichText::new("Dome").strong());
-                            let mut dome_enabled = false;
-                            let mut dome_config = rustjay_projection::DomemasterConfig::default();
-                            let mut dome_rotation = [0.0f32; 3];
-                            if let Some(sync) = &state.stage.dome_sync {
-                                if let Ok(g) = sync.lock() {
-                                    dome_enabled = g.enabled;
-                                    dome_config = g.config.clone();
-                                    dome_rotation = g.content_rotation;
-                                }
-                            }
-                            let mut dirty = false;
-                            if ui.checkbox(&mut dome_enabled, "Enabled").changed() {
-                                dirty = true;
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label("Resolution:");
-                                let mut res_idx = match dome_config.resolution {
-                                    rustjay_projection::DomemasterResolution::R1K => 0,
-                                    rustjay_projection::DomemasterResolution::R2K => 1,
-                                    rustjay_projection::DomemasterResolution::R4K => 2,
-                                };
-                                let prev = res_idx;
-                                egui::ComboBox::from_id_salt("dome_res")
-                                    .selected_text(["1K", "2K", "4K"][res_idx])
-                                    .show_ui(ui, |ui| {
-                                        for (i, name) in ["1K", "2K", "4K"].iter().enumerate() {
-                                            if ui.selectable_label(res_idx == i, *name).clicked() {
-                                                res_idx = i;
-                                            }
-                                        }
-                                    });
-                                if res_idx != prev {
-                                    dome_config.resolution = match res_idx {
-                                        0 => rustjay_projection::DomemasterResolution::R1K,
-                                        1 => rustjay_projection::DomemasterResolution::R2K,
-                                        _ => rustjay_projection::DomemasterResolution::R4K,
-                                    };
-                                    dirty = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("FOV°:");
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut dome_config.fov_degrees)
-                                            .speed(1.0)
-                                            .range(90.0..=220.0),
-                                    )
-                                    .changed()
-                                {
-                                    dirty = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Tilt°:");
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut dome_config.tilt_degrees)
-                                            .speed(1.0)
-                                            .range(-90.0..=90.0),
-                                    )
-                                    .changed()
-                                {
-                                    dirty = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Az:");
-                                if ui
-                                    .add(egui::DragValue::new(&mut dome_rotation[0]).speed(0.01))
-                                    .changed()
-                                {
-                                    dirty = true;
-                                }
-                                ui.label("El:");
-                                if ui
-                                    .add(egui::DragValue::new(&mut dome_rotation[1]).speed(0.01))
-                                    .changed()
-                                {
-                                    dirty = true;
-                                }
-                                ui.label("Roll:");
-                                if ui
-                                    .add(egui::DragValue::new(&mut dome_rotation[2]).speed(0.01))
-                                    .changed()
-                                {
-                                    dirty = true;
-                                }
-                            });
-                            if dirty {
-                                state
-                                    .stage
-                                    .publish_dome(dome_enabled, dome_config, dome_rotation);
-                            }
-                        }
-                    } else {
-                        ui.label("No surfaces. Add one from the list.");
                     }
-                });
+                }
+
             });
 
             // Push warp edits to the projector's live warp stage (version-bumped,
             // so the projector re-applies only on an actual change).
             if warp_dirty {
                 state.stage.publish_warp();
+                state.save_workspace();
             }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GeometryTab
+    // ─────────────────────────────────────────────────────────────────────────
+
+    impl AnyEguiTab for GeometryTab {
+        fn name(&self) -> &str {
+            "Geometry"
+        }
+        fn draw(
+            &mut self,
+            ui: &mut egui::Ui,
+            _app_state: &mut dyn std::any::Any,
+            _engine: &mut EngineState,
+        ) {
+            ui.heading("Geometry");
+            ui.separator();
+
+            #[cfg(feature = "projection")]
+            {
+                let state = _app_state
+                    .downcast_mut::<VardaAppState>()
+                    .expect("GeometryTab expects VardaAppState");
+                draw_surface_properties(ui, state);
+            }
+
+            #[cfg(not(feature = "projection"))]
+            {
+                ui.label("Projection feature is not enabled. Enable it to use surface geometry.");
+            }
+        }
+    }
+
+    #[cfg(feature = "projection")]
+    fn draw_surface_properties(ui: &mut egui::Ui, state: &mut VardaAppState) {
+        use crate::stage::{ContentMapping, SurfaceSource};
+
+        // Collect channel/deck names for source selector, falling back to the
+        // cached list when the mixer is contended.
+        let source_options: Vec<(String, SurfaceSource)> = {
+            let mut opts = vec![("Master".to_string(), SurfaceSource::Master)];
+            if let Ok(mixer) = state.mixer.try_lock() {
+                for ch in &mixer.channels {
+                    opts.push((
+                        format!("{} ({})", ch.name, &ch.uuid[..ch.uuid.len().min(4)]),
+                        SurfaceSource::Channel(ch.uuid.clone()),
+                    ));
+                    if let Some(compositor) = ch.effect.as_any() {
+                        if let Some(compositor) =
+                            compositor.downcast_ref::<crate::graph::DeckCompositor>()
+                        {
+                            for deck in &compositor.decks {
+                                opts.push((
+                                    format!(
+                                        "  {} ({})",
+                                        deck.name,
+                                        &deck.uuid[..deck.uuid.len().min(4)]
+                                    ),
+                                    SurfaceSource::Deck {
+                                        channel_uuid: ch.uuid.clone(),
+                                        deck_uuid: deck.uuid.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+                opts.push(("Domemaster".to_string(), SurfaceSource::Domemaster));
+                state.stage.cached_source_options = opts.clone();
+                opts
+            } else {
+                opts.push(("Domemaster".to_string(), SurfaceSource::Domemaster));
+                if state.stage.cached_source_options.is_empty() {
+                    opts
+                } else {
+                    state.stage.cached_source_options.clone()
+                }
+            }
+        };
+
+        let mut warp_dirty = false;
+        let mut geo_dirty = false;
+
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(400.0);
+            ui.label(egui::RichText::new("Properties").strong());
+            ui.separator();
+
+            if let Some(surf) = state.stage.surfaces.get_mut(state.stage.selected_surface_index) {
+                ui.label("Name:");
+                if ui.text_edit_singleline(&mut surf.name).changed() {
+                    geo_dirty = true;
+                }
+                ui.separator();
+
+                ui.label("Source:");
+                let current_label = surf.source.label();
+                let prev_source = surf.source.clone();
+                egui::ComboBox::from_id_salt("geo_source_sel")
+                    .selected_text(&current_label)
+                    .show_ui(ui, |ui| {
+                        for (label, src) in &source_options {
+                            if ui.selectable_label(surf.source == *src, label).clicked() {
+                                surf.source = src.clone();
+                            }
+                        }
+                    });
+                if surf.source != prev_source {
+                    geo_dirty = true;
+                }
+                ui.separator();
+
+                ui.label("Content Mapping:");
+                let mapping_label = surf.content_mapping.label();
+                egui::ComboBox::from_id_salt("geo_content_mapping")
+                    .selected_text(mapping_label)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(surf.content_mapping == ContentMapping::Fill, "Fill").clicked() {
+                            surf.content_mapping = ContentMapping::Fill;
+                            warp_dirty = true;
+                        }
+                        if ui.selectable_label(surf.content_mapping == ContentMapping::Mapped, "Mapped").clicked() {
+                            surf.content_mapping = ContentMapping::Mapped;
+                            warp_dirty = true;
+                        }
+                    });
+                ui.separator();
+
+                // Extra contours
+                if !surf.extra_contours.is_empty() {
+                    ui.label(egui::RichText::new("Extra Contours").strong());
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} extra contour(s)", surf.extra_contours.len()));
+                        if ui.small_button("Remove All").clicked() {
+                            surf.extra_contours.clear();
+                            geo_dirty = true;
+                        }
+                    });
+                    ui.separator();
+                }
+
+                ui.label("Warp Mode:");
+                let warp_label = match &surf.warp {
+                    rustjay_projection::WarpMode::CornerPin { .. } => "Corner Pin",
+                    rustjay_projection::WarpMode::Mesh(_) => "Mesh",
+                };
+                egui::ComboBox::from_id_salt("geo_warp_mode")
+                    .selected_text(warp_label)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                matches!(
+                                    surf.warp,
+                                    rustjay_projection::WarpMode::CornerPin { .. }
+                                ),
+                                "Corner Pin",
+                            )
+                            .clicked()
+                        {
+                            surf.warp = rustjay_projection::WarpMode::corner_pin([
+                                [0.0, 0.0],
+                                [1.0, 0.0],
+                                [1.0, 1.0],
+                                [0.0, 1.0],
+                            ]);
+                            warp_dirty = true;
+                        }
+                        if ui
+                            .selectable_label(
+                                matches!(surf.warp, rustjay_projection::WarpMode::Mesh(_)),
+                                "Mesh",
+                            )
+                            .clicked()
+                        {
+                            surf.warp = rustjay_projection::WarpMode::Mesh(
+                                rustjay_projection::WarpMesh::identity(4, 4),
+                            );
+                            warp_dirty = true;
+                        }
+                    });
+
+                if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
+                    ui.label("Corners (normalized):");
+                    for (i, corner) in corners.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(["TL", "TR", "BR", "BL"][i]);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut corner[0])
+                                        .speed(0.01)
+                                        .range(0.0..=1.0),
+                                )
+                                .changed()
+                            {
+                                warp_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut corner[1])
+                                        .speed(0.01)
+                                        .range(0.0..=1.0),
+                                )
+                                .changed()
+                            {
+                                warp_dirty = true;
+                            }
+                        });
+                    }
+                }
+
+                // Dome config when this surface is routed to Domemaster
+                if surf.source == crate::stage::SurfaceSource::Domemaster {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Dome").strong());
+                    let mut dome_enabled = false;
+                    let mut dome_config = rustjay_projection::DomemasterConfig::default();
+                    let mut dome_rotation = [0.0f32; 3];
+                    if let Some(sync) = &state.stage.dome_sync {
+                        if let Ok(g) = sync.lock() {
+                            dome_enabled = g.enabled;
+                            dome_config = g.config.clone();
+                            dome_rotation = g.content_rotation;
+                        }
+                    }
+                    let mut dirty = false;
+                    if ui.checkbox(&mut dome_enabled, "Enabled").changed() {
+                        dirty = true;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Resolution:");
+                        let mut res_idx = match dome_config.resolution {
+                            rustjay_projection::DomemasterResolution::R1K => 0,
+                            rustjay_projection::DomemasterResolution::R2K => 1,
+                            rustjay_projection::DomemasterResolution::R4K => 2,
+                        };
+                        let prev = res_idx;
+                        egui::ComboBox::from_id_salt("geo_dome_res")
+                            .selected_text(["1K", "2K", "4K"][res_idx])
+                            .show_ui(ui, |ui| {
+                                for (i, name) in ["1K", "2K", "4K"].iter().enumerate() {
+                                    if ui.selectable_label(res_idx == i, *name).clicked() {
+                                        res_idx = i;
+                                    }
+                                }
+                            });
+                        if res_idx != prev {
+                            dome_config.resolution = match res_idx {
+                                0 => rustjay_projection::DomemasterResolution::R1K,
+                                1 => rustjay_projection::DomemasterResolution::R2K,
+                                _ => rustjay_projection::DomemasterResolution::R4K,
+                            };
+                            dirty = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("FOV°:");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut dome_config.fov_degrees)
+                                    .speed(1.0)
+                                    .range(90.0..=220.0),
+                            )
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Tilt°:");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut dome_config.tilt_degrees)
+                                    .speed(1.0)
+                                    .range(-90.0..=90.0),
+                            )
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Az:");
+                        if ui
+                            .add(egui::DragValue::new(&mut dome_rotation[0]).speed(0.01))
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                        ui.label("El:");
+                        if ui
+                            .add(egui::DragValue::new(&mut dome_rotation[1]).speed(0.01))
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                        ui.label("Roll:");
+                        if ui
+                            .add(egui::DragValue::new(&mut dome_rotation[2]).speed(0.01))
+                            .changed()
+                        {
+                            dirty = true;
+                        }
+                    });
+                    if dirty {
+                        state
+                            .stage
+                            .publish_dome(dome_enabled, dome_config, dome_rotation);
+                    }
+                }
+            } else {
+                ui.label("No surfaces. Add one from the Stage tab.");
+            }
+        });
+
+        if warp_dirty {
+            state.stage.publish_warp();
+            state.save_workspace();
+        }
+        if geo_dirty {
+            state.save_workspace();
         }
     }
 
@@ -1225,6 +1580,7 @@ mod egui_impl {
                 // ── Projectors ──────────────────────────────────────────────
                 ui.label(egui::RichText::new("Projectors").strong());
                 let mut remove_proj: Option<usize> = None;
+                let mut proj_dirty = false;
                 for (i, proj) in state.stage.projectors.iter_mut().enumerate() {
                     ui.push_id(i, |ui| {
                         ui.horizontal(|ui| {
@@ -1254,12 +1610,43 @@ mod egui_impl {
                                 } else {
                                     Some(monitor as usize)
                                 };
+                                proj_dirty = true;
+                            }
+                            ui.label("surface:");
+                            let surf_count = state.stage.surfaces.len();
+                            let mut surf_idx = proj.surface_index.map(|s| s as i32).unwrap_or(-1);
+                            if ui
+                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=surf_count.max(1) as i32 - 1))
+                                .changed()
+                            {
+                                proj.surface_index = if surf_idx < 0 {
+                                    None
+                                } else {
+                                    Some(surf_idx as usize)
+                                };
+                                proj_dirty = true;
+                            }
+                            ui.label("type:");
+                            let prev_type = proj.output_type.clone();
+                            egui::ComboBox::from_id_salt(format!("proj_type_{}", i))
+                                .selected_text(proj.output_type.label())
+                                .show_ui(ui, |ui| {
+                                    use crate::stage::OutputType;
+                                    ui.selectable_value(&mut proj.output_type, OutputType::Display, "Display");
+                                    ui.selectable_value(&mut proj.output_type, OutputType::Ndi, "NDI");
+                                    ui.selectable_value(&mut proj.output_type, OutputType::Recording, "Recording");
+                                });
+                            if proj.output_type != prev_type {
+                                proj_dirty = true;
                             }
                             if ui.button("🗑").clicked() {
                                 remove_proj = Some(i);
                             }
                         });
                     });
+                }
+                if proj_dirty {
+                    state.save_workspace();
                 }
                 if let Some(i) = remove_proj {
                     state.stage.projectors.remove(i);
@@ -1277,6 +1664,7 @@ mod egui_impl {
                 // ── Headless outputs ────────────────────────────────────────
                 ui.label(egui::RichText::new("Headless Outputs").strong());
                 let mut remove_hl: Option<usize> = None;
+                let mut hl_dirty = false;
                 for (i, hl) in state.stage.headless_outputs.iter_mut().enumerate() {
                     ui.push_id(format!("hl_{}", i), |ui| {
                         ui.horizontal(|ui| {
@@ -1294,11 +1682,41 @@ mod egui_impl {
                                     .speed(10)
                                     .range(1..=8192),
                             );
+                            ui.label("surface:");
+                            let surf_count = state.stage.surfaces.len();
+                            let mut surf_idx = hl.surface_index.map(|s| s as i32).unwrap_or(-1);
+                            if ui
+                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=surf_count.max(1) as i32 - 1))
+                                .changed()
+                            {
+                                hl.surface_index = if surf_idx < 0 {
+                                    None
+                                } else {
+                                    Some(surf_idx as usize)
+                                };
+                                hl_dirty = true;
+                            }
+                            ui.label("type:");
+                            let prev_type = hl.output_type.clone();
+                            egui::ComboBox::from_id_salt(format!("hl_type_{}", i))
+                                .selected_text(hl.output_type.label())
+                                .show_ui(ui, |ui| {
+                                    use crate::stage::OutputType;
+                                    ui.selectable_value(&mut hl.output_type, OutputType::Display, "Display");
+                                    ui.selectable_value(&mut hl.output_type, OutputType::Ndi, "NDI");
+                                    ui.selectable_value(&mut hl.output_type, OutputType::Recording, "Recording");
+                                });
+                            if hl.output_type != prev_type {
+                                hl_dirty = true;
+                            }
                             if ui.button("🗑").clicked() {
                                 remove_hl = Some(i);
                             }
                         });
                     });
+                }
+                if hl_dirty {
+                    state.save_workspace();
                 }
                 if let Some(i) = remove_hl {
                     state.stage.headless_outputs.remove(i);

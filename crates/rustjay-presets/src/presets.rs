@@ -3,7 +3,8 @@
 //! Save and load parameter snapshots with quick preset selector.
 
 use rustjay_core::{
-    EngineState, HsbParams, LfoBank, MidiCommand, MidiMappingSnapshot, RoutingMatrix,
+    EngineState, HsbParams, LfoBank, MidiCommand, MidiMappingSnapshot, ModulationEngine,
+    RoutingMatrix,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,9 +57,14 @@ pub struct Preset {
     /// Internal render height.
     pub internal_height: u32,
 
-    // LFO settings
-    /// Bank of LFOs for modulation.
+    // Modulation settings
+    /// Unified modulation engine (LFO, ADSR, audio band, step sequencer).
     #[serde(default)]
+    pub modulation: ModulationEngine,
+    /// Legacy LFO bank — kept for backward compatibility. If `modulation` is absent
+    /// on load, the engine migrates this into the unified `modulation` field.
+    /// **Deprecated**: no longer serialized. Old presets still deserialize.
+    #[serde(default, skip_serializing)]
     pub lfo_bank: LfoBank,
 
     // Audio routing settings
@@ -106,7 +112,11 @@ impl Preset {
             audio_fft_size: state.audio.fft_size,
             internal_width: state.resolution.internal_width,
             internal_height: state.resolution.internal_height,
-            lfo_bank: state.lfo.bank.clone(),
+            modulation: {
+                let eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                eng.clone()
+            },
+            lfo_bank: LfoBank::default(), // no longer serialized; old presets still deserialize
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
             custom_values: state
@@ -123,6 +133,7 @@ impl Preset {
     /// Apply this preset to the shared state
     pub fn apply_to_state(&self, state: &mut EngineState) {
         state.hsb_params = self.hsb_params;
+        state.hsb_param_bases = self.hsb_params;
         state.audio_routing.update_base_values(
             self.hsb_params.hue_shift,
             self.hsb_params.saturation,
@@ -136,7 +147,15 @@ impl Preset {
         state.audio.fft_size = self.audio_fft_size;
         state.resolution.internal_width = self.internal_width;
         state.resolution.internal_height = self.internal_height;
-        state.lfo.bank = self.lfo_bank.clone();
+        // Restore modulation engine (new format), or migrate from legacy lfo_bank
+        let has_modulation = !self.modulation.sources.is_empty();
+        if has_modulation {
+            *state.modulation.lock().unwrap_or_else(|e| e.into_inner()) = self.modulation.clone();
+        } else if !self.lfo_bank.lfos.is_empty() {
+            let migrated = self.lfo_bank.to_modulation_engine(120.0);
+            *state.modulation.lock().unwrap_or_else(|e| e.into_inner()) = migrated;
+        }
+        // Legacy lfo_bank is no longer restored; unified modulation is the single source of truth.
         state.audio_routing.matrix = self.routing_matrix.clone();
         state.audio_routing.enabled = self.audio_routing_enabled;
         // Restore custom parameter values
@@ -208,6 +227,23 @@ impl Preset {
             return Err(anyhow::anyhow!(
                 "Too many custom values: {} (max 256)",
                 self.custom_values.len()
+            ));
+        }
+        const MAX_MOD_SOURCES: usize = 64;
+        const MAX_MOD_ASSIGNMENTS: usize = 256;
+        if self.modulation.sources.len() > MAX_MOD_SOURCES {
+            return Err(anyhow::anyhow!(
+                "Too many modulation sources: {} (max {})",
+                self.modulation.sources.len(),
+                MAX_MOD_SOURCES
+            ));
+        }
+        let total_assignments: usize = self.modulation.assignments.values().map(|v| v.len()).sum();
+        if total_assignments > MAX_MOD_ASSIGNMENTS {
+            return Err(anyhow::anyhow!(
+                "Too many modulation assignments: {} (max {})",
+                total_assignments,
+                MAX_MOD_ASSIGNMENTS
             ));
         }
         Ok(())

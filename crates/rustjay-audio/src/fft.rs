@@ -17,6 +17,8 @@ use std::sync::Arc;
 
 pub(crate) struct AudioOutput {
     pub fft: [AtomicU32; 8],
+    /// Full per-bin FFT spectrum (dB-mapped 0–1, length = fft_size/2+1).
+    pub spectrum: Vec<AtomicU32>,
     pub volume: AtomicU32,
     /// Set true by callback; atomically swapped false when read by main thread
     pub beat: AtomicBool,
@@ -24,9 +26,13 @@ pub(crate) struct AudioOutput {
 }
 
 impl AudioOutput {
-    pub fn new() -> Self {
+    pub fn new(fft_size: usize) -> Self {
+        let spectrum_len = fft_size / 2 + 1;
         Self {
             fft: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            spectrum: (0..spectrum_len)
+                .map(|_| AtomicU32::new(0.0f32.to_bits()))
+                .collect(),
             volume: AtomicU32::new(0.0f32.to_bits()),
             beat: AtomicBool::new(false),
             beat_phase: AtomicU32::new(0.0f32.to_bits()),
@@ -36,6 +42,9 @@ impl AudioOutput {
     pub fn reset(&self) {
         for f in &self.fft {
             f.store(0.0f32.to_bits(), Ordering::Relaxed);
+        }
+        for s in &self.spectrum {
+            s.store(0.0f32.to_bits(), Ordering::Relaxed);
         }
         self.volume.store(0.0f32.to_bits(), Ordering::Relaxed);
         self.beat.store(false, Ordering::Relaxed);
@@ -211,7 +220,7 @@ pub fn process_audio_frame(
     }
     *norm_peak = norm_peak.max(0.01); // Floor to prevent division by near-zero
 
-    // Write results atomically — smooth, optionally normalize, clamp to 0-1
+    // Write 8-band results atomically — smooth, optionally normalize, clamp to 0-1
     for (i, &band) in bands.iter().enumerate() {
         let scaled = if normalize {
             (band / *norm_peak).min(1.0)
@@ -223,6 +232,32 @@ pub fn process_audio_frame(
         let smoothed = prev * smoothing + scaled * (1.0 - smoothing);
 
         output.fft[i].store(smoothed.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    // Write full spectrum with the same smoothing / normalization / pink shaping.
+    // Per-bin pink gain is derived from the 8-band table by bin center frequency.
+    let spectrum_len = magnitudes_buf.len();
+    if output.spectrum.len() == spectrum_len {
+        let bin_hz = sample_rate / fft_size as f32;
+        for (i, (m, s)) in magnitudes_buf.iter().zip(output.spectrum.iter()).enumerate() {
+            let freq = i as f32 * bin_hz;
+            let pink_gain = if pink_noise_shaping {
+                pink_gain_for_freq(freq)
+            } else {
+                1.0
+            };
+
+            let scaled = (*m * pink_gain).min(1.0);
+            let normalized = if normalize {
+                (scaled / *norm_peak).min(1.0)
+            } else {
+                scaled
+            };
+
+            let prev = f32::from_bits(s.load(Ordering::Relaxed));
+            let smoothed = prev * smoothing + normalized * (1.0 - smoothing);
+            s.store(smoothed.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
     }
 
     // Volume: simple EMA, no amplitude feedback loop
@@ -270,4 +305,36 @@ pub fn calculate_bands(magnitudes: &[f32], sample_rate: f32) -> [f32; 8] {
     }
 
     bands
+}
+
+/// Return the pink-noise compensation gain for a given frequency in Hz.
+/// Maps the frequency to one of the 8 logarithmic bands and returns the
+/// corresponding gain multiplier (1.0 … 3.0). Frequencies outside the
+/// 20 Hz – 16 kHz range return 1.0 (no boost).
+pub fn pink_gain_for_freq(freq: f32) -> f32 {
+    const PINK_GAINS: [f32; 8] = [
+        1.0, 1.15, 1.30, 1.50, 1.80, 2.20, 2.60, 3.00,
+    ];
+    let band = if freq < 20.0 {
+        None
+    } else if freq < 60.0 {
+        Some(0)
+    } else if freq < 120.0 {
+        Some(1)
+    } else if freq < 250.0 {
+        Some(2)
+    } else if freq < 500.0 {
+        Some(3)
+    } else if freq < 2000.0 {
+        Some(4)
+    } else if freq < 4000.0 {
+        Some(5)
+    } else if freq < 8000.0 {
+        Some(6)
+    } else if freq < 16000.0 {
+        Some(7)
+    } else {
+        None
+    };
+    band.map(|idx| PINK_GAINS[idx]).unwrap_or(1.0)
 }

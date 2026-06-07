@@ -34,8 +34,16 @@ impl Scene {
     }
 
     /// Apply knob settings onto an already-built mixer.
-    pub fn apply_to_mixer(&self, mixer: &mut rustjay_mixer::Mixer) {
-        mixer.apply_state(&self.mixer_state);
+    ///
+    /// Returns `Some(engine)` when the scene was saved with a v1 preset that
+    /// carried modulation data. Callers should merge the returned engine into
+    /// `EngineState.modulation` (see `UNIFIED_MODULATION_ROADMAP.md` M4.5).
+    pub fn apply_to_mixer(
+        &self,
+        mixer: &mut rustjay_mixer::Mixer,
+    ) -> Option<rustjay_core::modulation::ModulationEngine> {
+        let (_, legacy) = mixer.apply_state(&self.mixer_state);
         mixer.sequencer = self.sequencer.clone();
+        legacy
     }
 }

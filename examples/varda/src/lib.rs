@@ -24,6 +24,7 @@ use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
+use sources::SourceKind;
 use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
@@ -85,6 +86,10 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_decks: Vec<PendingDeck>,
+    /// Runtime deck removal queue (processed in `prepare()`).
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_removals: Vec<PendingRemoval>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -104,6 +109,16 @@ pub struct PendingDeck {
     pub channel_uuid: String,
     /// Source entry from the library registry.
     pub source: crate::sources::SourceEntry,
+}
+
+/// One deck queued for removal by the UI and processed in `prepare()`.
+#[derive(Debug, Clone)]
+#[cfg(feature = "mixer")]
+pub struct PendingRemoval {
+    /// Target channel UUID.
+    pub channel_uuid: String,
+    /// Deck UUID to remove.
+    pub deck_uuid: String,
 }
 
 impl VardaAppState {
@@ -156,6 +171,8 @@ impl Default for VardaAppState {
             projection_handle: None,
             #[cfg(feature = "mixer")]
             pending_decks: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_removals: Vec::new(),
             #[cfg(feature = "sysmon")]
             sys: sysinfo::System::new_all(),
             #[cfg(feature = "sysmon")]
@@ -196,7 +213,7 @@ fn instantiate_source(
         SourceKind::SolidColor => {
             Box::new(SolidColorSource::new(device, format, [1.0, 0.0, 1.0, 1.0]))
         }
-        SourceKind::Camera => Box::new(CameraSource::new(device, 0)),
+        SourceKind::Camera => Box::new(CameraSource::new(device, entry.device_index)),
         SourceKind::Video => {
             let path = entry
                 .path
@@ -208,6 +225,7 @@ fn instantiate_source(
                     format!("deck_{}_{}", channel_id, entry.id),
                     &entry.name,
                     Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                    entry.kind,
                 ));
             }
             #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
@@ -216,6 +234,7 @@ fn instantiate_source(
                     format!("deck_{}_{}", channel_id, entry.id),
                     &entry.name,
                     Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                    entry.kind,
                 ));
             }
             #[cfg(all(feature = "hap", feature = "ffmpeg"))]
@@ -230,12 +249,14 @@ fn instantiate_source(
                         format!("deck_{}_{}", channel_id, entry.id),
                         &entry.name,
                         Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                        entry.kind,
                     ));
                 } else {
                     return Ok(crate::graph::Deck::new(
                         format!("deck_{}_{}", channel_id, entry.id),
                         &entry.name,
                         Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                        entry.kind,
                     ));
                 }
             }
@@ -258,6 +279,7 @@ fn instantiate_source(
                 format!("deck_{}_{}", channel_id, entry.id),
                 &entry.name,
                 Box::new(crate::sources::StreamSource::new(device, queue, url)?),
+                entry.kind,
             ));
         }
         #[cfg(not(feature = "ffmpeg"))]
@@ -266,10 +288,47 @@ fn instantiate_source(
                 "Stream support requires the ffmpeg feature"
             ));
         }
-        _ => {
+        #[cfg(feature = "ndi")]
+        SourceKind::Ndi => {
+            let source_name = entry.name.clone();
+            return Ok(crate::graph::Deck::new(
+                format!("deck_{}_{}", channel_id, entry.id),
+                &entry.name,
+                Box::new(crate::sources::NdiSource::new(device, source_name)),
+                entry.kind,
+            ));
+        }
+        #[cfg(not(feature = "ndi"))]
+        SourceKind::Ndi => {
             return Err(anyhow::anyhow!(
-                "Source kind {:?} not yet supported for runtime creation",
-                entry.kind
+                "NDI support requires the ndi feature"
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        SourceKind::Syphon => {
+            let server_name = entry.name.clone();
+            let server_uuid = entry
+                .path
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+                .to_string();
+            return Ok(crate::graph::Deck::new(
+                format!("deck_{}_{}", channel_id, entry.id),
+                &entry.name,
+                Box::new(crate::sources::SyphonSource::new(
+                    device,
+                    queue,
+                    server_name,
+                    server_uuid,
+                )),
+                entry.kind,
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        SourceKind::Syphon => {
+            return Err(anyhow::anyhow!(
+                "Syphon is only available on macOS"
             ));
         }
     };
@@ -280,6 +339,7 @@ fn instantiate_source(
         format!("deck_{}_{}", channel_id, entry.id),
         &entry.name,
         source,
+        entry.kind,
     );
     if entry.kind == SourceKind::Isf {
         deck.source_path = entry.path.clone();
@@ -362,7 +422,7 @@ impl VardaRootPlugin {
         let path_a1 = shaders_dir.join("ColorCycle.fs");
         if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
             let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node));
+            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_a1);
             comp_a.decks.push(deck);
         } else {
@@ -375,7 +435,7 @@ impl VardaRootPlugin {
         );
         comp_a
             .decks
-            .push(Deck::new("a2", "Solid Red", Box::new(solid)));
+            .push(Deck::new("a2", "Solid Red", Box::new(solid), SourceKind::SolidColor));
 
         #[cfg(feature = "hap")]
         {
@@ -396,6 +456,7 @@ impl VardaRootPlugin {
                                         format!("a_hap_{}", comp_a.decks.len()),
                                         &name,
                                         Box::new(hap),
+                                        SourceKind::Video,
                                     ));
                                     log::info!("Loaded HAP source: {}", path.display());
                                 }
@@ -419,7 +480,7 @@ impl VardaRootPlugin {
         let path_b1 = shaders_dir.join("AuroraWaves.fs");
         if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
             let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node));
+            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_b1);
             comp_b.decks.push(deck);
         } else {
@@ -428,7 +489,7 @@ impl VardaRootPlugin {
         let camera = CameraSource::new(device, 0);
         comp_b
             .decks
-            .push(Deck::new("b2", "Camera", Box::new(camera)));
+            .push(Deck::new("b2", "Camera", Box::new(camera), SourceKind::Camera));
 
         #[cfg(feature = "ffmpeg")]
         {
@@ -449,6 +510,7 @@ impl VardaRootPlugin {
                                         format!("b_vid_{}", comp_b.decks.len()),
                                         &name,
                                         Box::new(src),
+                                        SourceKind::Video,
                                     ));
                                     log::info!("Loaded video source: {}", path.display());
                                 }
@@ -510,80 +572,10 @@ impl VardaRootPlugin {
             }
         }
 
-        // Phase 4 modulation demo: LFO + audio-band sources on crossfader
-        let mod_arc = mixer.modulation.clone();
-        {
-            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                waveform: rustjay_core::modulation::LFOWaveform::Sine,
-                frequency: 0.25,
-                phase: 0.0,
-                amplitude: 0.5,
-                bipolar: true,
-            });
-            mod_eng.assign("crossfader", &lfo, 1.0, None);
-
-            let audio = mod_eng.add_source(rustjay_core::modulation::ModulationSource::AudioBand {
-                source_id: None,
-                freq_low: 20.0,
-                freq_high: 250.0,
-                gain: 2.0,
-                smoothing: 0.6,
-                mode: rustjay_core::modulation::AudioReactMode::Direct,
-                noise_gate: 0.1,
-            });
-            mod_eng.assign("crossfader", &audio, 1.0, None);
-        }
-
-        // Collect deck opacity keys and inject the shared modulation engine
-        let mut deck_keys: Vec<String> = Vec::new();
-        for ch in &mut mixer.channels {
-            if let Some(compositor) = ch.effect.as_any_mut() {
-                if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                    for deck in &compositor.decks {
-                        deck_keys.push(deck.opacity_key.clone());
-                    }
-                    compositor.set_modulation_engine(mod_arc.clone());
-                }
-            }
-        }
-
-        // Demo: modulate every deck opacity with a slow triangle LFO.
-        {
-            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-            let deck_lfo = mod_eng.add_source(rustjay_core::modulation::ModulationSource::LFO {
-                waveform: rustjay_core::modulation::LFOWaveform::Triangle,
-                frequency: 0.2,
-                phase: 0.0,
-                amplitude: 1.0,
-                bipolar: true,
-            });
-            for key in &deck_keys {
-                mod_eng.assign(key, &deck_lfo, 0.4, None);
-            }
-
-            // T04.3 carry-over: ADSR envelope + step sequencer demo sources
-            let adsr = mod_eng.add_source(rustjay_core::modulation::ModulationSource::ADSR {
-                attack: 0.5,
-                decay: 0.3,
-                sustain: 0.6,
-                release: 1.0,
-                stage: rustjay_core::modulation::ADSRStage::Idle,
-                stage_time: 0.0,
-                gate: true,
-                current_level: 0.0,
-            });
-            mod_eng.assign("crossfader", &adsr, 0.3, None);
-
-            let step_seq =
-                mod_eng.add_source(rustjay_core::modulation::ModulationSource::StepSequencer {
-                    steps: vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25],
-                    rate: 4.0,
-                    interpolation: rustjay_core::modulation::StepInterpolation::Linear,
-                    bipolar: false,
-                });
-            mod_eng.assign("crossfader", &step_seq, 0.2, None);
-        }
+        // NOTE: Phase 4 removed mixer-owned modulation. Demo sources that were
+        // previously added to mixer.modulation are now omitted; varda will ship
+        // a default preset that loads into the unified EngineState.modulation
+        // instead (M6.3). DeckCompositor no longer needs set_modulation_engine().
 
         drop(mixer);
         self.params_dirty = true;
@@ -716,7 +708,22 @@ impl EffectPlugin for VardaRootPlugin {
             // Apply pending scene from preset load or runtime restore.
             if let Some(scene) = state.pending_scene.take() {
                 if let Ok(mut mixer) = state.mixer.lock() {
-                    scene.apply_to_mixer(&mut mixer);
+                    if let Some(legacy_mod) = scene.apply_to_mixer(&mut mixer) {
+                        // v1 scene carried modulation in the mixer; merge into unified engine.
+                        let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                        for entry in legacy_mod.sources {
+                            // S3: guard against duplicate UUIDs if the workflow ever allows queued scenes.
+                            if !mod_eng.has_source(&entry.uuid) {
+                                mod_eng.add_source_with_uuid(entry.uuid, entry.source);
+                            }
+                        }
+                        for (param, assignments) in legacy_mod.assignments {
+                            for a in assignments {
+                                mod_eng.assign(&param, &a.source_id, a.amount, a.component);
+                            }
+                        }
+                        log::info!("[Scene] merged legacy modulation from v1 preset");
+                    }
                     log::info!("[Scene] applied pending scene snapshot");
                 }
             }
@@ -844,6 +851,33 @@ impl EffectPlugin for VardaRootPlugin {
         // Materialise runtime deck-creation requests queued by the UI.
         #[cfg(feature = "mixer")]
         {
+            // Process pending deck removals first.
+            let removals: Vec<PendingRemoval> = std::mem::take(&mut state.pending_removals);
+            for req in removals {
+                let Ok(mut mixer) = state.mixer.lock() else {
+                    continue;
+                };
+                let channel = mixer
+                    .channels
+                    .iter_mut()
+                    .find(|c| c.uuid == req.channel_uuid || c.name == req.channel_uuid);
+                let Some(channel) = channel else {
+                    continue;
+                };
+                if let Some(compositor) = channel.effect.as_any_mut() {
+                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                        if let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
+                            self.params_dirty = true;
+                            engine.notify(
+                                format!("Removed deck '{}' from {}", deck.name, channel.name),
+                                rustjay_core::NotificationLevel::Info,
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                    }
+                }
+            }
+
             let pending: Vec<PendingDeck> = std::mem::take(&mut state.pending_decks);
             for req in pending {
                 let Ok(mut mixer) = state.mixer.lock() else {
@@ -1040,7 +1074,13 @@ impl EffectPlugin for VardaRootPlugin {
                 match workspace.load_scene() {
                     Ok(scene) => {
                         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                        scene.apply_to_mixer(&mut mixer);
+                        let legacy_mod = scene.apply_to_mixer(&mut mixer);
+                        if legacy_mod.is_some() {
+                            // EngineState is not available in init(); legacy v1 modulation
+                            // cannot be merged here. Re-load the preset at runtime via the
+                            // web/MIDI interface to trigger the prepare() migration path.
+                            log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
+                        }
                         log::info!("[Workspace] restored scene onto default graph");
                     }
                     Err(e) => {
@@ -1052,7 +1092,7 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
-    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _app_state: &mut VardaAppState) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, app_state: &mut VardaAppState) -> bool {
         #[cfg(feature = "mixer")]
         {
             let mut render_ctx = RenderCtx {
@@ -1114,11 +1154,89 @@ impl EffectPlugin for VardaRootPlugin {
 
             let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
             mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
+
+            #[cfg(not(feature = "projection"))]
+            {
+                let _ = app_state.ready;
+            }
+
+            #[cfg(feature = "projection")]
+            {
+                use crate::stage::{SourceSync, SurfaceSource};
+                let stage = &mut app_state.stage;
+                // Grow/shrink source_syncs to match projector count.
+                while stage.source_syncs.len() < stage.projectors.len() {
+                    stage.source_syncs.push(std::sync::Arc::new(
+                        std::sync::Mutex::new(SourceSync::default()),
+                    ));
+                }
+                stage.source_syncs.truncate(stage.projectors.len());
+
+                for (i, proj) in stage.projectors.iter().enumerate() {
+                    if !proj.enabled {
+                        continue;
+                    }
+                    let sync = &stage.source_syncs[i];
+                    let surface = proj
+                        .surface_index
+                        .and_then(|idx| stage.surfaces.get(idx))
+                        .or_else(|| stage.surfaces.first());
+
+                    let source_key = surface.map(|s| s.source.label());
+
+                    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
+                        if g.source_key.as_ref() == source_key.as_ref() {
+                            // Source unchanged — keep current view, no version bump.
+                            (false, g.override_view.clone())
+                        } else {
+                            // Source changed — compute new view.
+                            let view = match surface {
+                                Some(surf) => match &surf.source {
+                                    SurfaceSource::Master => None,
+                                    SurfaceSource::Channel(uuid) => {
+                                        mixer.channel_texture(uuid).map(|tex| {
+                                            std::sync::Arc::new(tex.texture.create_view(
+                                                &wgpu::TextureViewDescriptor::default(),
+                                            ))
+                                        })
+                                    }
+                                    SurfaceSource::Deck { .. } => {
+                                        log::warn!(
+                                            "Deck source routing not yet implemented, falling back to Master"
+                                        );
+                                        None
+                                    }
+                                    SurfaceSource::Domemaster => None,
+                                },
+                                None => None,
+                            };
+                            (true, view)
+                        }
+                    } else {
+                        (false, None)
+                    };
+
+                    if needs_update {
+                        if let Ok(mut g) = sync.lock() {
+                            g.source_key = source_key;
+                            g.override_view = override_view;
+                            g.version = g.version.wrapping_add(1);
+                        }
+                    }
+                }
+
+                // TODO(S2): headless_outputs.surface_index is stored and UI-editable
+                // but not yet wired into the render hook. Headless outputs currently
+                // use a passthrough IdentityStage. Add per-headless source routing
+                // when the headless stage chain is made dynamic.
+            }
+
             true
         }
         #[cfg(not(feature = "mixer"))]
         {
             // Fallback when mixer is disabled: let the engine render the default shader pass.
+            let _ = app_state.ready;
             false
         }
     }
@@ -1245,6 +1363,7 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
             SourceKind::SolidColor => "solid_color",
             SourceKind::Camera => "camera",
             SourceKind::Ndi => "ndi",
+            SourceKind::Syphon => "syphon",
             SourceKind::Srt => "srt",
             SourceKind::Hls => "hls",
             SourceKind::Dash => "dash",
@@ -1252,5 +1371,6 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
         }
         .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        device_index: e.device_index,
     }
 }

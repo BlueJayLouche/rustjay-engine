@@ -13,6 +13,10 @@ fn default_target_fps() -> u32 {
     60
 }
 
+fn default_present_mode() -> rustjay_core::PresentMode {
+    rustjay_core::PresentMode::AutoVsync
+}
+
 fn default_midi_kind() -> rustjay_core::MidiMsgKind {
     rustjay_core::MidiMsgKind::Cc
 }
@@ -101,6 +105,8 @@ pub(crate) struct AppSettings {
     pub show_preview: bool,
     #[serde(default = "default_target_fps")]
     pub target_fps: u32,
+    #[serde(default = "default_present_mode")]
+    pub present_mode: rustjay_core::PresentMode,
     /// Effect-declared custom parameter values.
     #[serde(default)]
     pub custom_params: HashMap<String, f32>,
@@ -145,6 +151,7 @@ impl Default for AppSettings {
             ui_scale: 1.0,
             show_preview: true,
             target_fps: 60,
+            present_mode: rustjay_core::PresentMode::AutoVsync,
             custom_params: HashMap::new(),
             startup_webcam_device: None,
         }
@@ -289,6 +296,7 @@ impl AppSettings {
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
         state.target_fps = self.target_fps;
+        state.present_mode = self.present_mode;
         // Store the desired startup device; the engine issues StartWebcam once
         // the InputManager is ready (avoids the command being silently dropped
         // if it fires before the InputManager is initialised).
@@ -386,6 +394,7 @@ impl AppSettings {
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
             target_fps: state.target_fps,
+            present_mode: state.present_mode,
             custom_params: state
                 .param_descriptors
                 .iter()
