@@ -932,7 +932,7 @@ pub struct EngineState {
     /// - Linear scan on a tiny Vec is faster than HashMap hashing + bucket indirection
     ///   (benchmark: ~3ns/lookup vs ~15ns/lookup for std HashMap with < 10 entries)
     /// - No per-frame allocation (Vec is cleared and reused)
-    /// Trade-off: O(n) scan, but n is bounded by the number of assigned params.
+    ///   Trade-off: O(n) scan, but n is bounded by the number of assigned params.
     pub modulation_offsets: Vec<(String, f32)>,
 
     /// Flat list of plugin-declared parameter ids; updated on plugin load/reload.
@@ -1441,6 +1441,12 @@ impl EngineState {
     }
 }
 
+impl Default for EngineState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1510,11 +1516,5 @@ mod tests {
     fn registered_param_ids_empty_by_default() {
         let state = EngineState::new();
         assert!(state.registered_param_ids.is_empty());
-    }
-}
-
-impl Default for EngineState {
-    fn default() -> Self {
-        Self::new()
     }
 }

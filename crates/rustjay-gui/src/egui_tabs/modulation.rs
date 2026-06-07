@@ -7,8 +7,8 @@
 use crate::egui_control_gui::EguiControlGui;
 use crate::egui_theme::colors::*;
 use egui::Color32;
-use rustjay_core::modulation::{LFOWaveform, ModulationSource, ModulationSourceEntry};
-use rustjay_core::lfo::{beat_division_to_hz, BEAT_DIVISIONS};
+use rustjay_core::modulation::{LFOWaveform, ModulationSource};
+use rustjay_core::lfo::beat_division_to_hz;
 
 const WAVE_NAMES: &[(&str, LFOWaveform)] = &[
     ("Sine", LFOWaveform::Sine),
@@ -121,7 +121,7 @@ impl EguiControlGui {
                         ui.separator();
                         {
                             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-                            self.draw_source_editor(ui, &mut mod_eng, &uuid, bpm);
+                            self.draw_source_editor(ui, &mut mod_eng, uuid, bpm);
                         }
                         // Assignments are drawn outside the mod_eng lock so we can re-lock
                         // for the assignment buttons/sliders (Mutex is not reentrant).
@@ -314,7 +314,7 @@ impl EguiControlGui {
 
         // ── Step Sequencer ───────────────────────────────────────────────────
         if let Some(ModulationSource::StepSequencer {
-            steps, rate, interpolation, bipolar, ..
+            steps, rate, interpolation: _, bipolar, ..
         }) = mod_eng.source_mut(uuid)
         {
             ui.horizontal(|ui| {
@@ -325,7 +325,7 @@ impl EguiControlGui {
                 for (i, step) in steps.iter_mut().enumerate() {
                     ui.vertical(|ui| {
                         ui.label(format!("{}", i + 1));
-                        ui.add(egui::DragValue::new(step).speed(0.01).clamp_range(-1.0..=1.0));
+                        ui.add(egui::DragValue::new(step).speed(0.01).range(-1.0..=1.0));
                     });
                 }
             });

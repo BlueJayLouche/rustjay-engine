@@ -6,7 +6,7 @@
 
 use crate::control_gui::ControlGui;
 use rustjay_core::modulation::{LFOWaveform, ModulationSource};
-use rustjay_core::lfo::{beat_division_to_hz, BEAT_DIVISIONS};
+use rustjay_core::lfo::beat_division_to_hz;
 
 impl ControlGui {
     /// Build the Modulation tab (M5.1 — renamed from LFO).

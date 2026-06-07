@@ -1178,11 +1178,11 @@ impl ModulationEngine {
                         .find(|m| m.source_id == entry.uuid)
                         .map(|_| param_id.as_str())
                 })
-                .and_then(|pid| match pid {
-                    "hue_shift" => Some(LfoTarget::HueShift),
-                    "saturation" => Some(LfoTarget::Saturation),
-                    "brightness" => Some(LfoTarget::Brightness),
-                    _ => Some(LfoTarget::Custom(pid.to_string())),
+                .map(|pid| match pid {
+                    "hue_shift" => LfoTarget::HueShift,
+                    "saturation" => LfoTarget::Saturation,
+                    "brightness" => LfoTarget::Brightness,
+                    _ => LfoTarget::Custom(pid.to_string()),
                 })
                 .unwrap_or(LfoTarget::None);
 
