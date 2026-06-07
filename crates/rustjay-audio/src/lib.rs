@@ -43,7 +43,7 @@ impl AudioAnalyzer {
             stream: None,
             running: Arc::new(AtomicBool::new(false)),
             stream_error: Arc::new(AtomicBool::new(false)),
-            output: Arc::new(AudioOutput::new()),
+            output: Arc::new(AudioOutput::new(DEFAULT_FFT_SIZE)),
             config: Arc::new(AudioConfig::new()),
             fft_size: DEFAULT_FFT_SIZE,
             sample_rate: 48000.0,
@@ -90,7 +90,7 @@ impl AudioAnalyzer {
             self.stream = None;
         }
         self.running = Arc::new(AtomicBool::new(false));
-        self.output = Arc::new(AudioOutput::with_spectrum_size(self.fft_size));
+        self.output = Arc::new(AudioOutput::new(self.fft_size));
         self.stream_error = Arc::new(AtomicBool::new(false));
 
         let host = cpal::default_host();
@@ -177,16 +177,28 @@ impl AudioAnalyzer {
         std::array::from_fn(|i| f32::from_bits(self.output.fft[i].load(Ordering::Relaxed)))
     }
 
+    /// Write the full per-bin FFT spectrum into `buf` (0–1, length = fft_size/2+1).
+    ///
+    /// Clears and resizes `buf` to match the spectrum length. Reuses the
+    /// caller's allocation — zero-allocation path for the hot frame loop.
+    pub fn get_spectrum_into(&self, buf: &mut Vec<f32>) {
+        buf.clear();
+        buf.extend(
+            self.output
+                .spectrum
+                .iter()
+                .map(|s| f32::from_bits(s.load(Ordering::Relaxed))),
+        );
+    }
+
     /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
     ///
-    /// Uses the same smoothing, pink-noise shaping, and normalisation pipeline
-    /// as the 8-band output, so values are directly comparable.
+    /// Convenience wrapper around [`get_spectrum_into`](Self::get_spectrum_into)
+    /// that allocates a fresh Vec. Prefer `get_spectrum_into` on the hot path.
     pub fn get_spectrum(&self) -> Vec<f32> {
-        self.output
-            .spectrum
-            .iter()
-            .map(|s| f32::from_bits(s.load(Ordering::Relaxed)))
-            .collect()
+        let mut buf = Vec::new();
+        self.get_spectrum_into(&mut buf);
+        buf
     }
 
     /// Sample rate of the running audio stream in Hz.

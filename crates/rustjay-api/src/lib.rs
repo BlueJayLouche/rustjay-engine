@@ -279,8 +279,6 @@ pub struct InputSnapshot {
 pub struct AudioSnapshot {
     /// Per-band FFT magnitudes (8 bands, 0–1).
     pub fft: [f32; 8],
-    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
-    pub spectrum: Vec<f32>,
     /// Overall volume (0–1).
     pub volume: f32,
     /// Beat detected this frame.
@@ -508,7 +506,6 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
         second_input: input_snapshot(&state.second_input),
         audio: AudioSnapshot {
             fft: state.audio.fft,
-            spectrum: state.audio.spectrum.clone(),
             volume: state.audio.volume,
             beat: state.audio.beat,
             bpm: state.audio.bpm,

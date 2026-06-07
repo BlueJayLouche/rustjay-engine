@@ -211,7 +211,7 @@ impl<P: EffectPlugin> App<P> {
             analyzer.set_pink_noise_shaping(self.cached_audio_pink_noise);
 
             let fft = analyzer.get_fft();
-            let spectrum = analyzer.get_spectrum();
+            analyzer.get_spectrum_into(&mut self.cached_spectrum);
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
@@ -219,7 +219,7 @@ impl<P: EffectPlugin> App<P> {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if state.audio.enabled {
                 state.audio.fft = fft;
-                state.audio.spectrum = spectrum;
+                std::mem::swap(&mut state.audio.spectrum, &mut self.cached_spectrum);
                 state.audio.volume = volume;
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;

@@ -742,6 +742,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     // Main render loop
     let mut last_frame_start = std::time::Instant::now();
     let mut elapsed = 0.0f32;
+    let mut spectrum_scratch = Vec::new();
     loop {
         let frame_start = std::time::Instant::now();
         let delta_time = frame_start
@@ -755,7 +756,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         // Audio: push latest FFT + spectrum + volume into shared state
         {
             let fft = analyzer.get_fft();
-            let spectrum = analyzer.get_spectrum();
+            analyzer.get_spectrum_into(&mut spectrum_scratch);
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
@@ -764,7 +765,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             analyzer.set_smoothing(state.audio.smoothing);
             if state.audio.enabled {
                 state.audio.fft = fft;
-                state.audio.spectrum = spectrum;
+                std::mem::swap(&mut state.audio.spectrum, &mut spectrum_scratch);
                 state.audio.volume = volume;
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;

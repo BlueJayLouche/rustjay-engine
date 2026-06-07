@@ -26,18 +26,7 @@ pub(crate) struct AudioOutput {
 }
 
 impl AudioOutput {
-    pub fn new() -> Self {
-        Self {
-            fft: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
-            spectrum: Vec::new(),
-            volume: AtomicU32::new(0.0f32.to_bits()),
-            beat: AtomicBool::new(false),
-            beat_phase: AtomicU32::new(0.0f32.to_bits()),
-        }
-    }
-
-    /// Create with a pre-sized spectrum buffer.
-    pub fn with_spectrum_size(fft_size: usize) -> Self {
+    pub fn new(fft_size: usize) -> Self {
         let spectrum_len = fft_size / 2 + 1;
         Self {
             fft: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
@@ -249,36 +238,11 @@ pub fn process_audio_frame(
     // Per-bin pink gain is derived from the 8-band table by bin center frequency.
     let spectrum_len = magnitudes_buf.len();
     if output.spectrum.len() == spectrum_len {
-        let bin_hz = sample_rate / (2.0 * spectrum_len as f32);
+        let bin_hz = sample_rate / fft_size as f32;
         for (i, (m, s)) in magnitudes_buf.iter().zip(output.spectrum.iter()).enumerate() {
             let freq = i as f32 * bin_hz;
             let pink_gain = if pink_noise_shaping {
-                // Map frequency to one of the 8 logarithmic bands.
-                const PINK_GAINS: [f32; 8] = [
-                    1.0, 1.15, 1.30, 1.50, 1.80, 2.20, 2.60, 3.00,
-                ];
-                let band = if freq < 20.0 {
-                    None
-                } else if freq < 60.0 {
-                    Some(0)
-                } else if freq < 120.0 {
-                    Some(1)
-                } else if freq < 250.0 {
-                    Some(2)
-                } else if freq < 500.0 {
-                    Some(3)
-                } else if freq < 2000.0 {
-                    Some(4)
-                } else if freq < 4000.0 {
-                    Some(5)
-                } else if freq < 8000.0 {
-                    Some(6)
-                } else if freq < 16000.0 {
-                    Some(7)
-                } else {
-                    None
-                };
-                band.map(|idx| PINK_GAINS[idx]).unwrap_or(1.0)
+                pink_gain_for_freq(freq)
             } else {
                 1.0
             };
@@ -341,4 +305,36 @@ pub fn calculate_bands(magnitudes: &[f32], sample_rate: f32) -> [f32; 8] {
     }
 
     bands
+}
+
+/// Return the pink-noise compensation gain for a given frequency in Hz.
+/// Maps the frequency to one of the 8 logarithmic bands and returns the
+/// corresponding gain multiplier (1.0 … 3.0). Frequencies outside the
+/// 20 Hz – 16 kHz range return 1.0 (no boost).
+pub fn pink_gain_for_freq(freq: f32) -> f32 {
+    const PINK_GAINS: [f32; 8] = [
+        1.0, 1.15, 1.30, 1.50, 1.80, 2.20, 2.60, 3.00,
+    ];
+    let band = if freq < 20.0 {
+        None
+    } else if freq < 60.0 {
+        Some(0)
+    } else if freq < 120.0 {
+        Some(1)
+    } else if freq < 250.0 {
+        Some(2)
+    } else if freq < 500.0 {
+        Some(3)
+    } else if freq < 2000.0 {
+        Some(4)
+    } else if freq < 4000.0 {
+        Some(5)
+    } else if freq < 8000.0 {
+        Some(6)
+    } else if freq < 16000.0 {
+        Some(7)
+    } else {
+        None
+    };
+    band.map(|idx| PINK_GAINS[idx]).unwrap_or(1.0)
 }
