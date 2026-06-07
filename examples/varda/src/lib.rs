@@ -196,7 +196,7 @@ fn instantiate_source(
         SourceKind::SolidColor => {
             Box::new(SolidColorSource::new(device, format, [1.0, 0.0, 1.0, 1.0]))
         }
-        SourceKind::Camera => Box::new(CameraSource::new(device, 0)),
+        SourceKind::Camera => Box::new(CameraSource::new(device, entry.device_index)),
         SourceKind::Video => {
             let path = entry
                 .path
@@ -1203,5 +1203,6 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
         }
         .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        device_index: e.device_index,
     }
 }

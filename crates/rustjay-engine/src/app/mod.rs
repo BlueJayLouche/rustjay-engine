@@ -256,6 +256,8 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) cached_audio_pink_noise: bool,
     /// Reusable FFT scratch buffer (S1) — avoids per-frame allocation.
     pub(crate) cached_fft: Vec<f32>,
+    /// Reusable spectrum scratch buffer (S4) — avoids per-frame allocation.
+    pub(crate) cached_spectrum: Vec<f32>,
     /// Last-broadcast MIDI mapping snapshot for change detection (WR-3.3 / WR-6).
     pub(crate) last_broadcast_mappings: Vec<rustjay_core::MidiMappingSnapshot>,
 
@@ -488,6 +490,7 @@ impl<P: EffectPlugin> App<P> {
             cached_audio_normalize: true,
             cached_audio_pink_noise: false,
             cached_fft: Vec::new(),
+            cached_spectrum: Vec::new(),
             last_broadcast_mappings: Vec::new(),
             plugin_input_count: plugin.input_count(),
             plugin: Some(plugin),

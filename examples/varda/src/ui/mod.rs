@@ -71,6 +71,12 @@ pub struct OutputsTab {
     recording_codec: rustjay_core::RecorderCodec,
 }
 
+impl Default for OutputsTab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutputsTab {
     pub fn new() -> Self {
         Self {
@@ -366,6 +372,7 @@ mod egui_impl {
                         name: self.stream_name.clone(),
                         kind,
                         path: Some(std::path::PathBuf::from(&self.stream_url)),
+                        device_index: 0,
                     };
                     state.pending_decks.push(crate::PendingDeck {
                         channel_uuid: target_uuid.clone(),

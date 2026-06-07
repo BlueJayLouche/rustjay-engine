@@ -20,7 +20,7 @@ pub(crate) mod v4l2_devices;
 #[cfg(feature = "ffmpeg")]
 pub use input::ffmpeg::{FfmpegDecoder, LoopMode, StreamDecoder, VideoFrame};
 #[cfg(feature = "webcam")]
-pub use input::webcam::{WebcamCapture, WebcamFrame};
+pub use input::webcam::{WebcamCapture, WebcamFrame, list_cameras};
 pub use input::InputManager;
 pub use input::SpoutSenderInfo;
 pub use input::SyphonServerInfo;

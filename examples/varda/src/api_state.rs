@@ -104,4 +104,6 @@ pub struct VardaSourceEntry {
     pub kind: String,
     /// Absolute filesystem path, when applicable.
     pub path: Option<String>,
+    /// Device index for camera/NDI sources.
+    pub device_index: usize,
 }
