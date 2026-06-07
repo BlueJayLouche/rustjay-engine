@@ -29,3 +29,11 @@ sputnik_*.txt
 
 # Varda workspace directory
 .varda/
+
+# Video recordings
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+

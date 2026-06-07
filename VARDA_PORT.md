@@ -9,12 +9,32 @@ assembled as `examples/varda`.
 
 ---
 
-## 0. Current status (2026-06-05)
+## 0. Current status (2026-06-07)
 
 Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
 this is the phase-level rollup.
 
-**Phases 0–7 reviewed and verified (2026-06-05).** Phase 5 complete:
+**Phases 0–17 merged to main (2026-06-07).** Recent merges:
+- **PR #23** — unified `ModulationEngine` Phases 1–7: single `ModulationEngine` on
+  `EngineState`, `LfoBank` shim removed, new egui + imgui Modulation tab.
+- **PR #24** — full FFT spectrum for `AudioBand` sources (`get_spectrum_into` zero-alloc,
+  correct `bin_hz`, pink-noise helper extracted, spectrum excluded from WS broadcast).
+- **PR #25** — surface-to-output assignment: per-projector + headless `WarpSync`, GUI
+  assignment UI, `resolve_and_publish_warp` helper, version bumps only on warp change.
+- **Phase 17** — content mapping & spatial slicing: `ContentMapping::Fill/Mapped` on
+  `VardaSurface`, UV crop in `WarpStage` shader, per-projector `SourceSync` +
+  `VardaSourceStage` for non-Master (`Channel`) source routing, StageTab selection +
+  toggle + overlay, OutputsTab surface assignment + `OutputType` enum.
+
+**Newly identified gaps (2026-06-07 architecture audit)** — comparing against original
+Varda confirms two features still absent from the engine port:
+
+1. **Multi-contour surfaces** — original supports `extra_contours` for multi-polygon
+   units (e.g. a frame with a cutout). Engine only has single polygon or circle. → **Phase 18**.
+2. **Interactive 2D warp editing** — original has drag-based corner/mesh handle editing
+   in the 2D canvas; engine uses numeric DragValue inputs only. → **Phase 18**.
+
+**Phases 0–5 complete:**
 T05.1/05.2 — MIDI and OSC reach the canonical engine params (OSC via the
 auto-registered OSC address on each `param_descriptor`; MIDI via learned maps).
 T05.4 — `param_router` maps the hierarchical `deck|channel/<uuid>/param/<name>`
@@ -68,7 +88,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | **5 — Control** | ✅ done | T05.1/05.2 MIDI/OSC reach canonical params; T05.4 param_router wired into `WebCommand::Set` + MIDI fallback; T05.3 **generic** `rustjay-api` routes (`GET /api/app/state`, `GET\|PUT /api/app/params`) — app publishes its schema into the opaque `EngineState::app_state`; WS JSON-Patch deltas carry it. |
 | **6 — GUI** | ✅ done *(live click-test pending)* | Non-replacing egui tabs each with own sidebar button (engine-host fix in `rustjay-gui`). Mixer/Deck/Effects drive live graph params via canonical ids; Modulation/MIDI/Sequencer/Outputs are live panels. Stage/Outputs/Sequencer/Inspector filled in. |
 | **7 — Surfaces & projection** | ✅ done *(Master corner-pin/mesh warp reaches projector; live display smoke-test pending)* | T07.1 surface model (polygon/circle + source enum); T07.2 corner-pin/mesh warp **wired to projector output** via `VardaWarpStage`+`WarpSync` bridge (Master surface); T07.3 StageTab 2D canvas + surface list + warp editor + SVG/DXF import. Combined `run_with_projection_egui_tabs` entrypoint in `rustjay-engine`. Dome + edge-blend wired into projector chain. Non-Master source routing, per-surface selection, multi-surface output → Phase 8. |
-| **8 — Multi-output display** | ✅ done | `VardaStage.projectors` + `headless_outputs` config model; `main.rs` loads saved stage and registers each enabled projector via `sub.add_projector()`; per-projector size/monitor/fullscreen config; OutputsTab add/remove/edit for both projector and headless outputs; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle` so Varda `prepare()` adds headless outputs at runtime. |
+| **8 — Multi-output display** | ✅ done *(foundation)* | `VardaStage.projectors` + `headless_outputs` config model; `main.rs` loads saved stage and registers each enabled projector via `sub.add_projector()`; per-projector size/monitor/fullscreen config; OutputsTab add/remove/edit for both projector and headless outputs; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle` so Varda `prepare()` adds headless outputs at runtime. Per-output surface assignment wired (PR #25). **Not done:** per-surface output type (NDI out, Recording, Display passthrough); non-Master source textures rendering to non-Master surfaces (blocked on Phase 17 content mapping). |
 | **9–10 — Streaming / Recording** | ⬜ not started | NDI output, SRT/HLS/DASH/RTMP streaming, MP4/MOV recording. |
 | **11 — Persistence & presets** | ✅ done | `.varda/` workspace with scene.json (MixerState + sequencer), stage.json (VardaStage with warp), keymap.json; Cmd+S auto-save; `EffectPlugin` preset hooks (`serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied`) store/restore `Scene`. |
 | **12 — Transitions & sequencer** | ✅ done | `StepKind::TimedCrossfade` / `TimedHold` (seconds-based); SequencerTab play/stop/loop controls; pre-populated demo sequence with beat-synced and timed steps. |
@@ -76,6 +96,8 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | **14 — Parity audit** | ✅ done | Tracker walked to 100%; gaps filed as follow-ups (ffmpeg video/HAP, SRT/HLS/DASH/RTMP streaming, recording, mod-on-mod, notifications, sysmon). Perf pass: no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature only) noted as alloc-heavy. Docs updated. |
 | **15 — HAP video source** | ✅ done | `HapSource` wraps `hap-wgpu::HapPlayer` for GPU-native HAP decode (BCn textures). Playback params (`speed`, `playing`, `loop`, `position`) exposed via engine. `TEXTURE_COMPRESSION_BC` enabled in `rustjay-render` when adapter supports it. Feature-gated behind `hap` (off by default). YCoCg→RGB shader and background decode thread are future optimizations. |
 | **16 — ffmpeg video decode** | ✅ done | `FfmpegDecoder` in `rustjay-io` uses `ffmpeg-next` 8.1 to decode `.mp4`/`.mkv`/`.avi`/`.webm` to RGBA. `FfmpegSource` in Varda implements `EffectInstance` with 6 playback params (`speed`, `playing`, `loop`, `position`, `in_point`, `out_point`). Feature-gated behind `ffmpeg` (off by default). Hardware decode and background decode thread are future optimizations. |
+| **17 — Content mapping & spatial slicing** | ⬜ not started | `ContentMapping::Fill/Mapped` on `VardaSurface`; UV-crop render path for Mapped surfaces; non-Master (`Channel`/`Deck`) source textures wired into per-surface stage chain; per-surface output type (NDI out, Recording, Display). Prerequisite for full multi-screen workflow parity. |
+| **18 — Multi-contour surfaces & interactive warp** | ⬜ not started | `extra_contours: Vec<Vec<[f32;2]>>` on `VardaSurface`; SVG/DXF multi-path import; drag-handle warp editing in StageTab 2D canvas (corner-pin + mesh); Stage / Geometry tab split. |
 
 ### Carry-over backlog (deferred items from "done" phases — clear opportunistically)
 
@@ -249,12 +271,18 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - **T03.2 [Reuse]** ISF filters as effects; typed params surfaced into the graph.
 - *Acceptance:* reorder/toggle an FX at each level; params modulatable.
 
-### Phase 4 — Modulation
-- **T04.1 [Reuse]** LFO bank (`rustjay-core` `LfoBank`, 6 waveforms, beat-synced
-  divisions) targeting parameter paths.
-- **T04.2 [Reuse]** Audio-band routing (bass/mid/treble) via engine audio.
-- **T04.3 [Port]** ADSR envelope + Step sequencer sources (engine gap).
+### Phase 4 — Modulation ✅ done
+- **T04.1 [Extend]** Unified `ModulationEngine` on `EngineState` — tempo-sync LFO
+  (6 waveforms, beat divisions), audio-band (bass/mid/treble), ADSR envelope, and
+  step-sequencer sources in one engine. `LfoBank` shim removed; `get_param()` is
+  modulation-aware.
+- **T04.2 [Reuse]** Audio-band routing via engine audio FFT (`AudioSourceValues`
+  borrows slices zero-copy).
+- **T04.3 [Port]** ADSR envelope + Step sequencer sources (engine gap); GUI buttons
+  route through `trigger_adsr()` / `release_adsr()` state-machine transitions.
 - **T04.4 [Port]** Mod-on-mod chaining up to 4 deep; summed targets.
+- **T04.5 [Extend]** New egui + imgui **Modulation** tab (`GuiTab::Modulation`)
+  replacing the legacy LFO tab: source list + per-source editor + assignments.
 - *Acceptance:* LFO→param, audio→param, ADSR (MIDI-triggered), step-seq, and an
   LFO modulating another LFO's frequency all observable on one parameter.
 
@@ -384,6 +412,72 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
   file in `assets/` auto-loads as a deck; loop/speed/position/in/out params are
   modulatable.
 
+### Phase 17 — Content mapping & spatial slicing ✅ done
+
+The original Varda distinguishes two surface content modes:
+- **Fill** (current engine behaviour): source texture scaled to fill the surface —
+  every surface gets an independent full-frame render of its source.
+- **Mapped**: surface position on the stage canvas determines the UV crop — a surface
+  at the right half of the canvas samples the right half of the source. Multiple
+  surfaces on the same canvas tile a single render rather than duplicating it.
+
+- **T17.1 [Extend]** `ContentMapping { Fill, Mapped }` on `VardaSurface`, default
+  `Fill`. `#[serde(default)]` so old `stage.json` round-trips without breakage.
+- **T17.2 [Extend]** UV crop in `rustjay-projection::WarpStage` — `WarpParams`
+  extended with `uv_crop: vec4<f32>`; `WarpStage::set_uv_crop()` updates the uniform
+  without rebuilding. `VardaWarpStage` reads `uv_crop` from `WarpSync` and applies it
+  on version change. Bind-group layout visibility updated to `VERTEX | FRAGMENT` so
+  the fragment shader can read the crop rect.
+- **T17.3 [Extend]** Non-Master source routing:
+  - `Mixer::channel_texture(uuid)` + `Channel::output_texture()` expose private
+    channel textures publicly.
+  - `SourceSync { override_view: Option<Arc<TextureView>>, version }` per projector.
+  - `VardaSourceStage` (first in projector chain) samples from `override_view` when
+    set, otherwise passthrough-blit from the default input (Master).
+  - `VardaRootPlugin::render()` populates each projector's `SourceSync` after the
+    mixer render: resolves `surface_index` → `SurfaceSource::Channel(uuid)` →
+    `mixer.channel_texture()` → `Arc<TextureView>`.
+  - `Deck` source falls back to Master with a warning (needs deck-compositor texture
+    exposure — deferred to Phase 18 or follow-up).
+- **T17.4 [Extend]** StageTab: click-to-select surface (list or canvas), `Mapped/Fill`
+  ComboBox in properties panel, dashed yellow bounding-box overlay on canvas for
+  Mapped surfaces.
+- **T17.5 [Extend]** `OutputType { Display, Ndi, Recording }` on `VardaProjector` and
+  `VardaHeadlessConfig`. OutputsTab shows surface-index DragValue + output-type
+  ComboBox per projector/headless row. NDI/Recording are data-model + UI only;
+  actual protocol wiring is future work.
+- *Acceptance:* `cargo build -p varda --features projection` compiles clean;
+  `cargo test -p rustjay-projection` passes (31); `cargo check --workspace` green.
+  *(Live multi-projector Mapped + Channel-source smoke-test still to run.)*
+
+### Phase 18 — Multi-contour surfaces & interactive warp editing ⬜
+
+Two UX/fidelity gaps identified relative to the original:
+
+**Multi-contour surfaces:**
+- **T18.1 [Extend]** Add `extra_contours: Vec<Vec<[f32; 2]>>` to `VardaSurface`
+  (matching original's field name). Empty by default — no schema break.
+- **T18.2 [Extend]** StageTab 2D canvas: render extra contours as dashed outlines;
+  allow adding/removing contours from the surface properties panel.
+- **T18.3 [Extend]** SVG/DXF import: when a file defines multiple paths for one
+  logical surface (e.g. a frame + cutout), populate `extra_contours` rather than
+  creating separate surfaces.
+
+**Interactive warp editing:**
+- **T18.4 [Extend]** StageTab 2D canvas: add drag-handle editing for Corner Pin
+  mode. Current: numeric DragValue inputs (functional, not spatial). Target: four
+  draggable handles on the canvas at the corner positions, matching the original's
+  feel. Implement as egui painter `interact`-able circles; on drag, update the
+  corner array and call `publish_warp()`.
+- **T18.5 [Extend]** For Mesh warp: render grid points as draggable handles;
+  drag updates the `WarpMesh` point in-place and calls `publish_warp()`.
+- **T18.6 [Extend]** Separate the **Stage** tab (2D canvas + import) from the
+  **Geometry** tab (surface properties: name, source, mapping mode, circle editing,
+  vertex list) to match the original's panel separation, which improves usability
+  for complex multi-surface setups.
+- *Acceptance:* drag a corner handle on the 2D canvas and the projector output
+  updates in real time; a multi-contour surface imports from SVG with cutout intact.
+
 ---
 
 ## 5. GUI mapping (Varda panels → engine egui tabs)
@@ -401,7 +495,8 @@ stay authoritative) plus `param_slider` / `param_slider_int` helpers.
 | `modulation.rs` | **Modulation** | LFO/audio/ADSR/step assignment + chaining graph. |
 | `sequence.rs` | **Sequencer** | transition sequences. |
 | `midi.rs` | **MIDI** | device select, learn/unlearn, mapping table. |
-| `stage.rs` + `geometry.rs` | **Stage** | 2D surface editor, warp handles, import. |
+| `stage.rs` | **Stage** | 2D surface canvas editor, drag warp handles, SVG/DXF import. |
+| `geometry.rs` | **Geometry** | Surface properties: name, source, content mapping, circle hint, vertex list. Currently merged into StageTab — split in Phase 18. |
 | `outputs.rs` | **Outputs** | window/display/NDI/stream/record assignment. |
 | `right_panel.rs` | **Inspector** | context panel for selected node. |
 | `notifications*.rs` | overlay | toast layer (not a tab). |
@@ -420,7 +515,13 @@ rustjay_engine::run_with_egui_tabs(
 
 ## 6. Risks & open gaps
 
-1. **Deck-per-channel multiplicity** — the engine's `Channel` holds one effect;
+1. **Content mapping / spatial slicing (Phase 17)** — the engine always does Fill;
+   the original's `ContentMapping::Mapped` UV-crop model is the primary missing
+   workflow piece for multi-screen setups where surfaces share a source. Wiring
+   Channel/Deck source textures into the per-surface render path is a prerequisite.
+   Medium complexity: the UV math is simple; the render-path threading (right texture
+   into the right stage chain per output) needs care.
+2. **Deck-per-channel multiplicity** — the engine's `Channel` holds one effect;
    Varda channels composite *many* decks. This is the single largest *port* (vs
    reuse). Validate the offscreen-per-deck → channel-composite cost early (Phase 1).
 2. **Modulation parity** — engine has LFO + audio routing; ADSR, step-seq, and
