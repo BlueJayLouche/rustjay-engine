@@ -22,7 +22,7 @@ pub mod vertex;
 
 pub use instance::{EffectInput, EffectInstance, RenderCtx, RenderTarget};
 pub use lfo::{
-    beat_division_to_hz, Lfo, LfoBank, LfoState, LfoTarget, Waveform, BEAT_DIVISIONS,
+    beat_division_to_hz, Lfo, LfoBank, LfoTarget, Waveform, BEAT_DIVISIONS,
     BEAT_DIVISION_NAMES,
 };
 pub use modulation::{

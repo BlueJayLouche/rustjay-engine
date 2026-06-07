@@ -248,7 +248,7 @@ pub mod prelude {
     pub use crate::{run, run_headless, run_headless_with_tabs, run_with_tabs};
     pub use rustjay_core::{
         beat_division_to_hz, AudioCommand, EffectPlugin, EngineState, GuiTab, HsbParams,
-        InputCommand, InputType, Lfo, LfoBank, LfoState, LfoTarget, LinkCommand, MeshDescriptor,
+        InputCommand, InputType, Lfo, LfoBank, LfoTarget, LinkCommand, MeshDescriptor,
         MeshTopology, MidiCommand, ModulationSource, OscCommand, OutputCommand, ParamCategory,
         ParamType, ParameterDescriptor, Pass, PassInput, PresetCommand, ProDjCommand, RenderGraph,
         RenderHookCtx, Vertex, Waveform, WebCommand, BEAT_DIVISIONS, BEAT_DIVISION_NAMES,
