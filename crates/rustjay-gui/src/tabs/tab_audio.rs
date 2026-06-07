@@ -625,7 +625,13 @@ impl ControlGui {
         if is_first_tap {
             state.audio.tap_times.clear();
             state.audio.tap_tempo_info = "Reset: new tempo sequence".to_string();
-            state.lfo.bank.reset_all();
+            let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in mod_eng.sources.iter_mut() {
+                if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = &mut entry.source {
+                    *phase = 0.0;
+                    *last_beat_phase = 0.0;
+                }
+            }
         } else {
             state.audio.tap_tempo_info =
                 format!("{} taps recorded", state.audio.tap_times.len() + 1);

@@ -3,14 +3,12 @@
 //! Reuses `rustjay_mixer::CompositePipeline` and `BlitPipeline` so deck blending
 //! uses the same shader path as channel blending.
 
-use rustjay_core::modulation::ModulationEngine;
 use rustjay_core::{
     EffectInput, EffectInstance, EngineState, ParamCategory, ParameterDescriptor, RenderCtx,
     RenderTarget,
 };
 use rustjay_mixer::{BlendMode, BlitPipeline, CompositePipeline};
 use rustjay_render::Texture;
-use std::sync::{Arc, Mutex};
 
 use crate::graph::Deck;
 
@@ -37,10 +35,7 @@ pub struct DeckCompositor {
     // computed once per frame to avoid recomputation and per-frame allocation.
     eff_opacity: Vec<f32>,
     eff_blend: Vec<BlendMode>,
-    /// Optional shared modulation engine for applying mixer-level modulation to
-    /// deck params (crossfader/channel modulation lives in Mixer; deck modulation
-    /// reaches here via this Arc).
-    modulation: Option<Arc<Mutex<ModulationEngine>>>,
+
 }
 
 impl DeckCompositor {
@@ -57,13 +52,7 @@ impl DeckCompositor {
             generation: 0,
             eff_opacity: Vec::new(),
             eff_blend: Vec::new(),
-            modulation: None,
         }
-    }
-
-    /// Set the shared modulation engine used for deck-level param modulation.
-    pub fn set_modulation_engine(&mut self, engine: Arc<Mutex<ModulationEngine>>) {
-        self.modulation = Some(engine);
     }
 
     /// Ensure GPU resources match `size`.
@@ -202,18 +191,13 @@ impl EffectInstance for DeckCompositor {
         self.eff_opacity.clear();
         self.eff_blend.clear();
         for deck in &self.decks {
-            // base (incl. any engine-level LFO/audio) from get_param, plus the
-            // mixer's ModulationEngine — mirrors `rustjay_mixer::Mixer`'s own
-            // channel-opacity handling. NOTE: a given key must be assigned in
-            // exactly ONE modulation system (the mixer's `ModulationEngine`, used
-            // throughout this app — NOT the engine LfoBank as well) or the two
-            // contributions double-sum.
-            let mut opacity = engine.get_param(&deck.opacity_key).unwrap_or(deck.opacity);
-            if let Some(ref mod_arc) = self.modulation {
-                if let Ok(mod_eng) = mod_arc.lock() {
-                    opacity = (opacity + mod_eng.get_modulation(&deck.opacity_key)).clamp(0.0, 1.0);
-                }
-            }
+            // Opacity is read fully modulated from the unified engine.
+            // Phase 4 removed the mixer's owned ModulationEngine; all modulation
+            // assignments now live in EngineState.modulation.
+            let opacity = engine
+                .get_param(&deck.opacity_key)
+                .unwrap_or(deck.opacity)
+                .clamp(0.0, 1.0);
             self.eff_opacity.push(opacity);
             self.eff_blend.push(
                 engine

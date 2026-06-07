@@ -44,7 +44,7 @@ pub const MAX_MOD_SOURCES: usize = 64;
 pub const MAX_MOD_ASSIGNMENTS: usize = 256;
 
 /// Current [`MixerState`] schema version. Bump on breaking format changes.
-pub const MIXER_STATE_VERSION: u32 = 1;
+pub const MIXER_STATE_VERSION: u32 = 2;
 
 /// Serialized mix settings for one channel, keyed by stable UUID.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,16 +128,19 @@ impl Mixer {
                     mute: ch.mute,
                 })
                 .collect(),
-            modulation: self.modulation.lock().unwrap().clone(),
+            modulation: ModulationEngine::default(),
         }
     }
 
     /// Restore mix settings from a [`MixerState`] onto the live channel set.
     ///
-    /// Channels are matched by UUID; values are clamped into range. Returns the
-    /// number of channels matched (for logging). Does not allocate or touch GPU
-    /// resources — only the live channels' mix settings and the crossfader.
-    pub fn apply_state(&mut self, state: &MixerState) -> usize {
+    /// Channels are matched by UUID; values are clamped into range. Returns
+    /// `(matched_count, legacy_modulation)` where `legacy_modulation` is
+    /// `Some(engine)` only when the preset was written before version
+    /// [`MIXER_STATE_VERSION`] and carried non-empty modulation data. Callers
+    /// with access to `EngineState.modulation` should merge the returned engine
+    /// via `add_source_with_uuid` / `assign` (REQ-10 / UNIFIED_MODULATION_ROADMAP M4.5).
+    pub fn apply_state(&mut self, state: &MixerState) -> (usize, Option<ModulationEngine>) {
         self.crossfader = state.crossfader.clamp(0.0, 1.0);
 
         let mut matched = 0;
@@ -151,14 +154,17 @@ impl Mixer {
             }
         }
 
-        // Restore modulation state (T13).
-        {
-            let mut mod_eng = self.modulation.lock().unwrap();
-            *mod_eng = state.modulation.clone();
-            mod_eng.ensure_index();
-        }
+        // v1 presets carried modulation in the mixer; hand it back to the caller
+        // so it can be merged into the unified EngineState.modulation.
+        let legacy = if state.version < MIXER_STATE_VERSION && state.modulation.source_count() > 0 {
+            let mut eng = state.modulation.clone();
+            eng.ensure_index();
+            Some(eng)
+        } else {
+            None
+        };
 
-        matched
+        (matched, legacy)
     }
 }
 
@@ -202,7 +208,7 @@ mod tests {
         // Apply onto a fresh mixer with the same topology.
         let mut restored = mixer_ab();
         let state = MixerState::from_json(&json).unwrap();
-        assert_eq!(restored.apply_state(&state), 2);
+        assert_eq!(restored.apply_state(&state).0, 2);
 
         assert!((restored.crossfader - 0.3).abs() < 1e-6);
         assert!((restored.channels[0].opacity - 0.4).abs() < 1e-6);
@@ -246,54 +252,75 @@ mod tests {
         let mut m = mixer_ab();
         let before = m.channels[0].opacity;
         let state = MixerState::from_json(json).unwrap();
-        assert_eq!(m.apply_state(&state), 0);
+        assert_eq!(m.apply_state(&state).0, 0);
         assert_eq!(m.channels[0].opacity, before);
     }
 
     #[test]
     fn round_trip_modulation_state() {
+        // Since the mixer no longer owns a ModulationEngine (Phase 4),
+        // serialize_state writes an empty engine. The MixerState wire format
+        // still carries a `modulation` field for backward compat, so old
+        // presets deserialize without error, but the mixer ignores it on load.
         let m = mixer_ab();
-        let lfo = m
-            .modulation
-            .lock()
-            .unwrap()
-            .add_source(rustjay_core::ModulationSource::sine_lfo(1.0));
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("crossfader", &lfo, 0.5, None);
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("ch_a_opacity", &lfo, 0.25, None);
-        m.modulation
-            .lock()
-            .unwrap()
-            .assign("ch_b_opacity", &lfo, 0.25, None);
-
         let json = m.serialize_state().to_json().unwrap();
 
-        // Restore onto a fresh mixer.
-        let mut restored = mixer_ab();
         let state = MixerState::from_json(&json).unwrap();
-        restored.apply_state(&state);
+        // Field is present but empty because mixer no longer stores modulation.
+        assert_eq!(state.modulation.source_count(), 0);
 
-        assert_eq!(restored.modulation.lock().unwrap().source_count(), 1);
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("crossfader"));
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("ch_a_opacity"));
-        assert!(restored
-            .modulation
-            .lock()
-            .unwrap()
-            .has_modulation("ch_b_opacity"));
+        // Old presets with modulation still parse.
+        let json_with_mod = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false},
+            {"uuid":"b","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ],"modulation":{"sources":[{"uuid":"lfo_1","source":{"LFO":{"waveform":"Sine","frequency":1.0,"phase":0.0,"amplitude":1.0,"bipolar":true,"tempo_sync":false,"division":2,"phase_offset_degrees":0.0,"last_beat_phase":0.0}}}],"assignments":{"crossfader":[{"source_id":"lfo_1","amount":0.5,"component":null}]}}}"#;
+        let state_old = MixerState::from_json(json_with_mod).unwrap();
+        assert_eq!(state_old.modulation.source_count(), 1);
+        assert!(state_old.modulation.has_modulation("crossfader"));
+    }
+
+    #[test]
+    fn v1_migration_returns_legacy_modulation() {
+        // v1 preset with a non-empty modulation block should be handed back to
+        // the caller so it can be merged into EngineState.modulation.
+        let json_v1 = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false},
+            {"uuid":"b","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ],"modulation":{"sources":[{"uuid":"lfo_1","source":{"LFO":{"waveform":"Sine","frequency":1.0,"phase":0.0,"amplitude":1.0,"bipolar":true,"tempo_sync":false,"division":2,"phase_offset_degrees":0.0,"last_beat_phase":0.0}}}],"assignments":{"crossfader":[{"source_id":"lfo_1","amount":0.5,"component":null}]}}}"#;
+        let state = MixerState::from_json(json_v1).unwrap();
+        let mut m = mixer_ab();
+        let (matched, legacy) = m.apply_state(&state);
+        assert_eq!(matched, 2);
+        let legacy = legacy.expect("v1 preset with modulation should return legacy engine");
+        assert_eq!(legacy.source_count(), 1);
+        assert!(legacy.has_modulation("crossfader"));
+    }
+
+    #[test]
+    fn v2_preset_returns_no_legacy_modulation() {
+        // v2 (current) presets never carry modulation; apply_state returns None.
+        let m = mixer_ab();
+        let json = m.serialize_state().to_json().unwrap();
+        let state = MixerState::from_json(&json).unwrap();
+        let mut m2 = mixer_ab();
+        let (_, legacy) = m2.apply_state(&state);
+        assert!(legacy.is_none(), "current-version preset should not return legacy engine");
+    }
+
+    #[test]
+    fn v1_preset_with_empty_modulation_returns_no_legacy() {
+        // S2: v1 preset with an empty modulation block should return None,
+        // exercising the version < VERSION && source_count() == 0 branch.
+        let json_v1_empty = r#"{"version":1,"crossfader":0.5,"channels":[
+            {"uuid":"a","opacity":1.0,"blend_mode":"Normal","solo":false,"mute":false}
+        ],"modulation":{"sources":[],"assignments":{}}}"#;
+        let state = MixerState::from_json(json_v1_empty).unwrap();
+        let mut m = mixer_ab();
+        let (_, legacy) = m.apply_state(&state);
+        assert!(
+            legacy.is_none(),
+            "v1 preset with zero modulation sources should not return legacy engine"
+        );
     }
 
     #[test]

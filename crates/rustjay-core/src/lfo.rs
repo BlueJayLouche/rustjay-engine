@@ -408,7 +408,6 @@ impl LfoBank {
     /// Each LFO becomes a [`crate::modulation::ModulationSource::LFO`] entry.
     /// Waveforms are mapped to the nearest [`crate::modulation::LFOWaveform`];
     /// `Ramp` and `Saw` both map to `Sawtooth`.
-    #[cfg(feature = "modulation")]
     pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
         use crate::modulation::{LFOWaveform, ModulationSource, ModulationSourceEntry};
         self.lfos
@@ -432,6 +431,11 @@ impl LfoBank {
                     phase,
                     amplitude: lfo.amplitude,
                     bipolar: true,
+                    tempo_sync: lfo.tempo_sync,
+                    division: lfo.division,
+                    phase_offset_degrees: lfo.phase_offset,
+                    enabled: lfo.enabled,
+                    last_beat_phase: 0.0,
                 };
                 ModulationSourceEntry::with_uuid(format!("lfo_{}", lfo.index), source)
             })
@@ -441,7 +445,6 @@ impl LfoBank {
     /// Convert this bank into a full [`crate::modulation::ModulationEngine`].
     ///
     /// `bpm` is used to resolve tempo-synced frequencies.
-    #[cfg(feature = "modulation")]
     pub fn to_modulation_engine(&self, bpm: f32) -> crate::modulation::ModulationEngine {
         use crate::modulation::{LFOWaveform, ModulationEngine, ModulationSource};
         let mut engine = ModulationEngine::new();
@@ -464,6 +467,11 @@ impl LfoBank {
                 phase,
                 amplitude: lfo.amplitude,
                 bipolar: true,
+                tempo_sync: lfo.tempo_sync,
+                division: lfo.division,
+                phase_offset_degrees: lfo.phase_offset,
+                enabled: lfo.enabled,
+                last_beat_phase: 0.0,
             };
             let uuid = engine.add_source_with_uuid(format!("lfo_{}", lfo.index), source);
             if let Some(param_id) = lfo.target.param_id() {

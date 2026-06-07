@@ -682,8 +682,9 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             midi_learn_active: s.midi_learn_active,
             midi_learning_param_name: s.midi_learning_param_name.clone(),
         });
+        let mod_eng = s.modulation.lock().unwrap_or_else(|e| e.into_inner());
         web_server.send_modulation_state(&rustjay_control::ModulationStateJson {
-            lfos: s.lfo.bank.lfos.clone(),
+            lfos: mod_eng.to_lfo_vec(),
             audio_routes: s.audio_routing.matrix.routes().to_vec(),
             audio_routing_enabled: s.audio_routing.enabled,
             bpm: s.audio.bpm,
@@ -740,6 +741,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
     // Main render loop
     let mut last_frame_start = std::time::Instant::now();
+    let mut elapsed = 0.0f32;
     loop {
         let frame_start = std::time::Instant::now();
         let delta_time = frame_start
@@ -747,6 +749,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             .as_secs_f32()
             .min(0.1);
         last_frame_start = frame_start;
+        elapsed += delta_time;
 
         // ── Poll engine services ──────────────────────────────────────────────
         // Audio: push latest FFT + volume into shared state
@@ -822,46 +825,50 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
         // Update LFO phases and apply modulations to params (post-MIDI so LFO adds on top)
         {
+            let (mod_arc, bpm, stable_beat_phase, fft_snapshot, volume) = {
+                let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let mod_arc = state.modulation.clone();
+                let bpm = state.effective_bpm().max(1.0);
+                let stable_beat_phase = state.stable_beat_phase();
+                let volume = state.audio.volume;
+                let fft: Vec<f32> = if state.audio.enabled {
+                    state.audio.fft.clone()
+                } else {
+                    Vec::new()
+                };
+                (mod_arc, bpm, stable_beat_phase, fft, volume)
+            };
+            let audio = {
+                let mut values = rustjay_core::modulation::AudioValues::default();
+                if !fft_snapshot.is_empty() {
+                    values.sources.insert(
+                        0,
+                        rustjay_core::modulation::AudioSourceValues {
+                            fft: &fft_snapshot,
+                            level: volume,
+                            sample_rate: 48000.0,
+                        },
+                    );
+                }
+                values
+            };
+
+            let offsets = {
+                let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.update(elapsed, bpm, stable_beat_phase, &audio);
+                let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
+                for param_id in mod_eng.assignments.keys() {
+                    let offset = mod_eng.get_modulation(param_id);
+                    offsets.push((param_id.clone(), offset));
+                }
+                offsets
+            };
+
             let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let bpm = state.effective_bpm().max(1.0);
-            let beat_phase = state.stable_beat_phase();
-            state.lfo.bank.update(bpm, delta_time, beat_phase);
-            state.reset_custom_params_to_base();
-            let mods = state.lfo.bank.get_modulations();
-            let mut any_mod = false;
-            for (param_id, mod_val) in &mods {
-                if mod_val.abs() > 0.001 {
-                    any_mod = true;
-                }
-                match param_id.as_str() {
-                    "hue_shift" => {
-                        let base = state.hsb_param_bases.hue_shift;
-                        state.hsb_params.hue_shift = (base + mod_val * 180.0).clamp(-180.0, 180.0);
-                    }
-                    "saturation" => {
-                        let base = state.hsb_param_bases.saturation;
-                        state.hsb_params.saturation = (base + mod_val * 1.0).clamp(0.0, 2.0);
-                    }
-                    "brightness" => {
-                        let base = state.hsb_param_bases.brightness;
-                        state.hsb_params.brightness = (base + mod_val * 1.0).clamp(0.0, 2.0);
-                    }
-                    _ => {
-                        if let Some(i) = state
-                            .param_descriptors
-                            .iter()
-                            .position(|d| d.id == *param_id)
-                        {
-                            let base = state.custom_param_bases[i];
-                            let desc = &state.param_descriptors[i];
-                            let range = desc.max - desc.min;
-                            state.custom_params[i] =
-                                (base + mod_val * range).clamp(desc.min, desc.max);
-                        }
-                    }
-                }
-            }
-            let _ = any_mod; // per-frame; trace only if needed
+            state.modulation_offsets = offsets;
+
+            // HSB params are read modulated on demand via get_param();
+            // pre-computing them here would double-modulate (F4).
             let (h, s, b) = (
                 state.hsb_params.hue_shift,
                 state.hsb_params.saturation,
@@ -1076,25 +1083,46 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                     WebServerCommand::Modulation(mod_cmd) => {
                         match mod_cmd {
                             rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
+                                let uuid = format!("lfo_{slot}");
                                 let mut state =
                                     shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                if slot < state.lfo.bank.lfos.len() {
-                                    let existing = state.lfo.bank.lfos[slot].clone();
-                                    let mut new_config = config;
-                                    new_config.phase = existing.phase;
-                                    new_config.output = existing.output;
-                                    new_config.last_beat_phase = existing.last_beat_phase;
-                                    state.lfo.bank.lfos[slot] = new_config;
-                                    web_server.modulation_dirty = true;
+                                let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(idx) = mod_eng.sources.iter().position(|s| s.uuid == uuid) {
+                                    if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = &mod_eng.sources[idx].source {
+                                        let (existing_phase, existing_last_beat) = (*phase, *last_beat_phase);
+                                        let waveform = match config.waveform {
+                                            rustjay_core::lfo::Waveform::Sine => rustjay_core::modulation::LFOWaveform::Sine,
+                                            rustjay_core::lfo::Waveform::Triangle => rustjay_core::modulation::LFOWaveform::Triangle,
+                                            rustjay_core::lfo::Waveform::Square => rustjay_core::modulation::LFOWaveform::Square,
+                                            rustjay_core::lfo::Waveform::Ramp | rustjay_core::lfo::Waveform::Saw => rustjay_core::modulation::LFOWaveform::Sawtooth,
+                                        };
+                                        mod_eng.sources[idx].source = rustjay_core::modulation::ModulationSource::LFO {
+                                            waveform,
+                                            frequency: config.rate,
+                                            phase: existing_phase,
+                                            amplitude: config.amplitude,
+                                            bipolar: true,
+                                            tempo_sync: config.tempo_sync,
+                                            division: config.division,
+                                            phase_offset_degrees: config.phase_offset,
+                                            enabled: config.enabled,
+                                            last_beat_phase: existing_last_beat,
+                                        };
+                                    }
                                 }
+                                web_server.modulation_dirty = true;
                             }
                             rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
+                                let uuid = format!("lfo_{slot}");
                                 let mut state =
                                     shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                if slot < state.lfo.bank.lfos.len() {
-                                    state.lfo.bank.lfos[slot].enabled = enabled;
-                                    web_server.modulation_dirty = true;
+                                let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(idx) = mod_eng.sources.iter().position(|s| s.uuid == uuid) {
+                                    if let rustjay_core::modulation::ModulationSource::LFO { ref mut enabled: e, .. } = mod_eng.sources[idx].source {
+                                        *e = enabled;
+                                    }
                                 }
+                                web_server.modulation_dirty = true;
                             }
                             rustjay_control::ModulationWebCommand::AudioRoute {
                                 param_id,
@@ -1154,7 +1182,13 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     let is_first_tap = now - state.audio.last_tap_time > 2.0;
                                     if is_first_tap {
                                         state.audio.tap_times.clear();
-                                        state.lfo.bank.reset_all();
+                                        let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                        for entry in mod_eng.sources.iter_mut() {
+                                            if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = &mut entry.source {
+                                                *phase = 0.0;
+                                                *last_beat_phase = 0.0;
+                                            }
+                                        }
                                     }
                                     state.audio.tap_times.push(now);
                                     state.audio.last_tap_time = now;
@@ -1420,8 +1454,9 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
             if web_server.modulation_dirty {
                 if let Ok(state) = shared_state.lock() {
+                    let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
                     web_server.send_modulation_state(&rustjay_control::ModulationStateJson {
-                        lfos: state.lfo.bank.lfos.clone(),
+                        lfos: mod_eng.to_lfo_vec(),
                         audio_routes: state.audio_routing.matrix.routes().to_vec(),
                         audio_routing_enabled: state.audio_routing.enabled,
                         bpm: state.audio.bpm,

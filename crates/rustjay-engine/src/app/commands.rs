@@ -4,9 +4,10 @@ use rustjay_control::{MidiMapping, OscServer};
 use rustjay_control::{WebCommand as WebServerCommand, WebConfig, WebServer};
 use rustjay_core::EffectPlugin;
 use rustjay_core::{
-    AudioCommand, EngineState, InputCommand, LinkCommand, MidiCommand, OscCommand, OutputCommand,
-    PresetCommand, ProDjCommand, WebCommand,
+    AudioCommand, EngineState, InputCommand, LinkCommand, MidiCommand, ModulationCommand, OscCommand,
+    OutputCommand, PresetCommand, ProDjCommand, WebCommand,
 };
+use std::sync::Arc;
 
 fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, EngineState> {
     state.lock().unwrap_or_else(|e| e.into_inner())
@@ -29,6 +30,7 @@ struct PendingCommands {
     output: OutputCommand,
     audio: AudioCommand,
     midi: MidiCommand,
+    modulation: ModulationCommand,
     osc: OscCommand,
     preset: PresetCommand,
     web: WebCommand,
@@ -48,6 +50,7 @@ impl<P: EffectPlugin> App<P> {
                 output: std::mem::replace(&mut s.output_command, OutputCommand::None),
                 audio: std::mem::replace(&mut s.audio_command, AudioCommand::None),
                 midi: std::mem::replace(&mut s.midi_command, MidiCommand::None),
+                modulation: std::mem::replace(&mut s.modulation_command, ModulationCommand::None),
                 osc: std::mem::replace(&mut s.osc_command, OscCommand::None),
                 preset: std::mem::replace(&mut s.preset_command, PresetCommand::None),
                 web: std::mem::replace(&mut s.web_command, WebCommand::None),
@@ -60,6 +63,7 @@ impl<P: EffectPlugin> App<P> {
         self.process_output_commands(cmds.output);
         self.process_audio_commands(cmds.audio);
         self.process_midi_commands(cmds.midi);
+        self.process_modulation_commands(cmds.modulation);
         self.process_osc_commands(cmds.osc);
         self.process_preset_commands(cmds.preset);
         self.process_web_commands(cmds.web);
@@ -514,6 +518,60 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
+    fn process_modulation_commands(&mut self, command: ModulationCommand) {
+        if matches!(command, ModulationCommand::None) {
+            return;
+        }
+        // Clone the Arc while holding shared_state, then drop the guard before locking
+        // modulation — prevents the nested-lock deadlock (lock hierarchy: never hold
+        // shared_state while acquiring modulation from a different call path).
+        let mod_arc = {
+            let state = lock(&self.shared_state);
+            Arc::clone(&state.modulation)
+        };
+        let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+        match command {
+            ModulationCommand::None => {}
+            ModulationCommand::AddSource(source) => {
+                mod_eng.add_source(source);
+            }
+            ModulationCommand::AddSourceWithUuid { uuid, source } => {
+                mod_eng.add_source_with_uuid(uuid, source);
+            }
+            ModulationCommand::RemoveSource(uuid) => {
+                mod_eng.remove_source(&uuid);
+            }
+            ModulationCommand::Assign {
+                param,
+                source_id,
+                amount,
+                component,
+            } => {
+                mod_eng.assign(&param, &source_id, amount, component);
+            }
+            ModulationCommand::AssignModOnMod {
+                target_uuid,
+                param,
+                modulator_uuid,
+                amount,
+            } => {
+                mod_eng.assign_mod_on_mod(&target_uuid, &param, &modulator_uuid, amount);
+            }
+            ModulationCommand::ClearAssignments(param) => {
+                mod_eng.clear_assignments(&param);
+            }
+            ModulationCommand::TriggerAdsr(uuid) => {
+                mod_eng.trigger_adsr(&uuid);
+            }
+            ModulationCommand::ReleaseAdsr(uuid) => {
+                mod_eng.release_adsr(&uuid);
+            }
+            ModulationCommand::RestoreEngine(engine) => {
+                *mod_eng = engine;
+            }
+        }
+    }
+
     fn process_osc_commands(&mut self, command: OscCommand) {
         match command {
             OscCommand::Start => {
@@ -884,21 +942,53 @@ impl<P: EffectPlugin> App<P> {
                     },
                     WebServerCommand::Modulation(mod_cmd) => match mod_cmd {
                         rustjay_control::ModulationWebCommand::LfoSet { slot, config } => {
-                            if let Ok(mut state) = self.shared_state.lock() {
-                                if slot < state.lfo.bank.lfos.len() {
-                                    let existing = state.lfo.bank.lfos[slot].clone();
-                                    let mut new_config = config;
-                                    new_config.phase = existing.phase;
-                                    new_config.output = existing.output;
-                                    new_config.last_beat_phase = existing.last_beat_phase;
-                                    state.lfo.bank.lfos[slot] = new_config;
-                                }
+                            // Clone Arc before dropping shared_state to avoid nested-lock deadlock.
+                            let mod_arc = {
+                                let state = lock(&self.shared_state);
+                                Arc::clone(&state.modulation)
+                            };
+                            let uuid = format!("lfo_{slot}");
+                            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            // Preserve runtime phase state so the LFO doesn't jump on config change (S1).
+                            let (existing_phase, existing_last_beat) = mod_eng.sources.iter()
+                                .find(|s| s.uuid == uuid)
+                                .and_then(|s| if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = s.source { Some((phase, last_beat_phase)) } else { None })
+                                .unwrap_or((0.0, 0.0));
+                            let waveform = match config.waveform {
+                                rustjay_core::lfo::Waveform::Sine => rustjay_core::modulation::LFOWaveform::Sine,
+                                rustjay_core::lfo::Waveform::Triangle => rustjay_core::modulation::LFOWaveform::Triangle,
+                                rustjay_core::lfo::Waveform::Square => rustjay_core::modulation::LFOWaveform::Square,
+                                rustjay_core::lfo::Waveform::Ramp | rustjay_core::lfo::Waveform::Saw => rustjay_core::modulation::LFOWaveform::Sawtooth,
+                            };
+                            let new_source = rustjay_core::modulation::ModulationSource::LFO {
+                                waveform,
+                                frequency: config.rate,
+                                phase: existing_phase,
+                                amplitude: config.amplitude,
+                                bipolar: true,
+                                tempo_sync: config.tempo_sync,
+                                division: config.division,
+                                phase_offset_degrees: config.phase_offset,
+                                enabled: config.enabled,
+                                last_beat_phase: existing_last_beat,
+                            };
+                            if let Some(idx) = mod_eng.sources.iter().position(|s| s.uuid == uuid) {
+                                mod_eng.sources[idx].source = new_source;
+                            } else {
+                                mod_eng.add_source_with_uuid(uuid, new_source);
                             }
+                            mod_eng.ensure_index();
                         }
                         rustjay_control::ModulationWebCommand::LfoEnable { slot, enabled } => {
-                            if let Ok(mut state) = self.shared_state.lock() {
-                                if slot < state.lfo.bank.lfos.len() {
-                                    state.lfo.bank.lfos[slot].enabled = enabled;
+                            let mod_arc = {
+                                let state = lock(&self.shared_state);
+                                Arc::clone(&state.modulation)
+                            };
+                            let uuid = format!("lfo_{slot}");
+                            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(entry) = mod_eng.sources.iter_mut().find(|s| s.uuid == uuid) {
+                                if let rustjay_core::modulation::ModulationSource::LFO { enabled: ref mut e, .. } = entry.source {
+                                    *e = enabled;
                                 }
                             }
                         }
@@ -952,12 +1042,17 @@ impl<P: EffectPlugin> App<P> {
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs_f64();
-                            if let Ok(mut state) = self.shared_state.lock() {
+                            // Phase 1: do all audio mutations under shared_state; capture
+                            // mod_arc only if this is a first-tap phase reset, then drop guard.
+                            let phase_reset_arc = {
+                                let mut state = lock(&self.shared_state);
                                 let is_first_tap = now - state.audio.last_tap_time > 2.0;
-                                if is_first_tap {
+                                let mod_arc = if is_first_tap {
                                     state.audio.tap_times.clear();
-                                    state.lfo.bank.reset_all();
-                                }
+                                    Some(Arc::clone(&state.modulation))
+                                } else {
+                                    None
+                                };
                                 state.audio.tap_times.push(now);
                                 state.audio.last_tap_time = now;
                                 if state.audio.tap_times.len() > 8 {
@@ -966,14 +1061,9 @@ impl<P: EffectPlugin> App<P> {
                                 state.audio.beat_phase = 0.0;
                                 if state.audio.tap_times.len() >= 2 {
                                     let n = state.audio.tap_times.len();
-                                    let mut intervals = Vec::new();
-                                    for i in 1..n {
-                                        intervals.push(
-                                            state.audio.tap_times[i] - state.audio.tap_times[i - 1],
-                                        );
-                                    }
-                                    let avg_interval: f64 =
-                                        intervals.iter().sum::<f64>() / intervals.len() as f64;
+                                    let avg_interval: f64 = state.audio.tap_times.windows(2)
+                                        .map(|w| w[1] - w[0])
+                                        .sum::<f64>() / (n - 1) as f64;
                                     if avg_interval > 0.1 && avg_interval < 3.0 {
                                         state.audio.bpm = (60.0 / avg_interval) as f32;
                                         state.audio.tap_tempo_info =
@@ -981,6 +1071,17 @@ impl<P: EffectPlugin> App<P> {
                                     }
                                 } else {
                                     state.audio.tap_tempo_info = "Tap again…".to_string();
+                                }
+                                mod_arc
+                                // shared_state guard drops here
+                            };
+                            // Phase 2: reset LFO phases without holding shared_state.
+                            if let Some(mod_arc) = phase_reset_arc {
+                                let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                                for entry in &mut mod_eng.sources {
+                                    if let rustjay_core::modulation::ModulationSource::LFO { ref mut phase, .. } = entry.source {
+                                        *phase = 0.0;
+                                    }
                                 }
                             }
                             server.modulation_dirty = true;

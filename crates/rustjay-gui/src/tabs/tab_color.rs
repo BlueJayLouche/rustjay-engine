@@ -126,12 +126,15 @@ impl ControlGui {
             ui.spacing();
 
             // LFO Controls
-            ui.text("LFO Modulation");
+            ui.text("Modulation");
 
             // Display active LFO count
             let active_lfos = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.bank.lfos.iter().filter(|b| b.enabled).count()
+                let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.sources.iter().filter(|e| {
+                    matches!(e.source, rustjay_core::modulation::ModulationSource::LFO { enabled: true, .. })
+                }).count()
             };
 
             if active_lfos > 0 {

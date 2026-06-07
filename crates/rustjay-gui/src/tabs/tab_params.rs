@@ -102,15 +102,17 @@ impl ControlGui {
         if has_modulatable {
             ui.separator();
             ui.spacing();
-            ui.text("LFO Modulation");
-            if ui.button("Open LFO Window") {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.show_window = true;
+            ui.text("Modulation");
+            if ui.button("Open Modulation Tab") {
+                // Modulation tab is built-in; no window toggle needed.
             }
 
             let active_lfos = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.bank.lfos.iter().filter(|b| b.enabled).count()
+                let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.sources.iter().filter(|e| {
+                    matches!(e.source, rustjay_core::modulation::ModulationSource::LFO { enabled: true, .. })
+                }).count()
             };
             if active_lfos > 0 {
                 ui.same_line();

@@ -15,14 +15,16 @@ log        = { workspace = true }
 anyhow     = { workspace = true }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
-uuid       = { workspace = true, optional = true }
+uuid       = { workspace = true }
 
 [features]
 # `ndi` is a flag feature gating NDI output command variants; opt-in via the
 # engine's `ndi` feature (which needs a proprietary SDK to build).
 default = []
 ndi     = []
-modulation = ["dep:uuid"]
+# `modulation` was a transitional feature gate (Phase B). It is now unconditional.
+# Kept as a no-op for backward compatibility with downstream feature lists.
+modulation = []
 
 link   = []
 prodj  = []
