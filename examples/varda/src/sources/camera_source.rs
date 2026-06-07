@@ -198,6 +198,25 @@ impl CameraSource {
     }
 }
 
+impl Drop for CameraSource {
+    fn drop(&mut self) {
+        let map = CAMERA_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+        let Ok(mut guard) = map.lock() else { return };
+        if let Some(entry) = guard.get(&self.device_index) {
+            // If strong_count is 2, only this CameraSource and the map hold the Arc.
+            // Remove from map so the session is dropped and the webcam stops.
+            if Arc::strong_count(entry) <= 2 {
+                if let Some(session) = guard.remove(&self.device_index) {
+                    if let Ok(mut s) = session.lock() {
+                        s.manager.stop();
+                        log::info!("CameraSource stopped webcam {}", self.device_index);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl EffectInstance for CameraSource {
     fn prepare(&mut self, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
         let mut session = self.session.lock().unwrap();
