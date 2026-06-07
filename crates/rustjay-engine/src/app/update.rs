@@ -588,8 +588,9 @@ impl<P: EffectPlugin> App<P> {
             }
             if server.modulation_dirty {
                 if let Ok(state) = self.shared_state.lock() {
+                    let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
                     server.send_modulation_state(&rustjay_control::ModulationStateJson {
-                        lfos: state.lfo.bank.lfos.clone(),
+                        lfos: mod_eng.to_lfo_vec(),
                         audio_routes: state.audio_routing.matrix.routes().to_vec(),
                         audio_routing_enabled: state.audio_routing.enabled,
                         bpm: state.audio.bpm,

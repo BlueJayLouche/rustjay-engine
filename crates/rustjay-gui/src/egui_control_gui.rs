@@ -194,7 +194,13 @@ impl EguiControlGui {
         let is_first_tap = now - state.audio.last_tap_time > 2.0;
         if is_first_tap {
             state.audio.tap_times.clear();
-            state.lfo.bank.reset_all();
+            let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in mod_eng.sources.iter_mut() {
+                if let rustjay_core::modulation::ModulationSource::LFO { phase, last_beat_phase, .. } = &mut entry.source {
+                    *phase = 0.0;
+                    *last_beat_phase = 0.0;
+                }
+            }
         }
         state.audio.tap_times.push(now);
         state.audio.last_tap_time = now;
@@ -1177,15 +1183,16 @@ impl EguiControlGui {
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(8.0);
-            ui.label("LFO Modulation");
-            if ui.button("Open LFO Window").clicked() {
-                if let Ok(mut state) = self.shared_state.lock() {
-                    state.lfo.show_window = true;
-                }
+            ui.label("Modulation");
+            if ui.button("Open Modulation Tab").clicked() {
+                self.active_tab = GuiTab::Modulation;
             }
             let active_lfos = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.lfo.bank.lfos.iter().filter(|b| b.enabled).count()
+                let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                mod_eng.sources.iter().filter(|e| {
+                    matches!(e.source, rustjay_core::modulation::ModulationSource::LFO { enabled: true, .. })
+                }).count()
             };
             if active_lfos > 0 {
                 ui.horizontal(|ui| {

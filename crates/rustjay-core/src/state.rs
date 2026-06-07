@@ -3,7 +3,7 @@
 //! [`EngineState`] is the central mutable state that the engine manages and
 //! that app plugins read from (via [`EffectPlugin::build_uniforms`](crate::EffectPlugin::build_uniforms)).
 
-use crate::lfo::LfoState;
+
 use crate::modulation::ModulationEngine;
 use crate::params::{ParamCategory, ParameterDescriptor};
 use crate::routing::AudioRoutingState;
@@ -935,14 +935,6 @@ pub struct EngineState {
     /// Used by the Modulation tab (M5.2) to populate the target picker.
     pub registered_param_ids: Vec<String>,
 
-    /// LFO bank state.
-    ///
-    /// **Deprecated shim** — kept for backward compatibility with apps that read
-    /// `engine.lfo.bank.lfos[i].output` for visualization (e.g. waaaves). The engine
-    /// tick populates `.output` from the unified [`modulation`] engine; the actual
-    /// modulation logic no longer reads this field. Will be removed in a follow-up release.
-    #[deprecated(note = "Use EngineState.modulation instead. LfoState is a backward-compat shim.")]
-    pub lfo: LfoState,
 
     /// NDI output state (NDI feature only).
     #[cfg(feature = "ndi")]
@@ -1219,7 +1211,6 @@ impl EngineState {
             },
             modulation_offsets: Vec::new(),
             registered_param_ids: Vec::new(),
-            lfo: LfoState::new(),
             link: LinkState::default(),
             link_command: LinkCommand::None,
             prodj: ProDjState::default(),

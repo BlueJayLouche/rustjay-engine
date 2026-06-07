@@ -619,7 +619,7 @@ pub fn build_snapshot(state: &rustjay_core::EngineState) -> EngineSnapshot {
         modulation: {
             let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
             ModulationSnapshot {
-                lfos: state.lfo.bank.lfos.clone(),
+                lfos: mod_eng.to_lfo_vec(),
                 sources: mod_eng.sources.clone(),
                 assignments: mod_eng.assignments.clone(),
                 audio_routes: state.audio_routing.matrix.routes().to_vec(),

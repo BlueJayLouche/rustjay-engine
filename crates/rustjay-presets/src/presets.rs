@@ -63,7 +63,8 @@ pub struct Preset {
     pub modulation: ModulationEngine,
     /// Legacy LFO bank — kept for backward compatibility. If `modulation` is absent
     /// on load, the engine migrates this into the unified `modulation` field.
-    #[serde(default)]
+    /// **Deprecated**: no longer serialized. Old presets still deserialize.
+    #[serde(default, skip_serializing)]
     pub lfo_bank: LfoBank,
 
     // Audio routing settings
@@ -115,7 +116,7 @@ impl Preset {
                 let eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
                 eng.clone()
             },
-            lfo_bank: state.lfo.bank.clone(),
+            lfo_bank: LfoBank::default(), // no longer serialized; old presets still deserialize
             routing_matrix: state.audio_routing.matrix.clone(),
             audio_routing_enabled: state.audio_routing.enabled,
             custom_values: state
@@ -153,8 +154,7 @@ impl Preset {
             let migrated = self.lfo_bank.to_modulation_engine(120.0);
             *state.modulation.lock().unwrap_or_else(|e| e.into_inner()) = migrated;
         }
-        // Also keep the legacy shim populated so old UI still compiles
-        state.lfo.bank = self.lfo_bank.clone();
+        // Legacy lfo_bank is no longer restored; unified modulation is the single source of truth.
         state.audio_routing.matrix = self.routing_matrix.clone();
         state.audio_routing.enabled = self.audio_routing_enabled;
         // Restore custom parameter values

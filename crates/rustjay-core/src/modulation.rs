@@ -1144,6 +1144,68 @@ impl ModulationEngine {
     pub fn assignments_iter(&self) -> impl Iterator<Item = (&String, &Vec<ParamModulation>)> {
         self.assignments.iter()
     }
+
+    /// Map LFO sources back to legacy `Lfo` structs for web-protocol backward compat.
+    /// Non-LFO sources are ignored. Targets are inferred from assignments.
+    pub fn to_lfo_vec(&self) -> Vec<crate::lfo::Lfo> {
+        use crate::lfo::{Lfo, LfoTarget, Waveform};
+        let mut out = Vec::new();
+        for (i, entry) in self.sources.iter().enumerate() {
+            let ModulationSource::LFO {
+                waveform: wf,
+                frequency,
+                phase,
+                amplitude,
+                tempo_sync,
+                division,
+                phase_offset_degrees,
+                enabled,
+                last_beat_phase,
+                ..
+            } = &entry.source else { continue };
+
+            // Infer target from assignments: find the first param this source modulates.
+            let target = self
+                .assignments
+                .iter()
+                .find_map(|(param_id, mods)| {
+                    mods.iter()
+                        .find(|m| m.source_id == entry.uuid)
+                        .map(|_| param_id.as_str())
+                })
+                .and_then(|pid| match pid {
+                    "hue_shift" => Some(LfoTarget::HueShift),
+                    "saturation" => Some(LfoTarget::Saturation),
+                    "brightness" => Some(LfoTarget::Brightness),
+                    _ => Some(LfoTarget::Custom(pid.to_string())),
+                })
+                .unwrap_or(LfoTarget::None);
+
+            let waveform = match wf {
+                LFOWaveform::Sine => Waveform::Sine,
+                LFOWaveform::Square => Waveform::Square,
+                LFOWaveform::Triangle => Waveform::Triangle,
+                LFOWaveform::Sawtooth => Waveform::Saw,
+                LFOWaveform::Random => Waveform::Sine, // no Random in legacy; map to Sine
+            };
+
+            out.push(Lfo {
+                index: i,
+                enabled: *enabled,
+                target,
+                waveform,
+                amplitude: *amplitude,
+                tempo_sync: *tempo_sync,
+                division: *division,
+                rate: *frequency,
+                phase_offset: *phase_offset_degrees,
+                phase: *phase,
+                output: self.current_values.get(i).copied().unwrap_or(0.0),
+                last_beat_phase: *last_beat_phase,
+            });
+        }
+        out
+    }
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
