@@ -211,6 +211,7 @@ impl<P: EffectPlugin> App<P> {
             analyzer.set_pink_noise_shaping(self.cached_audio_pink_noise);
 
             let fft = analyzer.get_fft();
+            let spectrum = analyzer.get_spectrum();
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
@@ -218,9 +219,11 @@ impl<P: EffectPlugin> App<P> {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if state.audio.enabled {
                 state.audio.fft = fft;
+                state.audio.spectrum = spectrum;
                 state.audio.volume = volume;
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;
+                state.audio.sample_rate = analyzer.sample_rate();
 
                 // Always reset modulated params to their base values before applying
                 // this frame's modulations — prevents accumulation across frames.
@@ -252,17 +255,17 @@ impl<P: EffectPlugin> App<P> {
 
     pub(super) fn update_lfo(&mut self) {
         // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
-        let (mod_arc, bpm, stable_beat_phase, volume) = {
+        let (mod_arc, bpm, stable_beat_phase, volume, sample_rate) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let mod_arc = state.modulation.clone();
             let bpm = state.effective_bpm();
             let stable_beat_phase = state.stable_beat_phase();
-            // S1: copy FFT into reusable scratch buffer (avoids per-frame allocation).
+            // S1: copy full spectrum into reusable scratch buffer (avoids per-frame allocation).
             self.cached_fft.clear();
             if state.audio.enabled {
-                self.cached_fft.extend_from_slice(&state.audio.fft);
+                self.cached_fft.extend_from_slice(&state.audio.spectrum);
             }
-            (mod_arc, bpm, stable_beat_phase, state.audio.volume)
+            (mod_arc, bpm, stable_beat_phase, state.audio.volume, state.audio.sample_rate)
         };
 
         // Build AudioValues after dropping state (borrows from self.cached_fft).
@@ -274,7 +277,7 @@ impl<P: EffectPlugin> App<P> {
                     rustjay_core::modulation::AudioSourceValues {
                         fft: &self.cached_fft,
                         level: volume,
-                        sample_rate: 48000.0,
+                        sample_rate,
                     },
                 );
             }

@@ -618,6 +618,8 @@ pub struct ProDjState {
 pub struct AudioState {
     /// Per-band FFT magnitudes (8 bands, 0–1).
     pub fft: [f32; 8],
+    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
+    pub spectrum: Vec<f32>,
     /// Overall volume level (0–1).
     pub volume: f32,
     /// True if a beat was detected this frame.
@@ -642,6 +644,8 @@ pub struct AudioState {
     pub pink_noise_shaping: bool,
     /// FFT window size (1024, 2048, 4096, or 8192).
     pub fft_size: usize,
+    /// Sample rate of the audio stream in Hz.
+    pub sample_rate: f32,
     /// Recent tap-tempo timestamps (seconds since epoch).
     pub tap_times: Vec<f64>,
     /// Timestamp of the most recent tap.
@@ -654,6 +658,7 @@ impl Default for AudioState {
     fn default() -> Self {
         Self {
             fft: [0.0; 8],
+            spectrum: Vec::new(),
             volume: 0.0,
             beat: false,
             bpm: 120.0,
@@ -666,6 +671,7 @@ impl Default for AudioState {
             normalize: true,
             pink_noise_shaping: false,
             fft_size: 2048,
+            sample_rate: 48000.0,
             tap_times: Vec::new(),
             last_tap_time: 0.0,
             tap_tempo_info: "Tap to set tempo".to_string(),

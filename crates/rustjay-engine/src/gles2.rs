@@ -752,9 +752,10 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         elapsed += delta_time;
 
         // ── Poll engine services ──────────────────────────────────────────────
-        // Audio: push latest FFT + volume into shared state
+        // Audio: push latest FFT + spectrum + volume into shared state
         {
             let fft = analyzer.get_fft();
+            let spectrum = analyzer.get_spectrum();
             let volume = analyzer.get_volume();
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
@@ -763,9 +764,11 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             analyzer.set_smoothing(state.audio.smoothing);
             if state.audio.enabled {
                 state.audio.fft = fft;
+                state.audio.spectrum = spectrum;
                 state.audio.volume = volume;
                 state.audio.beat = beat;
                 state.audio.beat_phase = phase;
+                state.audio.sample_rate = analyzer.sample_rate();
                 state.reset_custom_params_to_base();
             }
         }
@@ -825,28 +828,28 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
         // Update LFO phases and apply modulations to params (post-MIDI so LFO adds on top)
         {
-            let (mod_arc, bpm, stable_beat_phase, fft_snapshot, volume) = {
+            let (mod_arc, bpm, stable_beat_phase, spectrum_snapshot, volume, sample_rate) = {
                 let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let mod_arc = state.modulation.clone();
                 let bpm = state.effective_bpm().max(1.0);
                 let stable_beat_phase = state.stable_beat_phase();
                 let volume = state.audio.volume;
-                let fft: Vec<f32> = if state.audio.enabled {
-                    state.audio.fft.clone()
+                let spectrum: Vec<f32> = if state.audio.enabled {
+                    state.audio.spectrum.clone()
                 } else {
                     Vec::new()
                 };
-                (mod_arc, bpm, stable_beat_phase, fft, volume)
+                (mod_arc, bpm, stable_beat_phase, spectrum, volume, state.audio.sample_rate)
             };
             let audio = {
                 let mut values = rustjay_core::modulation::AudioValues::default();
-                if !fft_snapshot.is_empty() {
+                if !spectrum_snapshot.is_empty() {
                     values.sources.insert(
                         0,
                         rustjay_core::modulation::AudioSourceValues {
-                            fft: &fft_snapshot,
+                            fft: &spectrum_snapshot,
                             level: volume,
-                            sample_rate: 48000.0,
+                            sample_rate,
                         },
                     );
                 }

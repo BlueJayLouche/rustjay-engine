@@ -33,6 +33,7 @@ pub struct AudioAnalyzer {
     output: Arc<AudioOutput>,
     config: Arc<AudioConfig>,
     fft_size: usize,
+    sample_rate: f32,
 }
 
 impl AudioAnalyzer {
@@ -45,6 +46,7 @@ impl AudioAnalyzer {
             output: Arc::new(AudioOutput::new()),
             config: Arc::new(AudioConfig::new()),
             fft_size: DEFAULT_FFT_SIZE,
+            sample_rate: 48000.0,
         }
     }
 
@@ -88,7 +90,7 @@ impl AudioAnalyzer {
             self.stream = None;
         }
         self.running = Arc::new(AtomicBool::new(false));
-        self.output = Arc::new(AudioOutput::new());
+        self.output = Arc::new(AudioOutput::with_spectrum_size(self.fft_size));
         self.stream_error = Arc::new(AtomicBool::new(false));
 
         let host = cpal::default_host();
@@ -110,6 +112,7 @@ impl AudioAnalyzer {
         let actual_name = device.description()?.name().to_string();
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate() as f32;
+        self.sample_rate = sample_rate;
         let channels = config.channels() as usize;
         let fft_size = self.fft_size;
 
@@ -172,6 +175,23 @@ impl AudioAnalyzer {
     /// Latest 8-band FFT magnitudes (0–1).
     pub fn get_fft(&self) -> [f32; 8] {
         std::array::from_fn(|i| f32::from_bits(self.output.fft[i].load(Ordering::Relaxed)))
+    }
+
+    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
+    ///
+    /// Uses the same smoothing, pink-noise shaping, and normalisation pipeline
+    /// as the 8-band output, so values are directly comparable.
+    pub fn get_spectrum(&self) -> Vec<f32> {
+        self.output
+            .spectrum
+            .iter()
+            .map(|s| f32::from_bits(s.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Sample rate of the running audio stream in Hz.
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 
     /// Current overall volume (0–1).
