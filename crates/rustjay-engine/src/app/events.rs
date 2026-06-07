@@ -593,7 +593,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = std::time::Instant::now();
+        let frame_start = std::time::Instant::now();
+        let now = frame_start;
         self.frame_delta_time = now
             .duration_since(self.last_frame_time)
             .as_secs_f32()
@@ -658,10 +659,21 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         #[cfg(not(feature = "gles2"))]
         let gles2_rendered = false;
 
+        let pre_render = std::time::Instant::now();
         if !gles2_rendered {
             if let Some(ref mut engine) = self.output_engine {
                 engine.render(self.output_occluded, &mut self.app_state);
                 self.update_preview_textures();
+            }
+        }
+
+        // Write CPU update time into performance metrics.
+        {
+            let cpu_update_ms = pre_render.duration_since(frame_start).as_secs_f32() * 1000.0;
+            if let Ok(state) = self.shared_state.lock() {
+                if let Ok(mut perf) = state.performance.lock() {
+                    perf.cpu_update_ms = cpu_update_ms;
+                }
             }
         }
 
@@ -726,18 +738,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        let target_fps = self
-            .shared_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .target_fps;
-        let target_frame_dur = std::time::Duration::from_micros(1_000_000 / target_fps as u64);
-        let elapsed = now.elapsed();
-        if elapsed < target_frame_dur {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                std::time::Instant::now() + (target_frame_dur - elapsed),
-            ));
-        }
+        // Use Poll so the event loop wakes every frame; actual pacing is handled
+        // by the renderer's next_render_time software cap and/or the surface
+        // present mode (AutoVsync/Fifo). The old WaitUntil throttle fought against
+        // hardware vsync and caused beat-frequency jitter on high-refresh displays.
+        event_loop.set_control_flow(ControlFlow::Poll);
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
