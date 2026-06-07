@@ -55,6 +55,17 @@ impl DeckCompositor {
         }
     }
 
+    /// Remove a deck by UUID. Returns the removed deck if found.
+    pub fn remove_deck(&mut self, uuid: &str) -> Option<Deck> {
+        if let Some(idx) = self.decks.iter().position(|d| d.uuid == uuid) {
+            let deck = self.decks.remove(idx);
+            self.generation = self.generation.wrapping_add(1);
+            Some(deck)
+        } else {
+            None
+        }
+    }
+
     /// Ensure GPU resources match `size`.
     fn ensure_resources(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if self.size != size || self.composite.is_none() {

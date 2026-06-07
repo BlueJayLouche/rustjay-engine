@@ -1,5 +1,6 @@
 //! A single deck: source + FX chain + opacity + blend mode.
 
+use crate::sources::SourceKind;
 use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
 use rustjay_mixer::{BlendMode, EffectSlot};
 use rustjay_render::Texture;
@@ -44,6 +45,8 @@ pub struct Deck {
     pub(crate) last_enabled_count: usize,
     /// Path to the source shader (ISF), if applicable — used for hot-reload.
     pub source_path: Option<std::path::PathBuf>,
+    /// The kind of source this deck was created from (for UI labeling).
+    pub source_kind: SourceKind,
 }
 
 impl Deck {
@@ -52,6 +55,7 @@ impl Deck {
         uuid: impl Into<String>,
         name: impl Into<String>,
         mut source: Box<dyn EffectInstance>,
+        source_kind: SourceKind,
     ) -> Self {
         let uuid = uuid.into();
         let name = name.into();
@@ -75,6 +79,7 @@ impl Deck {
             last_output: LastOutput::Texture,
             last_enabled_count: 0,
             source_path: None,
+            source_kind,
         }
     }
 
@@ -152,6 +157,7 @@ impl Deck {
         engine: &EngineState,
     ) -> Option<&'a Texture> {
         let tex = self.texture.as_ref()?;
+        self.source.prepare(engine, ctx.device, ctx.queue);
         self.source.render_to(
             ctx,
             inputs,
@@ -181,6 +187,7 @@ impl Deck {
                 generation: src_tex.generation,
                 texture: Some(&src_tex.texture),
             };
+            slot.effect.prepare(engine, ctx.device, ctx.queue);
             slot.effect.render_to(
                 ctx,
                 &[input],

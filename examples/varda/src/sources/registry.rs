@@ -34,6 +34,8 @@ pub enum SourceKind {
     Camera,
     /// NDI stream.
     Ndi,
+    /// Syphon server (macOS).
+    Syphon,
     /// SRT stream.
     Srt,
     /// HLS stream.
@@ -202,6 +204,36 @@ impl Registry {
                         path: None,
                         device_index: idx,
                     });
+                }
+                #[cfg(feature = "ndi")]
+                {
+                    for (idx, name) in rustjay_io::list_ndi_sources(500).into_iter().enumerate() {
+                        let id = format!("ndi_{}", idx);
+                        builtins.push(SourceEntry {
+                            id: id.clone(),
+                            name: name.clone(),
+                            kind: SourceKind::Ndi,
+                            path: None,
+                            device_index: 0,
+                        });
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    for (idx, info) in rustjay_io::SyphonDiscovery::new()
+                        .discover_servers()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let id = format!("syphon_{}", idx);
+                        builtins.push(SourceEntry {
+                            id: id.clone(),
+                            name: info.name.clone(),
+                            kind: SourceKind::Syphon,
+                            path: Some(std::path::PathBuf::from(&info.uuid)),
+                            device_index: 0,
+                        });
+                    }
                 }
                 builtins
             },
