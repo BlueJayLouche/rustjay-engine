@@ -5,6 +5,29 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "projection")]
+use bytemuck;
+
+/// How a surface maps its source texture onto its geometry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ContentMapping {
+    /// Source texture is scaled to fill the surface independently.
+    #[default]
+    Fill,
+    /// Surface position on the stage canvas determines the UV crop.
+    /// Multiple surfaces on the same canvas tile a single render.
+    Mapped,
+}
+
+impl ContentMapping {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ContentMapping::Fill => "Fill",
+            ContentMapping::Mapped => "Mapped",
+        }
+    }
+}
+
 /// Which graph output a surface samples from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SurfaceSource {
@@ -57,6 +80,13 @@ pub struct VardaSurface {
     pub radius: f32,
     /// What this surface displays.
     pub source: SurfaceSource,
+    /// How the source texture is mapped onto the surface geometry.
+    #[serde(default)]
+    pub content_mapping: ContentMapping,
+    /// Additional contour outlines (e.g. cutouts, frames) that are rendered
+    /// as dashed lines but not part of the primary warp geometry.
+    #[serde(default)]
+    pub extra_contours: Vec<Vec<[f32; 2]>>,
     /// Warp mode (corner-pin or mesh).
     #[cfg(feature = "projection")]
     pub warp: rustjay_projection::WarpMode,
@@ -74,6 +104,8 @@ impl VardaSurface {
             is_circular: false,
             radius: 0.0,
             source: SurfaceSource::Master,
+            content_mapping: ContentMapping::Fill,
+            extra_contours: Vec::new(),
             #[cfg(feature = "projection")]
             warp: rustjay_projection::WarpMode::identity(),
             #[cfg(not(feature = "projection"))]
@@ -95,10 +127,73 @@ impl VardaSurface {
             is_circular: true,
             radius,
             source: SurfaceSource::Master,
+            content_mapping: ContentMapping::Fill,
+            extra_contours: Vec::new(),
             #[cfg(feature = "projection")]
             warp: rustjay_projection::WarpMode::identity(),
             #[cfg(not(feature = "projection"))]
             warp: (),
+        }
+    }
+
+    /// Axis-aligned bounding box of the surface in normalized stage space.
+    /// Unions over the primary contour and all extra contours.
+    pub fn bounding_box(&self) -> [f32; 4] {
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+
+        let mut has_geometry = false;
+
+        if self.is_circular && !self.vertices.is_empty() {
+            let c = self.vertices[0];
+            min_x = min_x.min(c[0] - self.radius);
+            min_y = min_y.min(c[1] - self.radius);
+            max_x = max_x.max(c[0] + self.radius);
+            max_y = max_y.max(c[1] + self.radius);
+            has_geometry = true;
+        } else {
+            for v in &self.vertices {
+                min_x = min_x.min(v[0]);
+                min_y = min_y.min(v[1]);
+                max_x = max_x.max(v[0]);
+                max_y = max_y.max(v[1]);
+                has_geometry = true;
+            }
+        }
+
+        for contour in &self.extra_contours {
+            for v in contour {
+                min_x = min_x.min(v[0]);
+                min_y = min_y.min(v[1]);
+                max_x = max_x.max(v[0]);
+                max_y = max_y.max(v[1]);
+                has_geometry = true;
+            }
+        }
+
+        if has_geometry {
+            [min_x, min_y, max_x, max_y]
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        }
+    }
+
+    /// UV crop rect `[min_u, min_v, max_u, max_v]` for Mapped mode.
+    /// For Fill mode returns the full `[0,1]` rect.
+    pub fn uv_crop(&self) -> [f32; 4] {
+        match self.content_mapping {
+            ContentMapping::Fill => [0.0, 0.0, 1.0, 1.0],
+            ContentMapping::Mapped => {
+                let [min_x, min_y, max_x, max_y] = self.bounding_box();
+                [
+                    min_x.clamp(0.0, 1.0),
+                    min_y.clamp(0.0, 1.0),
+                    max_x.clamp(0.0, 1.0),
+                    max_y.clamp(0.0, 1.0),
+                ]
+            }
         }
     }
 
@@ -133,6 +228,14 @@ pub struct VardaStage {
     pub projectors: Vec<VardaProjector>,
     /// Headless (offscreen) outputs.
     pub headless_outputs: Vec<VardaHeadlessConfig>,
+    /// Index of the currently selected surface in the UI (not serialized).
+    #[serde(skip)]
+    pub selected_surface_index: usize,
+    /// Cached channel/deck source options for the Geometry tab source selector.
+    /// Updated when the mixer lock is successfully acquired; used as fallback
+    /// when the mixer is contended during render.
+    #[serde(skip)]
+    pub cached_source_options: Vec<(String, SurfaceSource)>,
     /// Shared warp state for the Master-routed surface, read each frame by the
     /// projector's [`VardaWarpStage`]. Injected by the plugin (`default_state`);
     /// the GUI publishes edits into it via [`VardaStage::publish_warp`]. Not
@@ -148,6 +251,12 @@ pub struct VardaStage {
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub edge_blend_sync: Option<std::sync::Arc<std::sync::Mutex<EdgeBlendSync>>>,
+    /// Per-projector source texture override. Each projector's [`VardaSourceStage`]
+    /// reads its slot to determine which texture to sample (Master = passthrough,
+    /// Channel = override). Injected by the plugin; grown/shrunk with projectors.
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub source_syncs: Vec<std::sync::Arc<std::sync::Mutex<SourceSync>>>,
 }
 
 impl VardaStage {
@@ -157,12 +266,16 @@ impl VardaStage {
             canvas_size: [1920, 1080],
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
+            selected_surface_index: 0,
+            cached_source_options: Vec::new(),
             #[cfg(feature = "projection")]
             warp_sync: None,
             #[cfg(feature = "projection")]
             dome_sync: None,
             #[cfg(feature = "projection")]
             edge_blend_sync: None,
+            #[cfg(feature = "projection")]
+            source_syncs: Vec::new(),
         }
     }
 
@@ -173,6 +286,8 @@ impl VardaStage {
             .push(VardaSurface::full_frame("Main", "main"));
         // One default projector
         stage.projectors.push(VardaProjector::default());
+        stage.selected_surface_index = 0;
+        stage.cached_source_options = Vec::new();
         stage
     }
 
@@ -221,6 +336,7 @@ impl VardaStage {
         if let (Some(sync), Some(surf)) = (&self.warp_sync, surf) {
             if let Ok(mut g) = sync.lock() {
                 g.mode = surf.warp.clone();
+                g.uv_crop = surf.uv_crop();
                 g.version = g.version.wrapping_add(1);
             }
         }
@@ -236,8 +352,11 @@ pub struct VardaProjector {
     pub height: u32,
     /// `None` = windowed; `Some(index)` = fullscreen on monitor N.
     pub fullscreen_monitor: Option<usize>,
-    /// Which surface's warp to apply (`None` = first Master surface).
+    /// Which surface this projector displays (`None` = first surface).
     pub surface_index: Option<usize>,
+    /// How this output delivers frames.
+    #[serde(default)]
+    pub output_type: OutputType,
     /// Use the global warp/dome/edge-blend syncs, or per-projector overrides.
     pub use_global_warp: bool,
     pub use_global_dome: bool,
@@ -269,6 +388,7 @@ impl Default for VardaProjector {
             height: 1080,
             fullscreen_monitor: None,
             surface_index: None,
+            output_type: OutputType::Display,
             use_global_warp: true,
             use_global_dome: true,
             use_global_edge_blend: true,
@@ -285,6 +405,28 @@ impl Default for VardaProjector {
     }
 }
 
+/// How a projector or headless output delivers its rendered frames.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum OutputType {
+    /// Render to a display window (default).
+    #[default]
+    Display,
+    /// Send frames over NDI (requires `ndi` feature).
+    Ndi,
+    /// Record to disk (requires recording backend).
+    Recording,
+}
+
+impl OutputType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            OutputType::Display => "Display",
+            OutputType::Ndi => "NDI",
+            OutputType::Recording => "Recording",
+        }
+    }
+}
+
 /// Configuration for a headless (offscreen) output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VardaHeadlessConfig {
@@ -292,6 +434,11 @@ pub struct VardaHeadlessConfig {
     pub enabled: bool,
     pub width: u32,
     pub height: u32,
+    /// Which surface this output displays (`None` = first surface).
+    pub surface_index: Option<usize>,
+    /// How this output delivers frames.
+    #[serde(default)]
+    pub output_type: OutputType,
     /// Whether this headless output has already been pushed to the
     /// projection subsystem. Not serialized — reset on app restart.
     #[serde(skip)]
@@ -307,6 +454,8 @@ impl Default for VardaHeadlessConfig {
             enabled: false,
             width: 1920,
             height: 1080,
+            surface_index: None,
+            output_type: OutputType::Display,
             pushed: false,
         }
     }
@@ -319,6 +468,8 @@ impl Default for VardaHeadlessConfig {
 #[derive(Debug, Clone)]
 pub struct WarpSync {
     pub mode: rustjay_projection::WarpMode,
+    /// UV crop rect [min_u, min_v, max_u, max_v] for content mapping.
+    pub uv_crop: [f32; 4],
     pub version: u64,
 }
 
@@ -327,6 +478,32 @@ impl Default for WarpSync {
     fn default() -> Self {
         Self {
             mode: rustjay_projection::WarpMode::identity(),
+            uv_crop: [0.0, 0.0, 1.0, 1.0],
+            version: 0,
+        }
+    }
+}
+
+/// Per-projector source texture override. The projector's [`VardaSourceStage`]
+/// reads this to determine which texture to sample.
+#[cfg(feature = "projection")]
+#[derive(Debug, Clone)]
+pub struct SourceSync {
+    /// `None` = use the default input (master mix).
+    /// `Some(view)` = sample from this texture view instead.
+    pub override_view: Option<std::sync::Arc<wgpu::TextureView>>,
+    /// A key representing the current source (e.g. "master", "channel:<uuid>").
+    /// Used to detect source changes without bumping version every frame.
+    pub source_key: Option<String>,
+    pub version: u64,
+}
+
+#[cfg(feature = "projection")]
+impl Default for SourceSync {
+    fn default() -> Self {
+        Self {
+            override_view: None,
+            source_key: None,
             version: 0,
         }
     }
@@ -342,6 +519,8 @@ pub struct VardaWarpStage {
     sync: std::sync::Arc<std::sync::Mutex<WarpSync>>,
     last_version: u64,
     inner_is_corner_pin: bool,
+    last_mesh_cols: u32,
+    last_mesh_rows: u32,
 }
 
 #[cfg(feature = "projection")]
@@ -356,6 +535,10 @@ impl VardaWarpStage {
             (g.mode.clone(), g.version)
         };
         let inner_is_corner_pin = matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
+        let (last_mesh_cols, last_mesh_rows) = match &mode {
+            rustjay_projection::WarpMode::Mesh(mesh) => (mesh.cols, mesh.rows),
+            _ => (0, 0),
+        };
         let inner = rustjay_projection::WarpStage::from_mode(device, format, &mode);
         Self {
             inner,
@@ -363,6 +546,8 @@ impl VardaWarpStage {
             sync,
             last_version: version,
             inner_is_corner_pin,
+            last_mesh_cols,
+            last_mesh_rows,
         }
     }
 }
@@ -381,9 +566,9 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
         output: &wgpu::TextureView,
         output_size: [u32; 2],
     ) {
-        let (mode, version) = {
+        let (mode, uv_crop, version) = {
             let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
-            (g.mode.clone(), g.version)
+            (g.mode.clone(), g.uv_crop, g.version)
         };
         if version != self.last_version {
             self.last_version = version;
@@ -393,13 +578,29 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
                     let src = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
                     let h = rustjay_projection::compute_forward_homography(&src, corners);
                     self.inner.set_homography(ctx.queue, &h);
+                    // set_homography already includes self.uv_crop, so no need
+                    // for a second uniform write here.
                 }
-                // Mode switch or mesh edit → rebuild the warp stage.
+                // Same mesh dimensions → cheap vertex buffer update (no rebuild on drag).
+                rustjay_projection::WarpMode::Mesh(mesh)
+                    if !self.inner_is_corner_pin
+                        && mesh.cols == self.last_mesh_cols
+                        && mesh.rows == self.last_mesh_rows =>
+                {
+                    self.inner.set_mesh(ctx.queue, mesh);
+                    self.inner.set_uv_crop(ctx.queue, &uv_crop);
+                }
+                // Mode switch or mesh dimension change → rebuild the warp stage.
                 _ => {
                     self.inner =
                         rustjay_projection::WarpStage::from_mode(ctx.device, self.format, &mode);
                     self.inner_is_corner_pin =
                         matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
+                    self.inner.set_uv_crop(ctx.queue, &uv_crop);
+                    if let rustjay_projection::WarpMode::Mesh(mesh) = &mode {
+                        self.last_mesh_cols = mesh.cols;
+                        self.last_mesh_rows = mesh.rows;
+                    }
                 }
             }
         }
@@ -409,6 +610,110 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
 
     fn on_input_changed(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         self.inner.on_input_changed(device, size);
+    }
+
+    fn is_active(&self) -> bool {
+        let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
+        g.config.any_enabled()
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Source stage — per-projector texture override
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "projection")]
+pub struct VardaSourceStage {
+    blit: rustjay_projection::identity::BlitPipeline,
+    vertex_buffer: wgpu::Buffer,
+    cached_bind_group: Option<wgpu::BindGroup>,
+    sync: std::sync::Arc<std::sync::Mutex<SourceSync>>,
+    last_version: u64,
+}
+
+#[cfg(feature = "projection")]
+impl VardaSourceStage {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        sync: std::sync::Arc<std::sync::Mutex<SourceSync>>,
+    ) -> Self {
+        use wgpu::util::DeviceExt;
+        let blit = rustjay_projection::identity::BlitPipeline::new(device, format);
+        let vertices: &[rustjay_projection::identity::BlitVertex] = &[
+            rustjay_projection::identity::BlitVertex {
+                position: [-1.0, -1.0],
+                texcoord: [0.0, 1.0],
+            },
+            rustjay_projection::identity::BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            rustjay_projection::identity::BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            rustjay_projection::identity::BlitVertex {
+                position: [-1.0, 1.0],
+                texcoord: [0.0, 0.0],
+            },
+            rustjay_projection::identity::BlitVertex {
+                position: [1.0, -1.0],
+                texcoord: [1.0, 1.0],
+            },
+            rustjay_projection::identity::BlitVertex {
+                position: [1.0, 1.0],
+                texcoord: [1.0, 0.0],
+            },
+        ];
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Varda Source Stage VB"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        Self {
+            blit,
+            vertex_buffer,
+            cached_bind_group: None,
+            sync,
+            last_version: 0,
+        }
+    }
+}
+
+#[cfg(feature = "projection")]
+impl rustjay_projection::ProjectionStage for VardaSourceStage {
+    fn label(&self) -> &str {
+        "varda-source"
+    }
+
+    fn render(
+        &mut self,
+        ctx: &mut rustjay_core::RenderCtx<'_>,
+        input: &wgpu::TextureView,
+        _input_texture: Option<&wgpu::Texture>,
+        output: &wgpu::TextureView,
+        _output_size: [u32; 2],
+    ) {
+        let (override_view, version) = {
+            let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
+            (g.override_view.clone(), g.version)
+        };
+
+        let source = override_view.as_ref().map(|a| a.as_ref()).unwrap_or(input);
+
+        if self.last_version != version || self.cached_bind_group.is_none() {
+            self.last_version = version;
+            self.cached_bind_group = Some(self.blit.create_bind_group(ctx.device, source));
+        }
+
+        let bind_group = self.cached_bind_group.as_ref().unwrap();
+        self.blit
+            .blit(ctx.encoder, bind_group, output, &self.vertex_buffer);
+    }
+
+    fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {
+        self.cached_bind_group = None;
     }
 }
 
@@ -503,6 +808,11 @@ impl rustjay_projection::ProjectionStage for VardaDomeStage {
 
     fn on_input_changed(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         self.inner.on_input_changed(device, size);
+    }
+
+    fn is_active(&self) -> bool {
+        let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
+        g.enabled
     }
 }
 

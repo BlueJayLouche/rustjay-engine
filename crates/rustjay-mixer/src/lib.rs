@@ -290,11 +290,23 @@ impl Channel {
     /// The texture that holds the most recent render result.
     ///
     /// Only valid after [`render`](Self::render) has been called for the current frame.
-    fn output_texture(&self) -> Option<&Texture> {
+    pub fn output_texture(&self) -> Option<&Texture> {
         match self.last_output {
             LastOutput::Texture => self.texture.as_ref(),
             LastOutput::Ping => self.ping.as_ref(),
         }
+    }
+}
+
+impl Mixer {
+    /// Get a channel's output texture by UUID.
+    ///
+    /// Only valid after the mixer has rendered for the current frame.
+    pub fn channel_texture(&self, uuid: &str) -> Option<&Texture> {
+        self.channels
+            .iter()
+            .find(|c| c.uuid == uuid)
+            .and_then(|c| c.output_texture())
     }
 }
 
