@@ -902,48 +902,30 @@ impl EffectPlugin for VardaRootPlugin {
         #[cfg(feature = "projection")]
         {
             let surfaces = &state.stage.surfaces;
-            let fallback = surfaces
+            let fallback_warp = surfaces
                 .iter()
                 .find(|s| s.source == crate::stage::SurfaceSource::Master)
-                .or_else(|| surfaces.first());
+                .or_else(|| surfaces.first())
+                .map(|s| &s.warp);
 
-            // Projectors
             for proj in &state.stage.projectors {
                 if let Some(sync) = &proj.warp_sync {
-                    let assigned = proj
-                        .surface_assignments
-                        .iter()
-                        .filter(|a| a.enabled)
-                        .find_map(|a| surfaces.iter().find(|s| s.uuid == a.surface_uuid));
-                    let warp = assigned
-                        .map(|s| s.warp.clone())
-                        .or_else(|| fallback.map(|s| s.warp.clone()));
-                    if let Some(warp) = warp {
-                        if let Ok(mut g) = sync.lock() {
-                            g.mode = warp;
-                            g.version = g.version.wrapping_add(1);
-                        }
-                    }
+                    crate::stage::resolve_and_publish_warp(
+                        sync,
+                        Some(&proj.surface_assignments),
+                        surfaces,
+                        fallback_warp,
+                    );
                 }
             }
-
-            // Headless outputs
             for hl in &state.stage.headless_outputs {
                 if let Some(sync) = &hl.warp_sync {
-                    let assigned = hl
-                        .surface_assignments
-                        .iter()
-                        .filter(|a| a.enabled)
-                        .find_map(|a| surfaces.iter().find(|s| s.uuid == a.surface_uuid));
-                    let warp = assigned
-                        .map(|s| s.warp.clone())
-                        .or_else(|| fallback.map(|s| s.warp.clone()));
-                    if let Some(warp) = warp {
-                        if let Ok(mut g) = sync.lock() {
-                            g.mode = warp;
-                            g.version = g.version.wrapping_add(1);
-                        }
-                    }
+                    crate::stage::resolve_and_publish_warp(
+                        sync,
+                        Some(&hl.surface_assignments),
+                        surfaces,
+                        fallback_warp,
+                    );
                 }
             }
         }

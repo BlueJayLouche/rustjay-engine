@@ -229,16 +229,64 @@ impl VardaStage {
     /// the shared [`WarpSync`] so the projector's [`VardaWarpStage`] picks it up
     /// on the next frame. Bumps the version so the projector only re-applies on
     /// an actual edit. Call after the GUI mutates a surface's warp.
+    ///
+    /// Also broadcasts to every per-output warp_sync so unassigned outputs pick
+    /// up the edit (S1).
     #[cfg(feature = "projection")]
     pub fn publish_warp(&self) {
-        let surf = self
+        let fallback = self
             .surfaces
             .iter()
             .find(|s| s.source == SurfaceSource::Master)
             .or_else(|| self.surfaces.first());
-        if let (Some(sync), Some(surf)) = (&self.warp_sync, surf) {
-            if let Ok(mut g) = sync.lock() {
-                g.mode = surf.warp.clone();
+        let warp = fallback.map(|s| s.warp.clone());
+
+        // Global sync (backward compatibility)
+        if let Some(sync) = &self.warp_sync {
+            resolve_and_publish_warp(sync, None, &self.surfaces, warp.as_ref());
+        }
+
+        // Broadcast to all per-projector syncs
+        for proj in &self.projectors {
+            if let Some(sync) = &proj.warp_sync {
+                resolve_and_publish_warp(sync, Some(&proj.surface_assignments), &self.surfaces, warp.as_ref());
+            }
+        }
+
+        // Broadcast to all per-headless syncs
+        for hl in &self.headless_outputs {
+            if let Some(sync) = &hl.warp_sync {
+                resolve_and_publish_warp(sync, Some(&hl.surface_assignments), &self.surfaces, warp.as_ref());
+            }
+        }
+    }
+}
+
+/// Resolve a warp for an output and publish it into its `WarpSync`, bumping
+/// version only when the mode actually changed (S2).
+#[cfg(feature = "projection")]
+pub fn resolve_and_publish_warp(
+    sync: &std::sync::Arc<std::sync::Mutex<WarpSync>>,
+    assignments: Option<&[SurfaceAssignment]>,
+    surfaces: &[VardaSurface],
+    fallback_warp: Option<&rustjay_projection::WarpMode>,
+) {
+    let warp = if let Some(assignments) = assignments {
+        assignments
+            .iter()
+            .filter(|a| a.enabled)
+            .find_map(|a| surfaces.iter().find(|s| s.uuid == a.surface_uuid))
+            .map(|s| &s.warp)
+            .or(fallback_warp)
+            .cloned()
+    } else {
+        fallback_warp.cloned()
+    };
+
+    if let Some(warp) = warp {
+        if let Ok(mut g) = sync.lock() {
+            if g.mode != warp {
+                g.mode = warp;
                 g.version = g.version.wrapping_add(1);
             }
         }

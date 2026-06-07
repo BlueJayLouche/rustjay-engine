@@ -984,21 +984,30 @@ mod egui_impl {
                 let mut remove_proj: Option<usize> = None;
                 for (i, proj) in state.stage.projectors.iter_mut().enumerate() {
                     ui.push_id(i, |ui| {
+                        let mut dirty = false;
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut proj.enabled, "");
-                            ui.text_edit_singleline(&mut proj.name);
+                            if ui.checkbox(&mut proj.enabled, "").changed() {
+                                dirty = true;
+                            }
+                            if ui.text_edit_singleline(&mut proj.name).changed() {
+                                dirty = true;
+                            }
                             ui.label("size:");
-                            ui.add(
+                            if ui.add(
                                 egui::DragValue::new(&mut proj.width)
                                     .speed(10)
                                     .range(1..=8192),
-                            );
+                            ).changed() {
+                                dirty = true;
+                            }
                             ui.label("×");
-                            ui.add(
+                            if ui.add(
                                 egui::DragValue::new(&mut proj.height)
                                     .speed(10)
                                     .range(1..=8192),
-                            );
+                            ).changed() {
+                                dirty = true;
+                            }
                             ui.label("monitor:");
                             let mut monitor =
                                 proj.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
@@ -1011,11 +1020,15 @@ mod egui_impl {
                                 } else {
                                     Some(monitor as usize)
                                 };
+                                dirty = true;
                             }
                             if ui.button("🗑").clicked() {
                                 remove_proj = Some(i);
                             }
                         });
+                        if dirty {
+                            state.save_workspace();
+                        }
                         // Surface assignments
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Surfaces:").small());
@@ -1035,7 +1048,9 @@ mod egui_impl {
                         let mut unassign: Option<usize> = None;
                         for (ai, assignment) in proj.surface_assignments.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut assignment.enabled, "");
+                                if ui.checkbox(&mut assignment.enabled, "").changed() {
+                                    state.save_workspace();
+                                }
                                 let name = state.stage.surfaces.iter()
                                     .find(|s| s.uuid == assignment.surface_uuid)
                                     .map(|s| s.name.as_str())
@@ -1070,25 +1085,37 @@ mod egui_impl {
                 let mut remove_hl: Option<usize> = None;
                 for (i, hl) in state.stage.headless_outputs.iter_mut().enumerate() {
                     ui.push_id(format!("hl_{}", i), |ui| {
+                        let mut dirty = false;
                         ui.horizontal(|ui| {
-                            ui.checkbox(&mut hl.enabled, "");
-                            ui.text_edit_singleline(&mut hl.name);
+                            if ui.checkbox(&mut hl.enabled, "").changed() {
+                                dirty = true;
+                            }
+                            if ui.text_edit_singleline(&mut hl.name).changed() {
+                                dirty = true;
+                            }
                             ui.label("size:");
-                            ui.add(
+                            if ui.add(
                                 egui::DragValue::new(&mut hl.width)
                                     .speed(10)
                                     .range(1..=8192),
-                            );
+                            ).changed() {
+                                dirty = true;
+                            }
                             ui.label("×");
-                            ui.add(
+                            if ui.add(
                                 egui::DragValue::new(&mut hl.height)
                                     .speed(10)
                                     .range(1..=8192),
-                            );
+                            ).changed() {
+                                dirty = true;
+                            }
                             if ui.button("🗑").clicked() {
                                 remove_hl = Some(i);
                             }
                         });
+                        if dirty {
+                            state.save_workspace();
+                        }
                         // Surface assignments
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Surfaces:").small());
@@ -1108,7 +1135,9 @@ mod egui_impl {
                         let mut unassign: Option<usize> = None;
                         for (ai, assignment) in hl.surface_assignments.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut assignment.enabled, "");
+                                if ui.checkbox(&mut assignment.enabled, "").changed() {
+                                    state.save_workspace();
+                                }
                                 let name = state.stage.surfaces.iter()
                                     .find(|s| s.uuid == assignment.surface_uuid)
                                     .map(|s| s.name.as_str())

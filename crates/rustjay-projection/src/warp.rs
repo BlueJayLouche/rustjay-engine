@@ -7,7 +7,7 @@ use wgpu::util::DeviceExt;
 // ── Mesh types ───────────────────────────────────────────────────────────
 
 /// A single point in a UV warp mesh: output-space position + source-space UV.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MeshPoint {
     /// Position in output-normalized coords [0..1]
     pub position: [f32; 2],
@@ -18,7 +18,7 @@ pub struct MeshPoint {
 /// A grid of XYUV warp points defining an arbitrary mesh warp.
 ///
 /// Points are stored row-major: `points[row * cols + col]`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WarpMesh {
     /// Number of columns in the grid (≥2)
     pub cols: u32,
@@ -81,7 +81,7 @@ impl WarpMesh {
 }
 
 /// Warp mode for surface assignments: corner-pin or arbitrary mesh.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum WarpMode {
     /// 4-point corner-pin warp (TL, TR, BR, BL in output space [0..1]).
