@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Projection mapping example demonstrating rustjay-projection"
 
+[features]
+default = ["projection", "webcam"]
+projection = ["rustjay-engine/projection"]
+webcam  = ["rustjay-engine/webcam"]
+ndi     = ["rustjay-engine/ndi"]
+
 [dependencies]
-rustjay-engine = { workspace = true, features = ["projection"] }
+rustjay-engine = { workspace = true }
 rustjay-projection = { workspace = true }
 rustjay-core   = { workspace = true }
 rustjay-render = { workspace = true }
@@ -17,7 +23,3 @@ image          = { workspace = true }
 log            = { workspace = true }
 env_logger     = "0.11"
 pollster       = { workspace = true }
-
-[features]
-default = ["webcam"]
-webcam  = ["rustjay-engine/webcam"]

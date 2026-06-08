@@ -184,13 +184,33 @@ impl EguiControlGui {
                 .color(ACCENT_CYAN)
                 .strong(),
         );
-        let (fps, frame_time_ms) = {
+        let (fps, frame_time_ms, cpu_update_ms, gpu_encode_ms, present_wait_ms) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
-            (perf.fps, perf.frame_time_ms)
+            (
+                perf.fps,
+                perf.frame_time_ms,
+                perf.cpu_update_ms,
+                perf.gpu_encode_ms,
+                perf.present_wait_ms,
+            )
         };
         ui.label(format!("Output FPS: {:.1}", fps));
         ui.label(format!("Frame Time: {:.2} ms", frame_time_ms));
+        ui.collapsing("Frame breakdown", |ui| {
+            ui.label(
+                egui::RichText::new(format!("CPU update:  {:>5.2} ms", cpu_update_ms))
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(format!("GPU encode:  {:>5.2} ms", gpu_encode_ms))
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(format!("Present wait:{:>5.2} ms", present_wait_ms))
+                    .monospace(),
+            );
+        });
 
         ui.add_space(8.0);
         ui.label("Target FPS:");
@@ -226,6 +246,37 @@ impl EguiControlGui {
             state.target_fps = fps_options[current_idx];
             state.save_settings_requested = true;
         }
+
+        ui.horizontal(|ui| {
+            ui.label("Present mode:");
+            let present_mode = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.present_mode
+            };
+            let all = rustjay_core::PresentMode::all();
+            let current_idx = all.iter().position(|&m| m == present_mode).unwrap_or(0);
+            egui::ComboBox::from_id_salt("present_mode")
+                .width(200.0)
+                .selected_text(all[current_idx].label())
+                .show_ui(ui, |ui| {
+                    for (i, &mode) in all.iter().enumerate() {
+                        if ui.selectable_label(current_idx == i, mode.label()).clicked() {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.present_mode = mode;
+                            state.save_settings_requested = true;
+                        }
+                    }
+                });
+        });
+        ui.label(
+            egui::RichText::new(
+                "Auto VSync = display-paced (best for target_fps = refresh). \
+                 Immediate = software cap only (best for target_fps < refresh or unlocked).",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
 
         ui.add_space(12.0);
         ui.separator();

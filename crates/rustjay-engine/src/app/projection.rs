@@ -165,9 +165,9 @@ impl ProjectorOutput {
             label: Some("Projector Stage Chain"),
         });
 
-        let n = self.stages.len();
-        if n == 0 {
-            // No stages — just present (surface shows whatever was there).
+        let active_count = self.stages.iter().filter(|s| s.is_active()).count();
+        if active_count == 0 {
+            // No active stages — just present (surface shows whatever was there).
             queue.submit(std::iter::once(encoder.finish()));
             surface_texture.present();
             return;
@@ -178,24 +178,20 @@ impl ProjectorOutput {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let views = &self.views;
 
-        for (i, stage) in self.stages.iter_mut().enumerate() {
-            let is_first = i == 0;
-            let is_last = i == n - 1;
+        let mut active_idx = 0;
+        let mut current_input_view = input_view;
+        let mut current_input_texture = input_texture;
 
-            let in_view: &wgpu::TextureView = if is_first {
-                input_view
-            } else {
-                &views[(i - 1) % views.len()]
-            };
-            let in_tex: Option<&wgpu::Texture> = if is_first {
-                input_texture
-            } else {
-                Some(&self.textures[(i - 1) % views.len()])
-            };
-            let out_view: &wgpu::TextureView = if is_last {
+        for stage in self.stages.iter_mut() {
+            if !stage.is_active() {
+                continue;
+            }
+
+            let is_last_active = active_idx == active_count - 1;
+            let out_view: &wgpu::TextureView = if is_last_active {
                 &surface_view
             } else {
-                &views[i % views.len()]
+                &views[active_idx % views.len()]
             };
 
             let mut ctx = rustjay_core::RenderCtx {
@@ -207,11 +203,17 @@ impl ProjectorOutput {
 
             stage.render(
                 &mut ctx,
-                in_view,
-                in_tex,
+                current_input_view,
+                current_input_texture,
                 out_view,
                 [self.width, self.height],
             );
+
+            current_input_view = out_view;
+            if !is_last_active {
+                current_input_texture = Some(&self.textures[active_idx % views.len()]);
+            }
+            active_idx += 1;
         }
 
         queue.submit(std::iter::once(encoder.finish()));
@@ -309,6 +311,11 @@ impl ProjectionSubsystem {
     /// Number of projector windows waiting to be created.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Clear all pending projector creation requests.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
     }
 
     /// Create any pending projector windows (call from `resumed()`).

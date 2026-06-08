@@ -16,7 +16,7 @@ Today the engine has **two modulation systems** that do not interoperate:
 | **Legacy `LfoBank`** | `rustjay-core/src/lfo.rs` | Tempo sync, beat divisions, quantum-boundary phase snap, built-in GUI tab | Fixed 8 slots, 1:1 targeting, no ADSR/sequencer |
 | **New `ModulationEngine`** | `rustjay-core/src/modulation.rs` | UUID-stable sources, multi-target assignments, ADSR, step-sequencer, audio band, mod-on-mod chaining | LFO is Hz-only; no tempo sync; not wired to engine HSB/custom params |
 
-`rustjay-mixer` owns its own `Arc<Mutex<ModulationEngine>>`. The engine's built-in `update_lfo()` mutates `custom_params` and `hsb_params` directly. Varda (`examples/varda`) also owns a mixer-level `ModulationEngine` and manually adds offsets on top of `engine.get_param()`. Nothing is shared, nothing is authoritative, and the B2.4 gap is documented but unclosed.
+`rustjay-mixer` owns its own `Arc<Mutex<ModulationEngine>>`. The engine's built-in `update_lfo()` mutates `custom_params` and `hsb_params` directly. Varda (`examples/vjarda`) also owns a mixer-level `ModulationEngine` and manually adds offsets on top of `engine.get_param()`. Nothing is shared, nothing is authoritative, and the B2.4 gap is documented but unclosed.
 
 This roadmap collapses both paths into **one engine-global `ModulationEngine`** that every subsystem reads through `engine.get_param()`.
 
@@ -105,7 +105,7 @@ Extend the LFO source so it can replace the old `LfoBank` feature-for-feature.
 
 > **Caller inventory for M1.4** — before touching the signature, confirm every call site:
 > - `rustjay-engine/src/app/update.rs` → `App::update_lfo()` (primary tick path)
-> - `examples/varda/src/lib.rs` → `VardaPlugin::update()` (owns a separate `ModulationEngine` today; removed in Phase 4)
+> - `examples/vjarda/src/lib.rs` → `VardaPlugin::update()` (owns a separate `ModulationEngine` today; removed in Phase 4)
 > - `rustjay-mixer/src/lib.rs` → `Mixer::render_to()` (owns a separate `ModulationEngine` today; removed in Phase 4)
 > - Any test that calls `engine.update(time, audio)` directly — update those signatures in this phase so CI stays green.
 
@@ -190,8 +190,8 @@ Update every example to use the unified system. Most need only minor changes.
 | Task | File | Acceptance |
 |---|---|---|
 | **M6.1** `examples/waaaves/src/lfo_ui.rs` — replace `LfoBank`/`LfoTarget` imports with `ModulationEngine` reads. Draw dots by scanning `engine.modulation.sources`. | `examples/waaaves/src/lfo_ui.rs` | Right-click assignment still works; dots render. |
-| **M6.2** `examples/varda/src/ui/mod.rs` — change `ModulationTab` from **read-only** info panel to **read-write** editor. Add/remove sources, assign to params, trigger ADSR. | `examples/varda/src/ui/mod.rs` | Can create an LFO and assign it to a deck opacity from the Varda UI. |
-| **M6.3** `examples/varda/src/lib.rs` — remove manual demo-source creation (the 4 demo sources added in `VardaPlugin::init`). Instead, ship a default preset that loads into the shared engine. | `examples/varda/src/lib.rs` | `cargo run -p varda` still shows modulation demo. |
+| **M6.2** `examples/vjarda/src/ui/mod.rs` — change `ModulationTab` from **read-only** info panel to **read-write** editor. Add/remove sources, assign to params, trigger ADSR. | `examples/vjarda/src/ui/mod.rs` | Can create an LFO and assign it to a deck opacity from the Varda UI. |
+| **M6.3** `examples/vjarda/src/lib.rs` — remove manual demo-source creation (the 4 demo sources added in `VardaPlugin::init`). Instead, ship a default preset that loads into the shared engine. | `examples/vjarda/src/lib.rs` | `cargo run -p vjarda` still shows modulation demo. |
 | **M6.4** `examples/mixer/src/main.rs` — remove any manual `mixer.modulation` setup. | `examples/mixer/src/main.rs` | Compiles; built-in Modulation tab drives mixer params. |
 | **M6.5** `examples/delta-egui/src/main.rs` — verify no direct LFO imports; confirm `get_param` reads modulated values. | — | No code change expected. |
 
@@ -476,7 +476,7 @@ On preset load, detect the presence of `"lfo"` key. If found:
 - [ ] `cargo run -p waaaves` — LFO dots and right-click assignment work.
 - [ ] `cargo run -p sputnik` — mesh LFO displacement works.
 - [ ] `cargo run -p mixer` — crossfader + channel opacity modulation works via built-in Modulation tab.
-- [ ] `cargo run -p varda` — ModulationTab is read-write; tempo-sync LFO can be created and assigned to deck opacity.
+- [ ] `cargo run -p vjarda` — ModulationTab is read-write; tempo-sync LFO can be created and assigned to deck opacity.
 - [ ] Old preset containing `LfoState` loads correctly and produces identical modulation output.
 - [ ] `guide/src/modulation/*.md` updated.
 - [ ] `PHASE_B_ROADMAP.md` B2.4 marked complete.

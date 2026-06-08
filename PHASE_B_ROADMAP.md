@@ -95,7 +95,7 @@ sub-mixes all fall out of the same abstraction.
                       │                       │
                 rustjay-engine (facade) ── rustjay-api
                       │
-              examples/varda  ← assembles everything into the full VJ app
+              examples/vjarda  ← assembles everything into the full VJ app
 ```
 
 **Invariant:** all arrows point toward `rustjay-core`. No cycles.
@@ -295,7 +295,7 @@ Week 3-5:  B3 (mixer, as example first) ────┤ needs B0
                                             │
 Week 6-7:  B5 (API)              ───────────┘ needs B3 surface
            Promote examples/mixer → crate
-           examples/varda assembles the full app
+           examples/vjarda assembles the full app
 ```
 
 **Critical path:** B0 → B3 → B5. B1 and B2 are off the critical path and are
@@ -318,7 +318,7 @@ done. B4 is deferred to Phase C.
 
 ## 7. Definition of Done (Phase B)
 
-1. `examples/varda` exists in the workspace and assembles `rustjay-mixer` +
+1. `examples/vjarda` exists in the workspace and assembles `rustjay-mixer` +
    `rustjay-isf` + `rustjay-projection` + `rustjay-api` + `rustjay-modulation`
    into a VJ app at feature parity with standalone varda for the five extracted domains.
 2. `cargo build -p delta` (and flux / sputnik / waaaves) compiles and runs

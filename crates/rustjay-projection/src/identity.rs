@@ -7,6 +7,15 @@ use crate::stage::ProjectionStage;
 use rustjay_core::RenderCtx;
 use wgpu::util::DeviceExt;
 
+/// Uniform buffer for blit UV transform.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlitParams {
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    uv_crop: [f32; 4],
+}
+
 /// Fullscreen vertex with position and UV.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -45,6 +54,7 @@ pub struct BlitPipeline {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     sampler_nearest: wgpu::Sampler,
+    params_buffer: wgpu::Buffer,
 }
 
 impl BlitPipeline {
@@ -72,6 +82,16 @@ impl BlitPipeline {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -123,12 +143,36 @@ impl BlitPipeline {
             ..Default::default()
         });
 
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Projection Blit Params"),
+            contents: bytemuck::cast_slice(&[BlitParams {
+                uv_scale: [1.0, 1.0],
+                uv_offset: [0.0, 0.0],
+                uv_crop: [0.0, 0.0, 1.0, 1.0],
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         Self {
             pipeline,
             bind_group_layout,
             sampler,
             sampler_nearest,
+            params_buffer,
         }
+    }
+
+    /// Update the UV transform and crop for the blit shader.
+    pub fn set_uv_transform(&self, queue: &wgpu::Queue, scale: [f32; 2], offset: [f32; 2], uv_crop: [f32; 4]) {
+        queue.write_buffer(
+            &self.params_buffer,
+            0,
+            bytemuck::cast_slice(&[BlitParams {
+                uv_scale: scale,
+                uv_offset: offset,
+                uv_crop,
+            }]),
+        );
     }
 
     /// Create a bind group sampling `source_view` with the default linear sampler.
@@ -166,6 +210,10 @@ impl BlitPipeline {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.params_buffer.as_entire_binding(),
                 },
             ],
         })

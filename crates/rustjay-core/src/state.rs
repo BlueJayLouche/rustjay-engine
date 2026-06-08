@@ -750,6 +750,12 @@ pub struct PerformanceMetrics {
     pub fps: f32,
     /// Average frame time in milliseconds.
     pub frame_time_ms: f32,
+    /// CPU update time (logic before render) in milliseconds.
+    pub cpu_update_ms: f32,
+    /// GPU command encoding time in milliseconds.
+    pub gpu_encode_ms: f32,
+    /// Time blocked in present() waiting for vsync in milliseconds.
+    pub present_wait_ms: f32,
     /// Global CPU usage percentage (populated externally via sysinfo).
     /// Zero when the sysmon feature is disabled or not yet polled.
     pub cpu_percent: f32,
@@ -853,6 +859,42 @@ impl GuiTab {
             // Sync is folded into the Audio tab.
             // Both variants are kept for serialization / hidden_tabs filtering.
         ]
+    }
+}
+
+/// Surface present mode for the output window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PresentMode {
+    /// Vsync-enabled; caps frame rate to display refresh.
+    #[default]
+    AutoVsync,
+    /// No vsync; presents immediately. Use with a software frame cap.
+    Immediate,
+    /// Strict FIFO queue (always vsync).
+    Fifo,
+    /// Double-buffered low-latency vsync where supported.
+    Mailbox,
+}
+
+impl PresentMode {
+    /// All available modes for UI selection.
+    pub fn all() -> &'static [PresentMode] {
+        &[
+            PresentMode::AutoVsync,
+            PresentMode::Fifo,
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+        ]
+    }
+
+    /// Human-readable label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            PresentMode::AutoVsync => "Auto VSync",
+            PresentMode::Immediate => "Immediate (no vsync)",
+            PresentMode::Fifo => "FIFO (strict vsync)",
+            PresentMode::Mailbox => "Mailbox (low latency)",
+        }
     }
 }
 
@@ -978,6 +1020,8 @@ pub struct EngineState {
     pub show_preview: bool,
     /// Target render frame rate in frames per second.
     pub target_fps: u32,
+    /// Output surface present mode.
+    pub present_mode: PresentMode,
     /// UI scale factor.
     pub ui_scale: f32,
     /// Currently selected GUI tab.
@@ -1069,7 +1113,7 @@ pub struct EngineState {
     /// Effects read these in `build_uniforms`.
     pub custom_params: Vec<f32>,
 
-    /// Pre-computed OSC address strings (`"/category/id"`) for each effect parameter.
+    /// Pre-computed full OSC address strings (`"/rustjay/category/id"`) for each effect parameter.
     /// Populated once at init alongside `param_descriptors`; avoids per-frame `format!()` calls.
     pub param_osc_addresses: Vec<String>,
 
@@ -1090,7 +1134,7 @@ pub struct EngineState {
 
     /// Optional app-published API snapshot, stored as opaque JSON so the
     /// generic engine does not need to know the concrete app schema. Apps
-    /// (e.g. `examples/varda`) publish their structure/state here; the API
+    /// (e.g. `examples/vjarda`) publish their structure/state here; the API
     /// layer serves it verbatim via `GET /api/app/state` and includes it in
     /// the WebSocket delta stream.
     pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
@@ -1163,6 +1207,7 @@ impl EngineState {
             startup_webcam_device: None,
             show_preview: true,
             target_fps: 60,
+            present_mode: PresentMode::default(),
             ui_scale: 1.0,
             current_tab: GuiTab::Input,
             midi_command: MidiCommand::None,

@@ -349,6 +349,8 @@ struct WarpParamsUniform {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
+    /// UV crop rectangle: [min_u, min_v, max_u, max_v].
+    uv_crop: [f32; 4],
 }
 
 /// GPU vertex for warp mesh.
@@ -395,6 +397,12 @@ pub struct WarpStage {
     is_identity: bool,
     blit: Option<crate::identity::BlitPipeline>,
     blit_vb: Option<wgpu::Buffer>,
+    /// Current UV crop rect [min_u, min_v, max_u, max_v].
+    uv_crop: [f32; 4],
+    /// Last homography (for cheap corner-pin updates).
+    last_homography: [f32; 9],
+    /// Last use_homography value (1.0 = corner-pin, 0.0 = mesh).
+    last_use_homography: f32,
 }
 
 impl WarpStage {
@@ -465,7 +473,7 @@ impl WarpStage {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -518,6 +526,7 @@ impl WarpStage {
         let h = initial_homography
             .copied()
             .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Warp Params"),
             contents: bytemuck::bytes_of(&WarpParamsUniform {
@@ -528,6 +537,7 @@ impl WarpStage {
                 _pad0: 0.0,
                 _pad1: 0.0,
                 _pad2: 0.0,
+                uv_crop: [0.0, 0.0, 1.0, 1.0],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -535,7 +545,7 @@ impl WarpStage {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Warp Vertex Buffer"),
             contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -557,6 +567,9 @@ impl WarpStage {
             is_identity: false,
             blit: None,
             blit_vb: None,
+            uv_crop: [0.0, 0.0, 1.0, 1.0],
+            last_homography: h,
+            last_use_homography: if is_corner_pin { 1.0 } else { 0.0 },
         }
     }
 
@@ -604,6 +617,8 @@ impl WarpStage {
         self.is_identity = false;
         self.blit = None;
         self.blit_vb = None;
+        self.last_homography = *homography;
+        self.last_use_homography = 1.0;
         queue.write_buffer(
             &self.params_buffer,
             0,
@@ -615,7 +630,59 @@ impl WarpStage {
                 _pad0: 0.0,
                 _pad1: 0.0,
                 _pad2: 0.0,
+                uv_crop: self.uv_crop,
             }),
+        );
+    }
+
+    /// Update the UV crop rectangle. `crop` is `[min_u, min_v, max_u, max_v]`.
+    pub fn set_uv_crop(&mut self, queue: &wgpu::Queue, crop: &[f32; 4]) {
+        self.uv_crop = *crop;
+        // Disable identity blit when cropping — the blit pipeline doesn't
+        // support UV cropping, so we must run the warp shader.
+        if self.uv_crop != [0.0, 0.0, 1.0, 1.0] {
+            self.is_identity = false;
+            self.blit = None;
+            self.blit_vb = None;
+        }
+        queue.write_buffer(
+            &self.params_buffer,
+            0,
+            bytemuck::bytes_of(&WarpParamsUniform {
+                h_row0: [self.last_homography[0], self.last_homography[1], self.last_homography[2], 0.0],
+                h_row1: [self.last_homography[3], self.last_homography[4], self.last_homography[5], 0.0],
+                h_row2: [self.last_homography[6], self.last_homography[7], self.last_homography[8], 0.0],
+                use_homography: self.last_use_homography,
+                _pad0: 0.0,
+                _pad1: 0.0,
+                _pad2: 0.0,
+                uv_crop: self.uv_crop,
+            }),
+        );
+    }
+
+    /// Cheap in-place mesh update — updates vertex positions without rebuilding
+    /// the pipeline. The mesh dimensions (cols × rows) must match the existing
+    /// vertex buffer size (true for drag editing).
+    pub fn set_mesh(&mut self, queue: &wgpu::Queue, mesh: &WarpMesh) {
+        self.is_identity = false;
+        self.blit = None;
+        self.blit_vb = None;
+        self.last_use_homography = 0.0;
+
+        let vertices: Vec<WarpVertex> = mesh
+            .points
+            .iter()
+            .map(|p| WarpVertex {
+                position: p.position,
+                uv: p.uv,
+            })
+            .collect();
+
+        queue.write_buffer(
+            &self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(&vertices),
         );
     }
 }

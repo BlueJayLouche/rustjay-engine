@@ -24,6 +24,10 @@ pub use input::webcam::{WebcamCapture, WebcamFrame, list_cameras};
 pub use input::InputManager;
 pub use input::SpoutSenderInfo;
 pub use input::SyphonServerInfo;
+#[cfg(feature = "ndi")]
+pub use input::{NdiReceiver, list_ndi_sources};
+#[cfg(target_os = "macos")]
+pub use input::{SyphonInputReceiver, SyphonDiscovery};
 pub use output::recorder::{Recorder, RecorderCodec};
 pub use output::OutputManager;
 #[cfg(target_os = "linux")]

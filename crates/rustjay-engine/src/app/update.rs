@@ -6,6 +6,10 @@ use std::sync::Arc;
 /// Minimum interval between device-enumeration polls (audio/MIDI/input lists).
 /// Devices change on a human timescale, so polling once per frame wastes CPU.
 const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+/// Minimum time between audio stream reconnection attempts. Without this,
+/// a broken device causes CPAL to enumerate + re-init every frame (~16 ms),
+/// spawning threads and hammering CoreAudio.
+const AUDIO_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self) {
@@ -180,22 +184,28 @@ impl<P: EffectPlugin> App<P> {
     pub(super) fn update_audio(&mut self) {
         if let Some(ref analyzer) = self.audio_analyzer {
             if analyzer.take_stream_error() {
-                let device = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio.selected_device.clone()
-                };
-                log::warn!(
-                    "[Audio] Stream error — attempting reconnect (device: {:?})",
-                    device
-                );
-                if let Some(ref mut analyzer) = self.audio_analyzer {
-                    match analyzer.start_with_device(device.as_deref()) {
-                        Ok(actual_name) => {
-                            let mut state =
-                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                            state.audio.selected_device = Some(actual_name);
+                let may_reconnect = self
+                    .last_audio_reconnect_attempt
+                    .map_or(true, |t| t.elapsed() >= AUDIO_RECONNECT_INTERVAL);
+                if may_reconnect {
+                    self.last_audio_reconnect_attempt = Some(std::time::Instant::now());
+                    let device = {
+                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.audio.selected_device.clone()
+                    };
+                    log::warn!(
+                        "[Audio] Stream error — attempting reconnect (device: {:?})",
+                        device
+                    );
+                    if let Some(ref mut analyzer) = self.audio_analyzer {
+                        match analyzer.start_with_device(device.as_deref()) {
+                            Ok(actual_name) => {
+                                let mut state =
+                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                                state.audio.selected_device = Some(actual_name);
+                            }
+                            Err(e) => log::error!("[Audio] Reconnect failed: {}", e),
                         }
-                        Err(e) => log::error!("[Audio] Reconnect failed: {}", e),
                     }
                 }
             }
@@ -425,23 +435,23 @@ impl<P: EffectPlugin> App<P> {
         if let Some(ref server) = self.osc_server {
             if let Ok(mut shared) = self.shared_state.lock() {
                 if let Ok(mut osc_state) = server.state().lock() {
-                    // Hardcoded HSB / audio params
-                    if let Some(v) = osc_state.get_value_if_dirty("/color/hue_shift") {
+                    // Hardcoded HSB / audio params (full OSC addresses)
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/hue_shift") {
                         shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
                     }
-                    if let Some(v) = osc_state.get_value_if_dirty("/color/saturation") {
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/saturation") {
                         shared.hsb_params.saturation = v.clamp(0.0, 2.0);
                     }
-                    if let Some(v) = osc_state.get_value_if_dirty("/color/brightness") {
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/brightness") {
                         shared.hsb_params.brightness = v.clamp(0.0, 2.0);
                     }
-                    if let Some(v) = osc_state.get_value_if_dirty("/color/enabled") {
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/enabled") {
                         shared.color_enabled = v > 0.5;
                     }
-                    if let Some(v) = osc_state.get_value_if_dirty("/audio/amplitude") {
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/audio/amplitude") {
                         shared.audio.amplitude = v.clamp(0.0, 5.0);
                     }
-                    if let Some(v) = osc_state.get_value_if_dirty("/audio/smoothing") {
+                    if let Some(v) = osc_state.get_value_if_dirty("/rustjay/audio/smoothing") {
                         shared.audio.smoothing = v.clamp(0.0, 1.0);
                     }
 
@@ -457,8 +467,7 @@ impl<P: EffectPlugin> App<P> {
                                 shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
                             } else if !osc_state.message_log.is_empty() {
                                 // Debug: log if message exists but param wasn't dirty
-                                let full_addr = format!("/rustjay{}", addr);
-                                if osc_state.parameters.contains_key(&full_addr) {
+                                if osc_state.parameters.contains_key(addr) {
                                     log::trace!("OSC param not dirty: {}", addr);
                                 }
                             }
@@ -509,8 +518,8 @@ impl<P: EffectPlugin> App<P> {
                 let descriptors = Arc::clone(&state.param_descriptors);
                 for (i, desc) in descriptors.iter().enumerate() {
                     if let Some(addr) = state.param_osc_addresses.get(i) {
-                        // OSC addresses are "/category/id"; web uses "category/id" (no leading slash)
-                        let id = addr.trim_start_matches('/');
+                        // OSC full addresses are "/rustjay/category/id"; web uses "category/id"
+                        let id = addr.strip_prefix("/rustjay/").unwrap_or(addr.trim_start_matches('/'));
                         let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
                         server.update_parameter(id, value);
                     }
@@ -724,7 +733,9 @@ impl<P: EffectPlugin> App<P> {
                 }
 
                 if any_work {
-                    renderer.queue().submit(std::iter::once(encoder.finish()));
+                    if let Some(ref mut engine) = self.output_engine {
+                        engine.enqueue_command(encoder.finish());
+                    }
                 }
             }
         } else if let (Some(ref mut renderer), Some(gui)) =
@@ -774,7 +785,9 @@ impl<P: EffectPlugin> App<P> {
             }
 
             if any_work {
-                renderer.queue().submit(std::iter::once(encoder.finish()));
+                if let Some(ref mut engine) = self.output_engine {
+                    engine.enqueue_command(encoder.finish());
+                }
             }
         }
     }

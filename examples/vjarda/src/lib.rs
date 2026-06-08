@@ -24,6 +24,7 @@ use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
+use sources::SourceKind;
 use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
@@ -85,6 +86,10 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_decks: Vec<PendingDeck>,
+    /// Runtime deck removal queue (processed in `prepare()`).
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_removals: Vec<PendingRemoval>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -104,6 +109,16 @@ pub struct PendingDeck {
     pub channel_uuid: String,
     /// Source entry from the library registry.
     pub source: crate::sources::SourceEntry,
+}
+
+/// One deck queued for removal by the UI and processed in `prepare()`.
+#[derive(Debug, Clone)]
+#[cfg(feature = "mixer")]
+pub struct PendingRemoval {
+    /// Target channel UUID.
+    pub channel_uuid: String,
+    /// Deck UUID to remove.
+    pub deck_uuid: String,
 }
 
 impl VardaAppState {
@@ -156,6 +171,8 @@ impl Default for VardaAppState {
             projection_handle: None,
             #[cfg(feature = "mixer")]
             pending_decks: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_removals: Vec::new(),
             #[cfg(feature = "sysmon")]
             sys: sysinfo::System::new_all(),
             #[cfg(feature = "sysmon")]
@@ -208,6 +225,7 @@ fn instantiate_source(
                     format!("deck_{}_{}", channel_id, entry.id),
                     &entry.name,
                     Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                    entry.kind,
                 ));
             }
             #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
@@ -216,6 +234,7 @@ fn instantiate_source(
                     format!("deck_{}_{}", channel_id, entry.id),
                     &entry.name,
                     Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                    entry.kind,
                 ));
             }
             #[cfg(all(feature = "hap", feature = "ffmpeg"))]
@@ -230,12 +249,14 @@ fn instantiate_source(
                         format!("deck_{}_{}", channel_id, entry.id),
                         &entry.name,
                         Box::new(crate::sources::HapSource::new(device, queue, path)?),
+                        entry.kind,
                     ));
                 } else {
                     return Ok(crate::graph::Deck::new(
                         format!("deck_{}_{}", channel_id, entry.id),
                         &entry.name,
                         Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
+                        entry.kind,
                     ));
                 }
             }
@@ -258,6 +279,7 @@ fn instantiate_source(
                 format!("deck_{}_{}", channel_id, entry.id),
                 &entry.name,
                 Box::new(crate::sources::StreamSource::new(device, queue, url)?),
+                entry.kind,
             ));
         }
         #[cfg(not(feature = "ffmpeg"))]
@@ -266,10 +288,47 @@ fn instantiate_source(
                 "Stream support requires the ffmpeg feature"
             ));
         }
-        _ => {
+        #[cfg(feature = "ndi")]
+        SourceKind::Ndi => {
+            let source_name = entry.name.clone();
+            return Ok(crate::graph::Deck::new(
+                format!("deck_{}_{}", channel_id, entry.id),
+                &entry.name,
+                Box::new(crate::sources::NdiSource::new(device, source_name)),
+                entry.kind,
+            ));
+        }
+        #[cfg(not(feature = "ndi"))]
+        SourceKind::Ndi => {
             return Err(anyhow::anyhow!(
-                "Source kind {:?} not yet supported for runtime creation",
-                entry.kind
+                "NDI support requires the ndi feature"
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        SourceKind::Syphon => {
+            let server_name = entry.name.clone();
+            let server_uuid = entry
+                .path
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .unwrap_or("")
+                .to_string();
+            return Ok(crate::graph::Deck::new(
+                format!("deck_{}_{}", channel_id, entry.id),
+                &entry.name,
+                Box::new(crate::sources::SyphonSource::new(
+                    device,
+                    queue,
+                    server_name,
+                    server_uuid,
+                )),
+                entry.kind,
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        SourceKind::Syphon => {
+            return Err(anyhow::anyhow!(
+                "Syphon is only available on macOS"
             ));
         }
     };
@@ -280,6 +339,7 @@ fn instantiate_source(
         format!("deck_{}_{}", channel_id, entry.id),
         &entry.name,
         source,
+        entry.kind,
     );
     if entry.kind == SourceKind::Isf {
         deck.source_path = entry.path.clone();
@@ -295,16 +355,23 @@ pub struct VardaRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
     params_dirty: bool,
-    /// Canonical live warp state, shared with the app state (GUI writer) and the
-    /// projector's `VardaWarpStage` (reader). See `stage::WarpSync`.
+    /// Per-projector warp state. Each projector gets its own sync so surface-
+    /// specific warp edits don't leak across outputs.
     #[cfg(feature = "projection")]
-    warp_sync: std::sync::Arc<std::sync::Mutex<stage::WarpSync>>,
+    warp_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<stage::WarpSync>>>>,
     /// Canonical live dome state, shared with the app state and projector.
     #[cfg(feature = "projection")]
     dome_sync: std::sync::Arc<std::sync::Mutex<stage::DomeSync>>,
     /// Canonical live edge-blend state, shared with the app state and projector.
     #[cfg(feature = "projection")]
     edge_blend_sync: std::sync::Arc<std::sync::Mutex<stage::EdgeBlendSync>>,
+    /// Per-projector source texture overrides. Shared between the stage factory
+    /// (created in main.rs) and the app state (updated in prepare()).
+    #[cfg(feature = "projection")]
+    source_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<stage::SourceSync>>>>,
+    /// Per-projector output rotation. Shared between the stage factory and app state.
+    #[cfg(feature = "projection")]
+    rotation_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>>>,
 }
 
 impl VardaRootPlugin {
@@ -314,20 +381,72 @@ impl VardaRootPlugin {
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
             #[cfg(feature = "projection")]
-            warp_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::WarpSync::default())),
+            warp_syncs: std::sync::Mutex::new(Vec::new()),
             #[cfg(feature = "projection")]
             dome_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::DomeSync::default())),
             #[cfg(feature = "projection")]
             edge_blend_sync: std::sync::Arc::new(std::sync::Mutex::new(
                 stage::EdgeBlendSync::default(),
             )),
+            #[cfg(feature = "projection")]
+            source_syncs: std::sync::Mutex::new(Vec::new()),
+            #[cfg(feature = "projection")]
+            rotation_syncs: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    /// Shared warp state for the projector stage.
+    /// Ensure source_syncs has at least `count` entries.
     #[cfg(feature = "projection")]
-    pub fn warp_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::WarpSync>> {
-        self.warp_sync.clone()
+    pub fn ensure_source_syncs(&self, count: usize) {
+        let mut syncs = self.source_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                stage::SourceSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Ensure rotation_syncs has at least `count` entries.
+    #[cfg(feature = "projection")]
+    pub fn ensure_rotation_syncs(&self, count: usize) {
+        let mut syncs = self.rotation_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                rustjay_projection::RotationSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Shared per-projector source syncs.
+    #[cfg(feature = "projection")]
+    pub fn source_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<stage::SourceSync>>> {
+        self.source_syncs.lock().unwrap().clone()
+    }
+
+    /// Shared per-projector rotation syncs.
+    #[cfg(feature = "projection")]
+    pub fn rotation_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>> {
+        self.rotation_syncs.lock().unwrap().clone()
+    }
+
+    /// Ensure warp_syncs has at least `count` entries.
+    #[cfg(feature = "projection")]
+    pub fn ensure_warp_syncs(&self, count: usize) {
+        let mut syncs = self.warp_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                stage::WarpSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Shared per-projector warp syncs.
+    #[cfg(feature = "projection")]
+    pub fn warp_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<stage::WarpSync>>> {
+        self.warp_syncs.lock().unwrap().clone()
     }
 
     /// Shared dome state for the projector stage.
@@ -362,7 +481,7 @@ impl VardaRootPlugin {
         let path_a1 = shaders_dir.join("ColorCycle.fs");
         if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
             let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node));
+            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_a1);
             comp_a.decks.push(deck);
         } else {
@@ -375,7 +494,7 @@ impl VardaRootPlugin {
         );
         comp_a
             .decks
-            .push(Deck::new("a2", "Solid Red", Box::new(solid)));
+            .push(Deck::new("a2", "Solid Red", Box::new(solid), SourceKind::SolidColor));
 
         #[cfg(feature = "hap")]
         {
@@ -396,6 +515,7 @@ impl VardaRootPlugin {
                                         format!("a_hap_{}", comp_a.decks.len()),
                                         &name,
                                         Box::new(hap),
+                                        SourceKind::Video,
                                     ));
                                     log::info!("Loaded HAP source: {}", path.display());
                                 }
@@ -419,7 +539,7 @@ impl VardaRootPlugin {
         let path_b1 = shaders_dir.join("AuroraWaves.fs");
         if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
             let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node));
+            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_b1);
             comp_b.decks.push(deck);
         } else {
@@ -428,7 +548,7 @@ impl VardaRootPlugin {
         let camera = CameraSource::new(device, 0);
         comp_b
             .decks
-            .push(Deck::new("b2", "Camera", Box::new(camera)));
+            .push(Deck::new("b2", "Camera", Box::new(camera), SourceKind::Camera));
 
         #[cfg(feature = "ffmpeg")]
         {
@@ -449,6 +569,7 @@ impl VardaRootPlugin {
                                         format!("b_vid_{}", comp_b.decks.len()),
                                         &name,
                                         Box::new(src),
+                                        SourceKind::Video,
                                     ));
                                     log::info!("Loaded video source: {}", path.display());
                                 }
@@ -552,9 +673,12 @@ impl EffectPlugin for VardaRootPlugin {
         }
         #[cfg(feature = "projection")]
         {
-            s.stage.warp_sync = Some(self.warp_sync.clone());
+            self.ensure_warp_syncs(s.stage.projectors.len());
+            s.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
             s.stage.dome_sync = Some(self.dome_sync.clone());
             s.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
+            s.stage.source_syncs = self.source_syncs.lock().unwrap().clone();
+            s.stage.rotation_syncs = self.rotation_syncs.lock().unwrap().clone();
         }
         s
     }
@@ -597,19 +721,21 @@ impl EffectPlugin for VardaRootPlugin {
                 if stage_path.exists() {
                     match state.workspace.load_stage() {
                         Ok(loaded_stage) => {
+                            // Preserve runtime sync handles so projector stages stay connected.
+                            let warp_syncs = std::mem::take(&mut state.stage.warp_syncs);
+                            let source_syncs = std::mem::take(&mut state.stage.source_syncs);
+                            let rotation_syncs = std::mem::take(&mut state.stage.rotation_syncs);
+
                             state.stage = loaded_stage;
-                            // Re-inject global Arc handles wiped by serde(skip) on deserialize.
-                            state.stage.warp_sync = Some(self.warp_sync.clone());
+
+                            // Restore runtime syncs.
+                            state.stage.warp_syncs = warp_syncs;
+                            state.stage.source_syncs = source_syncs;
+                            state.stage.rotation_syncs = rotation_syncs;
+                            self.ensure_warp_syncs(state.stage.projectors.len());
+                            state.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
                             state.stage.dome_sync = Some(self.dome_sync.clone());
                             state.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
-                            // Inject per-projector warp syncs for outputs loaded from disk.
-                            for proj in state.stage.projectors.iter_mut() {
-                                if proj.warp_sync.is_none() {
-                                    proj.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
-                                        crate::stage::WarpSync::default(),
-                                    )));
-                                }
-                            }
                             state.stage.publish_warp();
                             // Dome/edge-blend runtime state lives in the Sync structs and is
                             // not serialized, so publish defaults here — ephemeral by design.
@@ -797,6 +923,33 @@ impl EffectPlugin for VardaRootPlugin {
         // Materialise runtime deck-creation requests queued by the UI.
         #[cfg(feature = "mixer")]
         {
+            // Process pending deck removals first.
+            let removals: Vec<PendingRemoval> = std::mem::take(&mut state.pending_removals);
+            for req in removals {
+                let Ok(mut mixer) = state.mixer.lock() else {
+                    continue;
+                };
+                let channel = mixer
+                    .channels
+                    .iter_mut()
+                    .find(|c| c.uuid == req.channel_uuid || c.name == req.channel_uuid);
+                let Some(channel) = channel else {
+                    continue;
+                };
+                if let Some(compositor) = channel.effect.as_any_mut() {
+                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                        if let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
+                            self.params_dirty = true;
+                            engine.notify(
+                                format!("Removed deck '{}' from {}", deck.name, channel.name),
+                                rustjay_core::NotificationLevel::Info,
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                    }
+                }
+            }
+
             let pending: Vec<PendingDeck> = std::mem::take(&mut state.pending_decks);
             for req in pending {
                 let Ok(mut mixer) = state.mixer.lock() else {
@@ -863,21 +1016,13 @@ impl EffectPlugin for VardaRootPlugin {
                     {
                         for cfg in state.stage.headless_outputs.iter_mut() {
                             if cfg.enabled && !cfg.pushed {
-                                // Per-headless warp sync so assignments can drive warp.
-                                cfg.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
-                                    crate::stage::WarpSync::default(),
-                                )));
-                                let w = cfg.warp_sync.clone().unwrap();
-                                let d = self.dome_sync.clone();
-                                let e = self.edge_blend_sync.clone();
                                 sub.add_headless_output(
                                     cfg.width,
                                     cfg.height,
-                                    vec![
-                                        Box::new(crate::stage::VardaDomeStage::new(device, wgpu::TextureFormat::Rgba8Unorm, d)),
-                                        Box::new(crate::stage::VardaEdgeBlendStage::new(device, wgpu::TextureFormat::Rgba8Unorm, e)),
-                                        Box::new(crate::stage::VardaWarpStage::new(device, wgpu::TextureFormat::Rgba8Unorm, w)),
-                                    ],
+                                    vec![Box::new(rustjay_projection::IdentityStage::new(
+                                        device,
+                                        wgpu::TextureFormat::Rgba8Unorm,
+                                    ))],
                                 );
                                 cfg.pushed = true;
                                 log::info!(
@@ -891,41 +1036,6 @@ impl EffectPlugin for VardaRootPlugin {
                     } else {
                         log::warn!("[Headless] projection_handle downcast failed — headless outputs not created");
                     }
-                }
-            }
-        }
-
-        // ── Per-output render path iteration ─────────────────────────────────
-        // For each output, resolve its surface assignments and publish the
-        // appropriate warp into the per-output WarpSync so the stage chain
-        // renders the correct surface geometry.
-        #[cfg(feature = "projection")]
-        {
-            let surfaces = &state.stage.surfaces;
-            let fallback_warp = surfaces
-                .iter()
-                .find(|s| s.source == crate::stage::SurfaceSource::Master)
-                .or_else(|| surfaces.first())
-                .map(|s| &s.warp);
-
-            for proj in &state.stage.projectors {
-                if let Some(sync) = &proj.warp_sync {
-                    crate::stage::resolve_and_publish_warp(
-                        sync,
-                        Some(&proj.surface_assignments),
-                        surfaces,
-                        fallback_warp,
-                    );
-                }
-            }
-            for hl in &state.stage.headless_outputs {
-                if let Some(sync) = &hl.warp_sync {
-                    crate::stage::resolve_and_publish_warp(
-                        sync,
-                        Some(&hl.surface_assignments),
-                        surfaces,
-                        fallback_warp,
-                    );
                 }
             }
         }
@@ -1054,7 +1164,7 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
-    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _app_state: &mut VardaAppState) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, app_state: &mut VardaAppState) -> bool {
         #[cfg(feature = "mixer")]
         {
             let mut render_ctx = RenderCtx {
@@ -1116,11 +1226,122 @@ impl EffectPlugin for VardaRootPlugin {
 
             let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
             mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
+
+            #[cfg(not(feature = "projection"))]
+            {
+                let _ = app_state.ready;
+            }
+
+            #[cfg(feature = "projection")]
+            {
+                use crate::stage::{SourceSync, SurfaceSource};
+                let stage = &mut app_state.stage;
+                // Grow/shrink source_syncs and rotation_syncs to match projector count.
+                while stage.source_syncs.len() < stage.projectors.len() {
+                    stage.source_syncs.push(std::sync::Arc::new(
+                        std::sync::Mutex::new(SourceSync::default()),
+                    ));
+                }
+                stage.source_syncs.truncate(stage.projectors.len());
+                while stage.rotation_syncs.len() < stage.projectors.len() {
+                    stage.rotation_syncs.push(std::sync::Arc::new(
+                        std::sync::Mutex::new(rustjay_projection::RotationSync::default()),
+                    ));
+                }
+                stage.rotation_syncs.truncate(stage.projectors.len());
+
+                // Update rotation syncs from projector configs.
+                for (i, proj) in stage.projectors.iter().enumerate() {
+                    if let Some(sync) = stage.rotation_syncs.get(i) {
+                        if let Ok(mut g) = sync.lock() {
+                            g.set_rotation(proj.rotation.index());
+                        }
+                    }
+                }
+
+                for (i, proj) in stage.projectors.iter().enumerate() {
+                    if !proj.enabled {
+                        continue;
+                    }
+                    let sync = &stage.source_syncs[i];
+                    let surface = proj
+                        .surface_index
+                        .and_then(|idx| stage.surfaces.get(idx))
+                        .or_else(|| stage.surfaces.first());
+
+                    let source_key = surface.map(|s| s.source.label());
+
+                    // Compute UV transform for Mapped surfaces with Master source.
+                    let (uv_scale, uv_offset) = surface
+                        .filter(|s| s.source == SurfaceSource::Master && s.content_mapping == crate::stage::ContentMapping::Mapped)
+                        .map(|s| {
+                            let bb = s.bounding_box();
+                            let scale = [bb[2] - bb[0], bb[3] - bb[1]];
+                            let offset = [bb[0], bb[1]];
+                            (scale, offset)
+                        })
+                        .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
+
+                    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+
+                    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
+                        let source_changed = g.source_key.as_ref() != source_key.as_ref();
+                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
+                        if !source_changed && !uv_changed {
+                            // Nothing changed — keep current state.
+                            (false, g.override_view.clone())
+                        } else {
+                            // Source or UV changed — compute new view.
+                            let view = match surface {
+                                Some(surf) => match &surf.source {
+                                    SurfaceSource::Master => None,
+                                    SurfaceSource::Channel(uuid) => {
+                                        mixer.channel_texture(uuid).map(|tex| {
+                                            std::sync::Arc::new(tex.texture.create_view(
+                                                &wgpu::TextureViewDescriptor::default(),
+                                            ))
+                                        })
+                                    }
+                                    SurfaceSource::Deck { .. } => {
+                                        log::warn!(
+                                            "Deck source routing not yet implemented, falling back to Master"
+                                        );
+                                        None
+                                    }
+                                    SurfaceSource::Domemaster => None,
+                                },
+                                None => None,
+                            };
+                            (true, view)
+                        }
+                    } else {
+                        (false, None)
+                    };
+
+                    if needs_update {
+                        if let Ok(mut g) = sync.lock() {
+                            g.source_key = source_key;
+                            g.override_view = override_view;
+                            g.uv_scale = uv_scale;
+                            g.uv_offset = uv_offset;
+                            g.uv_crop = uv_crop;
+                            g.version = g.version.wrapping_add(1);
+                        }
+                    }
+                }
+
+                // TODO(S2): headless_outputs.surface_index is stored and UI-editable
+                // but not yet wired into the render hook. Headless outputs currently
+                // use a passthrough IdentityStage. Add per-headless source routing
+                // when the headless stage chain is made dynamic.
+            }
+
             true
         }
         #[cfg(not(feature = "mixer"))]
         {
             // Fallback when mixer is disabled: let the engine render the default shader pass.
+            let _ = app_state.ready;
             false
         }
     }
@@ -1247,6 +1468,7 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
             SourceKind::SolidColor => "solid_color",
             SourceKind::Camera => "camera",
             SourceKind::Ndi => "ndi",
+            SourceKind::Syphon => "syphon",
             SourceKind::Srt => "srt",
             SourceKind::Hls => "hls",
             SourceKind::Dash => "dash",

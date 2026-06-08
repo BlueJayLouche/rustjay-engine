@@ -244,6 +244,9 @@ pub(crate) struct App<P: EffectPlugin> {
     /// Last time device discovery was polled. Devices change on a human
     /// timescale, so this is throttled rather than run every frame.
     pub(crate) last_device_poll: std::time::Instant,
+    /// Last time an audio stream reconnect was attempted. Reconnects are
+    /// throttled to avoid hammering CoreAudio when a device is unavailable.
+    pub(crate) last_audio_reconnect_attempt: Option<std::time::Instant>,
 
     /// Scratch buffer for dirty MIDI values — cleared and reused each frame to avoid HashMap allocation.
     pub(crate) midi_dirty_scratch: Vec<(String, f32)>,
@@ -361,7 +364,7 @@ impl<P: EffectPlugin> App<P> {
             state.registered_param_ids = descriptors.iter().map(|d| d.id.clone()).collect();
             state.param_osc_addresses = descriptors
                 .iter()
-                .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
+                .map(|d| format!("/rustjay/{}/{}", d.category.name().to_lowercase(), d.id))
                 .collect();
         }
 
@@ -484,6 +487,7 @@ impl<P: EffectPlugin> App<P> {
             last_ui_render: std::time::Instant::now(),
             ui_needs_redraw: true,
             last_device_poll: std::time::Instant::now(),
+            last_audio_reconnect_attempt: None,
             midi_dirty_scratch: Vec::new(),
             cached_audio_amplitude: 1.0,
             cached_audio_smoothing: 0.5,

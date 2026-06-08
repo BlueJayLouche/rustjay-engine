@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Delta effect with a professional egui interface"
 
+[features]
+default = ["egui", "ndi", "webcam"]
+ndi     = ["rustjay-engine/ndi"]
+webcam  = ["rustjay-engine/webcam"]
+egui    = ["rustjay-engine/egui"]
+
 [dependencies]
-rustjay-engine = { workspace = true, features = ["egui", "webcam"] }
+rustjay-engine = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 serde = { workspace = true }

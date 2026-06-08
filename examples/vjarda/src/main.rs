@@ -15,26 +15,26 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
         let tabs = vec![
-            Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(varda::ui::DeckTab),
-            Box::new(varda::ui::EffectsTab::default()),
-            Box::new(varda::ui::MidiTab),
-            Box::new(varda::ui::StageTab::new()),
-            Box::new(varda::ui::OutputsTab::new()),
-            Box::new(varda::ui::SequencerTab),
-            Box::new(varda::ui::InspectorTab),
+            Box::new(vjarda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(vjarda::ui::DeckTab::default()),
+            Box::new(vjarda::ui::EffectsTab::default()),
+            Box::new(vjarda::ui::MidiTab),
+            Box::new(vjarda::ui::StageTab::new()),
+            Box::new(vjarda::ui::GeometryTab::new()),
+            Box::new(vjarda::ui::OutputsTab::new()),
+            Box::new(vjarda::ui::SequencerTab),
+            Box::new(vjarda::ui::InspectorTab),
         ];
-        let plugin = varda::VardaRootPlugin::new();
+        let plugin = vjarda::VardaRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
         // actually reach the render output.
-        let warp_sync = plugin.warp_sync();
         let dome_sync = plugin.dome_sync();
         let edge_blend_sync = plugin.edge_blend_sync();
 
         // Load saved stage config (projector/headless list) so we can register
         // multiple projector windows at startup.
         let mut stage = plugin.default_state().stage;
-        let workspace = varda::persistence::default_workspace();
+        let workspace = vjarda::persistence::default_workspace();
         if let Ok(loaded) = workspace.load_stage() {
             stage.projectors = loaded.projectors;
             stage.headless_outputs = loaded.headless_outputs;
@@ -45,16 +45,19 @@ fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Create per-projector warp syncs so each output can render a
-        // different assigned surface with its own warp.
-        for proj in stage.projectors.iter_mut() {
-            proj.warp_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
-                varda::stage::WarpSync::default(),
-            )));
-        }
+        // Ensure plugin-level syncs match projector count so stages and app state
+        // share the same Arcs.
+        plugin.ensure_source_syncs(stage.projectors.len());
+        plugin.ensure_rotation_syncs(stage.projectors.len());
+        plugin.ensure_warp_syncs(stage.projectors.len());
+
+        // Clone syncs for the closure (plugin will be moved into the engine).
+        let source_syncs = plugin.source_syncs();
+        let rotation_syncs = plugin.rotation_syncs();
+        let warp_syncs = plugin.warp_syncs();
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
-            use varda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaWarpStage};
+            use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
             use winit::window::WindowAttributes;
             for (i, proj) in stage.projectors.iter().enumerate() {
                 if !proj.enabled {
@@ -64,31 +67,30 @@ fn main() -> anyhow::Result<()> {
                     .with_title(format!("Varda Projector {} - {}", i + 1, proj.name))
                     .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
                 if let Some(monitor_idx) = proj.fullscreen_monitor {
-                    // winit monitor selection — iterate available monitors
-                    // and pick the Nth one.  If the index is out of range,
-                    // fall back to windowed.
-                    // NOTE: event_loop is not available here; fullscreen
-                    // is applied after window creation in a follow-up.
-                    // For now we just size the window to the display.
                     log::info!(
                         "[Projector {}] requested fullscreen on monitor {}",
                         i,
                         monitor_idx
                     );
                 }
-                // Use per-projector warp sync if available, otherwise fall back
-                // to the global warp sync (backward compatibility).
-                let w = proj
-                    .warp_sync
-                    .clone()
-                    .unwrap_or_else(|| warp_sync.clone());
+                let w = warp_syncs.get(i).cloned().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::WarpSync::default()))
+                });
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
+                let s = source_syncs.get(i).cloned().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::SourceSync::default()))
+                });
+                let r = rotation_syncs.get(i).cloned().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
+                });
                 sub.add_projector(attrs, move |device, format| {
                     vec![
+                        Box::new(VardaSourceStage::new(device, format, s.clone())),
                         Box::new(VardaDomeStage::new(device, format, d.clone())),
                         Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
                         Box::new(VardaWarpStage::new(device, format, w.clone())),
+                        Box::new(rustjay_projection::RotationStage::new(device, format, r.clone())),
                     ]
                 });
             }
@@ -98,19 +100,20 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
     {
         let tabs = vec![
-            Box::new(varda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(varda::ui::DeckTab),
-            Box::new(varda::ui::EffectsTab::default()),
-            Box::new(varda::ui::MidiTab),
-            Box::new(varda::ui::StageTab::new()),
-            Box::new(varda::ui::OutputsTab::new()),
-            Box::new(varda::ui::SequencerTab),
-            Box::new(varda::ui::InspectorTab),
+            Box::new(vjarda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(vjarda::ui::DeckTab::default()),
+            Box::new(vjarda::ui::EffectsTab::default()),
+            Box::new(vjarda::ui::MidiTab),
+            Box::new(vjarda::ui::StageTab::new()),
+            Box::new(vjarda::ui::GeometryTab::new()),
+            Box::new(vjarda::ui::OutputsTab::new()),
+            Box::new(vjarda::ui::SequencerTab),
+            Box::new(vjarda::ui::InspectorTab),
         ];
-        rustjay_engine::run_with_egui_tabs(varda::VardaRootPlugin::new(), tabs)
+        rustjay_engine::run_with_egui_tabs(vjarda::VardaRootPlugin::new(), tabs)
     }
     #[cfg(not(all(feature = "egui", feature = "mixer")))]
     {
-        rustjay_engine::run(varda::VardaRootPlugin::new())
+        rustjay_engine::run(vjarda::VardaRootPlugin::new())
     }
 }

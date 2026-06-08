@@ -232,15 +232,10 @@ impl OscState {
         self.parameters.get(&full_address).map(|p| p.value)
     }
 
-    /// Get parameter value and clear dirty flag (for reading OSC updates)
+    /// Get parameter value and clear dirty flag (for reading OSC updates).
+    /// `address` must be the full OSC address (e.g. `"/rustjay/color/hue_shift"`).
     pub fn get_value_if_dirty(&mut self, address: &str) -> Option<f32> {
-        let full_address = if address.starts_with(&self.base_address) {
-            address.to_string()
-        } else {
-            format!("{}{}", self.base_address, address)
-        };
-
-        if let Some(param) = self.parameters.get_mut(&full_address) {
+        if let Some(param) = self.parameters.get_mut(address) {
             if param.is_dirty() {
                 return Some(param.get_value());
             }
