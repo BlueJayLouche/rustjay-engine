@@ -611,11 +611,6 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
     fn on_input_changed(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         self.inner.on_input_changed(device, size);
     }
-
-    fn is_active(&self) -> bool {
-        let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
-        g.config.any_enabled()
-    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -867,6 +862,10 @@ impl VardaEdgeBlendStage {
 impl rustjay_projection::ProjectionStage for VardaEdgeBlendStage {
     fn label(&self) -> &str {
         "varda-edge-blend"
+    }
+
+    fn is_active(&self) -> bool {
+        self.inner.config.any_enabled()
     }
 
     fn render(
