@@ -295,13 +295,16 @@ impl<P: EffectPlugin> App<P> {
         };
 
         // Tick the unified modulation engine without holding shared_state.
+        // Use wall-clock time so LFO dt is real seconds, not the clamped
+        // frame_delta_time accumulator which runs fast under ControlFlow::Poll.
+        let mod_time = self.modulation_start.elapsed().as_secs_f32();
         let offsets = {
             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
             log::debug!(
-                "[update_lfo] elapsed={:.3} bpm={:.1} beat_phase={:.2}",
-                self.elapsed_time, bpm, stable_beat_phase
+                "[update_lfo] mod_time={:.3} bpm={:.1} beat_phase={:.2}",
+                mod_time, bpm, stable_beat_phase
             );
-            mod_eng.update(self.elapsed_time, bpm, stable_beat_phase, &audio);
+            mod_eng.update(mod_time, bpm, stable_beat_phase, &audio);
 
             let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
             for param_id in mod_eng.assignments.keys() {

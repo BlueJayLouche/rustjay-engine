@@ -753,6 +753,9 @@ pub struct ModulationEngine {
     /// Cached evaluation order; invalidated when assignments or sources change.
     #[serde(skip)]
     cached_evaluation_order: Option<Vec<usize>>,
+    /// Smoothed BPM (EMA) to suppress audio-detector jitter and octave errors.
+    #[serde(skip)]
+    bpm_smoothed: f32,
 }
 
 impl ModulationEngine {
@@ -946,13 +949,13 @@ impl ModulationEngine {
         match &mut modified {
             ModulationSource::LFO {
                 frequency,
-                phase,
                 amplitude,
                 ..
             } => {
                 *frequency =
                     (*frequency + self.get_mod_source_offset(uuid, "frequency")).max(0.001);
-                *phase = (*phase + self.get_mod_source_offset(uuid, "phase")).clamp(0.0, 1.0);
+                // phase is a running state accumulator — do NOT offset it here.
+                // Modulating the LFO phase_offset_degrees is the correct mod-on-mod target.
                 *amplitude =
                     (*amplitude + self.get_mod_source_offset(uuid, "amplitude")).clamp(0.0, 1.0);
             }
@@ -1046,7 +1049,25 @@ impl ModulationEngine {
         self.ensure_index();
         let dt = self.prev_time.map_or(0.016, |prev| time - prev);
         self.prev_time = Some(time);
-        log::debug!("[ModulationEngine::update] time={:.3} dt={:.4}", time, dt);
+
+        // Fold raw BPM into a canonical octave range (60–180) to suppress detector
+        // octave errors (2×/4× misreads), then smooth with a fast EMA (~0.33 s at 60 fps).
+        let bpm = if bpm > 1.0 {
+            let mut b = bpm;
+            while b > 180.0 { b /= 2.0; }
+            while b < 60.0 && b > 0.0 { b *= 2.0; }
+            const ALPHA: f32 = 0.05;
+            if self.bpm_smoothed <= 0.0 {
+                self.bpm_smoothed = b;
+            } else {
+                self.bpm_smoothed = ALPHA * b + (1.0 - ALPHA) * self.bpm_smoothed;
+            }
+            self.bpm_smoothed
+        } else {
+            bpm
+        };
+
+        log::debug!("[ModulationEngine::update] time={:.3} dt={:.4} bpm={:.1}", time, dt, bpm);
 
         while self.prev_values.len() < self.sources.len() {
             self.prev_values.push(0.0);
