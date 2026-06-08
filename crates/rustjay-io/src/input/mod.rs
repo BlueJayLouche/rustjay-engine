@@ -347,9 +347,9 @@ impl InputManager {
         // Metal's drawable pool when accessed off-thread, causing a deadlock.
         #[cfg(target_os = "macos")]
         {
-            log::info!("[InputManager] Discovering Syphon servers (main thread)...");
+            log::debug!("[InputManager] Discovering Syphon servers (main thread)...");
             let servers = syphon_input::SyphonDiscovery::new().discover_servers();
-            log::info!("[InputManager] Found {} Syphon server(s)", servers.len());
+            log::debug!("[InputManager] Found {} Syphon server(s)", servers.len());
             self.syphon_servers = Some(servers);
         }
 
@@ -360,11 +360,11 @@ impl InputManager {
         std::thread::spawn(move || {
             #[cfg(feature = "webcam")]
             let webcam = {
-                log::info!("[InputManager] Discovering webcam devices...");
+                log::debug!("[InputManager] Discovering webcam devices...");
                 let devices = list_cameras();
-                log::info!("[InputManager] Found {} webcam device(s)", devices.len());
+                log::debug!("[InputManager] Found {} webcam device(s)", devices.len());
                 for d in &devices {
-                    log::info!("  - {}", d);
+                    log::debug!("  - {}", d);
                 }
                 devices
             };
@@ -374,9 +374,9 @@ impl InputManager {
             // Audio device enumeration runs in the background to avoid blocking
             // the main thread — cpal's CoreAudio backend can stall the main run loop.
             let audio = {
-                log::info!("[InputManager] Discovering audio input devices...");
+                log::debug!("[InputManager] Discovering audio input devices...");
                 let devices = rustjay_audio::list_audio_devices();
-                log::info!(
+                log::debug!(
                     "[InputManager] Found {} audio input device(s)",
                     devices.len()
                 );
@@ -385,9 +385,9 @@ impl InputManager {
 
             #[cfg(feature = "ndi")]
             let ndi = {
-                log::info!("[InputManager] Discovering NDI sources...");
+                log::debug!("[InputManager] Discovering NDI sources...");
                 let sources = list_ndi_sources(2000);
-                log::info!("[InputManager] Found {} NDI source(s)", sources.len());
+                log::debug!("[InputManager] Found {} NDI source(s)", sources.len());
                 sources
             };
             #[cfg(not(feature = "ndi"))]
@@ -395,27 +395,27 @@ impl InputManager {
 
             #[cfg(target_os = "windows")]
             let spout = {
-                log::info!("[InputManager] Discovering Spout senders...");
+                log::debug!("[InputManager] Discovering Spout senders...");
                 let senders = spout_input::SpoutDiscovery::list_senders();
-                log::info!("[InputManager] Found {} Spout sender(s)", senders.len());
+                log::debug!("[InputManager] Found {} Spout sender(s)", senders.len());
                 senders
             };
 
             #[cfg(target_os = "linux")]
             let (v4l2_capture, v4l2_output) = {
-                log::info!("[InputManager] Discovering V4L2 devices...");
+                log::debug!("[InputManager] Discovering V4L2 devices...");
                 let cap = crate::v4l2_devices::list_capture_devices();
                 let out = crate::v4l2_devices::list_output_devices();
-                log::info!(
+                log::debug!(
                     "[InputManager] Found {} V4L2 capture, {} V4L2 output device(s)",
                     cap.len(),
                     out.len()
                 );
                 for d in &cap {
-                    log::info!("  - [capture] {}", d.display_name());
+                    log::debug!("  - [capture] {}", d.display_name());
                 }
                 for d in &out {
-                    log::info!("  - [output]  {}", d.display_name());
+                    log::debug!("  - [output]  {}", d.display_name());
                 }
                 (cap, out)
             };

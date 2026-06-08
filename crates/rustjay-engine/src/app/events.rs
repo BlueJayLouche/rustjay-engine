@@ -325,14 +325,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_egui);
 
                                     self.egui_control_gui = Some(gui);
-                                    {
-                                        let mut state = self
-                                            .shared_state
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        state.input_command =
-                                            rustjay_core::InputCommand::RefreshDevices;
-                                    }
                                     self.egui_renderer = Some(renderer);
                                 }
                                 Err(err) => {
@@ -369,14 +361,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_imgui);
 
                                     self.control_gui = Some(gui);
-                                    {
-                                        let mut state = self
-                                            .shared_state
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        state.input_command =
-                                            rustjay_core::InputCommand::RefreshDevices;
-                                    }
                                     self.imgui_renderer = Some(renderer);
                                 }
                                 Err(err) => log::error!("Failed to create control GUI: {}", err),
