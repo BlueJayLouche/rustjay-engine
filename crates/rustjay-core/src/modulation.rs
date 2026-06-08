@@ -511,6 +511,9 @@ impl ModulationSource {
                     1.0 // safe fallback
                 };
 
+                let old_phase = *phase;
+                let old_lbp = *last_beat_phase;
+
                 // Quantum-boundary phase snap: when beat_phase wraps from ~1 back to ~0,
                 // reset phase for sub-beat/single-beat divisions so the LFO stays musically in phase.
                 if *tempo_sync && beat_phase < *last_beat_phase - 0.5 {
@@ -523,6 +526,13 @@ impl ModulationSource {
 
                 // Accumulate phase at the effective rate
                 *phase = (*phase + effective_freq * dt) % 1.0;
+                if !phase.is_finite() {
+                    *phase = 0.0;
+                }
+                log::debug!(
+                    "[LFO] freq={:.2} dt={:.4} phase={:.3}->{:.3} lbp={:.2}->{:.2} bp={:.2}",
+                    effective_freq, dt, old_phase, *phase, old_lbp, *last_beat_phase, beat_phase
+                );
                 if !phase.is_finite() {
                     *phase = 0.0;
                 }
@@ -1036,6 +1046,7 @@ impl ModulationEngine {
         self.ensure_index();
         let dt = self.prev_time.map_or(0.016, |prev| time - prev);
         self.prev_time = Some(time);
+        log::debug!("[ModulationEngine::update] time={:.3} dt={:.4}", time, dt);
 
         while self.prev_values.len() < self.sources.len() {
             self.prev_values.push(0.0);
@@ -1053,25 +1064,34 @@ impl ModulationEngine {
             let value = if self.has_mod_on_mod {
                 let mut effective = self.apply_mod_on_mod(i, &self.sources[i].source);
                 let value = effective.calculate(time, dt, bpm, beat_phase, audio, self.prev_values[i]);
-                // Copy back mutable state changes (ADSR stage progression)
-                if let (
-                    ModulationSource::ADSR {
-                        stage,
-                        stage_time,
-                        current_level,
-                        ..
-                    },
-                    ModulationSource::ADSR {
-                        stage: eff_stage,
-                        stage_time: eff_st,
-                        current_level: eff_cl,
-                        ..
-                    },
-                ) = (&mut self.sources[i].source, &effective)
-                {
-                    *stage = *eff_stage;
-                    *stage_time = *eff_st;
-                    *current_level = *eff_cl;
+                // Copy back mutable state changes (ADSR stage progression, LFO phase)
+                match (&mut self.sources[i].source, &effective) {
+                    (
+                        ModulationSource::ADSR {
+                            stage,
+                            stage_time,
+                            current_level,
+                            ..
+                        },
+                        ModulationSource::ADSR {
+                            stage: eff_stage,
+                            stage_time: eff_st,
+                            current_level: eff_cl,
+                            ..
+                        },
+                    ) => {
+                        *stage = *eff_stage;
+                        *stage_time = *eff_st;
+                        *current_level = *eff_cl;
+                    }
+                    (
+                        ModulationSource::LFO { phase, last_beat_phase, .. },
+                        ModulationSource::LFO { phase: eff_phase, last_beat_phase: eff_lbp, .. },
+                    ) => {
+                        *phase = *eff_phase;
+                        *last_beat_phase = *eff_lbp;
+                    }
+                    _ => {}
                 }
                 value
             } else {
