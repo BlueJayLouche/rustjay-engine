@@ -313,6 +313,11 @@ impl ProjectionSubsystem {
         self.pending.len()
     }
 
+    /// Clear all pending projector creation requests.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
     /// Create any pending projector windows (call from `resumed()`).
     pub fn create_pending(
         &mut self,

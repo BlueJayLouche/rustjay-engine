@@ -1695,8 +1695,9 @@ mod egui_impl {
                             ui.label("surface:");
                             let surf_count = state.stage.surfaces.len();
                             let mut surf_idx = proj.surface_index.map(|s| s as i32).unwrap_or(-1);
+                            let max_surf = surf_count.saturating_sub(1) as i32;
                             if ui
-                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=surf_count.max(1) as i32 - 1))
+                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=max_surf))
                                 .changed()
                             {
                                 proj.surface_index = if surf_idx < 0 {
@@ -1729,14 +1730,79 @@ mod egui_impl {
                     state.save_workspace();
                 }
                 if let Some(i) = remove_proj {
+                    // Close the projector window if it exists.
+                    #[cfg(feature = "projection")]
+                    if let Some(handle) = state.projection_handle.as_ref() {
+                        let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                            if let Some(window_id) = state.stage.projectors.get(i).and_then(|p| p.window_id) {
+                                sub.remove_output(window_id);
+                            } else {
+                                // Window hasn't been created yet — clear pending queue.
+                                sub.clear_pending();
+                            }
+                        }
+                    }
                     state.stage.projectors.remove(i);
                     state.save_workspace();
                 }
+                // Sync runtime window IDs from the projection subsystem.
+                #[cfg(feature = "projection")]
+                if let Some(handle) = state.projection_handle.as_ref() {
+                    let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                        let mut enabled_idx = 0;
+                        for proj in state.stage.projectors.iter_mut() {
+                            if proj.enabled {
+                                if let Some(output) = sub.projectors.get(enabled_idx) {
+                                    proj.window_id = Some(output.window_id);
+                                }
+                                enabled_idx += 1;
+                            } else {
+                                proj.window_id = None;
+                            }
+                        }
+                    }
+                }
+
                 if ui.button("+ Add projector").clicked() {
+                    let new_idx = state.stage.projectors.len();
                     state
                         .stage
                         .projectors
                         .push(crate::stage::VardaProjector::default());
+                    // Ensure a source_sync exists for the new projector.
+                    while state.stage.source_syncs.len() <= new_idx {
+                        state.stage.source_syncs.push(std::sync::Arc::new(
+                            std::sync::Mutex::new(crate::stage::SourceSync::default()),
+                        ));
+                    }
+                    // Queue a window for the new projector.
+                    #[cfg(feature = "projection")]
+                    if let Some(handle) = state.projection_handle.as_ref() {
+                        let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                            let proj = &state.stage.projectors[new_idx];
+                            let attrs = winit::window::WindowAttributes::default()
+                                .with_title(format!("Varda Projector {} - {}", new_idx + 1, proj.name))
+                                .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
+                            let w = state.stage.warp_sync.clone().unwrap();
+                            let d = state.stage.dome_sync.clone().unwrap();
+                            let e = state.stage.edge_blend_sync.clone().unwrap();
+                            let s = state.stage.source_syncs.get(new_idx).cloned().unwrap_or_else(|| {
+                                std::sync::Arc::new(std::sync::Mutex::new(crate::stage::SourceSync::default()))
+                            });
+                            sub.add_projector(attrs, move |device, format| {
+                                vec![
+                                    Box::new(crate::stage::VardaSourceStage::new(device, format, s.clone())),
+                                    Box::new(crate::stage::VardaDomeStage::new(device, format, d.clone())),
+                                    Box::new(crate::stage::VardaEdgeBlendStage::new(device, format, e.clone())),
+                                    Box::new(crate::stage::VardaWarpStage::new(device, format, w.clone())),
+                                ]
+                            });
+                            log::info!("[Outputs] Queued projector {} window creation", new_idx + 1);
+                        }
+                    }
                     state.save_workspace();
                 }
                 ui.separator();

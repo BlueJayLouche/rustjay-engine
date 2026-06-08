@@ -356,8 +356,11 @@ pub struct VardaProjector {
     pub height: u32,
     /// `None` = windowed; `Some(index)` = fullscreen on monitor N.
     pub fullscreen_monitor: Option<usize>,
-    /// Which surface this projector displays (`None` = first surface).
+    /// Which surface this projector displays (`None` = master / no override).
     pub surface_index: Option<usize>,
+    /// Runtime window ID for live management (not persisted).
+    #[serde(skip)]
+    pub window_id: Option<winit::window::WindowId>,
     /// How this output delivers frames.
     #[serde(default)]
     pub output_type: OutputType,
@@ -391,7 +394,8 @@ impl Default for VardaProjector {
             width: 1920,
             height: 1080,
             fullscreen_monitor: None,
-            surface_index: None,
+            surface_index: Some(0),
+            window_id: None,
             output_type: OutputType::Display,
             use_global_warp: true,
             use_global_dome: true,
