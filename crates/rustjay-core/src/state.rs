@@ -1113,7 +1113,7 @@ pub struct EngineState {
     /// Effects read these in `build_uniforms`.
     pub custom_params: Vec<f32>,
 
-    /// Pre-computed OSC address strings (`"/category/id"`) for each effect parameter.
+    /// Pre-computed full OSC address strings (`"/rustjay/category/id"`) for each effect parameter.
     /// Populated once at init alongside `param_descriptors`; avoids per-frame `format!()` calls.
     pub param_osc_addresses: Vec<String>,
 

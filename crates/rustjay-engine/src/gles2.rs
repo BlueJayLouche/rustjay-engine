@@ -571,7 +571,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         }
         state.param_osc_addresses = descriptors
             .iter()
-            .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
+            .map(|d| format!("/rustjay/{}/{}", d.category.name().to_lowercase(), d.id))
             .collect();
     }
 
@@ -1373,7 +1373,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                 let descriptors = Arc::clone(&state.param_descriptors);
                 for (i, desc) in descriptors.iter().enumerate() {
                     if let Some(addr) = state.param_osc_addresses.get(i) {
-                        let id = addr.trim_start_matches('/');
+                        let id = addr.strip_prefix("/rustjay/").unwrap_or(addr.trim_start_matches('/'));
                         let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
                         web_server.update_parameter(id, value);
                     }

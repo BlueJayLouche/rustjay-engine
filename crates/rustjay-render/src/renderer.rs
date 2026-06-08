@@ -60,6 +60,9 @@ pub struct WgpuEngine<P: EffectPlugin> {
     next_render_time: std::time::Instant,
 
     output_manager: OutputManager,
+    /// Command buffers enqueued by external subsystems (e.g. preview textures)
+    /// to be submitted together with the main encoder, reducing total submits.
+    pending_commands: Vec<wgpu::CommandBuffer>,
 }
 
 impl<P: EffectPlugin> WgpuEngine<P> {
@@ -210,6 +213,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             fps_current: 0.0,
             next_render_time: std::time::Instant::now(),
             output_manager: OutputManager::new(),
+            pending_commands: Vec::new(),
         })
     }
 
@@ -223,6 +227,13 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.surface.configure(&self.device, &self.surface_config);
             log::debug!("Resized to {}x{}", width, height);
         }
+    }
+
+    /// Enqueue a command buffer to be submitted together with the main
+    /// encoder on the next `render()` call. This reduces total submit count
+    /// when external subsystems (e.g. preview textures) produce GPU work.
+    pub fn enqueue_command(&mut self, command_buffer: wgpu::CommandBuffer) {
+        self.pending_commands.push(command_buffer);
     }
 
     /// Recreate the internal render target at a new resolution.
@@ -419,7 +430,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                 .collect();
             let new_osc: Vec<String> = new_descs
                 .iter()
-                .map(|d| format!("/{}/{}", d.category.name().to_lowercase(), d.id))
+                .map(|d| format!("/rustjay/{}/{}", d.category.name().to_lowercase(), d.id))
                 .collect();
             let n = new_descs.len();
 
@@ -574,7 +585,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             );
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let mut commands = vec![encoder.finish()];
+        commands.extend(std::mem::take(&mut self.pending_commands));
+        self.queue.submit(commands);
 
         if let Some(buffer) = readback_buffer {
             // Time-bounded synchronous readback: a pixel pick is a rare per-click

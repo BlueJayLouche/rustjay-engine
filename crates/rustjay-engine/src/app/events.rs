@@ -659,11 +659,17 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         #[cfg(not(feature = "gles2"))]
         let gles2_rendered = false;
 
+        // Throttle the control-window UI (and preview texture updates) to ~30 Hz.
+        let ui_due =
+            self.ui_needs_redraw || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
+
         let pre_render = std::time::Instant::now();
         if !gles2_rendered {
             if let Some(ref mut engine) = self.output_engine {
                 engine.render(self.output_occluded, &mut self.app_state);
-                self.update_preview_textures();
+                if ui_due {
+                    self.update_preview_textures();
+                }
             }
         }
 
@@ -694,11 +700,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             );
         }
 
-        // Throttle the control-window UI rebuild/render to ~30 Hz (or sooner if a
-        // window event arrived since the last render), independent of the output
-        // `target_fps`. The output `engine.render(...)` above is unaffected.
-        let ui_due =
-            self.ui_needs_redraw || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
         if self.control_visible && ui_due {
             self.last_ui_render = now;
             self.ui_needs_redraw = false;
