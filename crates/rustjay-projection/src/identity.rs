@@ -13,6 +13,7 @@ use wgpu::util::DeviceExt;
 struct BlitParams {
     uv_scale: [f32; 2],
     uv_offset: [f32; 2],
+    uv_crop: [f32; 4],
 }
 
 /// Fullscreen vertex with position and UV.
@@ -147,6 +148,7 @@ impl BlitPipeline {
             contents: bytemuck::cast_slice(&[BlitParams {
                 uv_scale: [1.0, 1.0],
                 uv_offset: [0.0, 0.0],
+                uv_crop: [0.0, 0.0, 1.0, 1.0],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -160,14 +162,15 @@ impl BlitPipeline {
         }
     }
 
-    /// Update the UV transform for the blit shader.
-    pub fn set_uv_transform(&self, queue: &wgpu::Queue, scale: [f32; 2], offset: [f32; 2]) {
+    /// Update the UV transform and crop for the blit shader.
+    pub fn set_uv_transform(&self, queue: &wgpu::Queue, scale: [f32; 2], offset: [f32; 2], uv_crop: [f32; 4]) {
         queue.write_buffer(
             &self.params_buffer,
             0,
             bytemuck::cast_slice(&[BlitParams {
                 uv_scale: scale,
                 uv_offset: offset,
+                uv_crop,
             }]),
         );
     }

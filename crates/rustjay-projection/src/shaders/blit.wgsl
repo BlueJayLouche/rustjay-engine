@@ -6,6 +6,7 @@ struct VertexOutput {
 struct BlitParams {
     uv_scale: vec2<f32>,
     uv_offset: vec2<f32>,
+    uv_crop: vec4<f32>,
 }
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
@@ -23,5 +24,8 @@ fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.texcoord * params.uv_scale + params.uv_offset;
-    return textureSample(source_tex, source_sampler, uv);
+    let crop_min = params.uv_crop.xy;
+    let crop_max = params.uv_crop.zw;
+    let cropped = uv * (crop_max - crop_min) + crop_min;
+    return textureSample(source_tex, source_sampler, cropped);
 }

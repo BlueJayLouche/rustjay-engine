@@ -1268,9 +1268,11 @@ impl EffectPlugin for VardaRootPlugin {
                         })
                         .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
 
+                    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+
                     let (needs_update, override_view) = if let Ok(g) = sync.lock() {
                         let source_changed = g.source_key.as_ref() != source_key.as_ref();
-                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset;
+                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
                         if !source_changed && !uv_changed {
                             // Nothing changed — keep current state.
                             (false, g.override_view.clone())
@@ -1308,6 +1310,7 @@ impl EffectPlugin for VardaRootPlugin {
                             g.override_view = override_view;
                             g.uv_scale = uv_scale;
                             g.uv_offset = uv_offset;
+                            g.uv_crop = uv_crop;
                             g.version = g.version.wrapping_add(1);
                         }
                     }

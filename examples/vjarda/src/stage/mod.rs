@@ -347,7 +347,6 @@ impl VardaStage {
         if let (Some(sync), Some(surf)) = (&self.warp_sync, surf) {
             if let Ok(mut g) = sync.lock() {
                 g.mode = surf.warp.clone();
-                g.uv_crop = surf.uv_crop();
                 g.version = g.version.wrapping_add(1);
             }
         }
@@ -531,8 +530,6 @@ impl Default for VardaHeadlessConfig {
 #[derive(Debug, Clone)]
 pub struct WarpSync {
     pub mode: rustjay_projection::WarpMode,
-    /// UV crop rect [min_u, min_v, max_u, max_v] for content mapping.
-    pub uv_crop: [f32; 4],
     pub version: u64,
 }
 
@@ -541,7 +538,6 @@ impl Default for WarpSync {
     fn default() -> Self {
         Self {
             mode: rustjay_projection::WarpMode::identity(),
-            uv_crop: [0.0, 0.0, 1.0, 1.0],
             version: 0,
         }
     }
@@ -565,6 +561,9 @@ pub struct SourceSync {
     /// UV offset for sampling a sub-rect of the source texture.
     /// Default `[0.0, 0.0]` = full texture.
     pub uv_offset: [f32; 2],
+    /// UV crop rectangle `[min_u, min_v, max_u, max_v]` applied after scale/offset.
+    /// Default `[0.0, 0.0, 1.0, 1.0]` = no crop.
+    pub uv_crop: [f32; 4],
 }
 
 #[cfg(feature = "projection")]
@@ -576,6 +575,7 @@ impl Default for SourceSync {
             version: 0,
             uv_scale: [1.0, 1.0],
             uv_offset: [0.0, 0.0],
+            uv_crop: [0.0, 0.0, 1.0, 1.0],
         }
     }
 }
@@ -637,9 +637,9 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
         output: &wgpu::TextureView,
         output_size: [u32; 2],
     ) {
-        let (mode, uv_crop, version) = {
+        let (mode, version) = {
             let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
-            (g.mode.clone(), g.uv_crop, g.version)
+            (g.mode.clone(), g.version)
         };
         if version != self.last_version {
             self.last_version = version;
@@ -649,8 +649,6 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
                     let src = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
                     let h = rustjay_projection::compute_forward_homography(&src, corners);
                     self.inner.set_homography(ctx.queue, &h);
-                    // set_homography already includes self.uv_crop, so no need
-                    // for a second uniform write here.
                 }
                 // Same mesh dimensions → cheap vertex buffer update (no rebuild on drag).
                 rustjay_projection::WarpMode::Mesh(mesh)
@@ -659,7 +657,6 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
                         && mesh.rows == self.last_mesh_rows =>
                 {
                     self.inner.set_mesh(ctx.queue, mesh);
-                    self.inner.set_uv_crop(ctx.queue, &uv_crop);
                 }
                 // Mode switch or mesh dimension change → rebuild the warp stage.
                 _ => {
@@ -667,7 +664,6 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
                         rustjay_projection::WarpStage::from_mode(ctx.device, self.format, &mode);
                     self.inner_is_corner_pin =
                         matches!(mode, rustjay_projection::WarpMode::CornerPin { .. });
-                    self.inner.set_uv_crop(ctx.queue, &uv_crop);
                     if let rustjay_projection::WarpMode::Mesh(mesh) = &mode {
                         self.last_mesh_cols = mesh.cols;
                         self.last_mesh_rows = mesh.rows;
@@ -761,9 +757,9 @@ impl rustjay_projection::ProjectionStage for VardaSourceStage {
         output: &wgpu::TextureView,
         _output_size: [u32; 2],
     ) {
-        let (override_view, version, uv_scale, uv_offset) = {
+        let (override_view, version, uv_scale, uv_offset, uv_crop) = {
             let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
-            (g.override_view.clone(), g.version, g.uv_scale, g.uv_offset)
+            (g.override_view.clone(), g.version, g.uv_scale, g.uv_offset, g.uv_crop)
         };
 
         let source = override_view.as_ref().map(|a| a.as_ref()).unwrap_or(input);
@@ -771,7 +767,7 @@ impl rustjay_projection::ProjectionStage for VardaSourceStage {
         if self.last_version != version || self.cached_bind_group.is_none() {
             self.last_version = version;
             self.cached_bind_group = Some(self.blit.create_bind_group(ctx.device, source));
-            self.blit.set_uv_transform(ctx.queue, uv_scale, uv_offset);
+            self.blit.set_uv_transform(ctx.queue, uv_scale, uv_offset, uv_crop);
         }
 
         let bind_group = self.cached_bind_group.as_ref().unwrap();
