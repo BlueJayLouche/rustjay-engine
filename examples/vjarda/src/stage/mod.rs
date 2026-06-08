@@ -338,6 +338,7 @@ impl VardaStage {
     /// an actual edit. Call after the GUI mutates a surface's warp.
     #[cfg(feature = "projection")]
     pub fn publish_warp(&self) {
+        log::debug!("[publish_warp] {} projectors, {} warp_syncs, {} surfaces", self.projectors.len(), self.warp_syncs.len(), self.surfaces.len());
         for (i, proj) in self.projectors.iter().enumerate() {
             if let Some(sync) = self.warp_syncs.get(i) {
                 let surface = proj
@@ -345,11 +346,22 @@ impl VardaStage {
                     .and_then(|idx| self.surfaces.get(idx))
                     .or_else(|| self.surfaces.first());
                 if let Some(surf) = surface {
-                    if let Ok(mut g) = sync.lock() {
-                        g.mode = surf.warp.clone();
-                        g.version = g.version.wrapping_add(1);
+                    match sync.lock() {
+                        Ok(mut g) => {
+                            let old_version = g.version;
+                            g.mode = surf.warp.clone();
+                            g.version = g.version.wrapping_add(1);
+                            log::debug!("[publish_warp] proj {} -> surf {:?} ptr={:p} version {} -> {}", i, proj.surface_index, std::sync::Arc::as_ptr(sync), old_version, g.version);
+                        }
+                        Err(e) => {
+                            log::warn!("[publish_warp] proj {} sync poisoned: {}", i, e);
+                        }
                     }
+                } else {
+                    log::warn!("[publish_warp] proj {} has no surface (surface_index={:?}, surfaces={})", i, proj.surface_index, self.surfaces.len());
                 }
+            } else {
+                log::warn!("[publish_warp] proj {} has no warp_sync", i);
             }
         }
     }
@@ -644,6 +656,7 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
             (g.mode.clone(), g.version)
         };
         if version != self.last_version {
+            log::debug!("[VardaWarpStage] ptr={:p} version changed {} -> {}", std::sync::Arc::as_ptr(&self.sync), self.last_version, version);
             self.last_version = version;
             match &mode {
                 // Same mode family → cheap homography update (no rebuild on drag).

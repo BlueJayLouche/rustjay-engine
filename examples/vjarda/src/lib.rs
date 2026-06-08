@@ -673,12 +673,20 @@ impl EffectPlugin for VardaRootPlugin {
         }
         #[cfg(feature = "projection")]
         {
-            self.ensure_warp_syncs(s.stage.projectors.len());
-            s.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
+            // Create local default syncs for the initial app state.
+            // Do NOT touch the plugin's internal sync vectors here —
+            // main.rs and prepare() own the canonical counts.
+            s.stage.warp_syncs = vec![std::sync::Arc::new(std::sync::Mutex::new(
+                stage::WarpSync::default(),
+            ))];
             s.stage.dome_sync = Some(self.dome_sync.clone());
             s.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
-            s.stage.source_syncs = self.source_syncs.lock().unwrap().clone();
-            s.stage.rotation_syncs = self.rotation_syncs.lock().unwrap().clone();
+            s.stage.source_syncs = vec![std::sync::Arc::new(std::sync::Mutex::new(
+                stage::SourceSync::default(),
+            ))];
+            s.stage.rotation_syncs = vec![std::sync::Arc::new(std::sync::Mutex::new(
+                rustjay_projection::RotationSync::default(),
+            ))];
         }
         s
     }
@@ -725,8 +733,19 @@ impl EffectPlugin for VardaRootPlugin {
                             let warp_syncs = std::mem::take(&mut state.stage.warp_syncs);
                             let source_syncs = std::mem::take(&mut state.stage.source_syncs);
                             let rotation_syncs = std::mem::take(&mut state.stage.rotation_syncs);
+                            log::info!(
+                                "[Prepare] before load: old warp={}, source={}, rotation={}",
+                                warp_syncs.len(),
+                                source_syncs.len(),
+                                rotation_syncs.len()
+                            );
 
                             state.stage = loaded_stage;
+                            log::info!(
+                                "[Prepare] loaded stage: {} projectors, {} surfaces",
+                                state.stage.projectors.len(),
+                                state.stage.surfaces.len()
+                            );
 
                             // Restore runtime syncs.
                             state.stage.warp_syncs = warp_syncs;
@@ -734,6 +753,19 @@ impl EffectPlugin for VardaRootPlugin {
                             state.stage.rotation_syncs = rotation_syncs;
                             self.ensure_warp_syncs(state.stage.projectors.len());
                             state.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
+                            self.ensure_source_syncs(state.stage.projectors.len());
+                            state.stage.source_syncs = self.source_syncs.lock().unwrap().clone();
+                            self.ensure_rotation_syncs(state.stage.projectors.len());
+                            state.stage.rotation_syncs = self.rotation_syncs.lock().unwrap().clone();
+                            log::info!(
+                                "[Prepare] after sync injection: warp={}, source={}, rotation={}",
+                                state.stage.warp_syncs.len(),
+                                state.stage.source_syncs.len(),
+                                state.stage.rotation_syncs.len()
+                            );
+                            for (i, sync) in state.stage.warp_syncs.iter().enumerate() {
+                                log::info!("[Prepare] warp_sync[{}] ptr={:p}", i, std::sync::Arc::as_ptr(sync));
+                            }
                             state.stage.dome_sync = Some(self.dome_sync.clone());
                             state.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
                             state.stage.publish_warp();
@@ -754,6 +786,11 @@ impl EffectPlugin for VardaRootPlugin {
                         }
                         Err(e) => {
                             log::warn!("[Workspace] failed to load stage: {}", e);
+                            log::info!(
+                                "[Prepare] fallback stage: {} projectors, {} warp_syncs",
+                                state.stage.projectors.len(),
+                                state.stage.warp_syncs.len()
+                            );
                         }
                     }
                 }

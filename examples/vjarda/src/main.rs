@@ -55,6 +55,12 @@ fn main() -> anyhow::Result<()> {
         let source_syncs = plugin.source_syncs();
         let rotation_syncs = plugin.rotation_syncs();
         let warp_syncs = plugin.warp_syncs();
+        log::info!(
+            "[Main] captured syncs: source={}, rotation={}, warp={}",
+            source_syncs.len(),
+            rotation_syncs.len(),
+            warp_syncs.len()
+        );
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
             use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
@@ -74,8 +80,10 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
                 let w = warp_syncs.get(i).cloned().unwrap_or_else(|| {
+                    log::warn!("[Projector {}] warp_syncs missing, using default", i);
                     std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::WarpSync::default()))
                 });
+                log::info!("[Projector {}] warp_sync ptr={:p}", i, std::sync::Arc::as_ptr(&w));
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
                 let s = source_syncs.get(i).cloned().unwrap_or_else(|| {

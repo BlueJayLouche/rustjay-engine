@@ -1785,18 +1785,20 @@ mod egui_impl {
                         .stage
                         .projectors
                         .push(crate::stage::VardaProjector::default());
-                    // Ensure source_syncs and rotation_syncs exist for the new projector.
+                    // Ensure source_syncs, warp_syncs, and rotation_syncs exist for the new projector.
                     while state.stage.source_syncs.len() <= new_idx {
                         state.stage.source_syncs.push(std::sync::Arc::new(
                             std::sync::Mutex::new(crate::stage::SourceSync::default()),
                         ));
                     }
+                    while state.stage.warp_syncs.len() <= new_idx {
+                        state.stage.warp_syncs.push(std::sync::Arc::new(
+                            std::sync::Mutex::new(crate::stage::WarpSync::default()),
+                        ));
+                    }
                     while state.stage.rotation_syncs.len() <= new_idx {
                         state.stage.rotation_syncs.push(std::sync::Arc::new(
                             std::sync::Mutex::new(rustjay_projection::RotationSync::default()),
-                        ));
-                        state.stage.warp_syncs.push(std::sync::Arc::new(
-                            std::sync::Mutex::new(crate::stage::WarpSync::default()),
                         ));
                     }
                     // Queue a window for the new projector.
