@@ -1364,8 +1364,8 @@ mod tests {
 
     #[test]
     fn tempo_sync_lfo_frequency() {
-        // Direct helper check: 1 beat at 120 BPM = 2 Hz
-        assert!((beat_division_to_hz(4, 120.0) - 2.0).abs() < 0.001);
+        // Direct helper check: 1/4 note (1 beat) at 120 BPM = 2 Hz
+        assert!((beat_division_to_hz(2, 120.0) - 2.0).abs() < 0.001);
 
         let mut lfo = ModulationSource::LFO {
             waveform: LFOWaveform::Sine,
@@ -1374,7 +1374,7 @@ mod tests {
             amplitude: 1.0,
             bipolar: true,
             tempo_sync: true,
-            division: 4, // 1 beat
+            division: 2, // 1/4 note = 1 beat
             phase_offset_degrees: 0.0,
             enabled: true,
             last_beat_phase: 0.0,

@@ -8,17 +8,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
-/// Beat division multipliers for tempo sync
-/// Represent cycle duration in beats (smaller = faster)
+/// Beat division multipliers for tempo sync.
+/// Each value is the cycle duration in beats.  Labels like "1/4" refer to
+/// standard note lengths (quarter note = 1 beat), not fractions of a beat.
 pub const BEAT_DIVISIONS: [f32; 8] = [
-    0.0625, // 1/16
-    0.125,  // 1/8
-    0.25,   // 1/4
-    0.5,    // 1/2
-    1.0,    // 1 beat
-    2.0,    // 2 beats
-    4.0,    // 4 beats
-    8.0,    // 8 beats
+    0.25,  // 1/16 note
+    0.5,   // 1/8 note
+    1.0,   // 1/4 note (1 beat)
+    2.0,   // 1/2 note
+    4.0,   // 1 whole note
+    8.0,   // 2 whole notes
+    16.0,  // 4 whole notes
+    32.0,  // 8 whole notes
 ];
 
 /// Beat division names for UI
