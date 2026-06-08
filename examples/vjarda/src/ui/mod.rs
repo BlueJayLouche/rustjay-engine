@@ -1720,6 +1720,20 @@ mod egui_impl {
                             if proj.output_type != prev_type {
                                 proj_dirty = true;
                             }
+                            ui.label("rotate:");
+                            let prev_rot = proj.rotation;
+                            egui::ComboBox::from_id_salt(format!("proj_rot_{}", i))
+                                .selected_text(proj.rotation.label())
+                                .show_ui(ui, |ui| {
+                                    use crate::stage::OutputRotation;
+                                    ui.selectable_value(&mut proj.rotation, OutputRotation::Deg0, OutputRotation::Deg0.label());
+                                    ui.selectable_value(&mut proj.rotation, OutputRotation::Deg90, OutputRotation::Deg90.label());
+                                    ui.selectable_value(&mut proj.rotation, OutputRotation::Deg180, OutputRotation::Deg180.label());
+                                    ui.selectable_value(&mut proj.rotation, OutputRotation::Deg270, OutputRotation::Deg270.label());
+                                });
+                            if proj.rotation != prev_rot {
+                                proj_dirty = true;
+                            }
                             if ui.button("🗑").clicked() {
                                 remove_proj = Some(i);
                             }
@@ -1771,10 +1785,15 @@ mod egui_impl {
                         .stage
                         .projectors
                         .push(crate::stage::VardaProjector::default());
-                    // Ensure a source_sync exists for the new projector.
+                    // Ensure source_syncs and rotation_syncs exist for the new projector.
                     while state.stage.source_syncs.len() <= new_idx {
                         state.stage.source_syncs.push(std::sync::Arc::new(
                             std::sync::Mutex::new(crate::stage::SourceSync::default()),
+                        ));
+                    }
+                    while state.stage.rotation_syncs.len() <= new_idx {
+                        state.stage.rotation_syncs.push(std::sync::Arc::new(
+                            std::sync::Mutex::new(rustjay_projection::RotationSync::default()),
                         ));
                     }
                     // Queue a window for the new projector.
@@ -1792,12 +1811,16 @@ mod egui_impl {
                             let s = state.stage.source_syncs.get(new_idx).cloned().unwrap_or_else(|| {
                                 std::sync::Arc::new(std::sync::Mutex::new(crate::stage::SourceSync::default()))
                             });
+                            let r = state.stage.rotation_syncs.get(new_idx).cloned().unwrap_or_else(|| {
+                                std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
+                            });
                             sub.add_projector(attrs, move |device, format| {
                                 vec![
                                     Box::new(crate::stage::VardaSourceStage::new(device, format, s.clone())),
                                     Box::new(crate::stage::VardaDomeStage::new(device, format, d.clone())),
                                     Box::new(crate::stage::VardaEdgeBlendStage::new(device, format, e.clone())),
                                     Box::new(crate::stage::VardaWarpStage::new(device, format, w.clone())),
+                                    Box::new(rustjay_projection::RotationStage::new(device, format, r.clone())),
                                 ]
                             });
                             log::info!("[Outputs] Queued projector {} window creation", new_idx + 1);

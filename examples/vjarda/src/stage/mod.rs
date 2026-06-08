@@ -261,6 +261,11 @@ pub struct VardaStage {
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub source_syncs: Vec<std::sync::Arc<std::sync::Mutex<SourceSync>>>,
+    /// Per-projector output rotation. Each projector's [`RotationStage`] reads
+    /// the rotation value from here. Grown/shrunk with projectors.
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub rotation_syncs: Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>>,
 }
 
 impl VardaStage {
@@ -280,6 +285,8 @@ impl VardaStage {
             edge_blend_sync: None,
             #[cfg(feature = "projection")]
             source_syncs: Vec::new(),
+            #[cfg(feature = "projection")]
+            rotation_syncs: Vec::new(),
         }
     }
 
@@ -361,6 +368,9 @@ pub struct VardaProjector {
     /// Runtime window ID for live management (not persisted).
     #[serde(skip)]
     pub window_id: Option<winit::window::WindowId>,
+    /// Output rotation for physically mounted projectors.
+    #[serde(default)]
+    pub rotation: OutputRotation,
     /// How this output delivers frames.
     #[serde(default)]
     pub output_type: OutputType,
@@ -396,6 +406,7 @@ impl Default for VardaProjector {
             fullscreen_monitor: None,
             surface_index: Some(0),
             window_id: None,
+            rotation: OutputRotation::default(),
             output_type: OutputType::Display,
             use_global_warp: true,
             use_global_dome: true,
@@ -409,6 +420,50 @@ impl Default for VardaProjector {
             edge_blend_config: None,
             #[cfg(not(feature = "projection"))]
             edge_blend_config: None,
+        }
+    }
+}
+
+/// Output rotation for physically mounted projectors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum OutputRotation {
+    /// No rotation (default).
+    #[default]
+    Deg0,
+    /// 90° clockwise.
+    Deg90,
+    /// 180°.
+    Deg180,
+    /// 270° clockwise.
+    Deg270,
+}
+
+impl OutputRotation {
+    /// All rotation variants for UI dropdowns.
+    pub const ALL: [OutputRotation; 4] = [
+        OutputRotation::Deg0,
+        OutputRotation::Deg90,
+        OutputRotation::Deg180,
+        OutputRotation::Deg270,
+    ];
+
+    /// GPU-side index (0–3) for the shader uniform.
+    pub fn index(&self) -> u32 {
+        match self {
+            OutputRotation::Deg0 => 0,
+            OutputRotation::Deg90 => 1,
+            OutputRotation::Deg180 => 2,
+            OutputRotation::Deg270 => 3,
+        }
+    }
+
+    /// Human-readable label for UI display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OutputRotation::Deg0 => "0°",
+            OutputRotation::Deg90 => "90°",
+            OutputRotation::Deg180 => "180°",
+            OutputRotation::Deg270 => "270°",
         }
     }
 }

@@ -23,6 +23,10 @@ pub use dome::{DomeStage, DomemasterConfig, DomemasterParams, DomemasterResoluti
 pub mod warp;
 pub use warp::{compute_forward_homography, MeshPoint, WarpMesh, WarpMode, WarpStage};
 
+/// Output rotation stage (0°/90°/180°/270°).
+pub mod rotation;
+pub use rotation::{RotationStage, RotationSync};
+
 /// Edge blend projection stage.
 pub mod edge_blend;
 pub use edge_blend::{blend_alpha, EdgeBlendConfig, EdgeBlendEdge, EdgeBlendStage};

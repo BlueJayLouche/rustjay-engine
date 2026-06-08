@@ -46,13 +46,19 @@ fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Ensure source_syncs matches projector count.
+        // Ensure source_syncs and rotation_syncs match projector count.
         while stage.source_syncs.len() < stage.projectors.len() {
             stage.source_syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
                 vjarda::stage::SourceSync::default(),
             )));
         }
         stage.source_syncs.truncate(stage.projectors.len());
+        while stage.rotation_syncs.len() < stage.projectors.len() {
+            stage.rotation_syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                rustjay_projection::RotationSync::default(),
+            )));
+        }
+        stage.rotation_syncs.truncate(stage.projectors.len());
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
             use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
@@ -77,12 +83,16 @@ fn main() -> anyhow::Result<()> {
                 let s = stage.source_syncs.get(i).cloned().unwrap_or_else(|| {
                     std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::SourceSync::default()))
                 });
+                let r = stage.rotation_syncs.get(i).cloned().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
+                });
                 sub.add_projector(attrs, move |device, format| {
                     vec![
                         Box::new(VardaSourceStage::new(device, format, s.clone())),
                         Box::new(VardaDomeStage::new(device, format, d.clone())),
                         Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
                         Box::new(VardaWarpStage::new(device, format, w.clone())),
+                        Box::new(rustjay_projection::RotationStage::new(device, format, r.clone())),
                     ]
                 });
             }

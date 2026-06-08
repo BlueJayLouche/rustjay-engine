@@ -1164,13 +1164,28 @@ impl EffectPlugin for VardaRootPlugin {
             {
                 use crate::stage::{SourceSync, SurfaceSource};
                 let stage = &mut app_state.stage;
-                // Grow/shrink source_syncs to match projector count.
+                // Grow/shrink source_syncs and rotation_syncs to match projector count.
                 while stage.source_syncs.len() < stage.projectors.len() {
                     stage.source_syncs.push(std::sync::Arc::new(
                         std::sync::Mutex::new(SourceSync::default()),
                     ));
                 }
                 stage.source_syncs.truncate(stage.projectors.len());
+                while stage.rotation_syncs.len() < stage.projectors.len() {
+                    stage.rotation_syncs.push(std::sync::Arc::new(
+                        std::sync::Mutex::new(rustjay_projection::RotationSync::default()),
+                    ));
+                }
+                stage.rotation_syncs.truncate(stage.projectors.len());
+
+                // Update rotation syncs from projector configs.
+                for (i, proj) in stage.projectors.iter().enumerate() {
+                    if let Some(sync) = stage.rotation_syncs.get(i) {
+                        if let Ok(mut g) = sync.lock() {
+                            g.set_rotation(proj.rotation.index());
+                        }
+                    }
+                }
 
                 for (i, proj) in stage.projectors.iter().enumerate() {
                     if !proj.enabled {
