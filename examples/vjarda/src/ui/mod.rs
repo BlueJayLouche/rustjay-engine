@@ -1795,6 +1795,9 @@ mod egui_impl {
                         state.stage.rotation_syncs.push(std::sync::Arc::new(
                             std::sync::Mutex::new(rustjay_projection::RotationSync::default()),
                         ));
+                        state.stage.warp_syncs.push(std::sync::Arc::new(
+                            std::sync::Mutex::new(crate::stage::WarpSync::default()),
+                        ));
                     }
                     // Queue a window for the new projector.
                     #[cfg(feature = "projection")]
@@ -1805,7 +1808,9 @@ mod egui_impl {
                             let attrs = winit::window::WindowAttributes::default()
                                 .with_title(format!("Varda Projector {} - {}", new_idx + 1, proj.name))
                                 .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
-                            let w = state.stage.warp_sync.clone().unwrap();
+                            let w = state.stage.warp_syncs.get(new_idx).cloned().unwrap_or_else(|| {
+                                std::sync::Arc::new(std::sync::Mutex::new(crate::stage::WarpSync::default()))
+                            });
                             let d = state.stage.dome_sync.clone().unwrap();
                             let e = state.stage.edge_blend_sync.clone().unwrap();
                             let s = state.stage.source_syncs.get(new_idx).cloned().unwrap_or_else(|| {

@@ -240,13 +240,12 @@ pub struct VardaStage {
     /// when the mixer is contended during render.
     #[serde(skip)]
     pub cached_source_options: Vec<(String, SurfaceSource)>,
-    /// Shared warp state for the Master-routed surface, read each frame by the
-    /// projector's [`VardaWarpStage`]. Injected by the plugin (`default_state`);
-    /// the GUI publishes edits into it via [`VardaStage::publish_warp`]. Not
-    /// serialized — it's a live render bridge, not persisted scene data.
+    /// Per-projector warp state. Each projector's [`VardaWarpStage`] reads its
+    /// own slot so surface-specific warp edits reach only the assigned projector.
+    /// Injected by the plugin; grown/shrunk with projectors.
     #[cfg(feature = "projection")]
     #[serde(skip)]
-    pub warp_sync: Option<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
+    pub warp_syncs: Vec<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
     /// Shared dome state, read by [`VardaDomeStage`]. Injected by the plugin.
     #[cfg(feature = "projection")]
     #[serde(skip)]
@@ -278,7 +277,7 @@ impl VardaStage {
             selected_surface_index: 0,
             cached_source_options: Vec::new(),
             #[cfg(feature = "projection")]
-            warp_sync: None,
+            warp_syncs: Vec::new(),
             #[cfg(feature = "projection")]
             dome_sync: None,
             #[cfg(feature = "projection")]
@@ -339,15 +338,18 @@ impl VardaStage {
     /// an actual edit. Call after the GUI mutates a surface's warp.
     #[cfg(feature = "projection")]
     pub fn publish_warp(&self) {
-        let surf = self
-            .surfaces
-            .iter()
-            .find(|s| s.source == SurfaceSource::Master)
-            .or_else(|| self.surfaces.first());
-        if let (Some(sync), Some(surf)) = (&self.warp_sync, surf) {
-            if let Ok(mut g) = sync.lock() {
-                g.mode = surf.warp.clone();
-                g.version = g.version.wrapping_add(1);
+        for (i, proj) in self.projectors.iter().enumerate() {
+            if let Some(sync) = self.warp_syncs.get(i) {
+                let surface = proj
+                    .surface_index
+                    .and_then(|idx| self.surfaces.get(idx))
+                    .or_else(|| self.surfaces.first());
+                if let Some(surf) = surface {
+                    if let Ok(mut g) = sync.lock() {
+                        g.mode = surf.warp.clone();
+                        g.version = g.version.wrapping_add(1);
+                    }
+                }
             }
         }
     }

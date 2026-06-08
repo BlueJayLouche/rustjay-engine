@@ -28,7 +28,6 @@ fn main() -> anyhow::Result<()> {
         let plugin = vjarda::VardaRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
         // actually reach the render output.
-        let warp_sync = plugin.warp_sync();
         let dome_sync = plugin.dome_sync();
         let edge_blend_sync = plugin.edge_blend_sync();
 
@@ -50,10 +49,12 @@ fn main() -> anyhow::Result<()> {
         // share the same Arcs.
         plugin.ensure_source_syncs(stage.projectors.len());
         plugin.ensure_rotation_syncs(stage.projectors.len());
+        plugin.ensure_warp_syncs(stage.projectors.len());
 
         // Clone syncs for the closure (plugin will be moved into the engine).
         let source_syncs = plugin.source_syncs();
         let rotation_syncs = plugin.rotation_syncs();
+        let warp_syncs = plugin.warp_syncs();
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
             use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
@@ -72,7 +73,9 @@ fn main() -> anyhow::Result<()> {
                         monitor_idx
                     );
                 }
-                let w = warp_sync.clone();
+                let w = warp_syncs.get(i).cloned().unwrap_or_else(|| {
+                    std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::WarpSync::default()))
+                });
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
                 let s = source_syncs.get(i).cloned().unwrap_or_else(|| {

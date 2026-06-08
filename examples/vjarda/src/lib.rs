@@ -355,10 +355,10 @@ pub struct VardaRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
     params_dirty: bool,
-    /// Canonical live warp state, shared with the app state (GUI writer) and the
-    /// projector's `VardaWarpStage` (reader). See `stage::WarpSync`.
+    /// Per-projector warp state. Each projector gets its own sync so surface-
+    /// specific warp edits don't leak across outputs.
     #[cfg(feature = "projection")]
-    warp_sync: std::sync::Arc<std::sync::Mutex<stage::WarpSync>>,
+    warp_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<stage::WarpSync>>>>,
     /// Canonical live dome state, shared with the app state and projector.
     #[cfg(feature = "projection")]
     dome_sync: std::sync::Arc<std::sync::Mutex<stage::DomeSync>>,
@@ -381,7 +381,7 @@ impl VardaRootPlugin {
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
             #[cfg(feature = "projection")]
-            warp_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::WarpSync::default())),
+            warp_syncs: std::sync::Mutex::new(Vec::new()),
             #[cfg(feature = "projection")]
             dome_sync: std::sync::Arc::new(std::sync::Mutex::new(stage::DomeSync::default())),
             #[cfg(feature = "projection")]
@@ -431,10 +431,22 @@ impl VardaRootPlugin {
         self.rotation_syncs.lock().unwrap().clone()
     }
 
-    /// Shared warp state for the projector stage.
+    /// Ensure warp_syncs has at least `count` entries.
     #[cfg(feature = "projection")]
-    pub fn warp_sync(&self) -> std::sync::Arc<std::sync::Mutex<stage::WarpSync>> {
-        self.warp_sync.clone()
+    pub fn ensure_warp_syncs(&self, count: usize) {
+        let mut syncs = self.warp_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                stage::WarpSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Shared per-projector warp syncs.
+    #[cfg(feature = "projection")]
+    pub fn warp_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<stage::WarpSync>>> {
+        self.warp_syncs.lock().unwrap().clone()
     }
 
     /// Shared dome state for the projector stage.
@@ -661,7 +673,8 @@ impl EffectPlugin for VardaRootPlugin {
         }
         #[cfg(feature = "projection")]
         {
-            s.stage.warp_sync = Some(self.warp_sync.clone());
+            self.ensure_warp_syncs(s.stage.projectors.len());
+            s.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
             s.stage.dome_sync = Some(self.dome_sync.clone());
             s.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
             s.stage.source_syncs = self.source_syncs.lock().unwrap().clone();
@@ -709,17 +722,18 @@ impl EffectPlugin for VardaRootPlugin {
                     match state.workspace.load_stage() {
                         Ok(loaded_stage) => {
                             // Preserve runtime sync handles so projector stages stay connected.
+                            let warp_syncs = std::mem::take(&mut state.stage.warp_syncs);
                             let source_syncs = std::mem::take(&mut state.stage.source_syncs);
                             let rotation_syncs = std::mem::take(&mut state.stage.rotation_syncs);
 
                             state.stage = loaded_stage;
 
                             // Restore runtime syncs.
+                            state.stage.warp_syncs = warp_syncs;
                             state.stage.source_syncs = source_syncs;
                             state.stage.rotation_syncs = rotation_syncs;
-
-                            // Re-inject Arc handles wiped by serde(skip) on deserialize.
-                            state.stage.warp_sync = Some(self.warp_sync.clone());
+                            self.ensure_warp_syncs(state.stage.projectors.len());
+                            state.stage.warp_syncs = self.warp_syncs.lock().unwrap().clone();
                             state.stage.dome_sync = Some(self.dome_sync.clone());
                             state.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
                             state.stage.publish_warp();
