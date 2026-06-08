@@ -23,7 +23,7 @@ members = [
     "examples/delta-egui",
     "examples/mixer",
     "examples/projection",
-    "examples/varda",
+    "examples/vjarda",
 ]
 resolver = "2"
 

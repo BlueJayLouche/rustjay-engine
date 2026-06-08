@@ -1,7 +1,7 @@
 # Varda Port Roadmap
 
 Porting the full **Varda** broadcast-routing VJ application onto **rustjay-engine**,
-assembled as `examples/varda`.
+assembled as `examples/vjarda`.
 
 > Architect planning document. Companion to [`WAAAVES_PORT.md`](WAAAVES_PORT.md)
 > (the proven "port an app into the engine as an example" playbook) and the
@@ -11,7 +11,7 @@ assembled as `examples/varda`.
 
 ## 0. Current status (2026-06-07)
 
-Live parity detail lives in [`examples/varda/PARITY.md`](examples/varda/PARITY.md);
+Live parity detail lives in [`examples/vjarda/PARITY.md`](examples/vjarda/PARITY.md);
 this is the phase-level rollup.
 
 **Phases 0–17 merged to main (2026-06-07).** Recent merges:
@@ -44,7 +44,7 @@ T05.3 — HTTP/WS via **generic, app-agnostic** routes on `rustjay-api` (behind 
 `api` feature): `GET /api/app/state` serves the opaque JSON snapshot the app
 publishes into `EngineState::app_state`; `GET|PUT /api/app/params` lists/sets
 params, writes resolving through the same `param_resolver` → `WebCommand::Set`.
-The **Varda schema lives entirely in `examples/varda`** (`api_state.rs`), rebuilt
+The **Varda schema lives entirely in `examples/vjarda`** (`api_state.rs`), rebuilt
 with live values every frame into `app_state`; that slot is included in the WS
 snapshot so JSON-Patch deltas carry app state on change. (The shared crate knows
 no Varda types — a review-rework fix; the prior draft had hard-coded Varda DTOs
@@ -110,7 +110,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 - **Perf:** no per-frame allocations in `render`/`prepare`/`build_uniforms` (reuse scratch buffers, cache key strings); zero-opacity layers must skip the pass.
 - **Features:** heavy features (`ndi`/`api`/`projection`/streaming/recording/syphon) stay off by default; the `--no-default-features` build stays green and warning-clean.
 - **Modulation single-authority:** effective opacity/crossfader = `engine.get_param` base **plus** the mixer's `ModulationEngine` (this is `rustjay_mixer`'s established pattern, now extended to deck opacity via a shared `Arc<Mutex<ModulationEngine>>`). A given param key must be assigned in **exactly one** modulation system — assign through the mixer's `ModulationEngine` (as the app does), never *also* the engine's `LfoBank`, or the two contributions double-sum.
-- **Control targets canonical ids:** all external control (HTTP/MIDI/OSC) ultimately writes a flat canonical engine id (`crossfader`, `ch_<uuid>_…`, `ch_<uuid>_deck_<uuid>_…`) via `engine.set_param_base`. Hierarchical addresses are translated by `examples/varda`'s `ParamRouter` (via `EngineState::param_resolver`) — a thin string mapping, **not** a second param store. New control surfaces must resolve to these same ids; never read/write control state off to the side.
+- **Control targets canonical ids:** all external control (HTTP/MIDI/OSC) ultimately writes a flat canonical engine id (`crossfader`, `ch_<uuid>_…`, `ch_<uuid>_deck_<uuid>_…`) via `engine.set_param_base`. Hierarchical addresses are translated by `examples/vjarda`'s `ParamRouter` (via `EngineState::param_resolver`) — a thin string mapping, **not** a second param store. New control surfaces must resolve to these same ids; never read/write control state off to the side.
 
 ---
 
@@ -119,7 +119,7 @@ green and warning-clean, `cargo clippy -p varda -p rustjay-gui` clean, `cargo te
 | Axis | Decision | Consequence |
 |------|----------|-------------|
 | **Fidelity** | **Full parity** in one roadmap | Every Varda subsystem is planned: routing graph, 3-level FX, modulation, MIDI/OSC/HTTP, projection mapping, multi-output, NDI/SRT/HLS/DASH, recording, dome, edge-blend, persistence. |
-| **Code placement** | **Port Varda internals into `examples/varda`**, reuse engine crates where convenient | The app, routing model, scene/stage, and GUI live in `examples/varda`. Heavy GPU/codec/protocol machinery is delegated to existing crates (`rustjay-render`, `-mixer`, `-projection`, `-isf`, `-io`, `-control`, `-audio`, `-api`). |
+| **Code placement** | **Port Varda internals into `examples/vjarda`**, reuse engine crates where convenient | The app, routing model, scene/stage, and GUI live in `examples/vjarda`. Heavy GPU/codec/protocol machinery is delegated to existing crates (`rustjay-render`, `-mixer`, `-projection`, `-isf`, `-io`, `-control`, `-audio`, `-api`). |
 | **GUI** | **Engine egui tab system** (`run_with_egui_tabs` + `AnyEguiTab`) | Varda's 11 egui panels are rebuilt as `AnyEguiTab` implementors over `engine.get_param/set_param_base` and `param_slider*` helpers, consistent with `examples/delta-egui`. |
 | **Skill** | **Broad `rustjay` skill + worked Varda case study** | `.agents/skills/rustjay/SKILL.md` plus `references/`, including `varda-assembly-case-study.md` that doubles as living documentation of this port. |
 
@@ -151,7 +151,7 @@ frame loop. The app is a *plugin*, not a *main*.
                                      └──────────────────────────────────┘
 ```
 
-The `examples/varda` **stub already proves the spine**: it wraps `rustjay-mixer`
+The `examples/vjarda` **stub already proves the spine**: it wraps `rustjay-mixer`
 as the engine root via `EffectPlugin::render`, loads ISF channels through
 `rustjay_isf::IsfEffect` + `rustjay_render::EffectNode`, and exposes mixer
 parameters through `EffectPlugin::parameters`. Everything below extends that spine.
@@ -186,7 +186,7 @@ outputs.
 ## 3. Subsystem mapping: reuse vs. port
 
 For each Varda `src/internal` module (LOC measured), the disposition. **Reuse** =
-delegate to an engine crate. **Port** = bring the module into `examples/varda`,
+delegate to an engine crate. **Port** = bring the module into `examples/vjarda`,
 adapting to the plugin model. **Extend** = the crate covers most of it; add the gap.
 
 | Varda module | LOC | Disposition | Engine target / notes |
@@ -232,10 +232,10 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 `Txx` convention. Each task notes **reuse/port/extend** and an acceptance check.
 
 ### Phase 0 — Scaffolding & parity harness ✅ *(T00.4 deferred)*
-- **T00.1** Promote `examples/varda` from stub to module tree: `graph/`, `scene/`,
+- **T00.1** Promote `examples/vjarda` from stub to module tree: `graph/`, `scene/`,
   `stage/`, `sources/`, `ui/`, `persistence/`, `control/`. Keep the current
   mixer-as-root render spine working at every step.
-- **T00.2** Feature flags in `examples/varda/Cargo.toml` mirroring engine features
+- **T00.2** Feature flags in `examples/vjarda/Cargo.toml` mirroring engine features
   (`mixer`, `api`, `projection`, `ndi`, `syphon`, `streaming`, `recording`).
 - **T00.3** Parity tracker: a checklist mapping each Varda README capability → task
   ID → status. Acceptance gate for "full parity."
@@ -293,7 +293,7 @@ Phases are ordered so each ends with something runnable. IDs follow the waaaves
 - **T05.3 [Extend]** ✅ HTTP/WS via `rustjay-api` as **generic, app-agnostic** routes:
   `GET /api/app/state` (opaque app snapshot) + `GET|PUT /api/app/params`, single
   listener, WS JSON-Patch deltas carry `app_state`. The Varda schema lives in
-  `examples/varda/api_state.rs` (app-owned), not the shared crate. *(Typed per-
+  `examples/vjarda/api_state.rs` (app-owned), not the shared crate. *(Typed per-
   resource routes — decks/channels/effects/library — are reconstructable client-
   side from the snapshot; not added to the shared crate.)*
 - **T05.4 [Extend]** ✅ `param_router` bridging incoming control → `set_param_base`
@@ -558,7 +558,7 @@ rustjay_engine::run_with_egui_tabs(
 
 ## 7. Definition of done
 
-- `cargo run -p varda` launches a desktop VJ app with the full routing graph, GUI,
+- `cargo run -p vjarda` launches a desktop VJ app with the full routing graph, GUI,
   control, modulation, surfaces, multi-output, and persistence.
 - The Phase-0 parity tracker is 100% against the Varda README capability list
   (experimental items flagged, not required).

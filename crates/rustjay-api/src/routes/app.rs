@@ -1,7 +1,7 @@
 //! Generic app routes — app-published state and hierarchical param I/O.
 //!
 //! These are **app-agnostic**: the engine knows nothing about any concrete app
-//! schema. An app (e.g. `examples/varda`) publishes an opaque JSON snapshot into
+//! schema. An app (e.g. `examples/vjarda`) publishes an opaque JSON snapshot into
 //! [`EngineState::app_state`], which `GET /api/app/state` serves verbatim.
 //! Param writes resolve hierarchical paths through
 //! [`EngineState::param_resolver`] (when the app installs one) and call
