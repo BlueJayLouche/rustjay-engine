@@ -559,6 +559,12 @@ pub struct SourceSync {
     /// Used to detect source changes without bumping version every frame.
     pub source_key: Option<String>,
     pub version: u64,
+    /// UV scale for sampling a sub-rect of the source texture.
+    /// Default `[1.0, 1.0]` = full texture.
+    pub uv_scale: [f32; 2],
+    /// UV offset for sampling a sub-rect of the source texture.
+    /// Default `[0.0, 0.0]` = full texture.
+    pub uv_offset: [f32; 2],
 }
 
 #[cfg(feature = "projection")]
@@ -568,6 +574,8 @@ impl Default for SourceSync {
             override_view: None,
             source_key: None,
             version: 0,
+            uv_scale: [1.0, 1.0],
+            uv_offset: [0.0, 0.0],
         }
     }
 }
@@ -753,9 +761,9 @@ impl rustjay_projection::ProjectionStage for VardaSourceStage {
         output: &wgpu::TextureView,
         _output_size: [u32; 2],
     ) {
-        let (override_view, version) = {
+        let (override_view, version, uv_scale, uv_offset) = {
             let g = self.sync.lock().unwrap_or_else(|e| e.into_inner());
-            (g.override_view.clone(), g.version)
+            (g.override_view.clone(), g.version, g.uv_scale, g.uv_offset)
         };
 
         let source = override_view.as_ref().map(|a| a.as_ref()).unwrap_or(input);
@@ -763,6 +771,7 @@ impl rustjay_projection::ProjectionStage for VardaSourceStage {
         if self.last_version != version || self.cached_bind_group.is_none() {
             self.last_version = version;
             self.cached_bind_group = Some(self.blit.create_bind_group(ctx.device, source));
+            self.blit.set_uv_transform(ctx.queue, uv_scale, uv_offset);
         }
 
         let bind_group = self.cached_bind_group.as_ref().unwrap();

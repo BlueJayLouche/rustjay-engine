@@ -1199,12 +1199,25 @@ impl EffectPlugin for VardaRootPlugin {
 
                     let source_key = surface.map(|s| s.source.label());
 
+                    // Compute UV transform for Mapped surfaces with Master source.
+                    let (uv_scale, uv_offset) = surface
+                        .filter(|s| s.source == SurfaceSource::Master && s.content_mapping == crate::stage::ContentMapping::Mapped)
+                        .map(|s| {
+                            let bb = s.bounding_box();
+                            let scale = [bb[2] - bb[0], bb[3] - bb[1]];
+                            let offset = [bb[0], bb[1]];
+                            (scale, offset)
+                        })
+                        .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
+
                     let (needs_update, override_view) = if let Ok(g) = sync.lock() {
-                        if g.source_key.as_ref() == source_key.as_ref() {
-                            // Source unchanged — keep current view, no version bump.
+                        let source_changed = g.source_key.as_ref() != source_key.as_ref();
+                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset;
+                        if !source_changed && !uv_changed {
+                            // Nothing changed — keep current state.
                             (false, g.override_view.clone())
                         } else {
-                            // Source changed — compute new view.
+                            // Source or UV changed — compute new view.
                             let view = match surface {
                                 Some(surf) => match &surf.source {
                                     SurfaceSource::Master => None,
@@ -1235,6 +1248,8 @@ impl EffectPlugin for VardaRootPlugin {
                         if let Ok(mut g) = sync.lock() {
                             g.source_key = source_key;
                             g.override_view = override_view;
+                            g.uv_scale = uv_scale;
+                            g.uv_offset = uv_offset;
                             g.version = g.version.wrapping_add(1);
                         }
                     }
