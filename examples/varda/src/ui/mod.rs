@@ -872,6 +872,7 @@ mod egui_impl {
                                             source: SurfaceSource::Master,
                                             content_mapping: ContentMapping::Fill,
                                             extra_contours: Vec::new(),
+                                            uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
                                             warp: rustjay_projection::WarpMode::identity(),
                                         });
                                     } else {
@@ -894,6 +895,7 @@ mod egui_impl {
                                             source: SurfaceSource::Master,
                                             content_mapping: ContentMapping::Fill,
                                             extra_contours,
+                                            uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
                                             warp: rustjay_projection::WarpMode::identity(),
                                         });
                                     }
@@ -1070,15 +1072,22 @@ mod egui_impl {
                     }
                 }
 
-                // ── Warp drag handles ────────────────────────────────────────
+                // ── UV crop drag handles ───────────────────────────────────
+                // Corner handles on the stage canvas now control the UV sampling
+                // region (which part of the source texture is shown), not the
+                // output warp. Output warp remains editable on the Geometry tab.
                 let mut handle_dragged = false;
 
-                // Clone handle positions to avoid borrow issues during interaction
-                let corner_handles: Option<[[f32; 2]; 4]> = state.stage.surfaces
+                let uv_handles: Option<[[f32; 2]; 4]> = state.stage.surfaces
                     .get(state.stage.selected_surface_index)
-                    .and_then(|s| match &s.warp {
-                        rustjay_projection::WarpMode::CornerPin { corners } => Some(*corners),
-                        _ => None,
+                    .map(|s| {
+                        let [min_u, min_v, max_u, max_v] = s.uv_crop_rect;
+                        [
+                            [min_u, min_v], // TL
+                            [max_u, min_v], // TR
+                            [max_u, max_v], // BR
+                            [min_u, max_v], // BL
+                        ]
                     });
 
                 let mesh_handle_positions: Option<Vec<[f32; 2]>> = state.stage.surfaces
@@ -1090,38 +1099,75 @@ mod egui_impl {
                         _ => None,
                     });
 
-                // Draw corner-pin handles
-                if let Some(corners) = corner_handles {
+                // Draw UV crop handles and connecting rectangle
+                if let Some(corners) = uv_handles {
+                    let handle_labels = ["TL", "TR", "BR", "BL"];
+                    let mut positions = [Pos2::ZERO; 4];
                     for (i, corner) in corners.iter().enumerate() {
                         let pos = Pos2::new(
                             canvas_rect.min.x + corner[0] * canvas_rect.width(),
                             canvas_rect.min.y + corner[1] * canvas_rect.height(),
                         );
+                        positions[i] = pos;
                         let handle_rect = Rect::from_center_size(pos, Vec2::splat(12.0));
-                        let handle_id = ui.id().with(("warp_handle", i));
+                        let handle_id = ui.id().with(("uv_crop_handle", i));
                         let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
 
                         let handle_color = if handle_response.dragged() {
-                            Color32::YELLOW
+                            Color32::from_rgb(255, 200, 0) // amber for UV crop
                         } else if handle_response.hovered() {
                             Color32::WHITE
                         } else {
-                            Color32::from_rgb(200, 200, 200)
+                            Color32::from_rgb(180, 180, 180)
                         };
                         painter.circle_filled(pos, 5.0, handle_color);
+
+                        // Label
+                        painter.text(
+                            pos - Vec2::new(0.0, 8.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            handle_labels[i],
+                            egui::FontId::proportional(9.0),
+                            Color32::from_rgb(200, 200, 200),
+                        );
 
                         if handle_response.dragged() {
                             handle_dragged = true;
                             let dx = handle_response.drag_delta().x / canvas_rect.width();
                             let dy = handle_response.drag_delta().y / canvas_rect.height();
                             if let Some(surf) = state.stage.surfaces.get_mut(state.stage.selected_surface_index) {
-                                if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
-                                    corners[i][0] = (corners[i][0] + dx).clamp(0.0, 1.0);
-                                    corners[i][1] = (corners[i][1] + dy).clamp(0.0, 1.0);
+                                let [min_u, min_v, max_u, max_v] = &mut surf.uv_crop_rect;
+                                match i {
+                                    0 => { // TL
+                                        *min_u = (*min_u + dx).clamp(0.0, 1.0);
+                                        *min_v = (*min_v + dy).clamp(0.0, 1.0);
+                                    }
+                                    1 => { // TR
+                                        *max_u = (*max_u + dx).clamp(0.0, 1.0);
+                                        *min_v = (*min_v + dy).clamp(0.0, 1.0);
+                                    }
+                                    2 => { // BR
+                                        *max_u = (*max_u + dx).clamp(0.0, 1.0);
+                                        *max_v = (*max_v + dy).clamp(0.0, 1.0);
+                                    }
+                                    3 => { // BL
+                                        *min_u = (*min_u + dx).clamp(0.0, 1.0);
+                                        *max_v = (*max_v + dy).clamp(0.0, 1.0);
+                                    }
+                                    _ => {}
                                 }
+                                // Ensure min <= max
+                                if *min_u > *max_u { std::mem::swap(min_u, max_u); }
+                                if *min_v > *max_v { std::mem::swap(min_v, max_v); }
                             }
                             warp_dirty = true;
                         }
+                    }
+                    // Draw connecting lines to show crop rect
+                    let crop_line_color = Color32::from_rgba_premultiplied(255, 200, 0, 80);
+                    for i in 0..4 {
+                        let j = (i + 1) % 4;
+                        painter.line_segment([positions[i], positions[j]], egui::Stroke::new(1.0, crop_line_color));
                     }
                 }
 
@@ -1437,6 +1483,40 @@ mod egui_impl {
                                 warp_dirty = true;
                             }
                         });
+                    }
+                }
+
+                ui.separator();
+                ui.label(egui::RichText::new("UV Crop").strong());
+                ui.label("Sampling region (stage canvas handles edit this visually):");
+                {
+                    let [min_u, min_v, max_u, max_v] = &mut surf.uv_crop_rect;
+                    ui.horizontal(|ui| {
+                        ui.label("Min U:");
+                        if ui.add(egui::DragValue::new(min_u).speed(0.01).range(0.0..=1.0)).changed() {
+                            warp_dirty = true;
+                        }
+                        ui.label("Min V:");
+                        if ui.add(egui::DragValue::new(min_v).speed(0.01).range(0.0..=1.0)).changed() {
+                            warp_dirty = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Max U:");
+                        if ui.add(egui::DragValue::new(max_u).speed(0.01).range(0.0..=1.0)).changed() {
+                            warp_dirty = true;
+                        }
+                        ui.label("Max V:");
+                        if ui.add(egui::DragValue::new(max_v).speed(0.01).range(0.0..=1.0)).changed() {
+                            warp_dirty = true;
+                        }
+                    });
+                    if ui.small_button("Reset UV Crop").clicked() {
+                        *min_u = 0.0;
+                        *min_v = 0.0;
+                        *max_u = 1.0;
+                        *max_v = 1.0;
+                        warp_dirty = true;
                     }
                 }
 

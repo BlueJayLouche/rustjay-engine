@@ -87,11 +87,20 @@ pub struct VardaSurface {
     /// as dashed lines but not part of the primary warp geometry.
     #[serde(default)]
     pub extra_contours: Vec<Vec<[f32; 2]>>,
+    /// UV crop rectangle `[min_u, min_v, max_u, max_v]` in normalized source
+    /// texture space. Edited by corner handles on the stage canvas.
+    #[serde(default = "full_uv_crop")]
+    pub uv_crop_rect: [f32; 4],
     /// Warp mode (corner-pin or mesh).
     #[cfg(feature = "projection")]
     pub warp: rustjay_projection::WarpMode,
     #[cfg(not(feature = "projection"))]
     pub warp: (),
+}
+
+/// Default UV crop covering the full texture.
+fn full_uv_crop() -> [f32; 4] {
+    [0.0, 0.0, 1.0, 1.0]
 }
 
 impl VardaSurface {
@@ -106,6 +115,7 @@ impl VardaSurface {
             source: SurfaceSource::Master,
             content_mapping: ContentMapping::Fill,
             extra_contours: Vec::new(),
+            uv_crop_rect: full_uv_crop(),
             #[cfg(feature = "projection")]
             warp: rustjay_projection::WarpMode::identity(),
             #[cfg(not(feature = "projection"))]
@@ -129,6 +139,7 @@ impl VardaSurface {
             source: SurfaceSource::Master,
             content_mapping: ContentMapping::Fill,
             extra_contours: Vec::new(),
+            uv_crop_rect: full_uv_crop(),
             #[cfg(feature = "projection")]
             warp: rustjay_projection::WarpMode::identity(),
             #[cfg(not(feature = "projection"))]
@@ -180,20 +191,13 @@ impl VardaSurface {
         }
     }
 
-    /// UV crop rect `[min_u, min_v, max_u, max_v]` for Mapped mode.
-    /// For Fill mode returns the full `[0,1]` rect.
+    /// UV crop rect `[min_u, min_v, max_u, max_v]`.
+    /// For Fill mode returns the full `[0,1]` rect unless an explicit
+    /// `uv_crop_rect` has been edited.
     pub fn uv_crop(&self) -> [f32; 4] {
         match self.content_mapping {
-            ContentMapping::Fill => [0.0, 0.0, 1.0, 1.0],
-            ContentMapping::Mapped => {
-                let [min_x, min_y, max_x, max_y] = self.bounding_box();
-                [
-                    min_x.clamp(0.0, 1.0),
-                    min_y.clamp(0.0, 1.0),
-                    max_x.clamp(0.0, 1.0),
-                    max_y.clamp(0.0, 1.0),
-                ]
-            }
+            ContentMapping::Fill => self.uv_crop_rect,
+            ContentMapping::Mapped => self.uv_crop_rect,
         }
     }
 
