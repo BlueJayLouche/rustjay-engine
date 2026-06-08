@@ -491,6 +491,9 @@ pub enum OutputType {
     Ndi,
     /// Record to disk (requires recording backend).
     Recording,
+    /// Publish frames via Syphon (macOS only).
+    #[cfg(target_os = "macos")]
+    Syphon,
 }
 
 impl OutputType {
@@ -499,6 +502,8 @@ impl OutputType {
             OutputType::Display => "Display",
             OutputType::Ndi => "NDI",
             OutputType::Recording => "Recording",
+            #[cfg(target_os = "macos")]
+            OutputType::Syphon => "Syphon",
         }
     }
 }

@@ -1720,6 +1720,8 @@ mod egui_impl {
                                     ui.selectable_value(&mut proj.output_type, OutputType::Display, "Display");
                                     ui.selectable_value(&mut proj.output_type, OutputType::Ndi, "NDI");
                                     ui.selectable_value(&mut proj.output_type, OutputType::Recording, "Recording");
+                                    #[cfg(target_os = "macos")]
+                                    ui.selectable_value(&mut proj.output_type, OutputType::Syphon, "Syphon");
                                 });
                             if proj.output_type != prev_type {
                                 proj_dirty = true;
@@ -1885,6 +1887,8 @@ mod egui_impl {
                                     ui.selectable_value(&mut hl.output_type, OutputType::Display, "Display");
                                     ui.selectable_value(&mut hl.output_type, OutputType::Ndi, "NDI");
                                     ui.selectable_value(&mut hl.output_type, OutputType::Recording, "Recording");
+                                    #[cfg(target_os = "macos")]
+                                    ui.selectable_value(&mut hl.output_type, OutputType::Syphon, "Syphon");
                                 });
                             if hl.output_type != prev_type {
                                 hl_dirty = true;
