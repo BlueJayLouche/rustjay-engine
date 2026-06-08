@@ -870,7 +870,7 @@ mod egui_impl {
                                                 .map(|(_, r)| r)
                                                 .unwrap_or(0.1),
                                             source: SurfaceSource::Master,
-                                            content_mapping: ContentMapping::Fill,
+                                            content_mapping: ContentMapping::Mapped,
                                             extra_contours: Vec::new(),
                                             uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
                                             warp: rustjay_projection::WarpMode::identity(),
@@ -893,7 +893,7 @@ mod egui_impl {
                                                 .map(|(_, r)| r)
                                                 .unwrap_or(0.1),
                                             source: SurfaceSource::Master,
-                                            content_mapping: ContentMapping::Fill,
+                                            content_mapping: ContentMapping::Mapped,
                                             extra_contours,
                                             uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
                                             warp: rustjay_projection::WarpMode::identity(),

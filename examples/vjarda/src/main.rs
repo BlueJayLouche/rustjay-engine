@@ -46,19 +46,14 @@ fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Ensure source_syncs and rotation_syncs match projector count.
-        while stage.source_syncs.len() < stage.projectors.len() {
-            stage.source_syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
-                vjarda::stage::SourceSync::default(),
-            )));
-        }
-        stage.source_syncs.truncate(stage.projectors.len());
-        while stage.rotation_syncs.len() < stage.projectors.len() {
-            stage.rotation_syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
-                rustjay_projection::RotationSync::default(),
-            )));
-        }
-        stage.rotation_syncs.truncate(stage.projectors.len());
+        // Ensure plugin-level syncs match projector count so stages and app state
+        // share the same Arcs.
+        plugin.ensure_source_syncs(stage.projectors.len());
+        plugin.ensure_rotation_syncs(stage.projectors.len());
+
+        // Clone syncs for the closure (plugin will be moved into the engine).
+        let source_syncs = plugin.source_syncs();
+        let rotation_syncs = plugin.rotation_syncs();
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
             use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
@@ -80,10 +75,10 @@ fn main() -> anyhow::Result<()> {
                 let w = warp_sync.clone();
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
-                let s = stage.source_syncs.get(i).cloned().unwrap_or_else(|| {
+                let s = source_syncs.get(i).cloned().unwrap_or_else(|| {
                     std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::SourceSync::default()))
                 });
-                let r = stage.rotation_syncs.get(i).cloned().unwrap_or_else(|| {
+                let r = rotation_syncs.get(i).cloned().unwrap_or_else(|| {
                     std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
                 });
                 sub.add_projector(attrs, move |device, format| {

@@ -365,6 +365,13 @@ pub struct VardaRootPlugin {
     /// Canonical live edge-blend state, shared with the app state and projector.
     #[cfg(feature = "projection")]
     edge_blend_sync: std::sync::Arc<std::sync::Mutex<stage::EdgeBlendSync>>,
+    /// Per-projector source texture overrides. Shared between the stage factory
+    /// (created in main.rs) and the app state (updated in prepare()).
+    #[cfg(feature = "projection")]
+    source_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<stage::SourceSync>>>>,
+    /// Per-projector output rotation. Shared between the stage factory and app state.
+    #[cfg(feature = "projection")]
+    rotation_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>>>,
 }
 
 impl VardaRootPlugin {
@@ -381,7 +388,47 @@ impl VardaRootPlugin {
             edge_blend_sync: std::sync::Arc::new(std::sync::Mutex::new(
                 stage::EdgeBlendSync::default(),
             )),
+            #[cfg(feature = "projection")]
+            source_syncs: std::sync::Mutex::new(Vec::new()),
+            #[cfg(feature = "projection")]
+            rotation_syncs: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Ensure source_syncs has at least `count` entries.
+    #[cfg(feature = "projection")]
+    pub fn ensure_source_syncs(&self, count: usize) {
+        let mut syncs = self.source_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                stage::SourceSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Ensure rotation_syncs has at least `count` entries.
+    #[cfg(feature = "projection")]
+    pub fn ensure_rotation_syncs(&self, count: usize) {
+        let mut syncs = self.rotation_syncs.lock().unwrap();
+        while syncs.len() < count {
+            syncs.push(std::sync::Arc::new(std::sync::Mutex::new(
+                rustjay_projection::RotationSync::default(),
+            )));
+        }
+        syncs.truncate(count);
+    }
+
+    /// Shared per-projector source syncs.
+    #[cfg(feature = "projection")]
+    pub fn source_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<stage::SourceSync>>> {
+        self.source_syncs.lock().unwrap().clone()
+    }
+
+    /// Shared per-projector rotation syncs.
+    #[cfg(feature = "projection")]
+    pub fn rotation_syncs(&self) -> Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>> {
+        self.rotation_syncs.lock().unwrap().clone()
     }
 
     /// Shared warp state for the projector stage.
@@ -617,6 +664,8 @@ impl EffectPlugin for VardaRootPlugin {
             s.stage.warp_sync = Some(self.warp_sync.clone());
             s.stage.dome_sync = Some(self.dome_sync.clone());
             s.stage.edge_blend_sync = Some(self.edge_blend_sync.clone());
+            s.stage.source_syncs = self.source_syncs.lock().unwrap().clone();
+            s.stage.rotation_syncs = self.rotation_syncs.lock().unwrap().clone();
         }
         s
     }
@@ -659,7 +708,16 @@ impl EffectPlugin for VardaRootPlugin {
                 if stage_path.exists() {
                     match state.workspace.load_stage() {
                         Ok(loaded_stage) => {
+                            // Preserve runtime sync handles so projector stages stay connected.
+                            let source_syncs = std::mem::take(&mut state.stage.source_syncs);
+                            let rotation_syncs = std::mem::take(&mut state.stage.rotation_syncs);
+
                             state.stage = loaded_stage;
+
+                            // Restore runtime syncs.
+                            state.stage.source_syncs = source_syncs;
+                            state.stage.rotation_syncs = rotation_syncs;
+
                             // Re-inject Arc handles wiped by serde(skip) on deserialize.
                             state.stage.warp_sync = Some(self.warp_sync.clone());
                             state.stage.dome_sync = Some(self.dome_sync.clone());

@@ -113,7 +113,7 @@ impl VardaSurface {
             is_circular: false,
             radius: 0.0,
             source: SurfaceSource::Master,
-            content_mapping: ContentMapping::Fill,
+            content_mapping: ContentMapping::Mapped,
             extra_contours: Vec::new(),
             uv_crop_rect: full_uv_crop(),
             #[cfg(feature = "projection")]
@@ -137,7 +137,7 @@ impl VardaSurface {
             is_circular: true,
             radius,
             source: SurfaceSource::Master,
-            content_mapping: ContentMapping::Fill,
+            content_mapping: ContentMapping::Mapped,
             extra_contours: Vec::new(),
             uv_crop_rect: full_uv_crop(),
             #[cfg(feature = "projection")]
