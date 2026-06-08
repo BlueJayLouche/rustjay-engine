@@ -6430,6 +6430,7 @@ dependencies = [
  "image",
  "log",
  "notify",
+ "rfd",
  "rustjay-api",
  "rustjay-core",
  "rustjay-engine",

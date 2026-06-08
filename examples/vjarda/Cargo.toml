@@ -36,6 +36,7 @@ log            = { workspace = true }
 env_logger     = "0.11"
 image          = { workspace = true }
 notify         = "7.0"
+rfd            = "0.15"
 egui           = { workspace = true, optional = true }
 winit          = { workspace = true }
 hap-wgpu       = { path = "/Users/ac/developer/rust/hap-rs/hap-wgpu", optional = true }

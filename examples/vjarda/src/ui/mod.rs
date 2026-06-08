@@ -30,6 +30,8 @@ pub struct DeckTab {
     selected_camera_index: usize,
     selected_ndi_index: usize,
     selected_syphon_index: usize,
+    /// Async result from the native file picker.
+    pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 }
 
 impl Default for DeckTab {
@@ -41,6 +43,7 @@ impl Default for DeckTab {
             selected_camera_index: 0,
             selected_ndi_index: 0,
             selected_syphon_index: 0,
+            pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -114,6 +117,8 @@ impl GeometryTab {
 pub struct OutputsTab {
     recording_path: String,
     recording_codec: rustjay_core::RecorderCodec,
+    /// Async result from the native save dialog.
+    pending_save_path: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 }
 
 impl Default for OutputsTab {
@@ -127,6 +132,7 @@ impl OutputsTab {
         Self {
             recording_path: String::from("recording.mp4"),
             recording_codec: rustjay_core::RecorderCodec::H264,
+            pending_save_path: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -344,9 +350,31 @@ mod egui_impl {
 
             match self.add_tab {
                 AddSourceTab::File => {
+                    if let Ok(mut guard) = self.pending_file.lock() {
+                        if let Some(path) = guard.take() {
+                            self.file_path = path.to_string_lossy().to_string();
+                        }
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Path:");
                         ui.text_edit_singleline(&mut self.file_path);
+                        if ui.button("Browse…").clicked() {
+                            let pending = self.pending_file.clone();
+                            let ctx = ui.ctx().clone();
+                            std::thread::spawn(move || {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"])
+                                    .add_filter("Image", &["png", "jpg", "jpeg"])
+                                    .add_filter("ISF Shader", &["fs"])
+                                    .pick_file()
+                                {
+                                    if let Ok(mut guard) = pending.lock() {
+                                        *guard = Some(path);
+                                    }
+                                    ctx.request_repaint();
+                                }
+                            });
+                        }
                     });
                     let path = std::path::PathBuf::from(&self.file_path);
                     let exists = path.exists();
@@ -1974,6 +2002,13 @@ mod egui_impl {
 
             ui.separator();
             ui.label(egui::RichText::new("Recording").strong());
+
+            if let Ok(mut guard) = self.pending_save_path.lock() {
+                if let Some(path) = guard.take() {
+                    self.recording_path = path.to_string_lossy().to_string();
+                }
+            }
+
             ui.horizontal(|ui| {
                 ui.label("Codec:");
                 egui::ComboBox::from_id_salt("recorder_codec")
@@ -1989,6 +2024,26 @@ mod egui_impl {
                 ui.label("Path:");
                 ui.text_edit_singleline(&mut self.recording_path)
                     .on_hover_text("Output file path (relative or absolute)");
+                if ui.button("Browse…").clicked() {
+                    let pending = self.pending_save_path.clone();
+                    let ctx = ui.ctx().clone();
+                    let ext = match self.recording_codec {
+                        rustjay_core::RecorderCodec::H264 | rustjay_core::RecorderCodec::H265 | rustjay_core::RecorderCodec::AV1 => "mp4",
+                        rustjay_core::RecorderCodec::ProRes422 => "mov",
+                    };
+                    std::thread::spawn(move || {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Video", &[ext])
+                            .set_file_name(format!("recording.{}", ext))
+                            .save_file()
+                        {
+                            if let Ok(mut guard) = pending.lock() {
+                                *guard = Some(path);
+                            }
+                            ctx.request_repaint();
+                        }
+                    });
+                }
             });
             ui.horizontal(|ui| {
                 let is_recording = engine.recording_active;
