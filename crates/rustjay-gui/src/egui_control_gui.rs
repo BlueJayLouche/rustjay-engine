@@ -467,6 +467,17 @@ impl EguiControlGui {
                         }
                         ui.add_space(6.0);
                         if ui
+                            .button(egui::RichText::new("🔄 REFRESH").size(11.0).color(INK_2))
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.input_command = rustjay_core::InputCommand::RefreshDevices;
+                            state.audio_command = rustjay_core::AudioCommand::RefreshDevices;
+                            state.midi_command = rustjay_core::MidiCommand::RefreshDevices;
+                        }
+                        ui.add_space(6.0);
+                        if ui
                             .button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2))
                             .clicked()
                         {
