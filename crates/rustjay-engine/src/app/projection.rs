@@ -241,10 +241,15 @@ impl ProjectorOutput {
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Copy surface to record texture before presenting, if recording.
+        // Copy surface to the output texture before presenting, if any output
+        // sink (recorder, NDI, Syphon, …) is active.
         // Guard on COPY_SRC: without it `copy_texture_to_texture` from the
-        // surface is a fatal wgpu validation error, so skip recording instead.
-        if self.record_manager.is_some()
+        // surface is a fatal wgpu validation error, so skip the copy instead.
+        let has_output = self
+            .record_manager
+            .as_ref()
+            .map_or(false, |m| m.has_active_output());
+        if has_output
             && self
                 .surface_config
                 .usage
@@ -301,6 +306,13 @@ impl ProjectorOutput {
         surface_texture.present();
     }
 
+    /// The projector's output manager, lazily created. Hosts the recorder and
+    /// all senders (NDI/Syphon/Spout/V4L2) — one frame is fanned out to every
+    /// active output by `OutputManager::submit_frame`.
+    fn output_manager(&mut self) -> &mut OutputManager {
+        self.record_manager.get_or_insert_with(OutputManager::new)
+    }
+
     /// Start recording this projector's output to disk.
     pub fn start_recording(
         &mut self,
@@ -308,33 +320,142 @@ impl ProjectorOutput {
         fps: f32,
         codec: RecorderCodec,
     ) -> anyhow::Result<()> {
-        if self.record_manager.is_some() {
-            return Err(anyhow::anyhow!("Projector already recording"));
+        let (w, h) = (self.width, self.height);
+        let mgr = self.output_manager();
+        if mgr.is_recording() {
+            return Ok(());
         }
-        let mut manager = OutputManager::new();
-        manager.start_recording(path, self.width, self.height, fps, codec)?;
-        self.record_manager = Some(manager);
+        mgr.start_recording(path, w, h, fps, codec)?;
         log::info!(
             "Started projector recording {}x{} @ {:.2} fps → {}",
-            self.width,
-            self.height,
+            w,
+            h,
             fps,
             path.display()
         );
         Ok(())
     }
 
-    /// Stop recording this projector's output.
+    /// Stop recording this projector's output (leaves other sinks running).
     pub fn stop_recording(&mut self) {
-        if let Some(mut manager) = self.record_manager.take() {
-            manager.stop_recording();
-            log::info!("Stopped projector recording");
+        if let Some(manager) = self.record_manager.as_mut() {
+            if manager.is_recording() {
+                manager.stop_recording();
+                log::info!("Stopped projector recording");
+            }
         }
     }
 
-    /// Whether this projector is currently recording.
+    /// Whether this projector is currently recording to disk.
     pub fn is_recording(&self) -> bool {
-        self.record_manager.is_some()
+        self.record_manager
+            .as_ref()
+            .map_or(false, |m| m.is_recording())
+    }
+
+    /// Start publishing this projector's output as an NDI source named `name`.
+    pub fn start_ndi(&mut self, name: &str) -> anyhow::Result<()> {
+        let (w, h) = (self.width, self.height);
+        let mgr = self.output_manager();
+        if mgr.is_ndi_active() {
+            return Ok(());
+        }
+        mgr.start_ndi(name, w, h, false)
+    }
+
+    /// Stop the NDI sender (leaves other sinks running).
+    pub fn stop_ndi(&mut self) {
+        if let Some(manager) = self.record_manager.as_mut() {
+            manager.stop_ndi();
+        }
+    }
+
+    /// Whether this projector is publishing via NDI.
+    pub fn is_ndi(&self) -> bool {
+        self.record_manager
+            .as_ref()
+            .map_or(false, |m| m.is_ndi_active())
+    }
+
+    /// Start publishing this projector's output as a Syphon server (macOS).
+    #[cfg(target_os = "macos")]
+    pub fn start_syphon(
+        &mut self,
+        name: &str,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+    ) -> anyhow::Result<()> {
+        let mgr = self.output_manager();
+        if mgr.is_syphon_active() {
+            return Ok(());
+        }
+        mgr.start_syphon(name, device, queue)
+    }
+
+    /// Stop the Syphon server (macOS; leaves other sinks running).
+    #[cfg(target_os = "macos")]
+    pub fn stop_syphon(&mut self) {
+        if let Some(manager) = self.record_manager.as_mut() {
+            manager.stop_syphon();
+        }
+    }
+
+    /// Whether this projector is publishing via Syphon.
+    pub fn is_syphon(&self) -> bool {
+        self.record_manager
+            .as_ref()
+            .map_or(false, |m| m.is_syphon_active())
+    }
+
+    /// Start publishing this projector's output via Spout (Windows).
+    #[cfg(target_os = "windows")]
+    pub fn start_spout(&mut self, name: &str) -> anyhow::Result<()> {
+        let mgr = self.output_manager();
+        if mgr.is_spout_active() {
+            return Ok(());
+        }
+        mgr.start_spout(name)
+    }
+
+    /// Stop the Spout sender (Windows; leaves other sinks running).
+    #[cfg(target_os = "windows")]
+    pub fn stop_spout(&mut self) {
+        if let Some(manager) = self.record_manager.as_mut() {
+            manager.stop_spout();
+        }
+    }
+
+    /// Whether this projector is publishing via Spout.
+    pub fn is_spout(&self) -> bool {
+        self.record_manager
+            .as_ref()
+            .map_or(false, |m| m.is_spout_active())
+    }
+
+    /// Start publishing this projector's output to a V4L2 loopback (Linux).
+    #[cfg(target_os = "linux")]
+    pub fn start_v4l2(&mut self, device_path: &str) -> anyhow::Result<()> {
+        let (w, h) = (self.width, self.height);
+        let mgr = self.output_manager();
+        if mgr.is_v4l2_active() {
+            return Ok(());
+        }
+        mgr.start_v4l2(device_path, w, h)
+    }
+
+    /// Stop the V4L2 sender (Linux; leaves other sinks running).
+    #[cfg(target_os = "linux")]
+    pub fn stop_v4l2(&mut self) {
+        if let Some(manager) = self.record_manager.as_mut() {
+            manager.stop_v4l2();
+        }
+    }
+
+    /// Whether this projector is publishing via V4L2.
+    pub fn is_v4l2(&self) -> bool {
+        self.record_manager
+            .as_ref()
+            .map_or(false, |m| m.is_v4l2_active())
     }
 
     /// Toggle fullscreen for this projector window.
@@ -398,6 +519,9 @@ pub struct ProjectionSubsystem {
     last_render: Option<std::time::Instant>,
     /// Shared GPU device, set once `create_pending()` has run.
     device: Option<Arc<wgpu::Device>>,
+    /// Shared GPU queue, set once `create_pending()` has run. Needed to start
+    /// Syphon output senders (which require owned `Arc` handles).
+    queue: Option<Arc<wgpu::Queue>>,
 }
 
 type StageFactory =
@@ -426,6 +550,7 @@ impl ProjectionSubsystem {
             pending: Vec::new(),
             last_render: None,
             device: None,
+            queue: None,
         }
     }
 
@@ -465,9 +590,11 @@ impl ProjectionSubsystem {
         event_loop: &winit::event_loop::ActiveEventLoop,
         instance: &wgpu::Instance,
         device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
         adapter: &wgpu::Adapter,
     ) {
         self.device = Some(Arc::clone(&device));
+        self.queue = Some(queue);
 
         for pending in self.pending.drain(..) {
             let window = match event_loop.create_window(pending.window_attrs) {
@@ -693,6 +820,108 @@ impl ProjectionSubsystem {
     /// Whether a projector is recording.
     pub fn is_projector_recording(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_recording())
+    }
+
+    // ── Projector output senders (NDI / Syphon / Spout / V4L2) ──────────────
+    // Index is the position within the *enabled* projector list, matching the
+    // recording methods above.
+
+    /// Start publishing projector `index` as an NDI source named `name`.
+    pub fn start_projector_ndi(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let proj = self
+            .projectors
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Projector index {index} out of range"))?;
+        proj.start_ndi(name)
+    }
+
+    /// Stop projector `index`'s NDI sender.
+    pub fn stop_projector_ndi(&mut self, index: usize) {
+        if let Some(proj) = self.projectors.get_mut(index) {
+            proj.stop_ndi();
+        }
+    }
+
+    /// Whether projector `index` is publishing via NDI.
+    pub fn is_projector_ndi(&self, index: usize) -> bool {
+        self.projectors.get(index).map_or(false, |p| p.is_ndi())
+    }
+
+    /// Start publishing projector `index` as a Syphon server (macOS).
+    #[cfg(target_os = "macos")]
+    pub fn start_projector_syphon(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let device = self
+            .device
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Projection device not ready"))?;
+        let queue = self
+            .queue
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Projection queue not ready"))?;
+        let proj = self
+            .projectors
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Projector index {index} out of range"))?;
+        proj.start_syphon(name, device, queue)
+    }
+
+    /// Stop projector `index`'s Syphon server (macOS).
+    #[cfg(target_os = "macos")]
+    pub fn stop_projector_syphon(&mut self, index: usize) {
+        if let Some(proj) = self.projectors.get_mut(index) {
+            proj.stop_syphon();
+        }
+    }
+
+    /// Whether projector `index` is publishing via Syphon.
+    pub fn is_projector_syphon(&self, index: usize) -> bool {
+        self.projectors.get(index).map_or(false, |p| p.is_syphon())
+    }
+
+    /// Start publishing projector `index` via Spout (Windows).
+    #[cfg(target_os = "windows")]
+    pub fn start_projector_spout(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let proj = self
+            .projectors
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Projector index {index} out of range"))?;
+        proj.start_spout(name)
+    }
+
+    /// Stop projector `index`'s Spout sender (Windows).
+    #[cfg(target_os = "windows")]
+    pub fn stop_projector_spout(&mut self, index: usize) {
+        if let Some(proj) = self.projectors.get_mut(index) {
+            proj.stop_spout();
+        }
+    }
+
+    /// Whether projector `index` is publishing via Spout.
+    pub fn is_projector_spout(&self, index: usize) -> bool {
+        self.projectors.get(index).map_or(false, |p| p.is_spout())
+    }
+
+    /// Start publishing projector `index` to a V4L2 loopback device (Linux).
+    #[cfg(target_os = "linux")]
+    pub fn start_projector_v4l2(&mut self, index: usize, device_path: &str) -> anyhow::Result<()> {
+        let proj = self
+            .projectors
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Projector index {index} out of range"))?;
+        proj.start_v4l2(device_path)
+    }
+
+    /// Stop projector `index`'s V4L2 sender (Linux).
+    #[cfg(target_os = "linux")]
+    pub fn stop_projector_v4l2(&mut self, index: usize) {
+        if let Some(proj) = self.projectors.get_mut(index) {
+            proj.stop_v4l2();
+        }
+    }
+
+    /// Whether projector `index` is publishing via V4L2.
+    pub fn is_projector_v4l2(&self, index: usize) -> bool {
+        self.projectors.get(index).map_or(false, |p| p.is_v4l2())
     }
 
     /// Start recording a headless output by index.

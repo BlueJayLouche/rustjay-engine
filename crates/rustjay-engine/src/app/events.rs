@@ -269,12 +269,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             {
                 let inst = self.wgpu_instance.as_ref();
                 let device = self.wgpu_device.as_ref();
+                let queue = self.wgpu_queue.as_ref();
                 let adapter = self.wgpu_adapter.as_ref();
-                if let (Some(sub), Some(inst), Some(device), Some(adapter)) =
-                    (self.projection_subsystem.as_ref(), inst, device, adapter)
+                if let (Some(sub), Some(inst), Some(device), Some(queue), Some(adapter)) =
+                    (self.projection_subsystem.as_ref(), inst, device, queue, adapter)
                 {
                     let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
-                    sub.create_pending(event_loop, inst, Arc::clone(device), adapter);
+                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
                 }
             }
         }
@@ -614,13 +615,14 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         {
             let inst = self.wgpu_instance.as_ref();
             let device = self.wgpu_device.as_ref();
+            let queue = self.wgpu_queue.as_ref();
             let adapter = self.wgpu_adapter.as_ref();
-            if let (Some(sub), Some(inst), Some(device), Some(adapter)) =
-                (self.projection_subsystem.as_ref(), inst, device, adapter)
+            if let (Some(sub), Some(inst), Some(device), Some(queue), Some(adapter)) =
+                (self.projection_subsystem.as_ref(), inst, device, queue, adapter)
             {
                 let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
                 if sub.pending_len() > 0 {
-                    sub.create_pending(event_loop, inst, Arc::clone(device), adapter);
+                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
                 }
             }
         }

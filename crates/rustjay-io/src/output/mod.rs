@@ -355,6 +355,16 @@ impl OutputManager {
     #[cfg(not(feature = "ndi"))]
     pub fn stop_ndi(&mut self) {}
 
+    /// Whether any output (recorder or any sender) is currently active. Used to
+    /// gate the per-frame surface copy + `submit_frame`.
+    pub fn has_active_output(&self) -> bool {
+        self.is_recording()
+            || self.is_ndi_active()
+            || self.is_syphon_active()
+            || self.is_spout_active()
+            || self.is_v4l2_active()
+    }
+
     /// Start Syphon output (macOS only)
     #[cfg(target_os = "macos")]
     pub fn start_syphon(

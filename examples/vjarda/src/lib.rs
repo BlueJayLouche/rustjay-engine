@@ -1384,31 +1384,95 @@ impl EffectPlugin for VardaRootPlugin {
                     let fps = engine.target_fps as f32;
                     let codec = rustjay_io::RecorderCodec::H264;
 
+                    // Level-triggered: each frame, reconcile every enabled
+                    // projector's active sinks against its selected output_type
+                    // (mutually exclusive). Collect labels of what is live for the
+                    // top-bar services strip.
+                    use crate::stage::OutputType;
+                    let mut sink_labels: Vec<String> = Vec::new();
                     let mut enabled_idx = 0;
                     for (i, proj) in state.stage.projectors.iter().enumerate() {
-                        if proj.enabled {
-                            match proj.output_type {
-                                crate::stage::OutputType::Recording => {
-                                    if !sub.is_projector_recording(enabled_idx) {
-                                        let ts = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs();
-                                        let dir = std::path::PathBuf::from("recordings");
-                                        std::fs::create_dir_all(&dir).ok();
-                                        let path = dir.join(format!("projector_{}_{}_{}.mp4", i, proj.name, ts));
-                                        if let Err(e) = sub.start_projector_recording(enabled_idx, &path, fps, codec) {
-                                            log::error!("[Varda] Failed to start projector {i} recording: {e}");
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    if sub.is_projector_recording(enabled_idx) {
-                                        sub.stop_projector_recording(enabled_idx);
-                                    }
-                                }
+                        if !proj.enabled {
+                            continue;
+                        }
+                        let idx = enabled_idx;
+                        enabled_idx += 1;
+                        let sender_name = format!("vjarda — {}", proj.name);
+
+                        // ── Disk recording ──────────────────────────────────
+                        let want_rec = matches!(proj.output_type, OutputType::Recording);
+                        if want_rec && !sub.is_projector_recording(idx) {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let dir = std::path::PathBuf::from("recordings");
+                            std::fs::create_dir_all(&dir).ok();
+                            let path = dir.join(format!("projector_{}_{}_{}.mp4", i, proj.name, ts));
+                            if let Err(e) = sub.start_projector_recording(idx, &path, fps, codec) {
+                                log::error!("[Varda] Failed to start projector {i} recording: {e}");
                             }
-                            enabled_idx += 1;
+                        } else if !want_rec && sub.is_projector_recording(idx) {
+                            sub.stop_projector_recording(idx);
+                        }
+
+                        // ── NDI sender ──────────────────────────────────────
+                        let want_ndi = matches!(proj.output_type, OutputType::Ndi);
+                        if want_ndi && !sub.is_projector_ndi(idx) {
+                            match sub.start_projector_ndi(idx, &sender_name) {
+                                Ok(_) => engine.notify(
+                                    format!("NDI output started: {sender_name}"),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                ),
+                                Err(e) => engine.notify(
+                                    format!("NDI output failed: {e}"),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                ),
+                            }
+                        } else if !want_ndi && sub.is_projector_ndi(idx) {
+                            sub.stop_projector_ndi(idx);
+                        }
+
+                        // ── Syphon sender (macOS) ───────────────────────────
+                        #[cfg(target_os = "macos")]
+                        {
+                            let want_syphon = matches!(proj.output_type, OutputType::Syphon);
+                            if want_syphon && !sub.is_projector_syphon(idx) {
+                                match sub.start_projector_syphon(idx, &sender_name) {
+                                    Ok(_) => engine.notify(
+                                        format!("Syphon output started: {sender_name}"),
+                                        rustjay_core::NotificationLevel::Success,
+                                        std::time::Duration::from_secs(3),
+                                    ),
+                                    Err(e) => engine.notify(
+                                        format!("Syphon output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    ),
+                                }
+                            } else if !want_syphon && sub.is_projector_syphon(idx) {
+                                sub.stop_projector_syphon(idx);
+                            }
+                        }
+
+                        // Report what is actually live this frame.
+                        if sub.is_projector_ndi(idx) {
+                            sink_labels.push(format!("NDI · {}", proj.name));
+                        }
+                        if sub.is_projector_syphon(idx) {
+                            sink_labels.push(format!("Syphon · {}", proj.name));
+                        }
+                        if sub.is_projector_recording(idx) {
+                            sink_labels.push(format!("REC · {}", proj.name));
+                        }
+                    }
+
+                    // Publish active output sinks for the top-bar status strip.
+                    if let Ok(mut sinks) = engine.output_sinks.lock() {
+                        if *sinks != sink_labels {
+                            *sinks = sink_labels;
                         }
                     }
 

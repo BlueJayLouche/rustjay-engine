@@ -1145,6 +1145,11 @@ pub struct EngineState {
     /// Transient toast notifications posted by the app or engine.
     /// Rendered globally by the control GUI and expired automatically.
     pub notifications: Arc<Mutex<Vec<Notification>>>,
+    /// Labels of active output sinks (NDI/Syphon/Spout/V4L2/…) the app is
+    /// currently publishing. Written by the app each frame and rendered as
+    /// status pills in the control GUI top bar. Generic — the GUI only renders
+    /// the strings, so no engine→app coupling.
+    pub output_sinks: Arc<Mutex<Vec<String>>>,
     /// Monotonically increasing ID for notification egui keys.
     pub next_notification_id: AtomicU64,
 
@@ -1285,6 +1290,7 @@ impl EngineState {
             param_resolver: None,
             app_state: Arc::new(std::sync::Mutex::new(None)),
             notifications: Arc::new(Mutex::new(Vec::new())),
+            output_sinks: Arc::new(Mutex::new(Vec::new())),
             next_notification_id: AtomicU64::new(0),
             recording_active: false,
             projection_handle: None,

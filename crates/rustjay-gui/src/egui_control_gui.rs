@@ -291,7 +291,23 @@ impl EguiControlGui {
         use crate::egui_theme::colors::*;
         use crate::egui_widgets::{status_pill, PillState};
 
-        let (app_name, bpm, fps, cpu, mem_used, mem_total, volume, show_preview, audio_enabled) = {
+        let (
+            app_name,
+            bpm,
+            fps,
+            cpu,
+            mem_used,
+            mem_total,
+            volume,
+            show_preview,
+            audio_enabled,
+            web_enabled,
+            web_host,
+            web_port,
+            osc_enabled,
+            osc_port,
+            output_sinks,
+        ) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
             (
@@ -304,6 +320,16 @@ impl EguiControlGui {
                 state.audio.volume,
                 state.show_preview,
                 state.audio.enabled,
+                state.web_enabled,
+                state.web_host.clone(),
+                state.web_port,
+                state.osc_enabled,
+                state.osc_port,
+                state
+                    .output_sinks
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
             )
         };
 
@@ -499,6 +525,42 @@ impl EguiControlGui {
                                 PillState::Online
                             } else {
                                 PillState::Offline
+                            },
+                        );
+
+                        // Services strip: active output sinks (NDI/Syphon/…),
+                        // then web + OSC servers. right_to_left, so these render
+                        // to the left of the audio pill, sinks closest to it.
+                        ui.add_space(12.0);
+                        for label in &output_sinks {
+                            status_pill(ui, label, PillState::Online);
+                            ui.add_space(6.0);
+                        }
+                        status_pill(
+                            ui,
+                            &if osc_enabled {
+                                format!("OSC :{osc_port}")
+                            } else {
+                                "OSC OFF".to_string()
+                            },
+                            if osc_enabled {
+                                PillState::Online
+                            } else {
+                                PillState::Neutral
+                            },
+                        );
+                        ui.add_space(6.0);
+                        status_pill(
+                            ui,
+                            &if web_enabled {
+                                format!("WEB {web_host}:{web_port}")
+                            } else {
+                                "WEB OFF".to_string()
+                            },
+                            if web_enabled {
+                                PillState::Online
+                            } else {
+                                PillState::Neutral
                             },
                         );
                     });
