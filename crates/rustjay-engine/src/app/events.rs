@@ -286,7 +286,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 let queue = Arc::clone(&engine.queue);
 
                 let window_attrs = WindowAttributes::default()
-                    .with_title("RustJay - Control")
+                    .with_title(format!("{} - Control", self.config_manager.app_name))
                     .with_inner_size(winit::dpi::LogicalSize::new(1200u32, 800u32))
                     .with_resizable(true)
                     .with_decorations(true);

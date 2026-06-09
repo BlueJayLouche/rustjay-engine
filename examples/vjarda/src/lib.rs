@@ -803,6 +803,13 @@ impl EffectPlugin for VardaRootPlugin {
     type State = VardaAppState;
     type Uniforms = DummyUniforms;
 
+    /// Distinct app identity: drives the control window title, the top-bar name,
+    /// and isolates this example's config/presets (`~/.config/rustjay/Varda.json`)
+    /// so it doesn't collide with other examples.
+    fn app_name(&self) -> &str {
+        "Varda"
+    }
+
     fn shader_source(&self) -> &'static str {
         r#"
         @vertex
@@ -1457,15 +1464,69 @@ impl EffectPlugin for VardaRootPlugin {
                             }
                         }
 
-                        // Report what is actually live this frame.
+                        // ── Spout sender (Windows) ──────────────────────────
+                        #[cfg(target_os = "windows")]
+                        {
+                            let want_spout = matches!(proj.output_type, OutputType::Spout);
+                            if want_spout && !sub.is_projector_spout(idx) {
+                                match sub.start_projector_spout(idx, &sender_name) {
+                                    Ok(_) => engine.notify(
+                                        format!("Spout output started: {sender_name}"),
+                                        rustjay_core::NotificationLevel::Success,
+                                        std::time::Duration::from_secs(3),
+                                    ),
+                                    Err(e) => engine.notify(
+                                        format!("Spout output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    ),
+                                }
+                            } else if !want_spout && sub.is_projector_spout(idx) {
+                                sub.stop_projector_spout(idx);
+                            }
+                        }
+
+                        // ── V4L2 loopback sender (Linux) ────────────────────
+                        #[cfg(target_os = "linux")]
+                        {
+                            let want_v4l2 = matches!(proj.output_type, OutputType::V4l2);
+                            // Loopback devices must be pre-created (v4l2loopback);
+                            // default to /dev/video{10+idx} per projector.
+                            let dev = format!("/dev/video{}", 10 + idx);
+                            if want_v4l2 && !sub.is_projector_v4l2(idx) {
+                                match sub.start_projector_v4l2(idx, &dev) {
+                                    Ok(_) => engine.notify(
+                                        format!("V4L2 output started on {dev}"),
+                                        rustjay_core::NotificationLevel::Success,
+                                        std::time::Duration::from_secs(3),
+                                    ),
+                                    Err(e) => engine.notify(
+                                        format!("V4L2 output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    ),
+                                }
+                            } else if !want_v4l2 && sub.is_projector_v4l2(idx) {
+                                sub.stop_projector_v4l2(idx);
+                            }
+                        }
+
+                        // Report what is actually live this frame. Labels are kept
+                        // short (kind only) so the top-bar pills stay compact.
                         if sub.is_projector_ndi(idx) {
-                            sink_labels.push(format!("NDI · {}", proj.name));
+                            sink_labels.push("NDI".to_string());
                         }
                         if sub.is_projector_syphon(idx) {
-                            sink_labels.push(format!("Syphon · {}", proj.name));
+                            sink_labels.push("SYPHON".to_string());
+                        }
+                        if sub.is_projector_spout(idx) {
+                            sink_labels.push("SPOUT".to_string());
+                        }
+                        if sub.is_projector_v4l2(idx) {
+                            sink_labels.push("V4L2".to_string());
                         }
                         if sub.is_projector_recording(idx) {
-                            sink_labels.push(format!("REC · {}", proj.name));
+                            sink_labels.push("REC".to_string());
                         }
                     }
 

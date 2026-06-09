@@ -494,6 +494,12 @@ pub enum OutputType {
     /// Publish frames via Syphon (macOS only).
     #[cfg(target_os = "macos")]
     Syphon,
+    /// Publish frames via Spout (Windows only).
+    #[cfg(target_os = "windows")]
+    Spout,
+    /// Publish frames to a V4L2 loopback device (Linux only).
+    #[cfg(target_os = "linux")]
+    V4l2,
 }
 
 impl OutputType {
@@ -504,6 +510,10 @@ impl OutputType {
             OutputType::Recording => "Recording",
             #[cfg(target_os = "macos")]
             OutputType::Syphon => "Syphon",
+            #[cfg(target_os = "windows")]
+            OutputType::Spout => "Spout",
+            #[cfg(target_os = "linux")]
+            OutputType::V4l2 => "V4L2",
         }
     }
 }

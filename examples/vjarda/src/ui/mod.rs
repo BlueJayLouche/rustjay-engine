@@ -1935,6 +1935,10 @@ mod egui_impl {
                                     ui.selectable_value(&mut proj.output_type, OutputType::Recording, "Recording");
                                     #[cfg(target_os = "macos")]
                                     ui.selectable_value(&mut proj.output_type, OutputType::Syphon, "Syphon");
+                                    #[cfg(target_os = "windows")]
+                                    ui.selectable_value(&mut proj.output_type, OutputType::Spout, "Spout");
+                                    #[cfg(target_os = "linux")]
+                                    ui.selectable_value(&mut proj.output_type, OutputType::V4l2, "V4L2");
                                 });
                             if proj.output_type != prev_type {
                                 proj_dirty = true;
@@ -2102,6 +2106,10 @@ mod egui_impl {
                                     ui.selectable_value(&mut hl.output_type, OutputType::Recording, "Recording");
                                     #[cfg(target_os = "macos")]
                                     ui.selectable_value(&mut hl.output_type, OutputType::Syphon, "Syphon");
+                                    #[cfg(target_os = "windows")]
+                                    ui.selectable_value(&mut hl.output_type, OutputType::Spout, "Spout");
+                                    #[cfg(target_os = "linux")]
+                                    ui.selectable_value(&mut hl.output_type, OutputType::V4l2, "V4L2");
                                 });
                             if hl.output_type != prev_type {
                                 hl_dirty = true;

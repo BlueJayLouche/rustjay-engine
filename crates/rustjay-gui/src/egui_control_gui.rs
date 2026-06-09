@@ -528,9 +528,10 @@ impl EguiControlGui {
                             },
                         );
 
-                        // Services strip: active output sinks (NDI/Syphon/…),
-                        // then web + OSC servers. right_to_left, so these render
-                        // to the left of the audio pill, sinks closest to it.
+                        // Services strip (right_to_left): active output sinks,
+                        // then OSC and WEB. Labels are fixed so a pill only
+                        // changes colour (not width) when it goes active — details
+                        // live in the hover tooltip to keep the strip compact.
                         ui.add_space(12.0);
                         for label in &output_sinks {
                             status_pill(ui, label, PillState::Online);
@@ -538,31 +539,33 @@ impl EguiControlGui {
                         }
                         status_pill(
                             ui,
-                            &if osc_enabled {
-                                format!("OSC :{osc_port}")
-                            } else {
-                                "OSC OFF".to_string()
-                            },
+                            "OSC",
                             if osc_enabled {
                                 PillState::Online
                             } else {
                                 PillState::Neutral
                             },
-                        );
+                        )
+                        .on_hover_text(if osc_enabled {
+                            format!("OSC input listening on port {osc_port}")
+                        } else {
+                            "OSC input disabled".to_string()
+                        });
                         ui.add_space(6.0);
                         status_pill(
                             ui,
-                            &if web_enabled {
-                                format!("WEB {web_host}:{web_port}")
-                            } else {
-                                "WEB OFF".to_string()
-                            },
+                            "WEB",
                             if web_enabled {
                                 PillState::Online
                             } else {
                                 PillState::Neutral
                             },
-                        );
+                        )
+                        .on_hover_text(if web_enabled {
+                            format!("Web remote at {web_host}:{web_port}")
+                        } else {
+                            "Web remote disabled".to_string()
+                        });
                     });
                 });
             });
