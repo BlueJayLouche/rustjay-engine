@@ -1709,10 +1709,23 @@ impl EffectPlugin for VardaRootPlugin {
 
                     let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
 
+                    // Current generation of the routed source texture. A channel's
+                    // output ping-pongs between two physical buffers as its FX-chain
+                    // parity changes, so the cached view must be rebuilt when this
+                    // moves — otherwise the surface samples a stale buffer and the
+                    // FX appear to toggle at random.
+                    let current_gen = surface.and_then(|surf| match &surf.source {
+                        SurfaceSource::Channel(uuid) => {
+                            mixer.channel_texture(uuid).map(|t| t.generation)
+                        }
+                        _ => None,
+                    });
+
                     let (needs_update, override_view) = if let Ok(g) = sync.lock() {
                         let source_changed = g.source_key.as_ref() != source_key.as_ref();
                         let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
-                        if !source_changed && !uv_changed {
+                        let gen_changed = g.output_generation != current_gen;
+                        if !source_changed && !uv_changed && !gen_changed {
                             // Nothing changed — keep current state.
                             (false, g.override_view.clone())
                         } else {
@@ -1747,6 +1760,7 @@ impl EffectPlugin for VardaRootPlugin {
                         if let Ok(mut g) = sync.lock() {
                             g.source_key = source_key;
                             g.override_view = override_view;
+                            g.output_generation = current_gen;
                             g.uv_scale = uv_scale;
                             g.uv_offset = uv_offset;
                             g.uv_crop = uv_crop;

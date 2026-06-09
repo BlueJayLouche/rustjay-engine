@@ -573,6 +573,11 @@ pub struct SourceSync {
     /// A key representing the current source (e.g. "master", "channel:<uuid>").
     /// Used to detect source changes without bumping version every frame.
     pub source_key: Option<String>,
+    /// Generation of the source texture the cached `override_view` was built from.
+    /// A channel/deck output ping-pongs between two physical buffers as its FX
+    /// chain parity changes, so the view must be rebuilt when this changes —
+    /// otherwise the surface samples a stale buffer (FX appear/disappear).
+    pub output_generation: Option<u64>,
     pub version: u64,
     /// UV scale for sampling a sub-rect of the source texture.
     /// Default `[1.0, 1.0]` = full texture.
@@ -591,6 +596,7 @@ impl Default for SourceSync {
         Self {
             override_view: None,
             source_key: None,
+            output_generation: None,
             version: 0,
             uv_scale: [1.0, 1.0],
             uv_offset: [0.0, 0.0],
