@@ -26,8 +26,17 @@ grafton-ndi = { version = "0.11", optional = true }
 # Webcam (optional)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
-# ffmpeg video decode (optional)
-ffmpeg-next = { version = "8.1", optional = true }
+# ffmpeg video decode (optional).
+# default-features disabled to drop `device` (libavdevice): we decode files and
+# streams, never capture from AV devices. Linking libavdevice also registers
+# AVFFrameReceiver/AVFAudioReceiver, which collide with NewTek's NDI HX driver
+# (bundled libavdevice-ndi) and trigger duplicate Objective-C class warnings on
+# macOS. We only need codec + format + software-scaling (swscale).
+ffmpeg-next = { version = "8.1", optional = true, default-features = false, features = [
+    "codec",
+    "format",
+    "software-scaling",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 syphon-core = { workspace = true }
