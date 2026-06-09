@@ -115,21 +115,6 @@ impl StageTab {
     }
 }
 
-/// Geometry tab — properties panel for the selected surface.
-pub struct GeometryTab;
-
-impl Default for GeometryTab {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GeometryTab {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 /// Outputs tab — window/display/NDI/stream/record assignment.
 pub struct OutputsTab {
     recording_path: String,
@@ -984,6 +969,22 @@ mod egui_impl {
                 let state = _app_state
                     .downcast_mut::<VardaAppState>()
                     .expect("StageTab expects VardaAppState");
+
+                // Geometry of the selected surface lives in a resizable right
+                // panel so it can be adjusted without leaving the 2D stage editor
+                // (merged in from the former standalone Geometry tab).
+                egui::SidePanel::right("stage_geometry_panel")
+                    .resizable(true)
+                    .default_width(340.0)
+                    .show_inside(ui, |ui| {
+                        ui.heading("Geometry");
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            draw_surface_properties(ui, state);
+                        });
+                    });
+
+                // Central area: surface list + 2D editor canvas.
                 Self::draw_stage_tab(ui, state, &mut self.import_path);
             }
 
@@ -1491,36 +1492,8 @@ mod egui_impl {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // GeometryTab
+    // Surface geometry — rendered inside the Stage tab's right-hand panel.
     // ─────────────────────────────────────────────────────────────────────────
-
-    impl AnyEguiTab for GeometryTab {
-        fn name(&self) -> &str {
-            "Geometry"
-        }
-        fn draw(
-            &mut self,
-            ui: &mut egui::Ui,
-            _app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
-        ) {
-            ui.heading("Geometry");
-            ui.separator();
-
-            #[cfg(feature = "projection")]
-            {
-                let state = _app_state
-                    .downcast_mut::<VardaAppState>()
-                    .expect("GeometryTab expects VardaAppState");
-                draw_surface_properties(ui, state);
-            }
-
-            #[cfg(not(feature = "projection"))]
-            {
-                ui.label("Projection feature is not enabled. Enable it to use surface geometry.");
-            }
-        }
-    }
 
     #[cfg(feature = "projection")]
     fn draw_surface_properties(ui: &mut egui::Ui, state: &mut VardaAppState) {
