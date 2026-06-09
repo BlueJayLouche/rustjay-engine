@@ -15,6 +15,19 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Detect whether a video file uses the HAP codec.
+/// Returns `true` if the best video stream's codec ID is "hap".
+pub fn detect_hap_codec(path: &Path) -> anyhow::Result<bool> {
+    let ictx = input(path)?;
+    let stream = ictx
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .ok_or_else(|| anyhow::anyhow!("No video stream found"))?;
+    let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+    let decoder = context.decoder().video()?;
+    Ok(decoder.id().name() == "hap")
+}
+
 use ffmpeg::format::{input, Pixel};
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
@@ -77,6 +90,11 @@ pub struct FfmpegDecoder {
     last_frame: Option<VideoFrame>,
     last_pts: i64,
     last_decode_time: Option<Instant>,
+
+    // Frame pacing — wall-clock accumulator so we only decode when enough
+    // real time has elapsed for at least one video frame.
+    frame_accumulator: f64,
+    frame_time: f64,
 }
 
 struct DecodeContext {
@@ -132,6 +150,7 @@ impl FfmpegDecoder {
         drop(decoder);
         drop(ictx);
 
+        let frame_time = if fps > 0.0 { 1.0 / fps as f64 } else { 1.0 / 30.0 };
         Ok(Self {
             path: path.to_path_buf(),
             width,
@@ -150,6 +169,8 @@ impl FfmpegDecoder {
             last_frame: None,
             last_pts: -1,
             last_decode_time: None,
+            frame_accumulator: 0.0,
+            frame_time,
         })
     }
 
@@ -177,11 +198,12 @@ impl FfmpegDecoder {
         self.last_pts = -1;
         self.context = None;
         self.last_frame = None;
+        self.frame_accumulator = 0.0;
     }
 
     /// Set playback speed multiplier (clamped to ≥ 0).
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.max(0.0);
+        self.speed = speed;
     }
 
     /// Set loop mode.
@@ -198,6 +220,7 @@ impl FfmpegDecoder {
         let range = self.out_point - self.in_point;
         self.position = self.in_point + t * range;
         self.last_pts = -1;
+        self.frame_accumulator = 0.0;
         // Context will seek on next decode.
     }
 
@@ -278,6 +301,10 @@ impl FfmpegDecoder {
     ///
     /// Advances playback time when `playing == true`. Returns the last
     /// decoded frame when paused.
+    ///
+    /// Uses wall-clock frame pacing: only decodes a new frame when enough
+    /// real time has elapsed for the video frame rate and speed. When
+    /// behind, intermediate frames are skipped so the decoder catches up.
     pub fn decode_frame(&mut self) -> Option<VideoFrame> {
         if self.context.is_none() {
             if let Err(e) = self.init_context() {
@@ -294,8 +321,26 @@ impl FfmpegDecoder {
             return self.last_frame.clone();
         }
 
-        // Advance position by elapsed time.
         let now = Instant::now();
+
+        // ── Frame pacing ───────────────────────────────────────────────
+        // Compute how many video frames should have passed since the last
+        // decode. If zero, hold the current frame (no decode work).
+        let _frames_to_decode = if let Some(last) = self.last_decode_time {
+            let dt = now.duration_since(last).as_secs_f64().min(0.1);
+            // Pacing uses the absolute speed — direction doesn't affect decode rate.
+            self.frame_accumulator += dt * self.speed.abs() as f64;
+            let ftd = (self.frame_accumulator / self.frame_time).floor() as u32;
+            if ftd == 0 {
+                return self.last_frame.clone();
+            }
+            self.frame_accumulator -= ftd as f64 * self.frame_time;
+            ftd
+        } else {
+            1
+        };
+
+        // Advance position by elapsed time.
         if let Some(last) = self.last_decode_time {
             let elapsed = last.elapsed().as_secs_f64();
             if self.loop_mode == LoopMode::PingPong {
@@ -313,7 +358,7 @@ impl FfmpegDecoder {
                 }
             } else {
                 self.position += elapsed * self.speed as f64;
-                if self.position >= self.out_point {
+                if self.speed >= 0.0 && self.position >= self.out_point {
                     match self.loop_mode {
                         LoopMode::None => {
                             self.position = self.out_point;
@@ -325,12 +370,27 @@ impl FfmpegDecoder {
                         }
                         LoopMode::PingPong => unreachable!(),
                     }
+                } else if self.speed < 0.0 && self.position <= self.in_point {
+                    match self.loop_mode {
+                        LoopMode::None => {
+                            self.position = self.in_point;
+                            self.playing = false;
+                        }
+                        LoopMode::Loop => {
+                            self.position = self.out_point;
+                            self.last_pts = -1;
+                        }
+                        LoopMode::PingPong => unreachable!(),
+                    }
                 }
             }
         }
         self.last_decode_time = Some(now);
 
         // Decode the frame at the current position.
+        // When frames_to_decode > 1 we are behind; decode_at_position will
+        // seek (if far) or decode forward (if near) to the target frame,
+        // skipping intermediates.
         match self.decode_at_position(self.position) {
             Ok(frame) => {
                 self.last_frame = Some(frame.clone());

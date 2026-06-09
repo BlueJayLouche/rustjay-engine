@@ -79,7 +79,7 @@ pub use webcam::{list_cameras, WebcamCapture, WebcamFrame};
 pub mod ffmpeg;
 #[cfg(feature = "ffmpeg")]
 #[allow(unused_imports)]
-pub use ffmpeg::{FfmpegDecoder, LoopMode, VideoFrame};
+pub use ffmpeg::{detect_hap_codec, FfmpegDecoder, LoopMode, VideoFrame};
 
 #[cfg(not(feature = "ffmpeg"))]
 #[allow(dead_code)]

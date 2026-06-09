@@ -41,6 +41,8 @@ pub struct FfmpegSource {
     last_position: f32,
     last_in_point: f32,
     last_out_point: f32,
+    /// Forces a one-time sync of all playback params on the first prepare().
+    needs_sync: bool,
 }
 
 impl FfmpegSource {
@@ -163,6 +165,7 @@ impl FfmpegSource {
             last_position: 0.0,
             last_in_point: 0.0,
             last_out_point: 1.0,
+            needs_sync: true,
         })
     }
 
@@ -223,25 +226,27 @@ impl EffectInstance for FfmpegSource {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        let p = &self.param_prefix;
+        // Return bare names — the enclosing DeckCompositor and Mixer apply the
+        // canonical prefix (ch_<uuid>_deck_<uuid>_).  This avoids double-prefixing
+        // when set_full_prefix() has already been called on the deck.
         vec![
             ParameterDescriptor::float(
-                format!("{p}speed"),
+                "speed".to_string(),
                 "Speed",
                 ParamCategory::Custom("Playback".to_string()),
-                0.0,
-                2.0,
+                -5.0,
+                5.0,
                 1.0,
                 0.01,
             ),
             ParameterDescriptor::bool(
-                format!("{p}playing"),
+                "playing".to_string(),
                 "Playing",
                 ParamCategory::Custom("Playback".to_string()),
                 true,
             ),
             ParameterDescriptor::enum_param(
-                format!("{p}loop"),
+                "loop".to_string(),
                 "Loop Mode",
                 ParamCategory::Custom("Playback".to_string()),
                 vec![
@@ -252,7 +257,7 @@ impl EffectInstance for FfmpegSource {
                 1,
             ),
             ParameterDescriptor::float(
-                format!("{p}position"),
+                "position".to_string(),
                 "Position",
                 ParamCategory::Custom("Playback".to_string()),
                 0.0,
@@ -261,7 +266,7 @@ impl EffectInstance for FfmpegSource {
                 0.001,
             ),
             ParameterDescriptor::float(
-                format!("{p}in_point"),
+                "in_point".to_string(),
                 "In Point",
                 ParamCategory::Custom("Playback".to_string()),
                 0.0,
@@ -270,7 +275,7 @@ impl EffectInstance for FfmpegSource {
                 0.001,
             ),
             ParameterDescriptor::float(
-                format!("{p}out_point"),
+                "out_point".to_string(),
                 "Out Point",
                 ParamCategory::Custom("Playback".to_string()),
                 0.0,
@@ -284,13 +289,13 @@ impl EffectInstance for FfmpegSource {
     fn prepare(&mut self, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Sync playback params.
         let speed = engine.get_param(&self.speed_key).unwrap_or(1.0);
-        if (speed - self.last_speed).abs() > f32::EPSILON {
+        if self.needs_sync || (speed - self.last_speed).abs() > f32::EPSILON {
             self.decoder.set_speed(speed);
             self.last_speed = speed;
         }
 
         let playing = engine.get_param(&self.playing_key).unwrap_or(1.0) > 0.5;
-        if playing != self.last_playing {
+        if self.needs_sync || playing != self.last_playing {
             if playing {
                 self.decoder.play();
             } else {
@@ -300,7 +305,7 @@ impl EffectInstance for FfmpegSource {
         }
 
         let loop_raw = engine.get_param(&self.loop_key).unwrap_or(1.0) as i32;
-        if loop_raw != self.last_loop {
+        if self.needs_sync || loop_raw != self.last_loop {
             let mode = match loop_raw {
                 0 => LoopMode::None,
                 2 => LoopMode::PingPong,
@@ -311,24 +316,26 @@ impl EffectInstance for FfmpegSource {
         }
 
         let position = engine.get_param(&self.position_key).unwrap_or(0.0);
-        if (position - self.last_position).abs() > 0.001 {
+        if self.needs_sync || (position - self.last_position).abs() > 0.001 {
             self.decoder.seek_to(position as f64);
             self.last_position = position;
         }
 
         let in_point = engine.get_param(&self.in_point_key).unwrap_or(0.0);
-        if (in_point - self.last_in_point).abs() > 0.001 {
+        if self.needs_sync || (in_point - self.last_in_point).abs() > 0.001 {
             let t = in_point as f64 * self.decoder.duration();
             self.decoder.set_in_point(t);
             self.last_in_point = in_point;
         }
 
         let out_point = engine.get_param(&self.out_point_key).unwrap_or(1.0);
-        if (out_point - self.last_out_point).abs() > 0.001 {
+        if self.needs_sync || (out_point - self.last_out_point).abs() > 0.001 {
             let t = out_point as f64 * self.decoder.duration();
             self.decoder.set_out_point(t);
             self.last_out_point = out_point;
         }
+
+        self.needs_sync = false;
 
         // Decode and upload.
         if let Some(frame) = self.decoder.decode_frame() {

@@ -43,7 +43,7 @@ use crate::graph::{Deck, DeckCompositor};
 use crate::scene::Scene;
 #[cfg(all(feature = "mixer", feature = "ffmpeg"))]
 use crate::sources::FfmpegSource;
-#[cfg(all(feature = "mixer", feature = "hap"))]
+#[cfg(feature = "hap")]
 use crate::sources::HapSource;
 #[cfg(feature = "mixer")]
 use crate::sources::{CameraSource, SolidColorSource};
@@ -239,12 +239,8 @@ fn instantiate_source(
             }
             #[cfg(all(feature = "hap", feature = "ffmpeg"))]
             {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if ext == "mov" || ext == "hap" {
+                let is_hap = rustjay_io::detect_hap_codec(path).unwrap_or(false);
+                if is_hap {
                     return Ok(crate::graph::Deck::new(
                         format!("deck_{}_{}", channel_id, entry.id),
                         &entry.name,
@@ -502,29 +498,34 @@ impl VardaRootPlugin {
             if let Ok(entries) = std::fs::read_dir(&assets_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "mov" || ext == "hap" {
-                            match HapSource::new(device, queue, &path) {
-                                Ok(hap) => {
-                                    let name = path
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("HAP Video")
-                                        .to_string();
-                                    comp_a.decks.push(Deck::new(
-                                        format!("a_hap_{}", comp_a.decks.len()),
-                                        &name,
-                                        Box::new(hap),
-                                        SourceKind::Video,
-                                    ));
-                                    log::info!("Loaded HAP source: {}", path.display());
-                                }
-                                Err(e) => {
-                                    log::warn!("Failed to open HAP file {}: {}", path.display(), e);
-                                }
+                    #[cfg(feature = "ffmpeg")]
+                    let is_hap = rustjay_io::detect_hap_codec(&path).unwrap_or(false);
+                    #[cfg(not(feature = "ffmpeg"))]
+                    let is_hap = path
+                        .extension()
+                        .map(|e| e == "mov" || e == "hap")
+                        .unwrap_or(false);
+                    if is_hap {
+                        match HapSource::new(device, queue, &path) {
+                            Ok(hap) => {
+                                let name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("HAP Video")
+                                    .to_string();
+                                comp_a.decks.push(Deck::new(
+                                    format!("a_hap_{}", comp_a.decks.len()),
+                                    &name,
+                                    Box::new(hap),
+                                    SourceKind::Video,
+                                ));
+                                log::info!("Loaded HAP source: {}", path.display());
                             }
-                            break;
+                            Err(e) => {
+                                log::warn!("Failed to open HAP file {}: {}", path.display(), e);
+                            }
                         }
+                        break;
                     }
                 }
             }
@@ -557,8 +558,19 @@ impl VardaRootPlugin {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if let Some(ext) = path.extension() {
-                        if ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" {
-                            match FfmpegSource::new(device, queue, &path) {
+                        if ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" || ext == "mov" {
+                            #[cfg(all(feature = "ffmpeg", feature = "hap"))]
+                            let result = {
+                                let is_hap = rustjay_io::detect_hap_codec(&path).unwrap_or(false);
+                                if is_hap {
+                                    HapSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>)
+                                } else {
+                                    FfmpegSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>)
+                                }
+                            };
+                            #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
+                            let result = FfmpegSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>);
+                            match result {
                                 Ok(src) => {
                                     let name = path
                                         .file_stem()
@@ -568,7 +580,7 @@ impl VardaRootPlugin {
                                     comp_b.decks.push(Deck::new(
                                         format!("b_vid_{}", comp_b.decks.len()),
                                         &name,
-                                        Box::new(src),
+                                        src,
                                         SourceKind::Video,
                                     ));
                                     log::info!("Loaded video source: {}", path.display());
@@ -1075,6 +1087,71 @@ impl EffectPlugin for VardaRootPlugin {
                     }
                 }
             }
+
+            // Sync per-output recording state (auto-starts if output_type == Recording).
+            if let Some(handle) = &state.projection_handle {
+                let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                    let fps = engine.target_fps as f32;
+                    let codec = rustjay_io::RecorderCodec::H264;
+
+                    let mut enabled_idx = 0;
+                    for (i, proj) in state.stage.projectors.iter().enumerate() {
+                        if proj.enabled {
+                            match proj.output_type {
+                                crate::stage::OutputType::Recording => {
+                                    if !sub.is_projector_recording(enabled_idx) {
+                                        let ts = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        let dir = std::path::PathBuf::from("recordings");
+                                        std::fs::create_dir_all(&dir).ok();
+                                        let path = dir.join(format!("projector_{}_{}_{}.mp4", i, proj.name, ts));
+                                        if let Err(e) = sub.start_projector_recording(enabled_idx, &path, fps, codec) {
+                                            log::error!("[Varda] Failed to start projector {i} recording: {e}");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    if sub.is_projector_recording(enabled_idx) {
+                                        sub.stop_projector_recording(enabled_idx);
+                                    }
+                                }
+                            }
+                            enabled_idx += 1;
+                        }
+                    }
+
+                    let mut enabled_idx = 0;
+                    for (i, hl) in state.stage.headless_outputs.iter().enumerate() {
+                        if hl.enabled && hl.pushed {
+                            match hl.output_type {
+                                crate::stage::OutputType::Recording => {
+                                    if !sub.is_headless_recording(enabled_idx) {
+                                        let ts = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        let dir = std::path::PathBuf::from("recordings");
+                                        std::fs::create_dir_all(&dir).ok();
+                                        let path = dir.join(format!("headless_{}_{}_{}.mp4", i, hl.name, ts));
+                                        if let Err(e) = sub.start_headless_recording(enabled_idx, &path, fps, codec) {
+                                            log::error!("[Varda] Failed to start headless {i} recording: {e}");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    if sub.is_headless_recording(enabled_idx) {
+                                        sub.stop_headless_recording(enabled_idx);
+                                    }
+                                }
+                            }
+                            enabled_idx += 1;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1110,6 +1187,13 @@ impl EffectPlugin for VardaRootPlugin {
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn on_engine_ready(&mut self, engine: &mut EngineState) {
+        // When projection is enabled we don't need the primary output window —
+        // projectors are the sole visible outputs.
+        #[cfg(feature = "projection")]
+        {
+            engine.no_primary_output = true;
+        }
+
         #[cfg(feature = "mixer")]
         {
             let mut router = ParamRouter::new();

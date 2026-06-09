@@ -18,7 +18,7 @@ pub(crate) mod texture_utils;
 pub(crate) mod v4l2_devices;
 
 #[cfg(feature = "ffmpeg")]
-pub use input::ffmpeg::{FfmpegDecoder, LoopMode, StreamDecoder, VideoFrame};
+pub use input::ffmpeg::{detect_hap_codec, FfmpegDecoder, LoopMode, StreamDecoder, VideoFrame};
 #[cfg(feature = "webcam")]
 pub use input::webcam::{WebcamCapture, WebcamFrame, list_cameras};
 pub use input::InputManager;

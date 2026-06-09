@@ -135,6 +135,32 @@ impl OutputsTab {
             pending_save_path: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
+
+    #[cfg(feature = "projection")]
+    /// Generate an auto-incrementing recording path.
+    fn auto_record_path(&self, name: &str) -> std::path::PathBuf {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let ext = match self.recording_codec {
+            rustjay_core::RecorderCodec::ProRes422 => "mov",
+            _ => "mp4",
+        };
+        let dir = std::path::PathBuf::from("recordings");
+        std::fs::create_dir_all(&dir).ok();
+        dir.join(format!("{}_{}.{}", name, ts, ext))
+    }
+
+    #[cfg(feature = "projection")]
+    fn io_codec(&self) -> rustjay_io::RecorderCodec {
+        match self.recording_codec {
+            rustjay_core::RecorderCodec::H264 => rustjay_io::RecorderCodec::H264,
+            rustjay_core::RecorderCodec::H265 => rustjay_io::RecorderCodec::H265,
+            rustjay_core::RecorderCodec::AV1 => rustjay_io::RecorderCodec::AV1,
+            rustjay_core::RecorderCodec::ProRes422 => rustjay_io::RecorderCodec::ProRes422,
+        }
+    }
 }
 
 /// Inspector tab — context panel for selected node.
@@ -154,6 +180,30 @@ mod egui_impl {
         let mut idx = engine.get_param_base(key).unwrap_or(0.0).round() as usize;
         let prev = idx;
         let names: Vec<&str> = BlendMode::all().iter().map(|m| m.short_name()).collect();
+        ui.horizontal(|ui| {
+            ui.label(label);
+            egui::ComboBox::from_id_salt(key)
+                .width(ui.available_width())
+                .selected_text(*names.get(idx).unwrap_or(&"???"))
+                .show_ui(ui, |ui| {
+                    for (i, name) in names.iter().enumerate() {
+                        if ui.selectable_label(idx == i, *name).clicked() {
+                            idx = i;
+                        }
+                    }
+                });
+        });
+        if idx != prev {
+            engine.set_param_base(key, idx as f32);
+        }
+    }
+
+    /// Helper: draw a loop-mode combo bound to a canonical engine param key.
+    /// 0 = None, 1 = Loop, 2 = PingPong (matches FfmpegSource/HapSource).
+    fn loop_combo(ui: &mut egui::Ui, engine: &mut EngineState, key: &str, label: &str) {
+        let mut idx = engine.get_param_base(key).unwrap_or(1.0).round() as usize;
+        let prev = idx;
+        let names = ["None", "Loop", "PingPong"];
         ui.horizontal(|ui| {
             ui.label(label);
             egui::ComboBox::from_id_salt(key)
@@ -290,6 +340,45 @@ mod egui_impl {
                                             }
                                             fx_i += 1;
                                         }
+                                    }
+
+                                    // Playback controls for video sources.
+                                    if deck.source_kind == crate::sources::SourceKind::Video {
+                                        ui.separator();
+                                        let prefix = deck.full_prefix();
+
+                                        let playing_key = format!("{}playing", prefix);
+                                        let mut playing =
+                                            engine.get_param_base(&playing_key).unwrap_or(1.0) > 0.5;
+                                        if ui.checkbox(&mut playing, "Playing").changed() {
+                                            engine.set_param_base(
+                                                &playing_key,
+                                                if playing { 1.0 } else { 0.0 },
+                                            );
+                                        }
+
+                                        param_slider(
+                                            ui,
+                                            engine,
+                                            &format!("{}speed", prefix),
+                                            "Speed",
+                                            -5.0,
+                                            5.0,
+                                        );
+                                        loop_combo(
+                                            ui,
+                                            engine,
+                                            &format!("{}loop", prefix),
+                                            "Loop:",
+                                        );
+                                        param_slider(
+                                            ui,
+                                            engine,
+                                            &format!("{}position", prefix),
+                                            "Position",
+                                            0.0,
+                                            1.0,
+                                        );
                                     }
                                 });
                             });
@@ -1855,7 +1944,7 @@ mod egui_impl {
                             let r = state.stage.rotation_syncs.get(new_idx).cloned().unwrap_or_else(|| {
                                 std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
                             });
-                            sub.add_projector(attrs, move |device, format| {
+                            sub.add_projector(attrs, proj.fullscreen_monitor, move |device, format| {
                                 vec![
                                     Box::new(crate::stage::VardaSourceStage::new(device, format, s.clone())),
                                     Box::new(crate::stage::VardaDomeStage::new(device, format, d.clone())),
@@ -1931,6 +2020,26 @@ mod egui_impl {
                     state.save_workspace();
                 }
                 if let Some(i) = remove_hl {
+                    #[cfg(feature = "projection")]
+                    if let Some(handle) = state.projection_handle.as_ref() {
+                        let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                            let mut enabled_idx = 0;
+                            let mut found = false;
+                            for (j, hl) in state.stage.headless_outputs.iter().enumerate() {
+                                if j == i {
+                                    found = true;
+                                    break;
+                                }
+                                if hl.enabled && hl.pushed {
+                                    enabled_idx += 1;
+                                }
+                            }
+                            if found {
+                                sub.remove_headless_output(enabled_idx);
+                            }
+                        }
+                    }
                     state.stage.headless_outputs.remove(i);
                     state.save_workspace();
                 }
@@ -1991,6 +2100,62 @@ mod egui_impl {
                 edge_ui(ui, &mut config.bottom, "Bottom");
                 if dirty {
                     state.stage.publish_edge_blend(config);
+                }
+
+                // ── Per-output recording sync ───────────────────────────────
+                #[cfg(feature = "projection")]
+                if let Some(handle) = state.projection_handle.as_ref() {
+                    let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
+                        let fps = engine.target_fps as f32;
+                        let codec = self.io_codec();
+
+                        // Sync projector recordings
+                        let mut enabled_idx = 0;
+                        for (i, proj) in state.stage.projectors.iter().enumerate() {
+                            if proj.enabled {
+                                match proj.output_type {
+                                    crate::stage::OutputType::Recording => {
+                                        if !sub.is_projector_recording(enabled_idx) {
+                                            let path = self.auto_record_path(&format!("projector_{}_{}", i, proj.name));
+                                            if let Err(e) = sub.start_projector_recording(enabled_idx, &path, fps, codec) {
+                                                log::error!("[Outputs] Failed to start projector {i} recording: {e}");
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        if sub.is_projector_recording(enabled_idx) {
+                                            sub.stop_projector_recording(enabled_idx);
+                                        }
+                                    }
+                                }
+                                enabled_idx += 1;
+                            }
+                        }
+
+                        // Sync headless recordings
+                        let mut enabled_idx = 0;
+                        for (i, hl) in state.stage.headless_outputs.iter().enumerate() {
+                            if hl.enabled && hl.pushed {
+                                match hl.output_type {
+                                    crate::stage::OutputType::Recording => {
+                                        if !sub.is_headless_recording(enabled_idx) {
+                                            let path = self.auto_record_path(&format!("headless_{}_{}", i, hl.name));
+                                            if let Err(e) = sub.start_headless_recording(enabled_idx, &path, fps, codec) {
+                                                log::error!("[Outputs] Failed to start headless {i} recording: {e}");
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        if sub.is_headless_recording(enabled_idx) {
+                                            sub.stop_headless_recording(enabled_idx);
+                                        }
+                                    }
+                                }
+                                enabled_idx += 1;
+                            }
+                        }
+                    }
                 }
             }
 

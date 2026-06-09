@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
                 let r = rotation_syncs.get(i).cloned().unwrap_or_else(|| {
                     std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
                 });
-                sub.add_projector(attrs, move |device, format| {
+                sub.add_projector(attrs, proj.fullscreen_monitor, move |device, format| {
                     vec![
                         Box::new(VardaSourceStage::new(device, format, s.clone())),
                         Box::new(VardaDomeStage::new(device, format, d.clone())),

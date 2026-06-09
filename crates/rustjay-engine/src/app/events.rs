@@ -98,6 +98,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             return;
         };
 
+        let no_primary = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.no_primary_output
+        };
+
         if self.output_window.is_none() {
             let (output_width, output_height, fullscreen) = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -112,7 +117,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 .with_title("RustJay Output")
                 .with_inner_size(winit::dpi::LogicalSize::new(output_width, output_height))
                 .with_resizable(true)
-                .with_decorations(true);
+                .with_decorations(true)
+                .with_visible(!no_primary);
 
             let window = match event_loop.create_window(window_attrs) {
                 Ok(w) => Arc::new(w),
@@ -126,8 +132,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             if fullscreen {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             }
-            window.set_cursor_visible(false);
+            if !no_primary {
+                window.set_cursor_visible(false);
+            }
             self.output_window = Some(Arc::clone(&window));
+            if no_primary {
+                self.output_occluded = true;
+            }
 
             // ── GLES 2.0 path (Pi 2 / hardware without GLES 3.0 UBOs) ──────────
             #[cfg(feature = "gles2")]
@@ -571,7 +582,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         if let Some(sub) = self.projection_subsystem.as_ref() {
             if let Some(ref device) = self.wgpu_device {
                 let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
-                sub.handle_window_event(window_id, &event, device);
+                sub.handle_window_event(window_id, &event, device, &mut self.shift_pressed);
             }
         }
     }

@@ -195,6 +195,7 @@ impl Registry {
                     },
                 ];
                 // Discover webcams via the engine's nokhwa backend.
+                #[cfg(feature = "webcam")]
                 for (idx, name) in rustjay_io::list_cameras().into_iter().enumerate() {
                     let id = format!("camera_{}", idx);
                     builtins.push(SourceEntry {

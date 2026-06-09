@@ -21,7 +21,7 @@ mod stream_source;
 mod hap_source;
 #[cfg(feature = "ndi")]
 mod ndi_source;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "mixer"))]
 mod syphon_source;
 
 pub use camera_source::CameraSource;
@@ -36,6 +36,6 @@ pub use image_source::ImageSource;
 pub use ndi_source::NdiSource;
 pub use registry::{Registry, SourceEntry, SourceKind};
 pub use solid_color_source::SolidColorSource;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "mixer"))]
 pub use syphon_source::SyphonSource;
 pub use watcher::ShaderWatcher;

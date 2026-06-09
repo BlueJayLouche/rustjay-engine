@@ -4,6 +4,8 @@
 
 use rustjay_projection::stage::ProjectionStage;
 use rustjay_projection::HeadlessOutput;
+use rustjay_io::{OutputManager, Recorder, RecorderCodec};
+use std::path::Path;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -12,7 +14,6 @@ pub type ProjectionSubsystemHandle = Arc<std::sync::Mutex<ProjectionSubsystem>>;
 
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
-    #[allow(dead_code)]
     window: Arc<Window>,
     /// The winit window ID for event routing.
     pub window_id: winit::window::WindowId,
@@ -28,6 +29,12 @@ pub struct ProjectorOutput {
     height: u32,
     /// Dummy vertex buffer for `RenderCtx` (projection stages may ignore it).
     _dummy_vb: wgpu::Buffer,
+    /// Whether this projector is currently fullscreen.
+    fullscreen: bool,
+    /// Offscreen texture used for recording (copy from surface before present).
+    record_texture: Option<wgpu::Texture>,
+    /// Output manager with active recorder for this projector.
+    record_manager: Option<OutputManager>,
 }
 
 impl ProjectorOutput {
@@ -38,6 +45,7 @@ impl ProjectorOutput {
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
         stages: Vec<Box<dyn ProjectionStage>>,
+        fullscreen: bool,
     ) -> anyhow::Result<Self> {
         let window_id = window.id();
         let size = window.inner_size();
@@ -54,11 +62,9 @@ impl ProjectorOutput {
             .or_else(|| caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available for projector"))?;
 
-        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
-            wgpu::PresentMode::Immediate
-        } else {
-            wgpu::PresentMode::Fifo
-        };
+        // Use Fifo (vsync) for projector outputs to eliminate tearing.
+        // Immediate would lower latency but causes visible tearing on multi-monitor setups.
+        let present_mode = wgpu::PresentMode::Fifo;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -107,6 +113,9 @@ impl ProjectorOutput {
             width: size.width,
             height: size.height,
             _dummy_vb: dummy_vb,
+            fullscreen,
+            record_texture: None,
+            record_manager: None,
         })
     }
 
@@ -118,6 +127,8 @@ impl ProjectorOutput {
             self.surface_config.width = width;
             self.surface_config.height = height;
             self.surface.configure(device, &self.surface_config);
+            // Drop stale record texture so it is recreated at the new size.
+            self.record_texture = None;
 
             // Recreate ping-pong textures at new size.
             let format = self.surface_config.format;
@@ -217,7 +228,111 @@ impl ProjectorOutput {
         }
 
         queue.submit(std::iter::once(encoder.finish()));
+
+        // Copy surface to record texture before presenting, if recording.
+        if self.record_manager.is_some() {
+            if self.record_texture.is_none() {
+                self.record_texture = Some(device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Projector Record Texture"),
+                    size: wgpu::Extent3d {
+                        width: self.width.max(1),
+                        height: self.height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.surface_config.format,
+                    usage: wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                }));
+            }
+            if let Some(ref record_tex) = self.record_texture {
+                let mut copy_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Projector Record Copy"),
+                });
+                copy_encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface_texture.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: record_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                queue.submit(std::iter::once(copy_encoder.finish()));
+                if let Some(ref mut manager) = self.record_manager {
+                    manager.submit_frame(record_tex, device, queue);
+                }
+            }
+        }
+
         surface_texture.present();
+    }
+
+    /// Start recording this projector's output to disk.
+    pub fn start_recording(
+        &mut self,
+        path: &Path,
+        fps: f32,
+        codec: RecorderCodec,
+    ) -> anyhow::Result<()> {
+        if self.record_manager.is_some() {
+            return Err(anyhow::anyhow!("Projector already recording"));
+        }
+        let mut manager = OutputManager::new();
+        manager.start_recording(path, self.width, self.height, fps, codec)?;
+        self.record_manager = Some(manager);
+        log::info!(
+            "Started projector recording {}x{} @ {:.2} fps → {}",
+            self.width,
+            self.height,
+            fps,
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// Stop recording this projector's output.
+    pub fn stop_recording(&mut self) {
+        if let Some(mut manager) = self.record_manager.take() {
+            manager.stop_recording();
+            log::info!("Stopped projector recording");
+        }
+    }
+
+    /// Whether this projector is currently recording.
+    pub fn is_recording(&self) -> bool {
+        self.record_manager.is_some()
+    }
+
+    /// Toggle fullscreen for this projector window.
+    pub fn toggle_fullscreen(&mut self) {
+        self.fullscreen = !self.fullscreen;
+        let mode = if self.fullscreen {
+            Some(winit::window::Fullscreen::Borderless(None))
+        } else {
+            None
+        };
+        self.window.set_fullscreen(mode);
+        self.window.set_cursor_visible(false);
+    }
+
+    /// Hide the cursor on this projector window.
+    pub fn hide_cursor(&self) {
+        self.window.set_cursor_visible(false);
     }
 
     /// Returns true if this projector owns the given window ID.
@@ -256,6 +371,8 @@ pub struct ProjectionSubsystem {
     pub projectors: Vec<ProjectorOutput>,
     /// Active headless outputs (offscreen texture + async readback).
     pub headless_outputs: Vec<HeadlessOutput>,
+    /// Per-headless disk recorders (RGBA→BGRA swizzled).
+    headless_recorders: Vec<Option<Recorder>>,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
@@ -270,6 +387,8 @@ type StageFactory =
 struct PendingProjector {
     window_attrs: winit::window::WindowAttributes,
     stage_factory: StageFactory,
+    /// Monitor index for fullscreen, or `None` for windowed.
+    fullscreen_monitor: Option<usize>,
 }
 
 impl Default for ProjectionSubsystem {
@@ -284,6 +403,7 @@ impl ProjectionSubsystem {
         Self {
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
+            headless_recorders: Vec::new(),
             pending: Vec::new(),
             last_render: None,
             device: None,
@@ -298,6 +418,7 @@ impl ProjectionSubsystem {
     pub fn add_projector(
         &mut self,
         window_attrs: winit::window::WindowAttributes,
+        fullscreen_monitor: Option<usize>,
         stage_factory: impl FnOnce(&wgpu::Device, wgpu::TextureFormat) -> Vec<Box<dyn ProjectionStage>>
             + Send
             + 'static,
@@ -305,6 +426,7 @@ impl ProjectionSubsystem {
         self.pending.push(PendingProjector {
             window_attrs,
             stage_factory: Box::new(stage_factory),
+            fullscreen_monitor,
         });
     }
 
@@ -337,6 +459,26 @@ impl ProjectionSubsystem {
                 }
             };
 
+            // Apply fullscreen if requested.
+            let mut fullscreen = false;
+            if let Some(idx) = pending.fullscreen_monitor {
+                let monitors: Vec<_> = event_loop.available_monitors().collect();
+                if let Some(monitor) = monitors.get(idx) {
+                    window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                        monitor.clone(),
+                    ))));
+                    fullscreen = true;
+                    log::info!("Projector fullscreen on monitor {}", idx);
+                } else {
+                    log::warn!(
+                        "Projector requested fullscreen on monitor {} but only {} available",
+                        idx,
+                        monitors.len()
+                    );
+                }
+            }
+            window.set_cursor_visible(false);
+
             // Create a temporary surface just to query the format for the factory.
             let temp_surface = match instance.create_surface(Arc::clone(&window)) {
                 Ok(s) => s,
@@ -359,7 +501,7 @@ impl ProjectionSubsystem {
             drop(temp_surface);
 
             let stages = (pending.stage_factory)(&device, format);
-            match ProjectorOutput::new(window, instance, &device, adapter, stages) {
+            match ProjectorOutput::new(window, instance, &device, adapter, stages, fullscreen) {
                 Ok(proj) => {
                     log::info!("Projector window created ({}x{})", proj.width, proj.height);
                     self.projectors.push(proj);
@@ -377,6 +519,7 @@ impl ProjectionSubsystem {
         window_id: winit::window::WindowId,
         event: &winit::event::WindowEvent,
         device: &wgpu::Device,
+        shift_pressed: &mut bool,
     ) -> bool {
         let mut remove_id: Option<winit::window::WindowId> = None;
         for proj in &mut self.projectors {
@@ -387,6 +530,24 @@ impl ProjectionSubsystem {
                     }
                     winit::event::WindowEvent::CloseRequested => {
                         remove_id = Some(proj.window_id);
+                    }
+                    winit::event::WindowEvent::CursorEntered { .. } => {
+                        proj.hide_cursor();
+                    }
+                    winit::event::WindowEvent::KeyboardInput { ref event, .. } => {
+                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) =
+                            &event.logical_key
+                        {
+                            *shift_pressed =
+                                event.state == winit::event::ElementState::Pressed;
+                        }
+                        if event.state == winit::event::ElementState::Pressed {
+                            if let winit::keyboard::Key::Character(ch) = &event.logical_key {
+                                if *shift_pressed && ch.to_lowercase() == "f" {
+                                    proj.toggle_fullscreen();
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -419,12 +580,20 @@ impl ProjectionSubsystem {
         };
         self.headless_outputs
             .push(HeadlessOutput::new(device, width, height, stages));
+        self.headless_recorders.push(None);
     }
 
     /// Remove a headless output by index.
     pub fn remove_headless_output(&mut self, index: usize) {
         if index < self.headless_outputs.len() {
             self.headless_outputs.remove(index);
+            if index < self.headless_recorders.len() {
+                if let Some(rec) = self.headless_recorders.remove(index) {
+                    if let Err(e) = rec.finish() {
+                        log::warn!("[Headless {index}] recorder finish on remove failed: {e}");
+                    }
+                }
+            }
         }
     }
 
@@ -454,9 +623,102 @@ impl ProjectionSubsystem {
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
         }
-        for headless in &mut self.headless_outputs {
+        for (i, headless) in self.headless_outputs.iter_mut().enumerate() {
             headless.render(device, queue, source_view, source_texture, source_size);
+            headless.poll_readback(device);
+            if let Some(ref mut rec) = self.headless_recorders.get_mut(i).and_then(|r| r.as_mut()) {
+                if let Some(pixels) = headless.latest_frame() {
+                    let width = headless.size()[0];
+                    let height = headless.size()[1];
+                    let mut bgra = vec![0u8; (width * height * 4) as usize];
+                    for y in 0..height {
+                        for x in 0..width {
+                            let src_idx = ((y * width + x) * 4) as usize;
+                            let dst_idx = ((y * width + x) * 4) as usize;
+                            // RGBA -> BGRA
+                            bgra[dst_idx] = pixels[src_idx + 2];
+                            bgra[dst_idx + 1] = pixels[src_idx + 1];
+                            bgra[dst_idx + 2] = pixels[src_idx];
+                            bgra[dst_idx + 3] = pixels[src_idx + 3];
+                        }
+                    }
+                    if !rec.encode_frame(&bgra) {
+                        log::warn!("[Headless {i}] encoder failed — stopping");
+                        self.headless_recorders[i] = None;
+                    }
+                }
+            }
         }
+    }
+
+    /// Start recording a projector output by index.
+    pub fn start_projector_recording(
+        &mut self,
+        index: usize,
+        path: &Path,
+        fps: f32,
+        codec: RecorderCodec,
+    ) -> anyhow::Result<()> {
+        let proj = self.projectors.get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Projector index {index} out of range"))?;
+        proj.start_recording(path, fps, codec)
+    }
+
+    /// Stop recording a projector output by index.
+    pub fn stop_projector_recording(&mut self, index: usize) {
+        if let Some(proj) = self.projectors.get_mut(index) {
+            proj.stop_recording();
+        }
+    }
+
+    /// Whether a projector is recording.
+    pub fn is_projector_recording(&self, index: usize) -> bool {
+        self.projectors.get(index).map_or(false, |p| p.is_recording())
+    }
+
+    /// Start recording a headless output by index.
+    pub fn start_headless_recording(
+        &mut self,
+        index: usize,
+        path: &Path,
+        fps: f32,
+        codec: RecorderCodec,
+    ) -> anyhow::Result<()> {
+        if index >= self.headless_outputs.len() {
+            return Err(anyhow::anyhow!("Headless index {index} out of range"));
+        }
+        let headless = &self.headless_outputs[index];
+        let [width, height] = headless.size();
+        let rec = Recorder::start(path, width, height, fps, codec)?;
+        while self.headless_recorders.len() < self.headless_outputs.len() {
+            self.headless_recorders.push(None);
+        }
+        self.headless_recorders[index] = Some(rec);
+        log::info!(
+            "Started headless recording {}x{} @ {:.2} fps → {}",
+            width,
+            height,
+            fps,
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// Stop recording a headless output by index.
+    pub fn stop_headless_recording(&mut self, index: usize) {
+        if let Some(slot) = self.headless_recorders.get_mut(index) {
+            if let Some(rec) = slot.take() {
+                if let Err(e) = rec.finish() {
+                    log::warn!("[Headless {index}] recorder finish failed: {e}");
+                }
+                log::info!("Stopped headless recording [{index}]");
+            }
+        }
+    }
+
+    /// Whether a headless output is recording.
+    pub fn is_headless_recording(&self, index: usize) -> bool {
+        self.headless_recorders.get(index).and_then(|r| r.as_ref()).is_some()
     }
 
     /// Remove a projector output by its window ID, dropping the surface and window.

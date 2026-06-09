@@ -35,6 +35,8 @@ pub struct HapSource {
     last_playing: bool,
     last_loop: i32,
     last_position: f32,
+    /// Forces a one-time sync of all playback params on the first prepare().
+    needs_sync: bool,
 }
 
 impl HapSource {
@@ -149,6 +151,7 @@ impl HapSource {
             last_playing: true,
             last_loop: 1,
             last_position: 0.0,
+            needs_sync: true,
         })
     }
 
@@ -168,25 +171,27 @@ impl EffectInstance for HapSource {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        let p = &self.param_prefix;
+        // Return bare names — the enclosing DeckCompositor and Mixer apply the
+        // canonical prefix (ch_<uuid>_deck_<uuid>_).  This avoids double-prefixing
+        // when set_full_prefix() has already been called on the deck.
         vec![
             ParameterDescriptor::float(
-                format!("{p}speed"),
+                "speed".to_string(),
                 "Speed",
                 ParamCategory::Custom("Playback".to_string()),
-                0.0,
-                2.0,
+                -5.0,
+                5.0,
                 1.0,
                 0.01,
             ),
             ParameterDescriptor::bool(
-                format!("{p}playing"),
+                "playing".to_string(),
                 "Playing",
                 ParamCategory::Custom("Playback".to_string()),
                 true,
             ),
             ParameterDescriptor::enum_param(
-                format!("{p}loop"),
+                "loop".to_string(),
                 "Loop Mode",
                 ParamCategory::Custom("Playback".to_string()),
                 vec![
@@ -197,7 +202,7 @@ impl EffectInstance for HapSource {
                 1,
             ),
             ParameterDescriptor::float(
-                format!("{p}position"),
+                "position".to_string(),
                 "Position",
                 ParamCategory::Custom("Playback".to_string()),
                 0.0,
@@ -214,13 +219,13 @@ impl EffectInstance for HapSource {
 
         // Sync playback params.
         let speed = engine.get_param(&self.speed_key).unwrap_or(1.0);
-        if (speed - self.last_speed).abs() > f32::EPSILON {
+        if self.needs_sync || (speed - self.last_speed).abs() > f32::EPSILON {
             self.player.set_speed(speed);
             self.last_speed = speed;
         }
 
         let playing = engine.get_param(&self.playing_key).unwrap_or(1.0) > 0.5;
-        if playing != self.last_playing {
+        if self.needs_sync || playing != self.last_playing {
             if playing {
                 self.player.play();
             } else {
@@ -230,7 +235,7 @@ impl EffectInstance for HapSource {
         }
 
         let loop_raw = engine.get_param(&self.loop_key).unwrap_or(1.0) as i32;
-        if loop_raw != self.last_loop {
+        if self.needs_sync || loop_raw != self.last_loop {
             let mode = match loop_raw {
                 0 => hap_wgpu::LoopMode::None,
                 2 => hap_wgpu::LoopMode::Palindrome,
@@ -241,12 +246,14 @@ impl EffectInstance for HapSource {
         }
 
         let position = engine.get_param(&self.position_key).unwrap_or(0.0);
-        if (position - self.last_position).abs() > 0.001 {
+        if self.needs_sync || (position - self.last_position).abs() > 0.001 {
             let frame_count = self.player.frame_count().max(1);
             let target_frame = (position * (frame_count - 1) as f32) as u32;
             self.player.seek_to_frame(target_frame);
             self.last_position = position;
         }
+
+        self.needs_sync = false;
     }
 
     fn render_to(

@@ -220,4 +220,9 @@ impl Deck {
             LastOutput::Ping => self.ping.as_ref(),
         }
     }
+
+    /// The fully-qualified parameter prefix for this deck.
+    pub fn full_prefix(&self) -> &str {
+        &self.full_prefix
+    }
 }
