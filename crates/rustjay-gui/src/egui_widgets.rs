@@ -129,6 +129,97 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
     ui.add_space(6.0);
 }
 
+/// Interactive section header with an expand/collapse chevron.
+/// Returns the new expanded state (toggles on click).
+pub fn hud_collapsible_section_header(
+    ui: &mut Ui,
+    title: &str,
+    counter: Option<&str>,
+    expanded: bool,
+) -> bool {
+    ui.add_space(8.0);
+    let row_height = 18.0;
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+    let painter = ui.painter();
+
+    // Subtle hover feedback
+    if resp.hovered() {
+        painter.rect_filled(rect, 0.0, Color32::from_rgba_premultiplied(8, 12, 16, 24));
+    }
+
+    // Chevron (▶ / ▼)
+    let chevron_text = if expanded { "▼" } else { "▶" };
+    let chevron_galley =
+        painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), INK_3);
+    let chevron_w = chevron_galley.size().x;
+    painter.galley(
+        Pos2::new(rect.left(), rect.center().y - chevron_galley.size().y / 2.0),
+        chevron_galley,
+        INK_3,
+    );
+
+    // Amber tick glyph ▌
+    let tick_x = rect.left() + chevron_w + 4.0;
+    painter.rect_filled(
+        Rect::from_min_size(
+            Pos2::new(tick_x, rect.top() + 2.0),
+            Vec2::new(3.0, row_height - 4.0),
+        ),
+        0.0,
+        AMBER,
+    );
+
+    // Title (uppercase, letterspaced visually via tracking)
+    let title_x = tick_x + 10.0;
+    let title_galley =
+        painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
+    painter.galley(
+        Pos2::new(title_x, rect.center().y - title_galley.size().y / 2.0),
+        title_galley.clone(),
+        INK_2,
+    );
+
+    // Counter on the right (e.g. "03 CH · 01/04")
+    let counter_w = if let Some(c) = counter {
+        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), INK_4);
+        let w = g.size().x;
+        painter.galley(
+            Pos2::new(rect.right() - w, rect.center().y - g.size().y / 2.0),
+            g,
+            INK_4,
+        );
+        w + 12.0
+    } else {
+        0.0
+    };
+
+    // Dashed rule between title and counter
+    let rule_left = title_x + title_galley.size().x + 10.0;
+    let rule_right = rect.right() - counter_w;
+    if rule_right > rule_left + 8.0 {
+        let y = rect.center().y;
+        let mut x = rule_left;
+        let dash = 4.0;
+        let gap = 3.0;
+        while x < rule_right {
+            let end = (x + dash).min(rule_right);
+            painter.line_segment(
+                [Pos2::new(x, y), Pos2::new(end, y)],
+                Stroke::new(1.0, HAIR_2),
+            );
+            x = end + gap;
+        }
+    }
+    ui.add_space(6.0);
+
+    if resp.clicked() {
+        !expanded
+    } else {
+        expanded
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Segmented toggle — [ OFF │ ON ]
 // ─────────────────────────────────────────────────────────────────────────────

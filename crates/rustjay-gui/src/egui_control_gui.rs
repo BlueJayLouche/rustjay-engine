@@ -86,6 +86,11 @@ pub struct EguiControlGui {
     pub(crate) modulation_expanded_source: Option<String>,
     /// Param id selected in the "Add assignment" dropdown.
     pub(crate) modulation_new_assignment_param: Option<String>,
+
+    // ── Sidebar section collapse state ───────────────────────────────────────
+    /// Collapse state for sidebar sections: [SIGNAL, PARAMS, CONTROL, MANAGE, APP].
+    /// `true` = collapsed, `false` = expanded.
+    pub(crate) sidebar_collapsed: [bool; 5],
 }
 
 impl EguiControlGui {
@@ -167,6 +172,7 @@ impl EguiControlGui {
             qr_cache: None,
             modulation_expanded_source: None,
             modulation_new_assignment_param: None,
+            sidebar_collapsed: [false; 5],
         })
     }
 
@@ -558,7 +564,7 @@ impl EguiControlGui {
 
     fn build_left_sidebar(&mut self, ctx: &egui::Context) {
         use crate::egui_theme::colors::*;
-        use crate::egui_widgets::hud_section_header;
+        use crate::egui_widgets::hud_collapsible_section_header;
 
         let (hidden_tabs, has_color, has_motion) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -596,24 +602,56 @@ impl EguiControlGui {
             .show(ctx, |ui| {
                 ui.add_space(10.0);
 
-                hud_section_header(ui, "SIGNAL", Some("02 CH"));
-                self.sidebar_button(ui, GuiTab::Input, "INPUT", vis(GuiTab::Input));
-                self.sidebar_button(ui, GuiTab::Output, "OUTPUT", vis(GuiTab::Output));
+                // ── SIGNAL ───────────────────────────────────────────────────────
+                self.sidebar_collapsed[0] = hud_collapsible_section_header(
+                    ui,
+                    "SIGNAL",
+                    Some("02 CH"),
+                    self.sidebar_collapsed[0],
+                );
+                if !self.sidebar_collapsed[0] {
+                    self.sidebar_button(ui, GuiTab::Input, "INPUT", vis(GuiTab::Input));
+                    self.sidebar_button(ui, GuiTab::Output, "OUTPUT", vis(GuiTab::Output));
+                }
 
-                hud_section_header(ui, "PARAMS", Some("04 CH"));
-                self.sidebar_button(ui, GuiTab::Color, "COLOR", vis(GuiTab::Color));
-                self.sidebar_button(ui, GuiTab::Motion, "MOTION", vis(GuiTab::Motion));
-                self.sidebar_button(ui, GuiTab::Audio, "AUDIO", vis(GuiTab::Audio));
-                self.sidebar_button(ui, GuiTab::Modulation, "Modulation", vis(GuiTab::Modulation));
+                // ── PARAMS ───────────────────────────────────────────────────────
+                self.sidebar_collapsed[1] = hud_collapsible_section_header(
+                    ui,
+                    "PARAMS",
+                    Some("04 CH"),
+                    self.sidebar_collapsed[1],
+                );
+                if !self.sidebar_collapsed[1] {
+                    self.sidebar_button(ui, GuiTab::Color, "COLOR", vis(GuiTab::Color));
+                    self.sidebar_button(ui, GuiTab::Motion, "MOTION", vis(GuiTab::Motion));
+                    self.sidebar_button(ui, GuiTab::Audio, "AUDIO", vis(GuiTab::Audio));
+                    self.sidebar_button(ui, GuiTab::Modulation, "Modulation", vis(GuiTab::Modulation));
+                }
 
-                hud_section_header(ui, "CONTROL", Some("03 CH"));
-                self.sidebar_button(ui, GuiTab::Midi, "MIDI", vis(GuiTab::Midi));
-                self.sidebar_button(ui, GuiTab::Osc, "OSC", vis(GuiTab::Osc));
-                self.sidebar_button(ui, GuiTab::Web, "WEB", vis(GuiTab::Web));
+                // ── CONTROL ──────────────────────────────────────────────────────
+                self.sidebar_collapsed[2] = hud_collapsible_section_header(
+                    ui,
+                    "CONTROL",
+                    Some("03 CH"),
+                    self.sidebar_collapsed[2],
+                );
+                if !self.sidebar_collapsed[2] {
+                    self.sidebar_button(ui, GuiTab::Midi, "MIDI", vis(GuiTab::Midi));
+                    self.sidebar_button(ui, GuiTab::Osc, "OSC", vis(GuiTab::Osc));
+                    self.sidebar_button(ui, GuiTab::Web, "WEB", vis(GuiTab::Web));
+                }
 
-                hud_section_header(ui, "MANAGE", Some("02 CH"));
-                self.sidebar_button(ui, GuiTab::Presets, "PRESETS", vis(GuiTab::Presets));
-                self.sidebar_button(ui, GuiTab::Settings, "SETTINGS", true);
+                // ── MANAGE ───────────────────────────────────────────────────────
+                self.sidebar_collapsed[3] = hud_collapsible_section_header(
+                    ui,
+                    "MANAGE",
+                    Some("02 CH"),
+                    self.sidebar_collapsed[3],
+                );
+                if !self.sidebar_collapsed[3] {
+                    self.sidebar_button(ui, GuiTab::Presets, "PRESETS", vis(GuiTab::Presets));
+                    self.sidebar_button(ui, GuiTab::Settings, "SETTINGS", true);
+                }
 
                 // App-provided custom tabs that don't replace a builtin get their
                 // own sidebar buttons (replacing tabs render in their builtin's
@@ -627,9 +665,16 @@ impl EguiControlGui {
                     .collect();
                 if !custom.is_empty() {
                     let count = format!("{:02} CH", custom.len());
-                    hud_section_header(ui, "APP", Some(&count));
-                    for (idx, label) in &custom {
-                        self.custom_sidebar_button(ui, *idx, label);
+                    self.sidebar_collapsed[4] = hud_collapsible_section_header(
+                        ui,
+                        "APP",
+                        Some(&count),
+                        self.sidebar_collapsed[4],
+                    );
+                    if !self.sidebar_collapsed[4] {
+                        for (idx, label) in &custom {
+                            self.custom_sidebar_button(ui, *idx, label);
+                        }
                     }
                 }
             });
