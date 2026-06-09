@@ -65,8 +65,20 @@ impl ProjectorOutput {
         // Use Fifo (vsync) for projector outputs to eliminate tearing.
         // Immediate would lower latency but causes visible tearing on multi-monitor setups.
         let present_mode = wgpu::PresentMode::Fifo;
+        // Recording copies from the surface texture (`copy_texture_to_texture`),
+        // which requires COPY_SRC on the surface. Request it when the platform
+        // supports it; otherwise recording is skipped at copy time rather than
+        // panicking the whole app (see the `record_manager` block in `render`).
+        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+            surface_usage |= wgpu::TextureUsages::COPY_SRC;
+        } else {
+            log::warn!(
+                "Projector surface does not support COPY_SRC; output recording will be unavailable"
+            );
+        }
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: surface_usage,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -230,7 +242,14 @@ impl ProjectorOutput {
         queue.submit(std::iter::once(encoder.finish()));
 
         // Copy surface to record texture before presenting, if recording.
-        if self.record_manager.is_some() {
+        // Guard on COPY_SRC: without it `copy_texture_to_texture` from the
+        // surface is a fatal wgpu validation error, so skip recording instead.
+        if self.record_manager.is_some()
+            && self
+                .surface_config
+                .usage
+                .contains(wgpu::TextureUsages::COPY_SRC)
+        {
             if self.record_texture.is_none() {
                 self.record_texture = Some(device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Projector Record Texture"),
