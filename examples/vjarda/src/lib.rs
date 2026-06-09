@@ -94,6 +94,11 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_effects: Vec<PendingEffect>,
+    /// Set by the UI when it structurally edits an FX chain in place (e.g. removes
+    /// a slot) so `prepare()` re-registers parameters and drops orphaned descriptors.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub params_dirty_request: bool,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -206,6 +211,8 @@ impl Default for VardaAppState {
             pending_removals: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_effects: Vec::new(),
+            #[cfg(feature = "mixer")]
+            params_dirty_request: false,
             #[cfg(feature = "sysmon")]
             sys: sysinfo::System::new_all(),
             #[cfg(feature = "sysmon")]
@@ -1105,6 +1112,13 @@ impl EffectPlugin for VardaRootPlugin {
         // Materialise runtime deck-creation requests queued by the UI.
         #[cfg(feature = "mixer")]
         {
+            // The UI structurally edited an FX chain in place (e.g. removed a
+            // slot); re-register parameters so orphaned descriptors are dropped.
+            if state.params_dirty_request {
+                state.params_dirty_request = false;
+                self.params_dirty = true;
+            }
+
             // Process pending deck removals first.
             let removals: Vec<PendingRemoval> = std::mem::take(&mut state.pending_removals);
             for req in removals {
@@ -1183,9 +1197,13 @@ impl EffectPlugin for VardaRootPlugin {
             }
 
             // ── Process pending effect additions ─────────────────────────────
+            // Lock the mixer once for the whole batch (only when there's work),
+            // rather than re-locking per effect.
             let pending_effects: Vec<PendingEffect> = std::mem::take(&mut state.pending_effects);
+            let mut mixer_guard = (!pending_effects.is_empty())
+                .then(|| state.mixer.lock().unwrap_or_else(|e| e.into_inner()));
             for req in pending_effects {
-                let Ok(mut mixer) = state.mixer.lock() else {
+                let Some(mixer) = mixer_guard.as_mut() else {
                     continue;
                 };
                 match req.target {
