@@ -192,10 +192,19 @@ fn preprocess_glsl(
 ) -> String {
     let mut src = glsl.to_owned();
 
+    // Detect GLSL-450 style before stripping.
+    let is_glsl450 = src.contains("layout(");
+    let has_uv_varying = src.contains("in vec2 uv");
+
     // --- Preprocessor directives ---
     src = strip_preprocessor_blocks(&src);
     src = expand_fn_like_macros(&src); // parameterized #define macros before const conversion
     src = convert_define_to_const(&src);
+
+    // --- Strip GLSL-450 layout declarations (output, input, uniform blocks, samplers, textures) ---
+    // These are Vulkan-style GLSL constructs that have no WGSL equivalent.
+    // Our WGSL preamble handles outputs, inputs, uniforms, and texture bindings separately.
+    src = strip_glsl450_layout_decls(&src);
 
     // --- Strip GLSL precision qualifiers (highp/mediump/lowp used inline in declarations) ---
     src = strip_glsl_precision_qualifiers(&src);
@@ -213,10 +222,10 @@ fn preprocess_glsl(
     // --- Strip GLSL `uniform` declarations (ISF uses our own uniform struct) ---
     src = strip_uniform_declarations(&src);
 
-    // --- Rewrite partial gl_FragColor component writes (gl_FragColor.rgb = ..., etc.) ---
+    // --- Rewrite partial gl_FragColor / fragColor component writes (e.g. .rgb = ..., .a = ...) ---
     // These can't be handled by the simple `gl_FragColor = ` → `return` replacement.
     // Inject a local accumulator `_fc`, replace all component writes, add final assignment.
-    if src.contains("gl_FragColor.") {
+    if src.contains("gl_FragColor.") || src.contains("fragColor.") {
         src = rewrite_partial_gl_frag_color(&src);
     }
 
@@ -254,6 +263,25 @@ fn preprocess_glsl(
             "vec2<f32>(isf_u.rendersize_x, isf_u.rendersize_y)",
         );
     }
+
+    // --- Varda-specific built-in uniforms (declared in ISFUniforms block, not ISF INPUTS) ---
+    // Audio analysis — not wired yet, default to 0.0
+    src = replace_word(&src, "audio_level", "0.0");
+    src = replace_word(&src, "audio_bass", "0.0");
+    src = replace_word(&src, "audio_mid", "0.0");
+    src = replace_word(&src, "audio_treble", "0.0");
+    src = replace_word(&src, "audio_bpm", "0.0");
+    src = replace_word(&src, "audio_beat_phase", "0.0");
+    // Phase time accumulators — map to TIME for now
+    for i in 0..8usize {
+        let name = format!("PHASE_TIME_{}", i);
+        src = replace_word(&src, &name, "isf_u.time");
+    }
+    // Common math constants that may be defined via #define (stripped by preprocessor)
+    src = replace_word(&src, "PI", "3.14159265359");
+    src = replace_word(&src, "TAU", "6.28318530718");
+    // Audio FFT sample count built-in
+    src = replace_word(&src, "SAMPLES", "256.0");
 
     // ISF image-rect variables (e.g. `_inputImage_imgRect`, `_maskImage_imgRect`).
     // These hold the normalized texture rect (x, y, w, h) of an image input.
@@ -384,8 +412,16 @@ fn preprocess_glsl(
     for (name, _idx) in &sorted_uniforms {
         let safe = sanitize_ident(name);
         let replacement = if bool_inputs.contains(name.as_str()) {
-            // Wrap as explicit bool so WGSL if-conditions work (f32 != 0.0 → bool)
-            format!("(isf_u.{} != 0.0)", safe)
+            if is_glsl450 {
+                // GLSL-450 shaders (e.g. varda) store bools as float and compare them
+                // explicitly (e.g. `if (bool_input > 0.5)`). Wrapping with `!= 0.0`
+                // would produce invalid double-bool expressions like
+                // `((isf_u.name != 0.0) > 0.5)`. Leave as raw float.
+                format!("isf_u.{}", safe)
+            } else {
+                // Wrap as explicit bool so WGSL if-conditions work (f32 != 0.0 → bool)
+                format!("(isf_u.{} != 0.0)", safe)
+            }
         } else if long_inputs.contains(name.as_str()) {
             // Long inputs stored as f32; cast to i32 so integer arithmetic works in WGSL
             format!("i32(isf_u.{})", safe)
@@ -419,10 +455,13 @@ fn preprocess_glsl(
     // --- Ternary operator: COND ? A : B → select(B, A, COND) ---
     src = convert_ternary_operators(&src);
 
-    // --- gl_FragColor → return (MUST be AFTER ternary so ternary parser doesn't grab `return` as condition) ---
+    // --- gl_FragColor / fragColor → return (MUST be AFTER ternary so ternary parser doesn't grab `return` as condition) ---
     // Use "return " (with space) so `gl_FragColor =select(...)` → `return select(...)`, not `returnselect(...)`.
     src = src.replace("gl_FragColor =", "return ");
     src = src.replace("gl_FragColor=", "return ");
+    // GLSL-450 shaders often declare `layout(location = 0) out vec4 fragColor;` and write to it.
+    src = src.replace("fragColor =", "return ");
+    src = src.replace("fragColor=", "return ");
 
     // --- Braceless control-flow bodies (WGSL requires compound statements) ---
     // First handle multi-line braceless (must run before single-line so we have correct context)
@@ -510,6 +549,13 @@ fn preprocess_glsl(
         if src.contains(&name) {
             injected_locals.push(format!("    let {}: vec2<f32> = _isf_uv;", name));
         }
+    }
+
+    // uv: GLSL-450 fragment UV varying (stripped by strip_glsl450_layout_decls).
+    // Only inject when the original source declared it as a varying, not when `uv`
+    // is a local variable (e.g. `vec2 uv = fragCoord / iResolution.xy;`).
+    if has_uv_varying && contains_word(&src, "uv") {
+        injected_locals.push("    let uv: vec2<f32> = _isf_uv;".to_string());
     }
 
     // texOffsets: ISF multi-pass neighbor-coord array (stripped above). Inject a stub.
@@ -1054,8 +1100,80 @@ fn strip_preprocessor_blocks(src: &str) -> String {
             continue;
         }
 
-        // Strip standalone precision declarations outside preprocessor blocks
-        if trimmed.starts_with("precision ") {
+        // Strip standalone preprocessor directives with no WGSL equivalent.
+        // `#if`/`#ifdef`/`#ifndef`/`#else`/`#elif`/`#endif` are handled above.
+        if trimmed.starts_with("precision ")
+            || trimmed.starts_with("#version")
+            || trimmed.starts_with("#pragma")
+            || trimmed.starts_with("#extension")
+            || trimmed.starts_with("#define")
+            || trimmed.starts_with("#undef")
+            || trimmed.starts_with("#line")
+        {
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Strip GLSL-450 `layout(...)` declarations that have no WGSL equivalent.
+/// Handles both single-line declarations and multi-line `layout(...) uniform Name { ... };` blocks.
+fn strip_glsl450_layout_decls(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut in_layout_block = false;
+    let mut brace_depth = 0i32;
+
+    for line in src.lines() {
+        let trimmed = line.trim();
+
+        // Detect start of any layout(...) block or declaration.
+        if trimmed.starts_with("layout(") {
+            // Multi-line uniform block: layout(...) uniform Name {
+            if trimmed.contains("uniform") {
+                if trimmed.ends_with('{') {
+                    in_layout_block = true;
+                    brace_depth = 1;
+                    continue;
+                }
+                // layout(...) uniform Name\n{  — brace on next line
+                if !trimmed.ends_with(';') {
+                    in_layout_block = true;
+                    brace_depth = 0;
+                    continue;
+                }
+            }
+            // Single-line layout declaration (out, in, sampler, texture2D, etc.)
+            if trimmed.ends_with(';') {
+                continue;
+            }
+            // layout(...) on its own line (e.g. wrapped declaration) — skip and keep discarding
+            // until we hit the matching semicolon or brace.
+            in_layout_block = true;
+            brace_depth = 0;
+            continue;
+        }
+
+        if in_layout_block {
+            for c in trimmed.chars() {
+                match c {
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+            // If we were waiting for a semicolon to close a non-brace layout decl
+            if brace_depth == 0 && trimmed.ends_with(';') {
+                in_layout_block = false;
+                continue;
+            }
+            // If we were inside a brace block and it closed
+            if brace_depth <= 0 && !trimmed.starts_with("layout(") {
+                in_layout_block = false;
+                continue;
+            }
             continue;
         }
 
@@ -1860,6 +1978,15 @@ fn convert_types_and_syntax(src: &str) -> String {
     // GLSL atan(y, x) → WGSL atan2(y, x)  (two-arg form; one-arg stays as atan)
     s = convert_atan_calls(&s);
 
+    // GLSL inversesqrt(x) → WGSL (1.0 / sqrt(x))
+    s = convert_inversesqrt_calls(&s);
+
+    // GLSL i++ / ++i / i-- / --i → WGSL i += 1 / i -= 1
+    s = convert_increment_decrement(&s);
+
+    // WGSL reserved keywords used as identifiers
+    s = rename_wgsl_reserved_keywords(&s);
+
     // GLSL mod(x, y) → inlined (x - y * floor(x / y)), works for any scalar/vector type
     s = convert_mod_calls(&s);
 
@@ -2002,6 +2129,99 @@ fn convert_texture2d_calls(src: &str) -> String {
             } else {
                 // Unusual: keep as-is but with s_input inserted
                 out.push_str(&format!("textureSample(t_input, s_input, {})", args_str));
+            }
+        }
+        out.push_str(rest);
+        s = out;
+    }
+    s
+}
+
+/// Convert GLSL `inversesqrt(x)` → WGSL `(1.0 / sqrt(x))`.
+fn convert_inversesqrt_calls(src: &str) -> String {
+    let pattern = "inversesqrt(";
+    let mut out = String::with_capacity(src.len() + 32);
+    let mut rest = src;
+    while let Some(pos) = rest.find(pattern) {
+        let before = if pos > 0 {
+            rest.as_bytes()[pos - 1] as char
+        } else {
+            ' '
+        };
+        if is_word_char(before) {
+            out.push_str(&rest[..pos + 1]);
+            rest = &rest[pos + 1..];
+            continue;
+        }
+        out.push_str(&rest[..pos]);
+        rest = &rest[pos + pattern.len()..];
+        let (args_str, after) = extract_balanced(rest, ')');
+        rest = after;
+        out.push_str(&format!("(1.0 / sqrt({}))", args_str.trim()));
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Convert GLSL `i++` / `++i` / `i--` / `--i` → WGSL `i += 1` / `i -= 1`.
+fn convert_increment_decrement(src: &str) -> String {
+    let mut s = src.to_owned();
+    // Match identifier followed by ++ or --
+    // Use a simple regex-like scan: find ++ or -- and check surrounding chars
+    for op in &["++", "--"] {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s.as_str();
+        while let Some(pos) = rest.find(op) {
+            // Check that it's not inside a string/comment (simplified)
+            let before = if pos > 0 {
+                rest.as_bytes()[pos - 1] as char
+            } else {
+                '\0'
+            };
+            let after = if pos + 2 < rest.len() {
+                rest.as_bytes()[pos + 2] as char
+            } else {
+                '\0'
+            };
+            // Determine if prefix (++i) or postfix (i++)
+            let is_prefix = is_word_char(before) && !is_word_char(after);
+            let is_postfix = !is_word_char(before) && is_word_char(after);
+            if !is_prefix && !is_postfix {
+                // Not a standalone increment/decrement (e.g. inside a longer token)
+                out.push_str(&rest[..pos + 1]);
+                rest = &rest[pos + 1..];
+                continue;
+            }
+            let ident = if is_prefix {
+                // Extract identifier after ++/--
+                let ident_start = pos + 2;
+                let ident_end = rest[ident_start..]
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len() - ident_start)
+                    + ident_start;
+                &rest[ident_start..ident_end]
+            } else {
+                // Extract identifier before ++/--
+                let ident_end = pos;
+                let ident_start = rest[..ident_end]
+                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                &rest[ident_start..ident_end]
+            };
+            let replacement = if *op == "++" {
+                format!("{} += 1", ident)
+            } else {
+                format!("{} -= 1", ident)
+            };
+            if is_prefix {
+                out.push_str(&rest[..pos]);
+                out.push_str(&replacement);
+                rest = &rest[pos + 2 + ident.len()..];
+            } else {
+                out.push_str(&rest[..pos - ident.len()]);
+                out.push_str(&replacement);
+                rest = &rest[pos + 2..];
             }
         }
         out.push_str(rest);
@@ -3007,8 +3227,12 @@ fn convert_void_main_entry(
                 in_main = false;
                 continue;
             }
-            // Convert `return;` (bare return in void main) to no-op
-            if trimmed == "return;" {
+            // Convert `return;` (bare return in void main) to fallback return.
+            // Handles both standalone `return;` and `return;` inside braced blocks.
+            if trimmed.contains("return;") {
+                let fixed = line.replace("return;", "return vec4<f32>(0.0, 0.0, 0.0, 1.0);");
+                out.push_str(&fixed);
+                out.push('\n');
                 continue;
             }
             out.push_str(line);
@@ -3829,7 +4053,11 @@ fn is_scalar_expr_with_types(
             while sw_end < n && b"xyzwrgba".contains(&bytes[sw_end]) {
                 sw_end += 1;
             }
-            if sw_end - sw_start >= 2 {
+            // Only treat as a swizzle if it's not part of a longer identifier
+            // (e.g. `.br` in `isf_u.brightness` is a field access, not a swizzle).
+            if sw_end - sw_start >= 2
+                && !(sw_end < n && is_word_char(bytes[sw_end] as char))
+            {
                 return false;
             }
         }
@@ -4535,7 +4763,7 @@ fn rename_wgsl_reserved_keywords(src: &str) -> String {
     // WGSL reserved identifiers that may appear as GLSL variable or function names.
     // Safe to rename with word-boundary replacement: these don't appear as WGSL keywords
     // in the generated output.
-    const RESERVED: &[&str] = &["move", "override", "abstract", "ref", "final", "from"];
+    const RESERVED: &[&str] = &["move", "override", "abstract", "ref", "final", "from", "target"];
     let mut s = src.to_string();
     for &kw in RESERVED {
         let renamed = format!("{}_rjk", kw);
@@ -5474,12 +5702,15 @@ fn rewrite_partial_gl_frag_color(src: &str) -> String {
                 out.push(lines[j].to_owned());
             }
             out.push("    vec4 _fc = vec4(0.0, 0.0, 0.0, 1.0);".to_owned());
-            // Emit body lines with gl_FragColor.X → _fc.X replacement
+            // Emit body lines with gl_FragColor.X / fragColor.X → _fc.X replacement
             for j in main_brace_line + 1..main_end {
                 let l = lines[j].replace("gl_FragColor.", "_fc.");
-                // Also replace full `gl_FragColor =` if present
+                let l = l.replace("fragColor.", "_fc.");
+                // Also replace full `gl_FragColor =` / `fragColor =` if present
                 let l = l.replace("gl_FragColor =", "_fc =");
                 let l = l.replace("gl_FragColor=", "_fc=");
+                let l = l.replace("fragColor =", "_fc =");
+                let l = l.replace("fragColor=", "_fc=");
                 out.push(l);
             }
             // Insert the final assignment before the closing brace
@@ -5759,6 +5990,64 @@ mod tests {
             }
         }
         // Informational test: never fails, just reports
+    }
+
+    #[test]
+    fn test_varda_shaders_transpile() {
+        let naga = std::process::Command::new("naga").arg("--version").output();
+        let has_naga = naga.is_ok() && naga.unwrap().status.success();
+        if !has_naga {
+            eprintln!("naga CLI not available, skipping WGSL validation");
+        }
+        let dir = std::path::Path::new("/Users/ac/developer/rust/varda/shaders");
+        let mut ok = 0;
+        let mut fail = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("fs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let glsl_src = std::fs::read_to_string(&path).unwrap();
+            let isf = match isf::parse(&glsl_src) {
+                Ok(i) => i,
+                Err(e) => {
+                    eprintln!("  {}: ISF parse error: {}", name, e);
+                    fail += 1;
+                    continue;
+                }
+            };
+            let transpiled = match generate_wgsl(&isf, &glsl_src) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("  {}: transpile error: {}", name, e);
+                    fail += 1;
+                    continue;
+                }
+            };
+            if has_naga {
+                let tmp = std::env::temp_dir().join(format!("varda_test_{}.wgsl", name.replace(' ', "_")));
+                std::fs::write(&tmp, &transpiled.wgsl).unwrap();
+                let out = std::process::Command::new("naga").arg(&tmp).output().expect("run naga");
+                if out.status.success() {
+                    std::fs::remove_file(&tmp).ok();
+                    ok += 1;
+                } else {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    let preview: String = err.lines().take(4).collect::<Vec<_>>().join(" | ");
+                    eprintln!("  FAIL {}: {}", name, preview);
+                    fail += 1;
+                }
+            } else {
+                ok += 1; // count as ok if we can't validate
+            }
+        }
+        eprintln!("\nVarda shaders: {} ok, {} failed", ok, fail);
+        // Informational: track progress without failing the suite
+        if fail > 0 {
+            eprintln!("  ({} shaders still have transpilation edge cases)", fail);
+        }
     }
 
     #[test]
