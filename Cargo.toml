@@ -102,12 +102,13 @@ syphon-wgpu     = "0.1.1"
 
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
+nokhwa-bindings-macos = { path = "vendor/nokhwa-bindings-macos" }
 
 [profile.release]
 opt-level     = 3
 lto           = "fat"
 codegen-units = 1
-panic         = "abort"
+panic         = "unwind"
 
 [profile.dev]
 opt-level = 1
