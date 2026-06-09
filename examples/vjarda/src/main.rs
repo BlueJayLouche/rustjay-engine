@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
         let tabs = vec![
-            Box::new(vjarda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(vjarda::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
             Box::new(vjarda::ui::DeckTab::default()),
             Box::new(vjarda::ui::EffectsTab::default()),
             Box::new(vjarda::ui::MidiTab),
@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
     {
         let tabs = vec![
-            Box::new(vjarda::ui::MixerTab) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(vjarda::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
             Box::new(vjarda::ui::DeckTab::default()),
             Box::new(vjarda::ui::EffectsTab::default()),
             Box::new(vjarda::ui::MidiTab),

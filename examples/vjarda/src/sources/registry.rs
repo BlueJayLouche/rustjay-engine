@@ -2,10 +2,11 @@
 //!
 //! Drives the Library panel and API enumeration (T02.4).
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// One entry in the source library.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceEntry {
     /// Stable identifier (filename or UUID).
     pub id: String,
@@ -20,7 +21,7 @@ pub struct SourceEntry {
 }
 
 /// Classification of a source entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     /// ISF shader (generator or filter).
     Isf,

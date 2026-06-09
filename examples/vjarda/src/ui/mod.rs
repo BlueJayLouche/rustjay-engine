@@ -10,7 +10,18 @@
 //! See VARDA_PORT.md §5 and `examples/delta-egui`.
 
 /// Mixer tab — crossfader, per-channel opacity, master FX.
-pub struct MixerTab;
+pub struct MixerTab {
+    /// Async result from the native file picker for master FX.
+    pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
+}
+
+impl Default for MixerTab {
+    fn default() -> Self {
+        Self {
+            pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+}
 
 /// Active tab in the Add Source section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +41,10 @@ pub struct DeckTab {
     selected_camera_index: usize,
     selected_ndi_index: usize,
     selected_syphon_index: usize,
-    /// Async result from the native file picker.
+    /// Async result from the native file picker (source files).
     pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    /// Async result from the native file picker (effect shaders).
+    pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
 }
 
 impl Default for DeckTab {
@@ -44,6 +57,7 @@ impl Default for DeckTab {
             selected_ndi_index: 0,
             selected_syphon_index: 0,
             pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -58,6 +72,8 @@ pub struct EffectsTab {
     stream_name: String,
     /// Manual stream kind (srt / hls / dash / rtmp).
     stream_kind: String,
+    /// Async result from the native file picker (effect shaders).
+    pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
 }
 
 impl Default for EffectsTab {
@@ -67,6 +83,7 @@ impl Default for EffectsTab {
             stream_url: String::new(),
             stream_name: String::new(),
             stream_kind: "rtmp".to_string(),
+            pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -237,8 +254,15 @@ mod egui_impl {
             engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_ref::<VardaAppState>()
+                .downcast_mut::<VardaAppState>()
                 .expect("MixerTab expects VardaAppState");
+
+            // Poll async file picker result.
+            if let Ok(mut guard) = self.pending_effect.lock() {
+                if let Some(req) = guard.take() {
+                    state.pending_effects.push(req);
+                }
+            }
 
             // Cmd+S manual save
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
@@ -250,7 +274,7 @@ mod egui_impl {
             param_slider(ui, engine, "crossfader", "Crossfader", 0.0, 1.0);
             ui.separator();
 
-            let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
             for ch in &mixer.channels {
                 ui.push_id(&ch.uuid, |ui| {
@@ -263,13 +287,45 @@ mod egui_impl {
                 });
             }
 
-            if !mixer.master.is_empty() {
-                ui.separator();
-                ui.label(egui::RichText::new("Master FX").strong());
-                for slot in &mixer.master {
-                    let status = if slot.enabled { "●" } else { "○" };
-                    ui.label(format!("{} {}", status, slot.effect.label()));
-                }
+            // Master FX list + add button
+            ui.separator();
+            ui.label(egui::RichText::new("Master FX").strong());
+            let mut master_removals = Vec::new();
+            let mut fx_i = 0;
+            while fx_i < mixer.master.len() {
+                let mut enabled = mixer.master[fx_i].enabled;
+                let fx_label = mixer.master[fx_i].effect.label().to_string();
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut enabled, &fx_label).changed() {
+                        mixer.master[fx_i].enabled = enabled;
+                    }
+                    if ui.small_button("✖").clicked() {
+                        master_removals.push(fx_i);
+                    }
+                });
+                fx_i += 1;
+            }
+            for idx in master_removals.into_iter().rev() {
+                mixer.master.remove(idx);
+            }
+            if ui.button("➕ Add Master FX…").clicked() {
+                let pending = self.pending_effect.clone();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("ISF Shader", &["fs"])
+                        .set_title("Pick an ISF shader (.fs)")
+                        .pick_file()
+                    {
+                        if let Ok(mut guard) = pending.lock() {
+                            *guard = Some(crate::PendingEffect {
+                                path,
+                                target: crate::EffectTarget::Master,
+                            });
+                        }
+                        ctx.request_repaint();
+                    }
+                });
             }
         }
     }
@@ -291,6 +347,13 @@ mod egui_impl {
             let state = app_state
                 .downcast_mut::<VardaAppState>()
                 .expect("DeckTab expects VardaAppState");
+
+            // Poll async file picker result.
+            if let Ok(mut guard) = self.pending_effect.lock() {
+                if let Some(req) = guard.take() {
+                    state.pending_effects.push(req);
+                }
+            }
 
             ui.heading("Decks");
             ui.separator();
@@ -329,17 +392,51 @@ mod egui_impl {
                                     param_slider(ui, engine, &deck.opacity_key, "Opacity", 0.0, 1.0);
                                     blend_combo(ui, engine, &deck.blend_key, "Blend:");
 
+                                    // Deck FX list + add button
                                     if !deck.chain.is_empty() {
                                         ui.label("FX:");
-                                        let mut fx_i = 0;
-                                        while fx_i < deck.chain.len() {
-                                            let mut enabled = deck.chain[fx_i].enabled;
-                                            let fx_label = deck.chain[fx_i].effect.label();
-                                            if ui.checkbox(&mut enabled, fx_label).changed() {
+                                    }
+                                    let mut fx_removals = Vec::new();
+                                    let mut fx_i = 0;
+                                    while fx_i < deck.chain.len() {
+                                        let mut enabled = deck.chain[fx_i].enabled;
+                                        let fx_label = deck.chain[fx_i].effect.label().to_string();
+                                        ui.horizontal(|ui| {
+                                            if ui.checkbox(&mut enabled, &fx_label).changed() {
                                                 deck.set_effect_enabled(fx_i, enabled);
                                             }
-                                            fx_i += 1;
-                                        }
+                                            if ui.small_button("✖").clicked() {
+                                                fx_removals.push(fx_i);
+                                            }
+                                        });
+                                        fx_i += 1;
+                                    }
+                                    for idx in fx_removals.into_iter().rev() {
+                                        deck.chain.remove(idx);
+                                    }
+                                    if ui.small_button("➕ Add FX…").clicked() {
+                                        let pending = self.pending_effect.clone();
+                                        let ctx = ui.ctx().clone();
+                                        let channel_uuid = ch.uuid.clone();
+                                        let deck_uuid = deck.uuid.clone();
+                                        std::thread::spawn(move || {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("ISF Shader", &["fs"])
+                                                .set_title("Pick an ISF shader (.fs)")
+                                                .pick_file()
+                                            {
+                                                if let Ok(mut guard) = pending.lock() {
+                                                    *guard = Some(crate::PendingEffect {
+                                                        path,
+                                                        target: crate::EffectTarget::Deck {
+                                                            channel_uuid,
+                                                            deck_uuid,
+                                                        },
+                                                    });
+                                                }
+                                                ctx.request_repaint();
+                                            }
+                                        });
                                     }
 
                                     // Playback controls for video sources.
@@ -626,6 +723,13 @@ mod egui_impl {
                 .downcast_mut::<VardaAppState>()
                 .expect("EffectsTab expects VardaAppState");
 
+            // Poll async file picker result.
+            if let Ok(mut guard) = self.pending_effect.lock() {
+                if let Some(req) = guard.take() {
+                    state.pending_effects.push(req);
+                }
+            }
+
             ui.heading("Effects / Library");
             ui.separator();
 
@@ -773,23 +877,47 @@ mod egui_impl {
             for ch in &mut mixer.channels {
                 ui.push_id(ch.uuid.clone(), |ui| {
                     ui.collapsing(format!("Channel: {}", ch.name), |ui| {
-                        // Channel FX
+                        // Channel FX list + add button
                         if !ch.chain.is_empty() {
                             ui.label("Channel FX:");
-                            let mut fx_i = 0;
-                            while fx_i < ch.chain.len() {
-                                let mut enabled = ch.chain[fx_i].enabled;
-                                let fx_label = ch.chain[fx_i].effect.label();
-                                if ui
-                                    .push_id(("ch_fx", fx_i), |ui| {
-                                        ui.checkbox(&mut enabled, fx_label).changed()
-                                    })
-                                    .inner
-                                {
+                        }
+                        let mut ch_fx_removals = Vec::new();
+                        let mut fx_i = 0;
+                        while fx_i < ch.chain.len() {
+                            let mut enabled = ch.chain[fx_i].enabled;
+                            let fx_label = ch.chain[fx_i].effect.label().to_string();
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut enabled, &fx_label).changed() {
                                     ch.chain[fx_i].enabled = enabled;
                                 }
-                                fx_i += 1;
-                            }
+                                if ui.small_button("✖").clicked() {
+                                    ch_fx_removals.push(fx_i);
+                                }
+                            });
+                            fx_i += 1;
+                        }
+                        for idx in ch_fx_removals.into_iter().rev() {
+                            ch.chain.remove(idx);
+                        }
+                        if ui.small_button("➕ Add Channel FX…").clicked() {
+                            let pending = self.pending_effect.clone();
+                            let ctx = ui.ctx().clone();
+                            let channel_uuid = ch.uuid.clone();
+                            std::thread::spawn(move || {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("ISF Shader", &["fs"])
+                                    .set_title("Pick an ISF shader (.fs)")
+                                    .pick_file()
+                                {
+                                    if let Ok(mut guard) = pending.lock() {
+                                        *guard = Some(crate::PendingEffect {
+                                            path,
+                                            target: crate::EffectTarget::Channel { channel_uuid },
+                                        });
+                                    }
+                                    ctx.request_repaint();
+                                }
+                            });
                         }
 
                         // Deck FX
@@ -800,24 +928,51 @@ mod egui_impl {
                             return;
                         };
                         for deck in &mut compositor.decks {
-                            if deck.chain.is_empty() {
-                                continue;
-                            }
                             ui.push_id(deck.uuid.clone(), |ui| {
-                                ui.label(format!("Deck {} FX:", deck.name));
+                                if !deck.chain.is_empty() {
+                                    ui.label(format!("Deck {} FX:", deck.name));
+                                }
+                                let mut deck_fx_removals = Vec::new();
                                 let mut fx_i = 0;
                                 while fx_i < deck.chain.len() {
                                     let mut enabled = deck.chain[fx_i].enabled;
-                                    let fx_label = deck.chain[fx_i].effect.label();
-                                    if ui
-                                        .push_id(fx_i, |ui| {
-                                            ui.checkbox(&mut enabled, fx_label).changed()
-                                        })
-                                        .inner
-                                    {
-                                        deck.set_effect_enabled(fx_i, enabled);
-                                    }
+                                    let fx_label = deck.chain[fx_i].effect.label().to_string();
+                                    ui.horizontal(|ui| {
+                                        if ui.checkbox(&mut enabled, &fx_label).changed() {
+                                            deck.set_effect_enabled(fx_i, enabled);
+                                        }
+                                        if ui.small_button("✖").clicked() {
+                                            deck_fx_removals.push(fx_i);
+                                        }
+                                    });
                                     fx_i += 1;
+                                }
+                                for idx in deck_fx_removals.into_iter().rev() {
+                                    deck.chain.remove(idx);
+                                }
+                                if ui.small_button("➕ Add Deck FX…").clicked() {
+                                    let pending = self.pending_effect.clone();
+                                    let ctx = ui.ctx().clone();
+                                    let channel_uuid = ch.uuid.clone();
+                                    let deck_uuid = deck.uuid.clone();
+                                    std::thread::spawn(move || {
+                                        if let Some(path) = rfd::FileDialog::new()
+                                            .add_filter("ISF Shader", &["fs"])
+                                            .set_title("Pick an ISF shader (.fs)")
+                                            .pick_file()
+                                        {
+                                            if let Ok(mut guard) = pending.lock() {
+                                                *guard = Some(crate::PendingEffect {
+                                                    path,
+                                                    target: crate::EffectTarget::Deck {
+                                                        channel_uuid,
+                                                        deck_uuid,
+                                                    },
+                                                });
+                                            }
+                                            ctx.request_repaint();
+                                        }
+                                    });
                                 }
                             });
                         }
@@ -825,24 +980,46 @@ mod egui_impl {
                 });
             }
 
-            if !mixer.master.is_empty() {
-                ui.collapsing("Master FX", |ui| {
-                    let mut fx_i = 0;
-                    while fx_i < mixer.master.len() {
-                        let mut enabled = mixer.master[fx_i].enabled;
-                        let fx_label = mixer.master[fx_i].effect.label();
-                        if ui
-                            .push_id(("master_fx", fx_i), |ui| {
-                                ui.checkbox(&mut enabled, fx_label).changed()
-                            })
-                            .inner
-                        {
+            // Master FX list + add button
+            ui.collapsing("Master FX", |ui| {
+                let mut master_removals = Vec::new();
+                let mut fx_i = 0;
+                while fx_i < mixer.master.len() {
+                    let mut enabled = mixer.master[fx_i].enabled;
+                    let fx_label = mixer.master[fx_i].effect.label().to_string();
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut enabled, &fx_label).changed() {
                             mixer.master[fx_i].enabled = enabled;
                         }
-                        fx_i += 1;
-                    }
-                });
-            }
+                        if ui.small_button("✖").clicked() {
+                            master_removals.push(fx_i);
+                        }
+                    });
+                    fx_i += 1;
+                }
+                for idx in master_removals.into_iter().rev() {
+                    mixer.master.remove(idx);
+                }
+                if ui.small_button("➕ Add Master FX…").clicked() {
+                    let pending = self.pending_effect.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("ISF Shader", &["fs"])
+                            .set_title("Pick an ISF shader (.fs)")
+                            .pick_file()
+                        {
+                            if let Ok(mut guard) = pending.lock() {
+                                *guard = Some(crate::PendingEffect {
+                                    path,
+                                    target: crate::EffectTarget::Master,
+                                });
+                            }
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+            });
         }
     }
 

@@ -92,6 +92,10 @@ pub struct EffectSlot {
     pub enabled: bool,
     /// Stable identifier for this effect slot (used in param prefixes).
     pub uuid: String,
+    /// Origin of the effect (e.g. the `.fs` ISF shader path), if known. Recorded
+    /// so hosts can serialize and rebuild the chain across restarts. `None` for
+    /// effects with no on-disk source.
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 impl EffectSlot {
@@ -101,6 +105,7 @@ impl EffectSlot {
             effect,
             enabled: true,
             uuid: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+            source_path: None,
         }
     }
 }

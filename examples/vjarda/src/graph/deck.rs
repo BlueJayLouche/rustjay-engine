@@ -47,6 +47,11 @@ pub struct Deck {
     pub source_path: Option<std::path::PathBuf>,
     /// The kind of source this deck was created from (for UI labeling).
     pub source_kind: SourceKind,
+    /// The library descriptor this deck was instantiated from, if any. Carried
+    /// so the routing graph can be serialized and rebuilt across restarts
+    /// (camera device index, stream URL, etc. that aren't recoverable from
+    /// `source_path` alone). `None` for decks built without a registry entry.
+    pub source_entry: Option<crate::sources::SourceEntry>,
 }
 
 impl Deck {
@@ -80,6 +85,7 @@ impl Deck {
             last_enabled_count: 0,
             source_path: None,
             source_kind,
+            source_entry: None,
         }
     }
 

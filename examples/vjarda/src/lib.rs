@@ -90,6 +90,10 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_removals: Vec<PendingRemoval>,
+    /// Runtime effect addition queue (processed in `prepare()` where GPU resources are available).
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_effects: Vec<PendingEffect>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -119,6 +123,33 @@ pub struct PendingRemoval {
     pub channel_uuid: String,
     /// Deck UUID to remove.
     pub deck_uuid: String,
+}
+
+/// Target location for a runtime effect addition.
+#[derive(Debug, Clone)]
+#[cfg(feature = "mixer")]
+pub enum EffectTarget {
+    /// Add to a specific deck's FX chain.
+    Deck {
+        channel_uuid: String,
+        deck_uuid: String,
+    },
+    /// Add to a channel's post-compositor FX chain.
+    Channel {
+        channel_uuid: String,
+    },
+    /// Add to the master FX chain.
+    Master,
+}
+
+/// One ISF shader effect queued for creation by the UI and materialized in `prepare()`.
+#[derive(Debug, Clone)]
+#[cfg(feature = "mixer")]
+pub struct PendingEffect {
+    /// Path to the `.fs` ISF shader file.
+    pub path: std::path::PathBuf,
+    /// Where to append the effect.
+    pub target: EffectTarget,
 }
 
 impl VardaAppState {
@@ -173,6 +204,8 @@ impl Default for VardaAppState {
             pending_decks: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_removals: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_effects: Vec::new(),
             #[cfg(feature = "sysmon")]
             sys: sysinfo::System::new_all(),
             #[cfg(feature = "sysmon")]
@@ -182,6 +215,16 @@ impl Default for VardaAppState {
 }
 
 /// Build an `EffectInstance` + `Deck` from a library `SourceEntry`.
+/// Instantiate a [`Deck`](crate::graph::Deck) from a library [`SourceEntry`].
+///
+/// `deck_uuid` forces the deck's stable identity (used by topology replay so
+/// the rebuilt deck reproduces the exact param prefixes its saved modulation
+/// targets); pass `None` to derive the default `deck_<channel>_<entry>` id.
+///
+/// Every source kind funnels into a single `Deck` construction so the captured
+/// descriptor (`source_entry`, `source_path`, kind) is recorded uniformly — a
+/// camera's device index or a stream URL is otherwise unrecoverable from
+/// `source_path` alone.
 #[cfg(feature = "mixer")]
 fn instantiate_source(
     entry: &crate::sources::SourceEntry,
@@ -189,19 +232,19 @@ fn instantiate_source(
     queue: &wgpu::Queue,
     engine: &EngineState,
     channel_id: &str,
+    deck_uuid: Option<&str>,
 ) -> anyhow::Result<crate::graph::Deck> {
     use crate::sources::{CameraSource, ImageSource, SolidColorSource, SourceKind};
     let format = wgpu::TextureFormat::Bgra8Unorm;
 
-    let mut source: Box<dyn EffectInstance> = match entry.kind {
+    let source: Box<dyn EffectInstance> = match entry.kind {
         SourceKind::Isf => {
             let path = entry
                 .path
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("ISF entry missing path"))?;
             let isf = rustjay_isf::IsfEffect::from_path(path)?;
-            let node = EffectNode::new(isf, &entry.name, device, queue, engine);
-            Box::new(node)
+            Box::new(EffectNode::new(isf, &entry.name, device, queue, engine))
         }
         SourceKind::Image => {
             let path = entry
@@ -221,39 +264,19 @@ fn instantiate_source(
                 .ok_or_else(|| anyhow::anyhow!("Video entry missing path"))?;
             #[cfg(all(feature = "hap", not(feature = "ffmpeg")))]
             {
-                return Ok(crate::graph::Deck::new(
-                    format!("deck_{}_{}", channel_id, entry.id),
-                    &entry.name,
-                    Box::new(crate::sources::HapSource::new(device, queue, path)?),
-                    entry.kind,
-                ));
+                Box::new(crate::sources::HapSource::new(device, queue, path)?)
             }
             #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
             {
-                return Ok(crate::graph::Deck::new(
-                    format!("deck_{}_{}", channel_id, entry.id),
-                    &entry.name,
-                    Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
-                    entry.kind,
-                ));
+                Box::new(crate::sources::FfmpegSource::new(device, queue, path)?)
             }
             #[cfg(all(feature = "hap", feature = "ffmpeg"))]
             {
-                let is_hap = rustjay_io::detect_hap_codec(path).unwrap_or(false);
-                if is_hap {
-                    return Ok(crate::graph::Deck::new(
-                        format!("deck_{}_{}", channel_id, entry.id),
-                        &entry.name,
-                        Box::new(crate::sources::HapSource::new(device, queue, path)?),
-                        entry.kind,
-                    ));
+                if rustjay_io::detect_hap_codec(path).unwrap_or(false) {
+                    Box::new(crate::sources::HapSource::new(device, queue, path)?)
+                        as Box<dyn EffectInstance>
                 } else {
-                    return Ok(crate::graph::Deck::new(
-                        format!("deck_{}_{}", channel_id, entry.id),
-                        &entry.name,
-                        Box::new(crate::sources::FfmpegSource::new(device, queue, path)?),
-                        entry.kind,
-                    ));
+                    Box::new(crate::sources::FfmpegSource::new(device, queue, path)?)
                 }
             }
             #[cfg(not(any(feature = "hap", feature = "ffmpeg")))]
@@ -264,83 +287,94 @@ fn instantiate_source(
                 ));
             }
         }
-        #[cfg(feature = "ffmpeg")]
         SourceKind::Srt | SourceKind::Hls | SourceKind::Dash | SourceKind::Rtmp => {
-            let url = entry
-                .path
-                .as_ref()
-                .and_then(|p| p.to_str())
-                .ok_or_else(|| anyhow::anyhow!("Stream entry missing URL"))?;
-            return Ok(crate::graph::Deck::new(
-                format!("deck_{}_{}", channel_id, entry.id),
-                &entry.name,
-                Box::new(crate::sources::StreamSource::new(device, queue, url)?),
-                entry.kind,
-            ));
+            #[cfg(feature = "ffmpeg")]
+            {
+                let url = entry
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Stream entry missing URL"))?;
+                Box::new(crate::sources::StreamSource::new(device, queue, url)?)
+            }
+            #[cfg(not(feature = "ffmpeg"))]
+            {
+                return Err(anyhow::anyhow!("Stream support requires the ffmpeg feature"));
+            }
         }
-        #[cfg(not(feature = "ffmpeg"))]
-        SourceKind::Srt | SourceKind::Hls | SourceKind::Dash | SourceKind::Rtmp => {
-            return Err(anyhow::anyhow!(
-                "Stream support requires the ffmpeg feature"
-            ));
-        }
-        #[cfg(feature = "ndi")]
         SourceKind::Ndi => {
-            let source_name = entry.name.clone();
-            return Ok(crate::graph::Deck::new(
-                format!("deck_{}_{}", channel_id, entry.id),
-                &entry.name,
-                Box::new(crate::sources::NdiSource::new(device, source_name)),
-                entry.kind,
-            ));
+            #[cfg(feature = "ndi")]
+            {
+                Box::new(crate::sources::NdiSource::new(device, entry.name.clone()))
+            }
+            #[cfg(not(feature = "ndi"))]
+            {
+                return Err(anyhow::anyhow!("NDI support requires the ndi feature"));
+            }
         }
-        #[cfg(not(feature = "ndi"))]
-        SourceKind::Ndi => {
-            return Err(anyhow::anyhow!(
-                "NDI support requires the ndi feature"
-            ));
-        }
-        #[cfg(target_os = "macos")]
         SourceKind::Syphon => {
-            let server_name = entry.name.clone();
-            let server_uuid = entry
-                .path
-                .as_ref()
-                .and_then(|p| p.to_str())
-                .unwrap_or("")
-                .to_string();
-            return Ok(crate::graph::Deck::new(
-                format!("deck_{}_{}", channel_id, entry.id),
-                &entry.name,
+            #[cfg(target_os = "macos")]
+            {
+                let server_uuid = entry
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("")
+                    .to_string();
                 Box::new(crate::sources::SyphonSource::new(
                     device,
                     queue,
-                    server_name,
+                    entry.name.clone(),
                     server_uuid,
-                )),
-                entry.kind,
-            ));
-        }
-        #[cfg(not(target_os = "macos"))]
-        SourceKind::Syphon => {
-            return Err(anyhow::anyhow!(
-                "Syphon is only available on macOS"
-            ));
+                ))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(anyhow::anyhow!("Syphon is only available on macOS"));
+            }
         }
     };
 
-    let prefix = format!("ch_{}_deck_{}_{}_", channel_id, entry.id, entry.id);
-    source.set_param_prefix(&prefix);
-    let mut deck = crate::graph::Deck::new(
-        format!("deck_{}_{}", channel_id, entry.id),
-        &entry.name,
-        source,
-        entry.kind,
-    );
-    if entry.kind == SourceKind::Isf {
-        deck.source_path = entry.path.clone();
-    }
+    let deck_uuid = deck_uuid
+        .map(String::from)
+        .unwrap_or_else(|| format!("deck_{}_{}", channel_id, entry.id));
+    let mut deck = crate::graph::Deck::new(deck_uuid, &entry.name, source, entry.kind);
+    deck.source_path = entry.path.clone();
+    deck.source_entry = Some(entry.clone());
     Ok(deck)
+}
+
+/// Build an [`EffectSlot`](rustjay_mixer::EffectSlot) from a saved [`FxDesc`],
+/// reproducing the slot's stable uuid so its param prefix matches saved
+/// modulation. The caller is responsible for assigning the param prefix
+/// (deck chains are re-prefixed by `Deck::set_full_prefix`; channel/master
+/// chains must be prefixed explicitly). Returns `None` if the shader fails to
+/// load, logging the cause.
+#[cfg(feature = "mixer")]
+fn build_fx_slot(
+    fx: &crate::scene::FxDesc,
+    base: &std::path::Path,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    engine: &EngineState,
+) -> Option<rustjay_mixer::EffectSlot> {
+    let path = crate::scene::resolve(&fx.path, base);
+    match rustjay_isf::IsfEffect::from_path(&path) {
+        Ok(isf) => {
+            let name = isf.shader_name.clone();
+            let node = EffectNode::new(isf, &name, device, queue, engine);
+            Some(rustjay_mixer::EffectSlot {
+                effect: Box::new(node),
+                enabled: fx.enabled,
+                uuid: fx.uuid.clone(),
+                source_path: Some(path),
+            })
+        }
+        Err(e) => {
+            log::warn!("[Topology] failed to load FX {}: {}", path.display(), e);
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +647,9 @@ impl VardaRootPlugin {
                     if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
                         if let Some(deck) = compositor.decks.first_mut() {
                             deck.add_effect(Box::new(node));
+                            if let Some(slot) = deck.chain.last_mut() {
+                                slot.source_path = Some(fx_path.clone());
+                            }
                             log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
                         }
                     }
@@ -639,6 +676,9 @@ impl VardaRootPlugin {
             let node = EffectNode::new(isf, "BrightnessContrast", device, queue, &dummy_engine);
             if let Some(ch_b) = mixer.channels.get_mut(1) {
                 ch_b.add_effect(Box::new(node));
+                if let Some(slot) = ch_b.chain.last_mut() {
+                    slot.source_path = Some(ch_fx_path.clone());
+                }
                 log::info!("Added channel FX BrightnessContrast to Channel B");
             }
         }
@@ -648,6 +688,99 @@ impl VardaRootPlugin {
         // a default preset that loads into the unified EngineState.modulation
         // instead (M6.3). DeckCompositor no longer needs set_modulation_engine().
 
+        drop(mixer);
+        self.params_dirty = true;
+    }
+
+    /// Rebuild the routing graph from a saved [`Topology`](crate::scene::Topology).
+    ///
+    /// Replaces [`build_default_graph`](Self::build_default_graph) when a scene
+    /// carries topology. Channel/deck/slot uuids are reproduced exactly so the
+    /// rebuilt param prefixes match the modulation restored by
+    /// [`Scene::apply_to_mixer`](crate::scene::Scene::apply_to_mixer). Runs in
+    /// `init()` with a throwaway engine, mirroring `build_default_graph`; the
+    /// real engine wires params on the next `params_dirty` registration.
+    fn apply_topology(
+        &mut self,
+        topo: &crate::scene::Topology,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        let dummy_engine = EngineState::new();
+        let base = crate::scene::topology_base();
+
+        for ch_desc in &topo.channels {
+            let mut comp = DeckCompositor::new();
+            for deck_desc in &ch_desc.decks {
+                // Resolve the source path back to absolute before instantiating.
+                let mut entry = deck_desc.source.clone();
+                if let Some(p) = entry.path.take() {
+                    entry.path = Some(crate::scene::resolve(&p, &base));
+                }
+                match instantiate_source(
+                    &entry,
+                    device,
+                    queue,
+                    &dummy_engine,
+                    &ch_desc.uuid,
+                    Some(deck_desc.uuid.as_str()),
+                ) {
+                    Ok(mut deck) => {
+                        deck.opacity = deck_desc.opacity;
+                        deck.blend_mode = deck_desc.blend_mode;
+                        // Deck FX: pushed with the saved uuid; the channel's
+                        // set_param_prefix → Deck::set_full_prefix re-prefixes
+                        // these slots once the channel is created below.
+                        for fx in &deck_desc.fx {
+                            if let Some(slot) =
+                                build_fx_slot(fx, &base, device, queue, &dummy_engine)
+                            {
+                                deck.chain.push(slot);
+                            }
+                        }
+                        comp.decks.push(deck);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[Topology] failed to rebuild deck '{}' on channel '{}': {}",
+                            deck_desc.name,
+                            ch_desc.name,
+                            e
+                        );
+                    }
+                }
+            }
+
+            let mut channel = Channel::new(ch_desc.uuid.clone(), ch_desc.name.clone(), Box::new(comp));
+            // Channel post-FX: prefix explicitly (channel chains aren't
+            // auto-prefixed the way deck chains are).
+            for fx in &ch_desc.fx {
+                if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
+                    slot.effect
+                        .set_param_prefix(&format!("ch_{}_fx{}_", ch_desc.uuid, slot.uuid));
+                    channel.chain.push(slot);
+                }
+            }
+            if let Err(e) = mixer.add_channel(channel) {
+                log::warn!("[Topology] failed to add channel '{}': {}", ch_desc.name, e);
+            }
+        }
+
+        // Master FX: prefix explicitly (`master_fx<uuid>_`).
+        for fx in &topo.master_fx {
+            if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
+                slot.effect
+                    .set_param_prefix(&format!("master_fx{}_", slot.uuid));
+                mixer.master.push(slot);
+            }
+        }
+
+        log::info!(
+            "[Topology] rebuilt {} channels, {} master FX",
+            topo.channels.len(),
+            topo.master_fx.len()
+        );
         drop(mixer);
         self.params_dirty = true;
     }
@@ -1016,7 +1149,8 @@ impl EffectPlugin for VardaRootPlugin {
                     );
                     continue;
                 };
-                let result = instantiate_source(&req.source, device, queue, engine, &channel.uuid);
+                let result =
+                    instantiate_source(&req.source, device, queue, engine, &channel.uuid, None);
                 match result {
                     Ok(deck) => {
                         let name = deck.name.clone();
@@ -1044,6 +1178,143 @@ impl EffectPlugin for VardaRootPlugin {
                             rustjay_core::NotificationLevel::Error,
                             std::time::Duration::from_secs(4),
                         );
+                    }
+                }
+            }
+
+            // ── Process pending effect additions ─────────────────────────────
+            let pending_effects: Vec<PendingEffect> = std::mem::take(&mut state.pending_effects);
+            for req in pending_effects {
+                let Ok(mut mixer) = state.mixer.lock() else {
+                    continue;
+                };
+                match req.target {
+                    EffectTarget::Master => {
+                        match rustjay_isf::IsfEffect::from_path(&req.path) {
+                            Ok(isf) => {
+                                let name = isf.shader_name.clone();
+                                let node = EffectNode::new(isf, &name, device, queue, engine);
+                                mixer.add_master_effect(Box::new(node));
+                                if let Some(slot) = mixer.master.last_mut() {
+                                    slot.source_path = Some(req.path.clone());
+                                }
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added master FX '{}'", name),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => {
+                                engine.notify(
+                                    format!("Failed to load master FX: {}", e),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                );
+                            }
+                        }
+                    }
+                    EffectTarget::Channel { channel_uuid } => {
+                        let channel = mixer
+                            .channels
+                            .iter_mut()
+                            .find(|c| c.uuid == channel_uuid || c.name == channel_uuid);
+                        let Some(channel) = channel else {
+                            engine.notify(
+                                format!("Channel '{}' not found", channel_uuid),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
+                        };
+                        match rustjay_isf::IsfEffect::from_path(&req.path) {
+                            Ok(isf) => {
+                                let name = isf.shader_name.clone();
+                                let node = EffectNode::new(isf, &name, device, queue, engine);
+                                channel.add_effect(Box::new(node));
+                                if let Some(slot) = channel.chain.last_mut() {
+                                    slot.source_path = Some(req.path.clone());
+                                }
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added FX '{}' to channel '{}'", name, channel.name),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => {
+                                engine.notify(
+                                    format!("Failed to load channel FX: {}", e),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                );
+                            }
+                        }
+                    }
+                    EffectTarget::Deck { channel_uuid, deck_uuid } => {
+                        let channel = mixer
+                            .channels
+                            .iter_mut()
+                            .find(|c| c.uuid == channel_uuid || c.name == channel_uuid);
+                        let Some(channel) = channel else {
+                            engine.notify(
+                                format!("Channel '{}' not found", channel_uuid),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
+                        };
+                        let Some(compositor) = channel.effect.as_any_mut() else {
+                            engine.notify(
+                                "Channel does not support deck FX".to_string(),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
+                        };
+                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
+                            engine.notify(
+                                "Channel does not use DeckCompositor".to_string(),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
+                        };
+                        let deck = compositor
+                            .decks
+                            .iter_mut()
+                            .find(|d| d.uuid == deck_uuid);
+                        let Some(deck) = deck else {
+                            engine.notify(
+                                format!("Deck '{}' not found", deck_uuid),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
+                        };
+                        match rustjay_isf::IsfEffect::from_path(&req.path) {
+                            Ok(isf) => {
+                                let name = isf.shader_name.clone();
+                                let node = EffectNode::new(isf, &name, device, queue, engine);
+                                deck.add_effect(Box::new(node));
+                                if let Some(slot) = deck.chain.last_mut() {
+                                    slot.source_path = Some(req.path.clone());
+                                }
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added FX '{}' to deck '{}'", name, deck.name),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => {
+                                engine.notify(
+                                    format!("Failed to load deck FX: {}", e),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1257,29 +1528,44 @@ impl EffectPlugin for VardaRootPlugin {
     fn init(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(feature = "mixer")]
         {
-            self.build_default_graph(device, queue);
-
-            // Try to restore saved scene knobs onto the default graph.
             // FIXME: hardcodes default_workspace() because init() has no access to State.
             // Wire a workspace field onto the plugin when per-project paths are needed.
             let workspace = crate::persistence::default_workspace();
-            if workspace.exists() {
+            let scene = if workspace.exists() {
                 match workspace.load_scene() {
-                    Ok(scene) => {
-                        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                        let legacy_mod = scene.apply_to_mixer(&mut mixer);
-                        if legacy_mod.is_some() {
-                            // EngineState is not available in init(); legacy v1 modulation
-                            // cannot be merged here. Re-load the preset at runtime via the
-                            // web/MIDI interface to trigger the prepare() migration path.
-                            log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
-                        }
-                        log::info!("[Workspace] restored scene onto default graph");
-                    }
+                    Ok(scene) => Some(scene),
                     Err(e) => {
                         log::warn!("[Workspace] failed to load scene: {}", e);
+                        None
                     }
                 }
+            } else {
+                None
+            };
+
+            // Rebuild the saved routing graph when present; otherwise fall back
+            // to the hard-coded default assembly. Topology must exist before the
+            // knobs/modulation are applied so the param keys they target resolve.
+            match scene
+                .as_ref()
+                .and_then(|s| s.topology.as_ref())
+                .filter(|t| !t.channels.is_empty())
+            {
+                Some(topo) => self.apply_topology(topo, device, queue),
+                None => self.build_default_graph(device, queue),
+            }
+
+            // Restore knob settings (crossfader, opacities, blends, modulation).
+            if let Some(scene) = &scene {
+                let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                let legacy_mod = scene.apply_to_mixer(&mut mixer);
+                if legacy_mod.is_some() {
+                    // EngineState is not available in init(); legacy v1 modulation
+                    // cannot be merged here. Re-load the preset at runtime via the
+                    // web/MIDI interface to trigger the prepare() migration path.
+                    log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
+                }
+                log::info!("[Workspace] restored scene");
             }
         }
     }
