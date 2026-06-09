@@ -1068,17 +1068,21 @@ mod internal {
                 });
             }
 
-            // Use direct property setters instead of KVC (setValue:forKey:).
-            // On modern macOS, activeFormat and related properties are read-only
-            // via KVC and must be set through their Objective-C property setters.
-            let min_frame_duration: *mut Object =
-                unsafe { msg_send![selected_range, minFrameDuration] };
+            // activeFormat is read-only via KVC on modern macOS; use the
+            // direct property setter instead. Keep KVC for frame durations
+            // (KVC wraps CMTime in NSValue automatically).
+            let activefmtkey = str_to_nsstr("activeFormat");
+            let min_frame_duration = str_to_nsstr("minFrameDuration");
+            let active_video_min_frame_duration = str_to_nsstr("activeVideoMinFrameDuration");
+            let active_video_max_frame_duration = str_to_nsstr("activeVideoMaxFrameDuration");
             let _: () = unsafe { msg_send![self.inner, setActiveFormat:selected_format] };
+            let min_frame_duration: *mut Object =
+                unsafe { msg_send![selected_range, valueForKey: min_frame_duration] };
             let _: () = unsafe {
-                msg_send![self.inner, setActiveVideoMinFrameDuration:min_frame_duration]
+                msg_send![self.inner, setValue:min_frame_duration forKey:active_video_min_frame_duration]
             };
             let _: () = unsafe {
-                msg_send![self.inner, setActiveVideoMaxFrameDuration:min_frame_duration]
+                msg_send![self.inner, setValue:min_frame_duration forKey:active_video_max_frame_duration]
             };
             self.unlock();
             Ok(())
