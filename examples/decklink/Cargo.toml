@@ -1,0 +1,18 @@
+[package]
+name = "decklink-input"
+version = "0.1.0"
+edition = "2021"
+description = "Blackmagic DeckLink input example for rustjay-engine"
+
+[dependencies]
+rustjay-engine = { workspace = true }
+rustjay-core   = { workspace = true }
+bytemuck       = { workspace = true }
+anyhow         = { workspace = true }
+log            = { workspace = true }
+env_logger     = "0.11"
+crossbeam      = { workspace = true }
+wgpu           = { workspace = true }
+
+[build-dependencies]
+cc = "1.0"

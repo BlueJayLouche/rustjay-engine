@@ -1267,6 +1267,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
+name = "decklink-input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cc",
+ "crossbeam",
+ "env_logger",
+ "log",
+ "rustjay-core",
+ "rustjay-engine",
+ "wgpu",
+]
+
+[[package]]
 name = "delta"
 version = "0.1.0"
 dependencies = [

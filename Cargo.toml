@@ -24,6 +24,7 @@ members = [
     "examples/mixer",
     "examples/projection",
     "examples/vjarda",
+    "examples/decklink",
 ]
 resolver = "2"
 

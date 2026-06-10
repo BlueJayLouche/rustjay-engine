@@ -3,3 +3,11 @@ linker = "aarch64-linux-gnu-gcc"
 
 [target.armv7-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
+
+# Force Ninja generator so cmake (used by rusty_link/Ableton Link) never tries
+# to auto-detect a Visual Studio generator. Without this, the cmake crate picks
+# the generator based on the highest VS version installed; if that version is
+# newer than the cmake.exe found on PATH the build fails (e.g. VS 2026 detected
+# but only VS 2019's bundled cmake available).
+[env]
+CMAKE_GENERATOR = "Ninja"

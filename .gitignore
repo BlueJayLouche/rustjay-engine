@@ -37,3 +37,6 @@ sputnik_*.txt
 *.mkv
 *.webm
 
+
+# Proprietary Blackmagic DeckLink SDK header — user-supplied, not redistributable
+examples/decklink/src/DeckLinkAPI.h

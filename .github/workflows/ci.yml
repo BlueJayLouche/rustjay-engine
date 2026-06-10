@@ -8,8 +8,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Rust
+  rust-linux:
+    name: Rust (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,9 +17,7 @@ jobs:
       # default feature set (webcam, no ndi). These deps cover alsa (cpal) and the
       # v4l/udev webcam path (nokhwa).
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang ninja-build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -37,3 +35,17 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+
+  rust-windows:
+    name: Rust (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cmake and ninja
+        run: choco install cmake ninja --installargs 'ADD_CMAKE_TO_PATH=System' -y
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - run: cargo check --workspace

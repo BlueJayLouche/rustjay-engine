@@ -34,7 +34,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{IDXGIKeyedMutex, IDXGIResource};
 use windows::Win32::System::Memory::{
-    CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS, PAGE_READWRITE,
+    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MapViewOfFile, MEMORY_BASIC_INFORMATION,
+    PAGE_READWRITE, UnmapViewOfFile, VirtualQuery,
 };
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,9 @@ pub struct SpoutOutput {
     /// Held open to keep the per-sender SharedTextureInfo mapping alive
     _sender_info_map: HANDLE,
 }
+
+unsafe impl Send for SpoutOutput {}
+unsafe impl Sync for SpoutOutput {}
 
 impl SpoutOutput {
     /// Create a new Spout sender with the given name.

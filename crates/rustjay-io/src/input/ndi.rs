@@ -93,13 +93,36 @@ impl NdiReceiver {
                 }
             };
 
-            // Wait for the specific source
+            // Wait for the specific source.
+            // Strategy: call wait_for_sources() (which blocks until the source
+            // list *changes*), then snapshot with current_sources(). This avoids
+            // the race in sources(timeout) where the change event is consumed by
+            // wait_for_sources but the subsequent get returns stale data.
             let mut found_source = None;
             let search_start = Instant::now();
+            const SEARCH_TIMEOUT_SECS: u64 = 30;
 
-            while running.load(Ordering::SeqCst) && search_start.elapsed().as_secs() < 10 {
-                match finder.find_sources(Duration::from_millis(100)) {
+            #[cfg(target_os = "windows")]
+            log::warn!(
+                "[NDI] If no sources are found, check Windows Firewall: \
+                 the NDI runtime needs UDP access (ports 5353, 5960-5969) \
+                 for the app executable."
+            );
+
+            while running.load(Ordering::SeqCst)
+                && search_start.elapsed().as_secs() < SEARCH_TIMEOUT_SECS
+            {
+                // Block up to 500 ms for any change in the source list.
+                let _ = finder.wait_for_sources(Duration::from_millis(500));
+
+                match finder.current_sources() {
                     Ok(sources) => {
+                        if !sources.is_empty() {
+                            log::debug!(
+                                "[NDI] Visible sources: {}",
+                                sources.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
+                            );
+                        }
                         for source in sources {
                             if source.name == source_name {
                                 found_source = Some(source);
@@ -108,7 +131,7 @@ impl NdiReceiver {
                         }
                     }
                     Err(e) => {
-                        log::debug!("[NDI] Error finding sources: {:?}", e);
+                        log::debug!("[NDI] Error listing sources: {:?}", e);
                     }
                 }
 
@@ -116,7 +139,6 @@ impl NdiReceiver {
                     break;
                 }
 
-                thread::sleep(Duration::from_millis(50));
             }
 
             let source = match found_source {
@@ -290,10 +312,31 @@ pub fn list_ndi_sources(timeout_ms: u32) -> Vec<String> {
         }
     };
 
-    match finder.find_sources(Duration::from_millis(timeout_ms as u64)) {
-        Ok(sources) => sources.into_iter().map(|s| s.name).collect(),
+    // Poll using wait_for_sources() + current_sources() in a loop.
+    // A single sources(timeout_ms) call only returns after one change event;
+    // if sources are already known or no new sources arrive, it may time out
+    // without returning everything the SDK has discovered. The loop below
+    // keeps draining change events until the deadline, then returns a final
+    // snapshot so we don't miss sources announced just before the deadline.
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait = remaining.min(Duration::from_millis(500));
+        let _ = finder.wait_for_sources(wait);
+    }
+
+    match finder.current_sources() {
+        Ok(sources) => {
+            for s in &sources {
+                log::info!("[NDI] Discovered source: \"{}\"", s.name);
+            }
+            sources.into_iter().map(|s| s.name).collect()
+        }
         Err(e) => {
-            log::error!("Failed to find NDI sources: {:?}", e);
+            log::error!("Failed to get NDI sources: {:?}", e);
             Vec::new()
         }
     }
