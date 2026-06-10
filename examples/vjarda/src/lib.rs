@@ -746,6 +746,12 @@ impl VardaRootPlugin {
         let dummy_engine = EngineState::new();
         let base = crate::scene::topology_base();
 
+        // Idempotent: replace whatever graph is live (empty at `init`, the old
+        // graph when switching presets at runtime). Dropping the old channels
+        // releases their sources (cameras, decoders, GPU textures).
+        mixer.channels.clear();
+        mixer.master.clear();
+
         for ch_desc in &topo.channels {
             let mut comp = DeckCompositor::new();
             for deck_desc in &ch_desc.decks {
@@ -1020,6 +1026,18 @@ impl EffectPlugin for VardaRootPlugin {
         {
             // Apply pending scene from preset load or runtime restore.
             if let Some(scene) = state.pending_scene.take() {
+                // Rebuild the routing graph when the scene carries topology, so
+                // switching presets recreates the deck/FX graph (not just knobs).
+                // apply_topology clears + replaces the live graph with the saved
+                // UUIDs and flags params_dirty; do it before applying knobs (which
+                // match channels by UUID) and modulation (keyed by param id).
+                if let Some(topo) = scene
+                    .topology
+                    .as_ref()
+                    .filter(|t| !t.channels.is_empty())
+                {
+                    self.apply_topology(topo, device, queue);
+                }
                 if let Ok(mut mixer) = state.mixer.lock() {
                     if let Some(legacy_mod) = scene.apply_to_mixer(&mut mixer) {
                         // v1 scene carried modulation in the mixer; merge into unified engine.
