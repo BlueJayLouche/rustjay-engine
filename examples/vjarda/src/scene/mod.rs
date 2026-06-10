@@ -33,18 +33,37 @@ pub struct Scene {
     #[cfg(feature = "mixer")]
     #[serde(default)]
     pub topology: Option<Topology>,
+    /// Snapshot of the unified `EngineState.modulation` (LFO/ADSR/audio-band/
+    /// step-seq sources + their param assignments). Captured separately because
+    /// the mixer no longer owns modulation (it lives on `EngineState`), so
+    /// `mixer.serialize_state()` cannot see it. `Default` (empty) for old scenes.
+    #[cfg(feature = "mixer")]
+    #[serde(default)]
+    pub modulation: rustjay_core::modulation::ModulationEngine,
 }
 
 #[cfg(feature = "mixer")]
 impl Scene {
-    /// Snapshot from the live mixer (knobs + topology).
+    /// Snapshot from the live mixer (knobs + topology). The unified modulation
+    /// must be filled in by the caller via [`with_modulation`](Self::with_modulation),
+    /// since it lives on `EngineState`, not the mixer.
     pub fn from_mixer(mixer: &rustjay_mixer::Mixer) -> Self {
         Self {
             version: 2,
             mixer_state: mixer.serialize_state(),
             sequencer: mixer.sequencer.clone(),
             topology: Some(Topology::from_mixer(mixer)),
+            modulation: rustjay_core::modulation::ModulationEngine::default(),
         }
+    }
+
+    /// Attach a snapshot of the unified modulation engine (chainable).
+    pub fn with_modulation(
+        mut self,
+        modulation: &rustjay_core::modulation::ModulationEngine,
+    ) -> Self {
+        self.modulation = modulation.clone();
+        self
     }
 
     /// Apply knob settings onto an already-built mixer.

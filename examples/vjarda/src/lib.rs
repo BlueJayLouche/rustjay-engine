@@ -99,6 +99,13 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub params_dirty_request: bool,
+    /// Handle to the engine's unified modulation engine, captured on the first
+    /// `prepare()`. Lets the save paths (Cmd+S, preset export) snapshot modulation
+    /// into the scene even though they don't otherwise have `&EngineState`.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub engine_modulation:
+        Option<std::sync::Arc<std::sync::Mutex<rustjay_core::modulation::ModulationEngine>>>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -158,11 +165,25 @@ pub struct PendingEffect {
 }
 
 impl VardaAppState {
+    /// A complete scene snapshot: mixer knobs + topology + the unified modulation
+    /// engine (captured via the `engine_modulation` handle, if available).
+    #[cfg(feature = "mixer")]
+    pub fn scene_snapshot(&self, mixer: &Mixer) -> Scene {
+        let scene = Scene::from_mixer(mixer);
+        match &self.engine_modulation {
+            Some(handle) => {
+                let m = handle.lock().unwrap_or_else(|e| e.into_inner());
+                scene.with_modulation(&m)
+            }
+            None => scene,
+        }
+    }
+
     /// Manually save the current workspace (scene + stage).
     #[cfg(feature = "mixer")]
     pub fn save_workspace(&self) {
         if let Ok(mixer) = self.mixer.lock() {
-            let scene = Scene::from_mixer(&mixer);
+            let scene = self.scene_snapshot(&mixer);
             match self.workspace.save_scene(&scene) {
                 Ok(_) => log::info!("[Workspace] scene saved"),
                 Err(e) => log::warn!("[Workspace] scene save failed: {}", e),
@@ -200,6 +221,8 @@ impl Default for VardaAppState {
             stage: VardaStage::with_default_surface(),
             #[cfg(feature = "mixer")]
             pending_scene: None,
+            #[cfg(feature = "mixer")]
+            engine_modulation: None,
             workspace: crate::persistence::default_workspace(),
             auto_save_last: None,
             keymap: crate::keymap::Keymap::default_bindings(),
@@ -392,6 +415,10 @@ pub struct VardaRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
     params_dirty: bool,
+    /// Modulation snapshot loaded from the workspace scene in `init()` (which has
+    /// no `&EngineState`), applied into `engine.modulation` on the first `prepare()`.
+    #[cfg(feature = "mixer")]
+    pending_modulation: Option<rustjay_core::modulation::ModulationEngine>,
     /// Per-projector warp state. Each projector gets its own sync so surface-
     /// specific warp edits don't leak across outputs.
     #[cfg(feature = "projection")]
@@ -417,6 +444,8 @@ impl VardaRootPlugin {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
             params_dirty: false,
+            #[cfg(feature = "mixer")]
+            pending_modulation: None,
             #[cfg(feature = "projection")]
             warp_syncs: std::sync::Mutex::new(Vec::new()),
             #[cfg(feature = "projection")]
@@ -861,6 +890,22 @@ impl EffectPlugin for VardaRootPlugin {
         if !state.ready {
             state.ready = true;
 
+            // Capture a handle to the unified modulation engine so the save paths
+            // (Cmd+S, preset export) can snapshot it without `&EngineState`.
+            #[cfg(feature = "mixer")]
+            {
+                state.engine_modulation = Some(engine.modulation.clone());
+
+                // Restore the modulation snapshot loaded from the workspace scene
+                // in `init()` (topology already rebuilt there, so the param keys
+                // its assignments target now exist).
+                if let Some(modulation) = self.pending_modulation.take() {
+                    let n = modulation.sources.len();
+                    *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) = modulation;
+                    log::info!("[Workspace] restored {n} modulation source(s)");
+                }
+            }
+
             // Capture projection subsystem handle for runtime headless management.
             #[cfg(feature = "projection")]
             {
@@ -994,6 +1039,14 @@ impl EffectPlugin for VardaRootPlugin {
                     }
                     log::info!("[Scene] applied pending scene snapshot");
                 }
+                // Restore the unified modulation snapshot (v2 scenes). For preset
+                // loads the engine PresetBank has already applied an identical
+                // snapshot, so this is idempotent; it also covers any non-preset
+                // runtime scene load.
+                if !scene.modulation.sources.is_empty() {
+                    *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) =
+                        scene.modulation.clone();
+                }
             }
 
             if let Some(ref watcher) = state.shader_watcher {
@@ -1076,7 +1129,7 @@ impl EffectPlugin for VardaRootPlugin {
             #[cfg(feature = "mixer")]
             {
                 if let Ok(mixer) = state.mixer.lock() {
-                    let scene = Scene::from_mixer(&mixer);
+                    let scene = state.scene_snapshot(&mixer);
                     if let Err(e) = state.workspace.save_scene(&scene) {
                         log::warn!("[AutoSave] scene failed: {}", e);
                     }
@@ -1723,11 +1776,12 @@ impl EffectPlugin for VardaRootPlugin {
         }
     }
 
-    fn serialize_preset_state(&self, _state: &Self::State) -> Option<String> {
+    #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
+    fn serialize_preset_state(&self, state: &Self::State) -> Option<String> {
         #[cfg(feature = "mixer")]
         {
             if let Ok(mixer) = self.mixer.lock() {
-                let scene = Scene::from_mixer(&mixer);
+                let scene = state.scene_snapshot(&mixer);
                 return serde_json::to_string(&scene).ok();
             }
         }
@@ -1796,6 +1850,11 @@ impl EffectPlugin for VardaRootPlugin {
                     // cannot be merged here. Re-load the preset at runtime via the
                     // web/MIDI interface to trigger the prepare() migration path.
                     log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
+                }
+                // The unified modulation snapshot can't be applied here (no engine);
+                // stash it for the first prepare() to write into EngineState.modulation.
+                if !scene.modulation.sources.is_empty() {
+                    self.pending_modulation = Some(scene.modulation.clone());
                 }
                 log::info!("[Workspace] restored scene");
             }
