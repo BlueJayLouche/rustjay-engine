@@ -17,8 +17,9 @@ const MAP_FAILED: u8 = 2;
 
 /// A headless projector output: offscreen texture + stage chain + async readback.
 ///
-/// The output format is hard-coded to `Rgba8Unorm` (linear, non-sRGB) per
-/// REQ-08.6.
+/// The output format is `Bgra8Unorm` to match the rest of the output pipeline
+/// (projector surfaces, recorder, NDI/Syphon senders); the supplied stages must
+/// be built for the same format.
 pub struct HeadlessOutput {
     width: u32,
     height: u32,
@@ -29,7 +30,7 @@ pub struct HeadlessOutput {
     ping_textures: Vec<wgpu::Texture>,
     ping_views: Vec<wgpu::TextureView>,
     readback_buffer: wgpu::Buffer,
-    /// Tightly-packed RGBA8 pixels from the latest completed readback.
+    /// Tightly-packed BGRA8 pixels from the latest completed readback.
     latest_pixels: Vec<u8>,
     /// Readback status for the in-flight buffer, set by the `map_async` callback
     /// (`MAP_PENDING` / `MAP_READY` / `MAP_FAILED`).
@@ -49,7 +50,11 @@ impl HeadlessOutput {
         height: u32,
         stages: Vec<Box<dyn ProjectionStage>>,
     ) -> Self {
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        // BGRA to match the rest of the output pipeline (projector surfaces,
+        // recorder, NDI/Syphon senders), so a frame can be fed straight to
+        // `OutputManager::submit_frame` with no channel swizzle. The stages
+        // passed in must be built for this same format.
+        let format = wgpu::TextureFormat::Bgra8Unorm;
         let (offscreen_texture, offscreen_view) = create_offscreen(device, width, height, format);
         let (ping_textures, ping_views) =
             create_ping_pong(device, width, height, format, stages.len());
@@ -268,7 +273,7 @@ impl HeadlessOutput {
         }
     }
 
-    /// Returns the latest completed frame as tightly-packed RGBA8 bytes,
+    /// Returns the latest completed frame as tightly-packed BGRA8 bytes,
     /// or `None` if no frame has been read back yet.
     pub fn latest_frame(&self) -> Option<&[u8]> {
         if self.has_frame {
@@ -276,6 +281,13 @@ impl HeadlessOutput {
         } else {
             None
         }
+    }
+
+    /// The offscreen render target (BGRA8). Has `COPY_SRC | TEXTURE_BINDING`, so
+    /// it can be fed directly to `OutputManager::submit_frame` for recording and
+    /// NDI/Syphon/Spout/V4L2 senders.
+    pub fn output_texture(&self) -> &wgpu::Texture {
+        &self.offscreen_texture
     }
 
     /// Current output size in pixels.
@@ -377,7 +389,7 @@ mod tests {
             2,
             vec![Box::new(IdentityStage::new(
                 &device,
-                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm,
             ))],
         );
 
@@ -392,7 +404,7 @@ mod tests {
         }
 
         let pixels = output.latest_frame().expect("readback should complete");
-        assert_eq!(pixels.len(), 16, "expected 16 bytes for 2×2 RGBA8");
+        assert_eq!(pixels.len(), 16, "expected 16 bytes for 2×2 BGRA8");
 
         // Expected: TL white, TR black, BL black, BR white (row-major)
         assert_eq!(&pixels[0..4], &[255, 255, 255, 255]);
@@ -413,7 +425,7 @@ mod tests {
             2,
             vec![Box::new(IdentityStage::new(
                 &device,
-                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm,
             ))],
         );
 
@@ -452,7 +464,7 @@ mod tests {
             let base = i * 4;
             assert_eq!(
                 &pixels[base..base + 4],
-                &[128, 64, 32, 255],
+                &[32, 64, 128, 255], // BGRA readback of RGBA input [128,64,32]
                 "pixel {i} mismatch after resize"
             );
         }
@@ -479,7 +491,7 @@ mod tests {
             height,
             vec![Box::new(IdentityStage::new(
                 &device,
-                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm,
             ))],
         );
 
@@ -501,7 +513,8 @@ mod tests {
         assert_eq!(pixels.len(), (width * height * 4) as usize);
         for i in 0..(width * height) as usize {
             let base = i * 4;
-            assert_eq!(&pixels[base..base + 4], &[42, 43, 44, 255]);
+            // BGRA readback of RGBA input [42,43,44].
+            assert_eq!(&pixels[base..base + 4], &[44, 43, 42, 255]);
         }
     }
 
@@ -519,7 +532,7 @@ mod tests {
             2,
             vec![Box::new(IdentityStage::new(
                 &device,
-                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8Unorm,
             ))],
         );
 
@@ -548,6 +561,7 @@ mod tests {
             .latest_frame()
             .expect("readback should complete after resize");
         assert_eq!(pixels.len(), 4 * 4 * 4);
-        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
+        // BGRA readback of RGBA input [10,20,30].
+        assert_eq!(&pixels[0..4], &[30, 20, 10, 255]);
     }
 }

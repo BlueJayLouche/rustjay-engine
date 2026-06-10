@@ -1366,7 +1366,8 @@ impl EffectPlugin for VardaRootPlugin {
                                     cfg.height,
                                     vec![Box::new(rustjay_projection::IdentityStage::new(
                                         device,
-                                        wgpu::TextureFormat::Rgba8Unorm,
+                                        // Must match HeadlessOutput's BGRA offscreen.
+                                        wgpu::TextureFormat::Bgra8Unorm,
                                     ))],
                                 );
                                 cfg.pushed = true;
@@ -1530,38 +1531,126 @@ impl EffectPlugin for VardaRootPlugin {
                         }
                     }
 
-                    // Publish active output sinks for the top-bar status strip.
-                    if let Ok(mut sinks) = engine.output_sinks.lock() {
-                        if *sinks != sink_labels {
-                            *sinks = sink_labels;
+                    // Headless outputs: same level-triggered reconcile as projectors.
+                    let mut enabled_idx = 0;
+                    for (i, hl) in state.stage.headless_outputs.iter().enumerate() {
+                        if !(hl.enabled && hl.pushed) {
+                            continue;
+                        }
+                        let idx = enabled_idx;
+                        enabled_idx += 1;
+                        let sender_name = format!("vjarda — {}", hl.name);
+
+                        let want_rec = matches!(hl.output_type, OutputType::Recording);
+                        if want_rec && !sub.is_headless_recording(idx) {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let dir = std::path::PathBuf::from("recordings");
+                            std::fs::create_dir_all(&dir).ok();
+                            let path = dir.join(format!("headless_{}_{}_{}.mp4", i, hl.name, ts));
+                            if let Err(e) = sub.start_headless_recording(idx, &path, fps, codec) {
+                                log::error!("[Varda] Failed to start headless {i} recording: {e}");
+                            }
+                        } else if !want_rec && sub.is_headless_recording(idx) {
+                            sub.stop_headless_recording(idx);
+                        }
+
+                        let want_ndi = matches!(hl.output_type, OutputType::Ndi);
+                        if want_ndi && !sub.is_headless_ndi(idx) {
+                            match sub.start_headless_ndi(idx, &sender_name) {
+                                Ok(_) => engine.notify(
+                                    format!("NDI output started: {sender_name}"),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                ),
+                                Err(e) => engine.notify(
+                                    format!("NDI output failed: {e}"),
+                                    rustjay_core::NotificationLevel::Error,
+                                    std::time::Duration::from_secs(4),
+                                ),
+                            }
+                        } else if !want_ndi && sub.is_headless_ndi(idx) {
+                            sub.stop_headless_ndi(idx);
+                        }
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let want_syphon = matches!(hl.output_type, OutputType::Syphon);
+                            if want_syphon && !sub.is_headless_syphon(idx) {
+                                match sub.start_headless_syphon(idx, &sender_name) {
+                                    Ok(_) => engine.notify(
+                                        format!("Syphon output started: {sender_name}"),
+                                        rustjay_core::NotificationLevel::Success,
+                                        std::time::Duration::from_secs(3),
+                                    ),
+                                    Err(e) => engine.notify(
+                                        format!("Syphon output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    ),
+                                }
+                            } else if !want_syphon && sub.is_headless_syphon(idx) {
+                                sub.stop_headless_syphon(idx);
+                            }
+                        }
+
+                        #[cfg(target_os = "windows")]
+                        {
+                            let want_spout = matches!(hl.output_type, OutputType::Spout);
+                            if want_spout && !sub.is_headless_spout(idx) {
+                                if let Err(e) = sub.start_headless_spout(idx, &sender_name) {
+                                    engine.notify(
+                                        format!("Spout output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    );
+                                }
+                            } else if !want_spout && sub.is_headless_spout(idx) {
+                                sub.stop_headless_spout(idx);
+                            }
+                        }
+
+                        #[cfg(target_os = "linux")]
+                        {
+                            let want_v4l2 = matches!(hl.output_type, OutputType::V4l2);
+                            let dev = format!("/dev/video{}", 20 + idx);
+                            if want_v4l2 && !sub.is_headless_v4l2(idx) {
+                                if let Err(e) = sub.start_headless_v4l2(idx, &dev) {
+                                    engine.notify(
+                                        format!("V4L2 output failed: {e}"),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    );
+                                }
+                            } else if !want_v4l2 && sub.is_headless_v4l2(idx) {
+                                sub.stop_headless_v4l2(idx);
+                            }
+                        }
+
+                        if sub.is_headless_ndi(idx) {
+                            sink_labels.push("NDI".to_string());
+                        }
+                        if sub.is_headless_syphon(idx) {
+                            sink_labels.push("SYPHON".to_string());
+                        }
+                        if sub.is_headless_spout(idx) {
+                            sink_labels.push("SPOUT".to_string());
+                        }
+                        if sub.is_headless_v4l2(idx) {
+                            sink_labels.push("V4L2".to_string());
+                        }
+                        if sub.is_headless_recording(idx) {
+                            sink_labels.push("REC".to_string());
                         }
                     }
 
-                    let mut enabled_idx = 0;
-                    for (i, hl) in state.stage.headless_outputs.iter().enumerate() {
-                        if hl.enabled && hl.pushed {
-                            match hl.output_type {
-                                crate::stage::OutputType::Recording => {
-                                    if !sub.is_headless_recording(enabled_idx) {
-                                        let ts = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs();
-                                        let dir = std::path::PathBuf::from("recordings");
-                                        std::fs::create_dir_all(&dir).ok();
-                                        let path = dir.join(format!("headless_{}_{}_{}.mp4", i, hl.name, ts));
-                                        if let Err(e) = sub.start_headless_recording(enabled_idx, &path, fps, codec) {
-                                            log::error!("[Varda] Failed to start headless {i} recording: {e}");
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    if sub.is_headless_recording(enabled_idx) {
-                                        sub.stop_headless_recording(enabled_idx);
-                                    }
-                                }
-                            }
-                            enabled_idx += 1;
+                    // Publish active output sinks (projectors + headless) for the
+                    // top-bar status strip.
+                    if let Ok(mut sinks) = engine.output_sinks.lock() {
+                        if *sinks != sink_labels {
+                            *sinks = sink_labels;
                         }
                     }
                 }

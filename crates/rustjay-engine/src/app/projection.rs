@@ -4,7 +4,7 @@
 
 use rustjay_projection::stage::ProjectionStage;
 use rustjay_projection::HeadlessOutput;
-use rustjay_io::{OutputManager, Recorder, RecorderCodec};
+use rustjay_io::{OutputManager, RecorderCodec};
 use std::path::Path;
 use std::sync::Arc;
 use winit::window::Window;
@@ -511,8 +511,9 @@ pub struct ProjectionSubsystem {
     pub projectors: Vec<ProjectorOutput>,
     /// Active headless outputs (offscreen texture + async readback).
     pub headless_outputs: Vec<HeadlessOutput>,
-    /// Per-headless disk recorders (RGBA→BGRA swizzled).
-    headless_recorders: Vec<Option<Recorder>>,
+    /// Per-headless output managers (recorder + NDI/Syphon/Spout/V4L2 senders),
+    /// fed the BGRA offscreen texture each frame. Parallel to `headless_outputs`.
+    headless_managers: Vec<Option<OutputManager>>,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
@@ -546,7 +547,7 @@ impl ProjectionSubsystem {
         Self {
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
-            headless_recorders: Vec::new(),
+            headless_managers: Vec::new(),
             pending: Vec::new(),
             last_render: None,
             device: None,
@@ -726,21 +727,31 @@ impl ProjectionSubsystem {
         };
         self.headless_outputs
             .push(HeadlessOutput::new(device, width, height, stages));
-        self.headless_recorders.push(None);
+        self.headless_managers.push(None);
     }
 
     /// Remove a headless output by index.
     pub fn remove_headless_output(&mut self, index: usize) {
         if index < self.headless_outputs.len() {
             self.headless_outputs.remove(index);
-            if index < self.headless_recorders.len() {
-                if let Some(rec) = self.headless_recorders.remove(index) {
-                    if let Err(e) = rec.finish() {
-                        log::warn!("[Headless {index}] recorder finish on remove failed: {e}");
-                    }
+            if index < self.headless_managers.len() {
+                if let Some(mut mgr) = self.headless_managers.remove(index) {
+                    mgr.shutdown();
                 }
             }
         }
+    }
+
+    /// The output manager for headless output `index`, created on demand. `None`
+    /// if the index is out of range.
+    fn ensure_headless_manager(&mut self, index: usize) -> Option<&mut OutputManager> {
+        if index >= self.headless_outputs.len() {
+            return None;
+        }
+        while self.headless_managers.len() < self.headless_outputs.len() {
+            self.headless_managers.push(None);
+        }
+        Some(self.headless_managers[index].get_or_insert_with(OutputManager::new))
     }
 
     /// Returns the latest readback frame for a headless output, if available.
@@ -769,29 +780,20 @@ impl ProjectionSubsystem {
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
         }
-        for (i, headless) in self.headless_outputs.iter_mut().enumerate() {
-            headless.render(device, queue, source_view, source_texture, source_size);
-            headless.poll_readback(device);
-            if let Some(ref mut rec) = self.headless_recorders.get_mut(i).and_then(|r| r.as_mut()) {
-                if let Some(pixels) = headless.latest_frame() {
-                    let width = headless.size()[0];
-                    let height = headless.size()[1];
-                    let mut bgra = vec![0u8; (width * height * 4) as usize];
-                    for y in 0..height {
-                        for x in 0..width {
-                            let src_idx = ((y * width + x) * 4) as usize;
-                            let dst_idx = ((y * width + x) * 4) as usize;
-                            // RGBA -> BGRA
-                            bgra[dst_idx] = pixels[src_idx + 2];
-                            bgra[dst_idx + 1] = pixels[src_idx + 1];
-                            bgra[dst_idx + 2] = pixels[src_idx];
-                            bgra[dst_idx + 3] = pixels[src_idx + 3];
-                        }
-                    }
-                    if !rec.encode_frame(&bgra) {
-                        log::warn!("[Headless {i}] encoder failed — stopping");
-                        self.headless_recorders[i] = None;
-                    }
+        for i in 0..self.headless_outputs.len() {
+            self.headless_outputs[i].render(device, queue, source_view, source_texture, source_size);
+            // The BGRA offscreen feeds the recorder and every sender directly,
+            // no swizzle. `submit_frame` does its own async readback for the
+            // CPU-path sinks (NDI/V4L2/recorder) and hands Syphon the texture.
+            let active = self
+                .headless_managers
+                .get(i)
+                .and_then(|m| m.as_ref())
+                .map_or(false, |m| m.has_active_output());
+            if active {
+                let tex = self.headless_outputs[i].output_texture();
+                if let Some(Some(mgr)) = self.headless_managers.get_mut(i) {
+                    mgr.submit_frame(tex, device, queue);
                 }
             }
         }
@@ -932,16 +934,18 @@ impl ProjectionSubsystem {
         fps: f32,
         codec: RecorderCodec,
     ) -> anyhow::Result<()> {
-        if index >= self.headless_outputs.len() {
-            return Err(anyhow::anyhow!("Headless index {index} out of range"));
+        let [width, height] = self
+            .headless_outputs
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?
+            .size();
+        let mgr = self
+            .ensure_headless_manager(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?;
+        if mgr.is_recording() {
+            return Ok(());
         }
-        let headless = &self.headless_outputs[index];
-        let [width, height] = headless.size();
-        let rec = Recorder::start(path, width, height, fps, codec)?;
-        while self.headless_recorders.len() < self.headless_outputs.len() {
-            self.headless_recorders.push(None);
-        }
-        self.headless_recorders[index] = Some(rec);
+        mgr.start_recording(path, width, height, fps, codec)?;
         log::info!(
             "Started headless recording {}x{} @ {:.2} fps → {}",
             width,
@@ -952,21 +956,149 @@ impl ProjectionSubsystem {
         Ok(())
     }
 
-    /// Stop recording a headless output by index.
+    /// Stop recording a headless output by index (leaves other sinks running).
     pub fn stop_headless_recording(&mut self, index: usize) {
-        if let Some(slot) = self.headless_recorders.get_mut(index) {
-            if let Some(rec) = slot.take() {
-                if let Err(e) = rec.finish() {
-                    log::warn!("[Headless {index}] recorder finish failed: {e}");
-                }
-                log::info!("Stopped headless recording [{index}]");
-            }
+        if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
+            mgr.stop_recording();
         }
     }
 
-    /// Whether a headless output is recording.
+    /// Whether a headless output is recording to disk.
     pub fn is_headless_recording(&self, index: usize) -> bool {
-        self.headless_recorders.get(index).and_then(|r| r.as_ref()).is_some()
+        self.headless_managers
+            .get(index)
+            .and_then(|m| m.as_ref())
+            .map_or(false, |m| m.is_recording())
+    }
+
+    // ── Headless output senders (NDI / Syphon / Spout / V4L2) ───────────────
+
+    /// Start publishing headless output `index` as an NDI source named `name`.
+    pub fn start_headless_ndi(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let [w, h] = self
+            .headless_outputs
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?
+            .size();
+        let mgr = self
+            .ensure_headless_manager(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?;
+        if mgr.is_ndi_active() {
+            return Ok(());
+        }
+        mgr.start_ndi(name, w, h, false)
+    }
+
+    /// Stop headless output `index`'s NDI sender.
+    pub fn stop_headless_ndi(&mut self, index: usize) {
+        if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
+            mgr.stop_ndi();
+        }
+    }
+
+    /// Whether headless output `index` is publishing via NDI.
+    pub fn is_headless_ndi(&self, index: usize) -> bool {
+        self.headless_managers
+            .get(index)
+            .and_then(|m| m.as_ref())
+            .map_or(false, |m| m.is_ndi_active())
+    }
+
+    /// Start publishing headless output `index` as a Syphon server (macOS).
+    #[cfg(target_os = "macos")]
+    pub fn start_headless_syphon(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let device = self
+            .device
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Projection device not ready"))?;
+        let queue = self
+            .queue
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Projection queue not ready"))?;
+        let mgr = self
+            .ensure_headless_manager(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?;
+        if mgr.is_syphon_active() {
+            return Ok(());
+        }
+        mgr.start_syphon(name, device, queue)
+    }
+
+    /// Stop headless output `index`'s Syphon server (macOS).
+    #[cfg(target_os = "macos")]
+    pub fn stop_headless_syphon(&mut self, index: usize) {
+        if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
+            mgr.stop_syphon();
+        }
+    }
+
+    /// Whether headless output `index` is publishing via Syphon.
+    pub fn is_headless_syphon(&self, index: usize) -> bool {
+        self.headless_managers
+            .get(index)
+            .and_then(|m| m.as_ref())
+            .map_or(false, |m| m.is_syphon_active())
+    }
+
+    /// Start publishing headless output `index` via Spout (Windows).
+    #[cfg(target_os = "windows")]
+    pub fn start_headless_spout(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
+        let mgr = self
+            .ensure_headless_manager(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?;
+        if mgr.is_spout_active() {
+            return Ok(());
+        }
+        mgr.start_spout(name)
+    }
+
+    /// Stop headless output `index`'s Spout sender (Windows).
+    #[cfg(target_os = "windows")]
+    pub fn stop_headless_spout(&mut self, index: usize) {
+        if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
+            mgr.stop_spout();
+        }
+    }
+
+    /// Whether headless output `index` is publishing via Spout.
+    pub fn is_headless_spout(&self, index: usize) -> bool {
+        self.headless_managers
+            .get(index)
+            .and_then(|m| m.as_ref())
+            .map_or(false, |m| m.is_spout_active())
+    }
+
+    /// Start publishing headless output `index` to a V4L2 loopback (Linux).
+    #[cfg(target_os = "linux")]
+    pub fn start_headless_v4l2(&mut self, index: usize, device_path: &str) -> anyhow::Result<()> {
+        let [w, h] = self
+            .headless_outputs
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?
+            .size();
+        let mgr = self
+            .ensure_headless_manager(index)
+            .ok_or_else(|| anyhow::anyhow!("Headless index {index} out of range"))?;
+        if mgr.is_v4l2_active() {
+            return Ok(());
+        }
+        mgr.start_v4l2(device_path, w, h)
+    }
+
+    /// Stop headless output `index`'s V4L2 sender (Linux).
+    #[cfg(target_os = "linux")]
+    pub fn stop_headless_v4l2(&mut self, index: usize) {
+        if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
+            mgr.stop_v4l2();
+        }
+    }
+
+    /// Whether headless output `index` is publishing via V4L2.
+    pub fn is_headless_v4l2(&self, index: usize) -> bool {
+        self.headless_managers
+            .get(index)
+            .and_then(|m| m.as_ref())
+            .map_or(false, |m| m.is_v4l2_active())
     }
 
     /// Remove a projector output by its window ID, dropping the surface and window.
