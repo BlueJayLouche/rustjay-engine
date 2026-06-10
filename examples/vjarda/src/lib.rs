@@ -106,6 +106,15 @@ pub struct VardaAppState {
     #[cfg(feature = "mixer")]
     pub engine_modulation:
         Option<std::sync::Arc<std::sync::Mutex<rustjay_core::modulation::ModulationEngine>>>,
+    /// Snapshot of all custom param base values (id → value), refreshed in
+    /// `prepare()` only when they change, so the save paths can capture them into
+    /// the scene without `&EngineState`. `param_bases_cache` backs change detection.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub param_snapshot: std::collections::HashMap<String, f32>,
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub param_bases_cache: Vec<f32>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -169,7 +178,7 @@ impl VardaAppState {
     /// engine (captured via the `engine_modulation` handle, if available).
     #[cfg(feature = "mixer")]
     pub fn scene_snapshot(&self, mixer: &Mixer) -> Scene {
-        let scene = Scene::from_mixer(mixer);
+        let scene = Scene::from_mixer(mixer).with_params(self.param_snapshot.clone());
         match &self.engine_modulation {
             Some(handle) => {
                 let m = handle.lock().unwrap_or_else(|e| e.into_inner());
@@ -223,6 +232,10 @@ impl Default for VardaAppState {
             pending_scene: None,
             #[cfg(feature = "mixer")]
             engine_modulation: None,
+            #[cfg(feature = "mixer")]
+            param_snapshot: std::collections::HashMap::new(),
+            #[cfg(feature = "mixer")]
+            param_bases_cache: Vec::new(),
             workspace: crate::persistence::default_workspace(),
             auto_save_last: None,
             keymap: crate::keymap::Keymap::default_bindings(),
@@ -419,6 +432,11 @@ pub struct VardaRootPlugin {
     /// no `&EngineState`), applied into `engine.modulation` on the first `prepare()`.
     #[cfg(feature = "mixer")]
     pending_modulation: Option<rustjay_core::modulation::ModulationEngine>,
+    /// Custom param base values loaded from the workspace scene in `init()`, queued
+    /// into `engine.param_restore` on the first `prepare()` so the renderer applies
+    /// them after the rebuilt graph's params (re)register.
+    #[cfg(feature = "mixer")]
+    pending_params: Option<std::collections::HashMap<String, f32>>,
     /// Per-projector warp state. Each projector gets its own sync so surface-
     /// specific warp edits don't leak across outputs.
     #[cfg(feature = "projection")]
@@ -446,6 +464,8 @@ impl VardaRootPlugin {
             params_dirty: false,
             #[cfg(feature = "mixer")]
             pending_modulation: None,
+            #[cfg(feature = "mixer")]
+            pending_params: None,
             #[cfg(feature = "projection")]
             warp_syncs: std::sync::Mutex::new(Vec::new()),
             #[cfg(feature = "projection")]
@@ -910,6 +930,14 @@ impl EffectPlugin for VardaRootPlugin {
                     *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) = modulation;
                     log::info!("[Workspace] restored {n} modulation source(s)");
                 }
+
+                // Queue the workspace's saved param base values; the renderer
+                // applies them after the rebuilt graph's params (re)register.
+                if let Some(params) = self.pending_params.take() {
+                    if let Ok(mut restore) = engine.param_restore.lock() {
+                        restore.extend(params);
+                    }
+                }
             }
 
             // Capture projection subsystem handle for runtime headless management.
@@ -1065,6 +1093,14 @@ impl EffectPlugin for VardaRootPlugin {
                     *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) =
                         scene.modulation.clone();
                 }
+                // Queue the saved param base values; the renderer applies them
+                // after the rebuilt graph's params (re)register (set_param_base
+                // needs &mut engine, which we don't have here).
+                if !scene.params.is_empty() {
+                    if let Ok(mut restore) = engine.param_restore.lock() {
+                        restore.extend(scene.params.clone());
+                    }
+                }
             }
 
             if let Some(ref watcher) = state.shader_watcher {
@@ -1195,6 +1231,19 @@ impl EffectPlugin for VardaRootPlugin {
             if state.params_dirty_request {
                 state.params_dirty_request = false;
                 self.params_dirty = true;
+            }
+
+            // Refresh the custom-param snapshot only when base values actually
+            // change (param edit, preset load) — cheap `Vec<f32>` compare per
+            // frame, no allocation otherwise. The save paths read this.
+            if state.param_bases_cache != engine.custom_param_bases {
+                state.param_bases_cache = engine.custom_param_bases.clone();
+                state.param_snapshot = engine
+                    .param_descriptors
+                    .iter()
+                    .zip(engine.custom_param_bases.iter())
+                    .map(|(d, &v)| (d.id.clone(), v))
+                    .collect();
             }
 
             // Process pending deck removals first.
@@ -1869,10 +1918,13 @@ impl EffectPlugin for VardaRootPlugin {
                     // web/MIDI interface to trigger the prepare() migration path.
                     log::warn!("[Workspace] v1 scene modulation skipped at init (no engine access); reload preset at runtime to migrate");
                 }
-                // The unified modulation snapshot can't be applied here (no engine);
-                // stash it for the first prepare() to write into EngineState.modulation.
+                // Modulation + param values can't be applied here (no engine);
+                // stash them for the first prepare().
                 if !scene.modulation.sources.is_empty() {
                     self.pending_modulation = Some(scene.modulation.clone());
+                }
+                if !scene.params.is_empty() {
+                    self.pending_params = Some(scene.params.clone());
                 }
                 log::info!("[Workspace] restored scene");
             }

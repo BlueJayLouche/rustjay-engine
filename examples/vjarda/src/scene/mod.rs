@@ -40,6 +40,12 @@ pub struct Scene {
     #[cfg(feature = "mixer")]
     #[serde(default)]
     pub modulation: rustjay_core::modulation::ModulationEngine,
+    /// Base values of every custom parameter (fully-qualified id → value), e.g.
+    /// each deck/channel/FX param. Captured so a graph rebuilt on load restores
+    /// its FX-internal values, not just structure. `Default` (empty) for old scenes.
+    #[cfg(feature = "mixer")]
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, f32>,
 }
 
 #[cfg(feature = "mixer")]
@@ -54,6 +60,7 @@ impl Scene {
             sequencer: mixer.sequencer.clone(),
             topology: Some(Topology::from_mixer(mixer)),
             modulation: rustjay_core::modulation::ModulationEngine::default(),
+            params: std::collections::HashMap::new(),
         }
     }
 
@@ -63,6 +70,12 @@ impl Scene {
         modulation: &rustjay_core::modulation::ModulationEngine,
     ) -> Self {
         self.modulation = modulation.clone();
+        self
+    }
+
+    /// Attach a snapshot of custom param base values (chainable).
+    pub fn with_params(mut self, params: std::collections::HashMap<String, f32>) -> Self {
+        self.params = params;
         self
     }
 

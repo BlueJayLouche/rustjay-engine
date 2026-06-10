@@ -975,6 +975,12 @@ pub struct EngineState {
 
     /// Unified modulation engine (single source of truth for LFO, ADSR, audio band, step seq).
     pub modulation: Arc<Mutex<ModulationEngine>>,
+    /// App-requested base-value restores (param id → value), applied by the engine
+    /// right after the next parameter (re)registration. Lets an app restore saved
+    /// param values for a graph it rebuilds inside the frame loop, where it only
+    /// holds `&EngineState` and so cannot call `set_param_base` itself. Empty for
+    /// apps that don't use it.
+    pub param_restore: Arc<Mutex<Vec<(String, f32)>>>,
     /// Pre-computed modulation offsets for each param id, updated once per frame after
     /// `ModulationEngine::update()`. `get_param()` reads this without locking.
     ///
@@ -1291,6 +1297,7 @@ impl EngineState {
             app_state: Arc::new(std::sync::Mutex::new(None)),
             notifications: Arc::new(Mutex::new(Vec::new())),
             output_sinks: Arc::new(Mutex::new(Vec::new())),
+            param_restore: Arc::new(Mutex::new(Vec::new())),
             next_notification_id: AtomicU64::new(0),
             recording_active: false,
             projection_handle: None,

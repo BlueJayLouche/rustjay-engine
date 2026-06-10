@@ -440,6 +440,18 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             engine_state.param_osc_addresses = new_osc;
         }
 
+        // Apply app-requested param-base restores now that parameters are
+        // (re)registered — an app that rebuilt its graph this frame can only set
+        // these from the engine side, since `prepare`/`render` hold `&EngineState`.
+        let restores: Vec<(String, f32)> = engine_state
+            .param_restore
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for (id, value) in restores {
+            engine_state.set_param_base(&id, value);
+        }
+
         let render_start = std::time::Instant::now();
 
         let mut encoder = self
