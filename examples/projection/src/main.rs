@@ -116,6 +116,7 @@ fn main() -> anyhow::Result<()> {
             WindowAttributes::default()
                 .with_title("Projector 1 — Identity")
                 .with_inner_size(winit::dpi::LogicalSize::new(640u32, 480u32)),
+            None, // windowed (no fullscreen monitor)
             |device, format| vec![Box::new(IdentityStage::new(device, format))],
         );
 
@@ -124,6 +125,7 @@ fn main() -> anyhow::Result<()> {
             WindowAttributes::default()
                 .with_title("Projector 2 — Edge Blend")
                 .with_inner_size(winit::dpi::LogicalSize::new(800u32, 600u32)),
+            None, // windowed (no fullscreen monitor)
             |device, format| {
                 let mut blend = EdgeBlendStage::new(device, format);
                 blend.config.left.enabled = true;
