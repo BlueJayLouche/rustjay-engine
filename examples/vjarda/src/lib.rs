@@ -326,6 +326,27 @@ fn segment_region(
     }
 }
 
+/// Resolve a segment's source texture override. When the segment references a
+/// surface whose source is a mixer channel, returns that channel's texture view
+/// (via `resolve_channel`) so the segment samples the channel directly instead
+/// of the master composite. Master/Domemaster/Deck sources return `None`
+/// (sample master).
+#[cfg(feature = "projection")]
+fn resolve_segment_source(
+    seg: &crate::stage::LightingSegment,
+    surfaces: &[crate::stage::VardaSurface],
+    resolve_channel: impl Fn(&str) -> Option<std::sync::Arc<wgpu::TextureView>>,
+) -> Option<std::sync::Arc<wgpu::TextureView>> {
+    let uuid = seg.source_surface.as_ref()?;
+    let surf = surfaces.iter().find(|s| &s.uuid == uuid)?;
+    match &surf.source {
+        crate::stage::SurfaceSource::Channel(ch) => resolve_channel(ch),
+        // Deck routing is not yet implemented (mirrors projector behaviour);
+        // Master/Domemaster sample the master composite at the surface's crop.
+        _ => None,
+    }
+}
+
 #[cfg(feature = "projection")]
 fn output_atlas_layout(
     output: &crate::stage::LightingOutput,
@@ -1924,6 +1945,11 @@ impl EffectPlugin for VardaRootPlugin {
                         let mut active_ids = HashSet::new();
                         let mut overlap_spans = Vec::new();
 
+                        // Lock the mixer once to resolve channel-sourced segments
+                        // to their channel textures (released at block end).
+                        #[cfg(feature = "mixer")]
+                        let mixer_guard = state.mixer.lock().ok();
+
                         for lo in state.stage.lighting_outputs.iter_mut() {
                             let layout = output_atlas_layout(lo, &state.stage.surfaces);
                             let sampler_id = match lo.sampler_id {
@@ -1940,6 +1966,34 @@ impl EffectPlugin for VardaRootPlugin {
                                 }
                             };
                             active_ids.insert(sampler_id);
+
+                            // Per-segment source override: a surface sourced from a
+                            // mixer channel makes its segment sample that channel's
+                            // texture instead of the master composite.
+                            let tile_sources: Vec<Option<std::sync::Arc<wgpu::TextureView>>> = lo
+                                .segments
+                                .iter()
+                                .map(|seg| {
+                                    resolve_segment_source(seg, &state.stage.surfaces, |_ch| {
+                                        #[cfg(feature = "mixer")]
+                                        {
+                                            mixer_guard
+                                                .as_ref()
+                                                .and_then(|m| m.channel_texture(_ch))
+                                                .map(|t| {
+                                                    std::sync::Arc::new(t.texture.create_view(
+                                                        &wgpu::TextureViewDescriptor::default(),
+                                                    ))
+                                                })
+                                        }
+                                        #[cfg(not(feature = "mixer"))]
+                                        {
+                                            None
+                                        }
+                                    })
+                                })
+                                .collect();
+                            sub.set_sampler_tile_sources(sampler_id, &tile_sources);
 
                             let want = lo.enabled
                                 && matches!(

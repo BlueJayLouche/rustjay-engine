@@ -6,6 +6,8 @@
 //! atlas is read back by [`PixelSampler`](super::pixel_sampler::PixelSampler) and
 //! demuxed into DMX fixtures on the CPU.
 
+use std::sync::Arc;
+
 use crate::identity::{BlitPipeline, BlitVertex};
 use crate::stage::ProjectionStage;
 use rustjay_core::RenderCtx;
@@ -73,6 +75,12 @@ struct TileDraw {
     viewport: [f32; 4],
     uniform_buffer: wgpu::Buffer,
     bind_group: Option<wgpu::BindGroup>,
+    /// Optional per-tile source view override (e.g. a mixer channel texture).
+    /// `None` = sample the shared `input` (master composite).
+    source: Option<Arc<wgpu::TextureView>>,
+    /// Pointer of the source view the cached `bind_group` was built from, so the
+    /// bind group is rebuilt only when this tile's effective source changes.
+    cached_src_ptr: Option<usize>,
 }
 
 /// Renders an arbitrary number of segment regions into a packed atlas.
@@ -126,7 +134,32 @@ impl SampleStage {
                 ],
                 uniform_buffer: tile_uniform_buffer(device, tile.region),
                 bind_group: None,
+                source: None,
+                cached_src_ptr: None,
             });
+        }
+    }
+
+    /// Set per-tile source view overrides (aligned to atlas tiles / segments).
+    /// A `Some` entry makes that tile sample the given texture (e.g. a mixer
+    /// channel) instead of the shared master `input`; `None` falls back to master.
+    /// Extra entries are ignored; missing entries default to master.
+    pub fn set_tile_sources(&mut self, sources: &[Option<Arc<wgpu::TextureView>>]) {
+        for (tile, src) in self.tiles.iter_mut().zip(sources.iter()) {
+            let new_ptr = src.as_ref().map(|v| Arc::as_ptr(v) as usize);
+            let cur_ptr = tile.source.as_ref().map(|v| Arc::as_ptr(v) as usize);
+            if new_ptr != cur_ptr {
+                tile.source = src.clone();
+                // Force this tile's bind group to rebuild against the new source.
+                tile.cached_src_ptr = None;
+            }
+        }
+        // Tiles beyond the provided slice fall back to master.
+        for tile in self.tiles.iter_mut().skip(sources.len()) {
+            if tile.source.is_some() {
+                tile.source = None;
+                tile.cached_src_ptr = None;
+            }
         }
     }
 
@@ -150,16 +183,27 @@ impl ProjectionStage for SampleStage {
         _output_size: [u32; 2],
     ) {
         let input_ptr = input as *const _ as usize;
-        if self.cached_input_ptr != Some(input_ptr) {
-            for tile in &mut self.tiles {
+        let master_changed = self.cached_input_ptr != Some(input_ptr);
+        for tile in &mut self.tiles {
+            // Effective source: per-tile override, or the shared master input.
+            let (view, src_ptr) = match &tile.source {
+                Some(v) => (v.as_ref(), Arc::as_ptr(v) as usize),
+                None => (input, input_ptr),
+            };
+            // Rebuild this tile's bind group when its source pointer changed, or
+            // when a master-backed tile sees a new master view.
+            let needs_rebuild = tile.cached_src_ptr != Some(src_ptr)
+                || (tile.source.is_none() && master_changed);
+            if needs_rebuild || tile.bind_group.is_none() {
                 tile.bind_group = Some(self.blit.create_bind_group_nearest_with_uniform(
                     ctx.device,
-                    input,
+                    view,
                     &tile.uniform_buffer,
                 ));
+                tile.cached_src_ptr = Some(src_ptr);
             }
-            self.cached_input_ptr = Some(input_ptr);
         }
+        self.cached_input_ptr = Some(input_ptr);
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("SampleStage Atlas Pass"),

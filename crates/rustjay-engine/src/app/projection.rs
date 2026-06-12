@@ -791,6 +791,20 @@ impl ProjectionSubsystem {
         }
     }
 
+    /// Set per-segment source view overrides for a sampler (aligned to its atlas
+    /// tiles). Lets each segment sample its surface's source texture (e.g. a
+    /// mixer channel) instead of the master composite. `None` entries fall back
+    /// to master.
+    pub fn set_sampler_tile_sources(
+        &mut self,
+        id: SamplerId,
+        sources: &[Option<Arc<wgpu::TextureView>>],
+    ) {
+        if let Some(s) = self.sampler_outputs.get_mut(&id) {
+            s.set_tile_sources(sources);
+        }
+    }
+
     /// Remove a pixel sampler by id.
     pub fn remove_pixel_sampler(&mut self, id: SamplerId) {
         self.sampler_outputs.remove(&id);

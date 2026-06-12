@@ -722,7 +722,8 @@ pub struct LightingSegment {
     #[serde(default)]
     pub sample_mode: SampleMode,
     /// Fixture profile id. Built-in ids: `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"`,
-    /// `"rgb_dimmer"`. The profile determines the channel layout / footprint.
+    /// `"rgb_dimmer"`, `"dim_rgb"`. The profile determines the channel layout /
+    /// footprint.
     #[serde(default = "default_profile_id")]
     pub profile: String,
     /// Deprecated; kept for backward-compatible scene loading. Footprint is now

@@ -7,9 +7,9 @@
 
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam::channel::{bounded, Sender};
+use crossbeam::channel::{bounded, RecvTimeoutError, Sender};
 
 use crate::dmx::DmxFrame;
 use crate::transport::DmxTransport;
@@ -31,10 +31,25 @@ impl DmxSender {
         let interval = Duration::from_secs_f32(1.0 / fps.clamp(1.0, 60.0));
 
         let handle = std::thread::spawn(move || {
-            let ticker = crossbeam::channel::tick(interval);
+            // Pace on an absolute schedule: advance the deadline by exactly one
+            // `interval` each tick so send latency (lock + clone + packetise +
+            // send_to) does not accumulate into drift. `crossbeam::channel::tick`
+            // reschedules relative to delivery, which at 44 Hz dropped the real
+            // rate to ~37 Hz; this holds the configured rate.
+            let mut next = Instant::now() + interval;
             loop {
-                crossbeam::select! {
-                    recv(ticker) -> _ => {
+                match sd_rx.recv_deadline(next) {
+                    // Shutdown signalled, or the sender was dropped.
+                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                    // Deadline reached — time to transmit.
+                    Err(RecvTimeoutError::Timeout) => {
+                        next += interval;
+                        // If we fell badly behind (e.g. the thread was
+                        // descheduled), resync rather than bursting to catch up.
+                        let now = Instant::now();
+                        if next <= now {
+                            next = now + interval;
+                        }
                         let frame = match latest_thread.lock() {
                             Ok(g) => g.clone(),
                             Err(p) => p.into_inner().clone(),
@@ -43,7 +58,6 @@ impl DmxSender {
                             transport.send(&frame);
                         }
                     }
-                    recv(sd_rx) -> _ => break,
                 }
             }
         });

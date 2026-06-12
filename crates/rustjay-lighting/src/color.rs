@@ -167,6 +167,16 @@ pub fn builtin_profiles() -> Vec<FixtureProfile> {
                 ChannelRole::Dimmer,
             ],
         },
+        FixtureProfile {
+            id: "dim_rgb".into(),
+            name: "Dimmer + RGB".into(),
+            channels: vec![
+                ChannelRole::Dimmer,
+                ChannelRole::Red,
+                ChannelRole::Green,
+                ChannelRole::Blue,
+            ],
+        },
     ]
 }
 
@@ -326,6 +336,35 @@ mod tests {
         };
         let bytes = color_pipeline([0, 0, 255, 255], 2.2, &color, &profile);
         assert_eq!(bytes[3], 127);
+    }
+
+    #[test]
+    fn dim_rgb_builtin_has_dimmer_first_layout() {
+        let profile = builtin_profiles()
+            .into_iter()
+            .find(|p| p.id == "dim_rgb")
+            .expect("dim_rgb builtin profile must exist");
+        assert_eq!(
+            profile.channels,
+            vec![
+                ChannelRole::Dimmer,
+                ChannelRole::Red,
+                ChannelRole::Green,
+                ChannelRole::Blue,
+            ]
+        );
+
+        // Dimmer occupies channel 0, RGB follow. BGRA red input → red on ch1.
+        let color = SegmentColor {
+            master_dimmer: 0.5,
+            ..Default::default()
+        };
+        let bytes = color_pipeline([0, 0, 255, 255], 2.2, &color, &profile);
+        assert_eq!(bytes.len(), 4);
+        assert_eq!(bytes[0], 127, "ch0 = master dimmer");
+        assert!(bytes[1] > 200, "ch1 = red");
+        assert_eq!(bytes[2], 0, "ch2 = green");
+        assert_eq!(bytes[3], 0, "ch3 = blue");
     }
 
     #[test]

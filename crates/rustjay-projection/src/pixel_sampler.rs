@@ -50,6 +50,13 @@ impl PixelSampler {
         self.layout = layout;
     }
 
+    /// Set per-segment source view overrides (aligned to the atlas tiles). A
+    /// `Some` entry makes that segment sample the given texture (e.g. a mixer
+    /// channel) instead of the master composite; `None` falls back to master.
+    pub fn set_tile_sources(&mut self, sources: &[Option<std::sync::Arc<wgpu::TextureView>>]) {
+        self.sample_stage.set_tile_sources(sources);
+    }
+
     /// Render the source into the atlas and enqueue an async CPU readback.
     pub fn render(
         &mut self,
