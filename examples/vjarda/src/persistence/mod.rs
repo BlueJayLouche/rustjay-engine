@@ -77,7 +77,9 @@ impl Workspace {
     pub fn load_stage(&self) -> anyhow::Result<crate::stage::VardaStage> {
         let path = self.stage_path();
         let json = std::fs::read_to_string(&path)?;
-        let stage: crate::stage::VardaStage = serde_json::from_str(&json)?;
+        let mut stage: crate::stage::VardaStage = serde_json::from_str(&json)?;
+        stage.migrate_legacy_segments();
+        stage.ensure_builtin_fixture_profiles();
         log::info!("[Workspace] stage loaded from {}", path.display());
         Ok(stage)
     }

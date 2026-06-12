@@ -1,0 +1,15 @@
+[package]
+name = "rustjay-lighting"
+version = "0.1.0"
+edition = "2021"
+description = "DMX lighting output (sACN / Art-Net) for rustjay-engine"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["dmx", "sacn", "artnet", "e131", "lighting"]
+categories = ["multimedia"]
+
+[dependencies]
+log       = { workspace = true }
+crossbeam = { workspace = true }
+serde     = { workspace = true, features = ["derive"] }
+socket2   = { workspace = true }

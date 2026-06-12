@@ -50,7 +50,7 @@ impl BlitVertex {
 
 /// A fullscreen-triangle pipeline that samples a source texture into a target.
 pub struct BlitPipeline {
-    pipeline: wgpu::RenderPipeline,
+    pub(crate) pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     sampler_nearest: wgpu::Sampler,
@@ -193,11 +193,37 @@ impl BlitPipeline {
         self.create_bind_group_with_sampler(device, source_view, &self.sampler_nearest)
     }
 
+    /// Create a bind group with the nearest sampler and a caller-supplied
+    /// uniform buffer (e.g. per-tile params in an atlas sampler).
+    pub fn create_bind_group_nearest_with_uniform(
+        &self,
+        device: &wgpu::Device,
+        source_view: &wgpu::TextureView,
+        uniform_buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        self.create_bind_group_with_sampler_and_uniform(
+            device,
+            source_view,
+            &self.sampler_nearest,
+            uniform_buffer,
+        )
+    }
+
     fn create_bind_group_with_sampler(
         &self,
         device: &wgpu::Device,
         source_view: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        self.create_bind_group_with_sampler_and_uniform(device, source_view, sampler, &self.params_buffer)
+    }
+
+    fn create_bind_group_with_sampler_and_uniform(
+        &self,
+        device: &wgpu::Device,
+        source_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        uniform_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Projection Blit Bind Group"),
@@ -213,7 +239,7 @@ impl BlitPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.params_buffer.as_entire_binding(),
+                    resource: uniform_buffer.as_entire_binding(),
                 },
             ],
         })

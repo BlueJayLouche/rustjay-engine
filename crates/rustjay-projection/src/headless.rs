@@ -232,6 +232,91 @@ impl HeadlessOutput {
         }
     }
 
+    /// Render a single externally-supplied stage into this headless target and
+    /// enqueue a readback. Used by `PixelSampler` so it can own and update its
+    /// `SampleStage` without forcing it into the internal `Vec<Box<dyn ProjectionStage>>`.
+    pub fn render_stage(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        stage: &mut dyn crate::stage::ProjectionStage,
+        input_view: &wgpu::TextureView,
+        input_texture: Option<&wgpu::Texture>,
+        _input_size: [u32; 2],
+    ) {
+        self.render_stage_internal(device, queue, |ctx, out_view, size| {
+            stage.render(ctx, input_view, input_texture, out_view, size);
+        });
+    }
+
+    fn render_stage_internal(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        render_fn: impl FnOnce(&mut RenderCtx<'_>, &wgpu::TextureView, [u32; 2]),
+    ) {
+        // Try to collect a previously-submitted readback first.
+        self.poll_readback(device);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Headless Stage Chain"),
+        });
+
+        let mut ctx = RenderCtx {
+            device,
+            queue,
+            encoder: &mut encoder,
+            vertex_buffer: &self.dummy_vb,
+        };
+
+        render_fn(&mut ctx, &self.offscreen_view, [self.width, self.height]);
+
+        // If no readback is in flight, encode the copy and start mapping.
+        if !self.readback_in_flight {
+            let bytes_per_row = ((self.width * 4).div_ceil(256)) * 256;
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.offscreen_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &self.readback_buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bytes_per_row),
+                        rows_per_image: Some(self.height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            queue.submit(std::iter::once(encoder.finish()));
+
+            // Fresh state per submission so a callback from a previously-abandoned
+            // buffer (e.g. after a resize) can never flip the state we poll here.
+            let state = Arc::new(AtomicU8::new(MAP_PENDING));
+            self.map_state = Arc::clone(&state);
+            self.readback_buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |res| match res {
+                    Ok(()) => state.store(MAP_READY, Ordering::SeqCst),
+                    Err(e) => {
+                        log::error!("headless readback map_async failed: {e:?}");
+                        state.store(MAP_FAILED, Ordering::SeqCst);
+                    }
+                });
+            self.readback_in_flight = true;
+        } else {
+            queue.submit(std::iter::once(encoder.finish()));
+        }
+    }
+
     /// Poll the device non-blocking and, if the readback has completed, copy
     /// the pixels into `latest_pixels` (tightly packed, padding stripped) and
     /// unmap the buffer.
