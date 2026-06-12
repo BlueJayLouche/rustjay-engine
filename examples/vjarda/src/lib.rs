@@ -88,6 +88,10 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "projection")]
     pub lighting_senders: std::collections::HashMap<rustjay_projection::SamplerId, rustjay_lighting::DmxSender>,
+    /// Latest submitted DMX frame per lighting output, mirrored for the UI activity meters.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub lighting_last_frames: std::collections::HashMap<rustjay_projection::SamplerId, rustjay_lighting::DmxFrame>,
     /// Latest DMX patch overlap warnings, computed each frame for the UI.
     #[serde(skip)]
     #[cfg(feature = "projection")]
@@ -253,6 +257,8 @@ impl Default for VardaAppState {
             projection_handle: None,
             #[cfg(feature = "projection")]
             lighting_senders: std::collections::HashMap::new(),
+            #[cfg(feature = "projection")]
+            lighting_last_frames: std::collections::HashMap::new(),
             #[cfg(feature = "projection")]
             lighting_overlap_warnings: Vec::new(),
             #[cfg(feature = "mixer")]
@@ -1966,6 +1972,7 @@ impl EffectPlugin for VardaRootPlugin {
                                 if let Some(sender) = state.lighting_senders.remove(&sampler_id) {
                                     sender.shutdown();
                                 }
+                                state.lighting_last_frames.remove(&sampler_id);
                             }
 
                             if want {
@@ -1976,6 +1983,7 @@ impl EffectPlugin for VardaRootPlugin {
                                         px,
                                         layout,
                                     );
+                                    state.lighting_last_frames.insert(sampler_id, frame.clone());
                                     if let Some(sender) = state.lighting_senders.get(&sampler_id) {
                                         sender.submit(frame);
                                     }
@@ -2010,6 +2018,7 @@ impl EffectPlugin for VardaRootPlugin {
                             if let Some(sender) = state.lighting_senders.remove(&id) {
                                 sender.shutdown();
                             }
+                            state.lighting_last_frames.remove(&id);
                         }
                         // Remove samplers for outputs that no longer exist.
                         sub.remove_stale_pixel_samplers(&active_ids);

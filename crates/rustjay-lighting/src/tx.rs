@@ -64,6 +64,14 @@ impl DmxSender {
         }
     }
 
+    /// Read the latest frame without removing it. Useful for UI mirrors.
+    pub fn peek_latest(&self) -> DmxFrame {
+        match self.latest.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
     /// Signal the transmit thread to stop and join it.
     pub fn shutdown(mut self) {
         self.stop();
@@ -125,6 +133,26 @@ mod tests {
             values.len()
         );
         assert!(values.iter().all(|&v| v == 42), "all sends carry latest frame");
+    }
+
+    #[test]
+    fn peek_latest_returns_submitted_frame() {
+        let transport = Box::new(MockTransport {
+            sent: Arc::new(Mutex::new(Vec::new())),
+        });
+        let sender = DmxSender::spawn(transport, 60.0);
+
+        let mut frame = DmxFrame::new();
+        frame.universe_mut(1)[0] = 42;
+        sender.submit(frame.clone());
+        assert_eq!(sender.peek_latest().get(1).map(|u| u[0]), Some(42));
+
+        let mut frame2 = DmxFrame::new();
+        frame2.universe_mut(1)[0] = 99;
+        sender.submit(frame2);
+        assert_eq!(sender.peek_latest().get(1).map(|u| u[0]), Some(99));
+
+        sender.shutdown();
     }
 
     #[test]

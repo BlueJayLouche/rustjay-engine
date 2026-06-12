@@ -9,7 +9,7 @@ mixer = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
 webcam = ["rustjay-engine/webcam", "rustjay-io/webcam"]
 api = ["rustjay-engine/api", "dep:rustjay-api"]
 egui = ["rustjay-engine/egui", "dep:egui"]
-projection = ["rustjay-engine/projection", "dep:rustjay-projection", "rustjay-projection/surface-import", "dep:rustjay-lighting"]
+projection = ["rustjay-engine/projection", "dep:rustjay-projection", "rustjay-projection/surface-import"]
 ndi = ["rustjay-engine/ndi", "rustjay-io/ndi"]
 syphon = []
 streaming = []
@@ -27,7 +27,7 @@ rustjay-render = { workspace = true }
 rustjay-io     = { workspace = true }
 rustjay-api    = { workspace = true, optional = true }
 rustjay-projection = { workspace = true, optional = true }
-rustjay-lighting   = { workspace = true, optional = true }
+rustjay-lighting   = { workspace = true }
 wgpu           = { workspace = true }
 bytemuck       = { workspace = true }
 anyhow         = { workspace = true }

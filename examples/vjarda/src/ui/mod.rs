@@ -108,6 +108,14 @@ pub struct StageTab {
     /// clean live preview of the master output.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
     edit_mode: bool,
+    /// When true, the Stage preview overlays lighting segment regions and lets
+    /// the user drag them to set sampling rectangles.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    lighting_regions_active: bool,
+    /// Currently selected lighting segment for editing on the Stage preview.
+    /// `(lighting_output_index, segment_index)`.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    selected_light_segment: Option<(usize, usize)>,
 }
 
 impl Default for StageTab {
@@ -125,6 +133,10 @@ impl StageTab {
             canvas_zoom: 1.0,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             edit_mode: false,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            lighting_regions_active: false,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            selected_light_segment: None,
         }
     }
 }
@@ -1040,10 +1052,14 @@ mod egui_impl {
             let import_path = &mut self.import_path;
             let canvas_zoom = &mut self.canvas_zoom;
             let edit_mode = &mut self.edit_mode;
+            let lighting_regions_active = &mut self.lighting_regions_active;
+            let selected_light_segment = &mut self.selected_light_segment;
 
             // Set when a surface warp is edited this frame, so we publish to the
             // projector only on change (avoids per-frame mesh rebuilds).
             let mut warp_dirty = false;
+            // Set when a lighting segment region is edited this frame.
+            let mut regions_dirty = false;
 
             // Left panel: surface list
             ui.horizontal(|ui| {
@@ -1178,6 +1194,7 @@ mod egui_impl {
                         );
                         ui.separator();
                         ui.checkbox(edit_mode, "Edit mode");
+                        ui.checkbox(lighting_regions_active, "Lighting regions");
                         if *edit_mode {
                             ui.label("Zoom:");
                             ui.add(
@@ -1571,8 +1588,9 @@ mod egui_impl {
                     }
                 }
 
-                // Surface selection via canvas click (skip if a handle is being dragged)
-                if !handle_dragged && response.clicked_by(egui::PointerButton::Primary) {
+                // Surface selection via canvas click (skip if a handle is being dragged
+                // or if lighting region editing is active).
+                if !*lighting_regions_active && !handle_dragged && response.clicked_by(egui::PointerButton::Primary) {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
                         let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
@@ -1583,6 +1601,155 @@ mod egui_impl {
                                 state.stage.selected_surface_index = i;
                                 break;
                             }
+                        }
+                    }
+                }
+
+                // ── Lighting region overlay ──────────────────────────────────
+                if *lighting_regions_active {
+                    let mut light_region_dragged = false;
+                    // Draw all segment regions first, then handles on top of the selected one.
+                    for (oi, light) in state.stage.lighting_outputs.iter().enumerate() {
+                        if !light.enabled {
+                            continue;
+                        }
+                        let color = egui::Color32::from_rgb(
+                            ((oi * 73) % 200 + 55) as u8,
+                            ((oi * 137) % 200 + 55) as u8,
+                            ((oi * 211) % 200 + 55) as u8,
+                        );
+                        for (si, seg) in light.segments.iter().enumerate() {
+                            if !seg.enabled {
+                                continue;
+                            }
+                            let [u0, v0, u1, v1] = seg.region;
+                            let min = egui::Pos2::new(
+                                canvas_rect.min.x + u0 * canvas_rect.width(),
+                                canvas_rect.min.y + v0 * canvas_rect.height(),
+                            );
+                            let max = egui::Pos2::new(
+                                canvas_rect.min.x + u1 * canvas_rect.width(),
+                                canvas_rect.min.y + v1 * canvas_rect.height(),
+                            );
+                            let rect = egui::Rect::from_min_max(min, max);
+                            let is_selected = selected_light_segment == &Some((oi, si));
+                            let stroke_width = if is_selected { 3.0 } else { 1.5 };
+                            painter.rect_stroke(
+                                rect,
+                                egui::CornerRadius::ZERO,
+                                egui::Stroke::new(stroke_width, color),
+                                egui::StrokeKind::Inside,
+                            );
+                            if is_selected {
+                                painter.rect_filled(rect, egui::CornerRadius::ZERO, color.linear_multiply(0.12));
+                            }
+                            let label = format!("{} / {}", light.name, seg.name);
+                            painter.text(
+                                min + egui::Vec2::new(4.0, 2.0),
+                                egui::Align2::LEFT_TOP,
+                                label,
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+
+                    // Drag handles for the selected segment.
+                    if let Some((sel_oi, sel_si)) = *selected_light_segment {
+                        let handle_labels = ["TL", "TR", "BR", "BL"];
+                        let mut handle_positions = [egui::Pos2::ZERO; 4];
+                        let mut corners_opt: Option<[[f32; 2]; 4]> = None;
+                        if let Some(light) = state.stage.lighting_outputs.get(sel_oi) {
+                            if let Some(seg) = light.segments.get(sel_si) {
+                                let [u0, v0, u1, v1] = seg.region;
+                                corners_opt = Some([
+                                    [u0, v0],
+                                    [u1, v0],
+                                    [u1, v1],
+                                    [u0, v1],
+                                ]);
+                            }
+                        }
+                        if let Some(corners) = corners_opt {
+                            for (hi, corner) in corners.iter().enumerate() {
+                                let pos = egui::Pos2::new(
+                                    canvas_rect.min.x + corner[0] * canvas_rect.width(),
+                                    canvas_rect.min.y + corner[1] * canvas_rect.height(),
+                                );
+                                handle_positions[hi] = pos;
+                                let handle_rect = egui::Rect::from_center_size(pos, egui::Vec2::splat(12.0));
+                                let handle_id = ui.id().with(("light_region_handle", sel_oi, sel_si, hi));
+                                let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
+                                let handle_color = if handle_response.dragged() {
+                                    egui::Color32::YELLOW
+                                } else if handle_response.hovered() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_gray(180)
+                                };
+                                painter.circle_filled(pos, 5.0, handle_color);
+                                painter.text(
+                                    pos - egui::Vec2::new(0.0, 8.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    handle_labels[hi],
+                                    egui::FontId::proportional(9.0),
+                                    egui::Color32::from_gray(200),
+                                );
+                                if handle_response.dragged() {
+                                    light_region_dragged = true;
+                                    let dx = handle_response.drag_delta().x / canvas_rect.width();
+                                    let dy = handle_response.drag_delta().y / canvas_rect.height();
+                                    if let Some(light) = state.stage.lighting_outputs.get_mut(sel_oi) {
+                                        if let Some(seg) = light.segments.get_mut(sel_si) {
+                                            let [min_u, min_v, max_u, max_v] = &mut seg.region;
+                                            match hi {
+                                                0 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
+                                                1 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
+                                                2 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
+                                                3 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
+                                                _ => {}
+                                            }
+                                            if *min_u > *max_u { std::mem::swap(min_u, max_u); }
+                                            if *min_v > *max_v { std::mem::swap(min_v, max_v); }
+                                            regions_dirty = true;
+                                        }
+                                    }
+                                }
+                            }
+                            for hi in 0..4 {
+                                let j = (hi + 1) % 4;
+                                painter.line_segment([handle_positions[hi], handle_positions[j]], egui::Stroke::new(1.0, egui::Color32::YELLOW));
+                            }
+                        }
+                    }
+
+                    // Select a segment by clicking inside its region.
+                    if !light_region_dragged && response.clicked_by(egui::PointerButton::Primary) {
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
+                            let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
+                            let mut new_selection: Option<(usize, usize)> = None;
+                            for (oi, light) in state.stage.lighting_outputs.iter().enumerate().rev() {
+                                if !light.enabled {
+                                    continue;
+                                }
+                                for (si, seg) in light.segments.iter().enumerate().rev() {
+                                    if !seg.enabled {
+                                        continue;
+                                    }
+                                    let [u0, v0, u1, v1] = seg.region;
+                                    if norm_x >= u0.min(u1) && norm_x <= u0.max(u1)
+                                        && norm_y >= v0.min(v1) && norm_y <= v0.max(v1)
+                                    {
+                                        new_selection = Some((oi, si));
+                                        break;
+                                    }
+                                }
+                                if new_selection.is_some() {
+                                    break;
+                                }
+                            }
+                            *selected_light_segment = new_selection;
                         }
                     }
                 }
@@ -1630,6 +1797,10 @@ mod egui_impl {
                         }); // ScrollArea::both
                 }); // ui.vertical (canvas column)
             });
+
+            if regions_dirty {
+                state.save_workspace();
+            }
 
             // Push warp edits to the projector's live warp stage (version-bumped,
             // so the projector re-applies only on an actual change).
@@ -2650,6 +2821,29 @@ mod egui_impl {
                                 light_dirty = true;
                             }
                         }
+
+                        // Activity meters
+                        if let Some(sampler_id) = light.sampler_id {
+                            if let Some(frame) = state.lighting_last_frames.get(&sampler_id) {
+                                ui.collapsing("Activity", |ui| {
+                                    if frame.is_empty() {
+                                        ui.label("No activity");
+                                    } else {
+                                        for (universe, data) in frame.iter() {
+                                            let max = data.iter().copied().max().unwrap_or(0) as f32 / 255.0;
+                                            ui.horizontal(|ui| {
+                                                ui.label(format!("U{}", universe));
+                                                ui.add(
+                                                    egui::ProgressBar::new(max)
+                                                        .text(format!("{:.0}", max * 255.0))
+                                                        .desired_width(ui.available_width()),
+                                                );
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        }
                     });
                 }
                 if light_dirty {
@@ -2696,28 +2890,64 @@ mod egui_impl {
                 let mut profile_dirty = false;
                 for (i, profile) in state.stage.fixture_profiles.iter_mut().enumerate() {
                     ui.push_id(format!("profile_{}", i), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(&profile.name);
-                            ui.label(format!("{}ch", profile.channels.len()));
-                            let roles: Vec<String> = profile
-                                .channels
-                                .iter()
-                                .map(|r| match r {
-                                    crate::stage::ChannelRole::Red => "R".to_string(),
-                                    crate::stage::ChannelRole::Green => "G".to_string(),
-                                    crate::stage::ChannelRole::Blue => "B".to_string(),
-                                    crate::stage::ChannelRole::White => "W".to_string(),
-                                    crate::stage::ChannelRole::Amber => "A".to_string(),
-                                    crate::stage::ChannelRole::Uv => "UV".to_string(),
-                                    crate::stage::ChannelRole::Dimmer => "D".to_string(),
-                                    crate::stage::ChannelRole::Static(v) => format!("S({})", v),
-                                })
-                                .collect();
-                            ui.label(roles.join(","));
-                            if !builtin_ids.contains(&profile.id) && ui.small_button("✖").clicked() {
-                                remove_profile = Some(i);
-                            }
-                        });
+                        let is_builtin = builtin_ids.contains(&profile.id);
+                        if is_builtin {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&profile.name).strong());
+                                ui.label(format!("{}ch", profile.channels.len()));
+                                ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
+                            });
+                        } else {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("name:");
+                                    if ui.text_edit_singleline(&mut profile.name).changed() {
+                                        profile_dirty = true;
+                                    }
+                                    ui.label(format!("{}ch", profile.channels.len()));
+                                    if ui.small_button("✖").clicked() {
+                                        remove_profile = Some(i);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("add:");
+                                    use crate::stage::ChannelRole;
+                                    let mut push = |role| {
+                                        profile.channels.push(role);
+                                        profile_dirty = true;
+                                    };
+                                    if ui.small_button("R").clicked() { push(ChannelRole::Red); }
+                                    if ui.small_button("G").clicked() { push(ChannelRole::Green); }
+                                    if ui.small_button("B").clicked() { push(ChannelRole::Blue); }
+                                    if ui.small_button("W").clicked() { push(ChannelRole::White); }
+                                    if ui.small_button("A").clicked() { push(ChannelRole::Amber); }
+                                    if ui.small_button("UV").clicked() { push(ChannelRole::Uv); }
+                                    if ui.small_button("D").clicked() { push(ChannelRole::Dimmer); }
+                                    if ui.small_button("S").clicked() { push(ChannelRole::Static(255)); }
+                                    if ui.small_button("✖ last").clicked() {
+                                        profile.channels.pop();
+                                        profile_dirty = true;
+                                    }
+                                    if ui.small_button("Clear").clicked() {
+                                        profile.channels.clear();
+                                        profile_dirty = true;
+                                    }
+                                });
+                                // Editable value for the last channel if it is Static.
+                                if let Some(crate::stage::ChannelRole::Static(ref mut v)) = profile.channels.last_mut() {
+                                    ui.horizontal(|ui| {
+                                        ui.label("static value:");
+                                        if ui.add(egui::DragValue::new(v).speed(1).range(0..=255)).changed() {
+                                            profile_dirty = true;
+                                        }
+                                    });
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("order:");
+                                    ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
+                                });
+                            });
+                        }
                     });
                 }
                 if let Some(i) = remove_profile {
