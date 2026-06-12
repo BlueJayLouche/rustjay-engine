@@ -52,6 +52,13 @@ pub use surface_import::{
 pub mod headless;
 pub use headless::HeadlessOutput;
 
+/// Atlas sample stage and pixel sampler for lighting output.
+pub mod sample_stage;
+pub use sample_stage::{AtlasLayout, AtlasTile, SampleStage};
+
+pub mod pixel_sampler;
+pub use pixel_sampler::{PixelSampler, SamplerId};
+
 /// Auto edge-blend computer (CPU-side overlap detection).
 #[cfg(feature = "auto-edge-blend")]
 pub mod auto_blend;

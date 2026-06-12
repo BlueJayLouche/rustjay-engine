@@ -679,14 +679,11 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_preview_textures(&mut self) {
-        let show_preview = self
-            .shared_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .show_preview;
-        if !show_preview {
-            return;
-        }
+        // Note: previously this early-returned when `show_preview` was false.
+        // The output preview texture now also backs custom egui tabs (e.g.
+        // vjarda's Stage canvas), which must show the live master regardless of
+        // whether the built-in preview panel is visible, so we always refresh.
+        // The extra input-preview copies when hidden are negligible.
 
         if self.use_egui {
             #[cfg(feature = "egui")]

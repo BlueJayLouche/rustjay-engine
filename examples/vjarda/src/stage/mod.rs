@@ -232,6 +232,12 @@ pub struct VardaStage {
     pub projectors: Vec<VardaProjector>,
     /// Headless (offscreen) outputs.
     pub headless_outputs: Vec<VardaHeadlessConfig>,
+    /// Pixel-mapped DMX lighting outputs (sACN / Art-Net).
+    #[serde(default)]
+    pub lighting_outputs: Vec<LightingOutput>,
+    /// Fixture profile library. Built-in profiles are injected on load if missing.
+    #[serde(default)]
+    pub fixture_profiles: Vec<FixtureProfile>,
     /// Index of the currently selected surface in the UI (not serialized).
     #[serde(skip)]
     pub selected_surface_index: usize,
@@ -274,6 +280,8 @@ impl VardaStage {
             canvas_size: [1920, 1080],
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
+            lighting_outputs: Vec::new(),
+            fixture_profiles: builtin_fixture_profiles(),
             selected_surface_index: 0,
             cached_source_options: Vec::new(),
             #[cfg(feature = "projection")]
@@ -298,7 +306,27 @@ impl VardaStage {
         stage.projectors.push(VardaProjector::default());
         stage.selected_surface_index = 0;
         stage.cached_source_options = Vec::new();
+        stage.fixture_profiles = builtin_fixture_profiles();
         stage
+    }
+
+    /// Ensure the built-in fixture profiles are present in the library. Call after
+    /// loading a scene so custom profiles are preserved and built-ins are restored.
+    pub fn ensure_builtin_fixture_profiles(&mut self) {
+        let builtins = builtin_fixture_profiles();
+        for builtin in builtins {
+            if !self.fixture_profiles.iter().any(|p| p.id == builtin.id) {
+                self.fixture_profiles.push(builtin);
+            }
+        }
+    }
+
+    /// Migrate pre-M3 single-segment lighting outputs into the multi-segment
+    /// `segments` table. Idempotent.
+    pub fn migrate_legacy_segments(&mut self) {
+        for output in &mut self.lighting_outputs {
+            output.migrate_legacy_segment();
+        }
     }
 
     /// Push dome config into the shared [`DomeSync`] so the projector's
@@ -491,6 +519,10 @@ pub enum OutputType {
     Ndi,
     /// Record to disk (requires recording backend).
     Recording,
+    /// Stream pixel-mapped colour as DMX over sACN (E1.31). Cross-platform.
+    Sacn,
+    /// Stream pixel-mapped colour as DMX over Art-Net. Cross-platform.
+    ArtNet,
     /// Publish frames via Syphon (macOS only).
     #[cfg(target_os = "macos")]
     Syphon,
@@ -508,6 +540,8 @@ impl OutputType {
             OutputType::Display => "Display",
             OutputType::Ndi => "NDI",
             OutputType::Recording => "Recording",
+            OutputType::Sacn => "sACN",
+            OutputType::ArtNet => "Art-Net",
             #[cfg(target_os = "macos")]
             OutputType::Syphon => "Syphon",
             #[cfg(target_os = "windows")]
@@ -550,6 +584,203 @@ impl Default for VardaHeadlessConfig {
             pushed: false,
         }
     }
+}
+
+/// A pixel-mapped DMX lighting output (sACN / Art-Net).
+///
+/// The master composite is sampled into one or more segments, each mapped to its
+/// own DMX start address, and streamed over the network.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightingOutput {
+    pub name: String,
+    pub enabled: bool,
+    /// Wire protocol: [`OutputType::Sacn`] or [`OutputType::ArtNet`].
+    #[serde(default)]
+    pub output_type: OutputType,
+    /// Network / transport settings.
+    #[serde(default)]
+    pub transport: LightingTransport,
+    /// Output-level gamma encode: sRGB display value → linear LED intensity.
+    #[serde(default = "default_gamma")]
+    pub gamma: f32,
+    /// Per-output segment patch table.
+    #[serde(default)]
+    pub segments: Vec<LightingSegment>,
+    /// Deprecated single segment, kept for backward-compatible scene loading.
+    /// Use [`LightingOutput::segments`] instead.
+    #[serde(default, rename = "segment")]
+    pub legacy_segment: Option<LightingSegment>,
+    /// Runtime sampler id for this output. Not serialized; rebuilt by reconcile.
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub sampler_id: Option<rustjay_projection::SamplerId>,
+}
+
+impl LightingOutput {
+    /// Migrate the pre-M3 single `segment` field into `segments` if needed.
+    pub fn migrate_legacy_segment(&mut self) {
+        if self.segments.is_empty() {
+            if let Some(seg) = self.legacy_segment.take() {
+                self.segments.push(seg);
+            }
+        }
+        if self.segments.is_empty() {
+            self.segments.push(LightingSegment::default());
+        }
+    }
+}
+
+impl Default for LightingOutput {
+    fn default() -> Self {
+        Self {
+            name: "Lighting".to_string(),
+            enabled: false,
+            output_type: OutputType::Sacn,
+            transport: LightingTransport::default(),
+            gamma: default_gamma(),
+            segments: vec![LightingSegment::default()],
+            legacy_segment: None,
+            #[cfg(feature = "projection")]
+            sampler_id: None,
+        }
+    }
+}
+
+fn default_gamma() -> f32 {
+    2.2
+}
+
+/// Network/transport settings for a [`LightingOutput`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightingTransport {
+    /// sACN priority (0–200; ignored by Art-Net).
+    pub priority: u8,
+    /// Output refresh rate in Hz (DMX practical ceiling ≈ 44).
+    pub fps: f32,
+    /// Unicast destination IPv4; empty = protocol default (sACN multicast /
+    /// Art-Net broadcast).
+    pub dest_ip: String,
+}
+
+impl Default for LightingTransport {
+    fn default() -> Self {
+        Self {
+            priority: 100,
+            fps: 44.0,
+            dest_ip: String::new(),
+        }
+    }
+}
+
+/// Sampling quality for a [`LightingSegment`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum SampleMode {
+    /// Nearest-pixel sample (fast, may alias).
+    #[default]
+    Point,
+    // /// Area-average downsample (deferred to M5).
+    // Box,
+}
+
+impl SampleMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SampleMode::Point => "Point",
+        }
+    }
+}
+
+/// Re-export scan-order types from `rustjay_lighting` so vjarda's scene format and
+/// the lighting crate share one source of truth.
+pub use rustjay_lighting::{Axis, Corner, ScanOrder};
+
+/// One sampling + patch segment: a fixture grid sampled from the master and
+/// patched to a DMX start address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightingSegment {
+    /// Display name for this segment.
+    #[serde(default = "default_segment_name")]
+    pub name: String,
+    /// Whether this segment contributes to the output.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Surface to pull pixel data from (by `VardaSurface::uuid`). When set, the
+    /// sampled region follows that surface's `uv_crop_rect` and `region` is
+    /// ignored. `None` = sample the master composite using `region` directly.
+    #[serde(default)]
+    pub source_surface: Option<String>,
+    /// Normalized source region `[u0, v0, u1, v1]` to sample from the master.
+    /// Used only when `source_surface` is `None`.
+    #[serde(default = "full_region")]
+    pub region: [f32; 4],
+    /// Fixture grid `[cols, rows]`; total fixtures = `cols * rows`.
+    pub grid: [u16; 2],
+    /// How to walk the fixture grid into on-wire order.
+    #[serde(default)]
+    pub scan: ScanOrder,
+    /// Sampling mode (point/box). Box is deferred to M5.
+    #[serde(default)]
+    pub sample_mode: SampleMode,
+    /// Fixture profile id. Built-in ids: `"rgb"`, `"grb"`, `"bgr"`, `"rgbw"`,
+    /// `"rgb_dimmer"`, `"dim_rgb"`. The profile determines the channel layout /
+    /// footprint.
+    #[serde(default = "default_profile_id")]
+    pub profile: String,
+    /// Deprecated; kept for backward-compatible scene loading. Footprint is now
+    /// derived from the referenced [`FixtureProfile`].
+    #[serde(default)]
+    pub footprint: u8,
+    /// 1-based DMX start universe.
+    pub start_universe: u16,
+    /// 1-based DMX start channel within the start universe.
+    pub start_channel: u16,
+    /// Per-segment colour adjustments applied after output gamma.
+    #[serde(default)]
+    pub color: SegmentColor,
+}
+
+impl Default for LightingSegment {
+    fn default() -> Self {
+        Self {
+            name: default_segment_name(),
+            enabled: true,
+            source_surface: None,
+            region: full_region(),
+            grid: [18, 1],
+            scan: ScanOrder::default(),
+            sample_mode: SampleMode::default(),
+            profile: default_profile_id(),
+            footprint: 3,
+            start_universe: 1,
+            start_channel: 1,
+            color: SegmentColor::default(),
+        }
+    }
+}
+
+fn default_segment_name() -> String {
+    "Segment".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn full_region() -> [f32; 4] {
+    [0.0, 0.0, 1.0, 1.0]
+}
+
+fn default_profile_id() -> String {
+    "rgb".to_string()
+}
+
+/// Re-export lighting vocabulary that is serde-compatible and shared with
+/// [`rustjay_lighting`]. Keeping one source of truth for fixture/channel types.
+pub use rustjay_lighting::{ChannelRole, FixtureProfile, SegmentColor, WhiteMode};
+
+/// Built-in fixture profiles shipped with vjarda.
+pub fn builtin_fixture_profiles() -> Vec<FixtureProfile> {
+    rustjay_lighting::builtin_profiles()
 }
 
 /// Live warp state shared between the GUI (writer) and the projector's

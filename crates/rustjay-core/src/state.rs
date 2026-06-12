@@ -1027,6 +1027,14 @@ pub struct EngineState {
     pub startup_webcam_device: Option<usize>,
     /// Whether preview windows are shown.
     pub show_preview: bool,
+    /// Raw value of the egui `TextureId` backing the live master-output preview,
+    /// published by the egui control GUI each time the preview texture is
+    /// (re)created. Custom egui tabs (e.g. vjarda's Stage tab) read this to draw
+    /// the live master output as a canvas background. `None` until the GUI is up,
+    /// or when not using the egui front-end. Reconstruct with
+    /// `egui::TextureId::User(id)` — `register_native_texture` always returns the
+    /// `User` variant. Not part of any preset/persistence.
+    pub stage_preview_texture_id: Option<u64>,
     /// Target render frame rate in frames per second.
     pub target_fps: u32,
     /// Output surface present mode.
@@ -1221,6 +1229,7 @@ impl EngineState {
             performance: Mutex::new(PerformanceMetrics::default()),
             startup_webcam_device: None,
             show_preview: true,
+            stage_preview_texture_id: None,
             target_fps: 60,
             present_mode: PresentMode::default(),
             ui_scale: 1.0,

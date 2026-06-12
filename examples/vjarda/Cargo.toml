@@ -27,6 +27,7 @@ rustjay-render = { workspace = true }
 rustjay-io     = { workspace = true }
 rustjay-api    = { workspace = true, optional = true }
 rustjay-projection = { workspace = true, optional = true }
+rustjay-lighting   = { workspace = true }
 wgpu           = { workspace = true }
 bytemuck       = { workspace = true }
 anyhow         = { workspace = true }

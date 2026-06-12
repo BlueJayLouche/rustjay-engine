@@ -5147,6 +5147,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustjay-lighting"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "log",
+ "serde",
+ "socket2 0.5.10",
+]
+
+[[package]]
 name = "rustjay-mixer"
 version = "0.1.0"
 dependencies = [
@@ -5726,9 +5736,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8bc2f3c53053f0a22d0cf3041127f7db7f5bb82dce5a4aecd151f55d368962"
+checksum = "4562c8aac5987c26e26bd8ade0c92dd0900b10ff0ecabd2ab4a59580fd3eec15"
 dependencies = [
  "block",
  "cocoa 0.26.1",
@@ -5745,9 +5755,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-metal"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f40d9a19f718b0798ca038e20eb4a260012032a55542147ad2ec8c3e8766bf47"
+checksum = "0f3f516ba34b3a23468516b29dab9940a9a8629fb426b302e71846e41da24f29"
 dependencies = [
  "cocoa 0.26.1",
  "core-foundation 0.10.1",
@@ -5764,9 +5774,9 @@ dependencies = [
 
 [[package]]
 name = "syphon-wgpu"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd95e68a8ff7db50b20708144c40d8a06dac289822e48ecdc25cbae68a3917ab"
+checksum = "d6b7cab222e4a63354424043254dc7c90350cacda906f72875c5157ff61ae848"
 dependencies = [
  "bytemuck",
  "cocoa 0.26.1",
@@ -6455,6 +6465,7 @@ dependencies = [
  "rustjay-engine",
  "rustjay-io",
  "rustjay-isf",
+ "rustjay-lighting",
  "rustjay-mixer",
  "rustjay-projection",
  "rustjay-render",

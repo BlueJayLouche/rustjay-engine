@@ -82,6 +82,20 @@ pub struct VardaAppState {
     #[serde(skip)]
     #[cfg(feature = "projection")]
     pub projection_handle: Option<std::sync::Arc<std::sync::Mutex<dyn std::any::Any + Send>>>,
+    /// Active DMX senders keyed by sampler id. Not serialized; (re)built by the
+    /// reconcile loop. Using the sampler id as the key keeps the sender attached
+    /// to its output even when outputs are reordered or removed.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub lighting_senders: std::collections::HashMap<rustjay_projection::SamplerId, rustjay_lighting::DmxSender>,
+    /// Latest submitted DMX frame per lighting output, mirrored for the UI activity meters.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub lighting_last_frames: std::collections::HashMap<rustjay_projection::SamplerId, rustjay_lighting::DmxFrame>,
+    /// Latest DMX patch overlap warnings, computed each frame for the UI.
+    #[serde(skip)]
+    #[cfg(feature = "projection")]
+    pub lighting_overlap_warnings: Vec<rustjay_lighting::Overlap>,
     /// Runtime deck creation queue (processed in `prepare()` where GPU resources are available).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -241,6 +255,12 @@ impl Default for VardaAppState {
             keymap: crate::keymap::Keymap::default_bindings(),
             #[cfg(feature = "projection")]
             projection_handle: None,
+            #[cfg(feature = "projection")]
+            lighting_senders: std::collections::HashMap::new(),
+            #[cfg(feature = "projection")]
+            lighting_last_frames: std::collections::HashMap::new(),
+            #[cfg(feature = "projection")]
+            lighting_overlap_warnings: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_decks: Vec::new(),
             #[cfg(feature = "mixer")]
@@ -255,6 +275,151 @@ impl Default for VardaAppState {
             sysmon_frame: 0,
         }
     }
+}
+
+/// Spawn a DMX transmitter for a lighting output's protocol + transport config.
+#[cfg(feature = "projection")]
+fn build_dmx_sender(
+    output_type: &crate::stage::OutputType,
+    transport: &crate::stage::LightingTransport,
+) -> std::io::Result<rustjay_lighting::DmxSender> {
+    use crate::stage::OutputType;
+    use rustjay_lighting::{ArtNetTransport, Dest, DmxTransport, SacnTransport};
+
+    let default_dest = |t: &OutputType| match t {
+        OutputType::ArtNet => Dest::Broadcast,
+        _ => Dest::Multicast,
+    };
+    let dest = if transport.dest_ip.trim().is_empty() {
+        default_dest(output_type)
+    } else {
+        match transport.dest_ip.trim().parse::<std::net::Ipv4Addr>() {
+            Ok(ip) => Dest::Unicast(ip),
+            Err(_) => default_dest(output_type),
+        }
+    };
+
+    let tx: Box<dyn DmxTransport> = match output_type {
+        OutputType::ArtNet => Box::new(ArtNetTransport::new(dest)?),
+        _ => Box::new(SacnTransport::new(dest, transport.priority, "vjarda")?),
+    };
+    Ok(rustjay_lighting::DmxSender::spawn(tx, transport.fps))
+}
+
+/// Build the atlas layout that packs all of an output's segments.
+#[cfg(feature = "projection")]
+/// Resolve the normalized region a segment samples: the referenced surface's
+/// `uv_crop_rect` when `source_surface` is set (and found), otherwise the
+/// segment's own `region`.
+#[cfg(feature = "projection")]
+fn segment_region(
+    seg: &crate::stage::LightingSegment,
+    surfaces: &[crate::stage::VardaSurface],
+) -> [f32; 4] {
+    match &seg.source_surface {
+        Some(uuid) => surfaces
+            .iter()
+            .find(|s| &s.uuid == uuid)
+            .map(|s| s.uv_crop_rect)
+            .unwrap_or(seg.region),
+        None => seg.region,
+    }
+}
+
+/// Resolve a segment's source texture override. When the segment references a
+/// surface whose source is a mixer channel, returns that channel's texture view
+/// (via `resolve_channel`) so the segment samples the channel directly instead
+/// of the master composite. Master/Domemaster/Deck sources return `None`
+/// (sample master).
+#[cfg(feature = "projection")]
+fn resolve_segment_source(
+    seg: &crate::stage::LightingSegment,
+    surfaces: &[crate::stage::VardaSurface],
+    resolve_channel: impl Fn(&str) -> Option<std::sync::Arc<wgpu::TextureView>>,
+) -> Option<std::sync::Arc<wgpu::TextureView>> {
+    let uuid = seg.source_surface.as_ref()?;
+    let surf = surfaces.iter().find(|s| &s.uuid == uuid)?;
+    match &surf.source {
+        crate::stage::SurfaceSource::Channel(ch) => resolve_channel(ch),
+        // Deck routing is not yet implemented (mirrors projector behaviour);
+        // Master/Domemaster sample the master composite at the surface's crop.
+        _ => None,
+    }
+}
+
+#[cfg(feature = "projection")]
+fn output_atlas_layout(
+    output: &crate::stage::LightingOutput,
+    surfaces: &[crate::stage::VardaSurface],
+) -> rustjay_projection::AtlasLayout {
+    let segs: Vec<_> = output
+        .segments
+        .iter()
+        .map(|s| {
+            (
+                [s.grid[0].max(1) as u32, s.grid[1].max(1) as u32],
+                segment_region(s, surfaces),
+            )
+        })
+        .collect();
+    rustjay_projection::AtlasLayout::from_segments(segs)
+}
+
+/// Map a BGRA8 atlas readback into a [`rustjay_lighting::DmxFrame`] for a
+/// lighting output. M3: multi-segment, profile-driven, scan-order aware.
+#[cfg(feature = "projection")]
+fn build_dmx_frame(
+    output: &crate::stage::LightingOutput,
+    profiles: &[crate::stage::FixtureProfile],
+    bgra: &[u8],
+    layout: &rustjay_projection::AtlasLayout,
+) -> rustjay_lighting::DmxFrame {
+    let mut frame = rustjay_lighting::DmxFrame::new();
+    for (tile, seg) in layout.tiles.iter().zip(output.segments.iter()) {
+        if !seg.enabled {
+            continue;
+        }
+        let profile = profiles
+            .iter()
+            .find(|p| p.id == seg.profile)
+            .unwrap_or_else(|| {
+                log::warn!(
+                    "[Lighting] profile '{}' not found; falling back to RGB",
+                    seg.profile
+                );
+                profiles
+                    .first()
+                    .expect("at least one fixture profile must exist")
+            });
+
+        let pixels = rustjay_lighting::demux_tile(
+            bgra,
+            layout.size[0],
+            [tile.offset[0], tile.offset[1]],
+            [tile.size[0], tile.size[1]],
+            seg.scan,
+        );
+
+        let footprint = profile.footprint();
+        let mut fixtures = Vec::with_capacity(pixels.len() * footprint);
+        for pixel in pixels {
+            fixtures.extend_from_slice(&rustjay_lighting::color_pipeline(
+                pixel,
+                output.gamma,
+                &seg.color,
+                profile,
+            ));
+        }
+
+        rustjay_lighting::pack_fixtures(
+            &mut frame,
+            footprint,
+            &fixtures,
+            seg.start_universe,
+            seg.start_channel,
+        );
+    }
+    frame
 }
 
 /// Build an `EffectInstance` + `Deck` from a library `SourceEntry`.
@@ -979,10 +1144,12 @@ impl EffectPlugin for VardaRootPlugin {
                             );
 
                             state.stage = loaded_stage;
+                            state.stage.ensure_builtin_fixture_profiles();
                             log::info!(
-                                "[Prepare] loaded stage: {} projectors, {} surfaces",
+                                "[Prepare] loaded stage: {} projectors, {} surfaces, {} fixture profiles",
                                 state.stage.projectors.len(),
-                                state.stage.surfaces.len()
+                                state.stage.surfaces.len(),
+                                state.stage.fixture_profiles.len()
                             );
 
                             // Restore runtime syncs.
@@ -1766,6 +1933,154 @@ impl EffectPlugin for VardaRootPlugin {
                         }
                     }
 
+                    // ── Lighting outputs (sACN / Art-Net) ───────────────────
+                    // One pixel sampler per lighting output (stable id), packing
+                    // all segments into an atlas. Each frame: render atlas →
+                    // readback → demux tiles in scan order → map RGB → patch per
+                    // segment into a DmxFrame → submit to the TX thread.
+                    {
+                        use std::collections::HashSet;
+
+                        let profiles = state.stage.fixture_profiles.clone();
+                        let mut active_ids = HashSet::new();
+                        let mut overlap_spans = Vec::new();
+
+                        // Lock the mixer once to resolve channel-sourced segments
+                        // to their channel textures (released at block end).
+                        #[cfg(feature = "mixer")]
+                        let mixer_guard = state.mixer.lock().ok();
+
+                        for lo in state.stage.lighting_outputs.iter_mut() {
+                            let layout = output_atlas_layout(lo, &state.stage.surfaces);
+                            let sampler_id = match lo.sampler_id {
+                                Some(id) => {
+                                    sub.update_pixel_sampler(id, layout);
+                                    id
+                                }
+                                None => {
+                                    let Some(id) = sub.add_pixel_sampler(layout) else {
+                                        continue;
+                                    };
+                                    lo.sampler_id = Some(id);
+                                    id
+                                }
+                            };
+                            active_ids.insert(sampler_id);
+
+                            // Per-segment source override: a surface sourced from a
+                            // mixer channel makes its segment sample that channel's
+                            // texture instead of the master composite.
+                            let tile_sources: Vec<Option<std::sync::Arc<wgpu::TextureView>>> = lo
+                                .segments
+                                .iter()
+                                .map(|seg| {
+                                    resolve_segment_source(seg, &state.stage.surfaces, |_ch| {
+                                        #[cfg(feature = "mixer")]
+                                        {
+                                            mixer_guard
+                                                .as_ref()
+                                                .and_then(|m| m.channel_texture(_ch))
+                                                .map(|t| {
+                                                    std::sync::Arc::new(t.texture.create_view(
+                                                        &wgpu::TextureViewDescriptor::default(),
+                                                    ))
+                                                })
+                                        }
+                                        #[cfg(not(feature = "mixer"))]
+                                        {
+                                            None
+                                        }
+                                    })
+                                })
+                                .collect();
+                            sub.set_sampler_tile_sources(sampler_id, &tile_sources);
+
+                            let want = lo.enabled
+                                && matches!(
+                                    lo.output_type,
+                                    OutputType::Sacn | OutputType::ArtNet
+                                );
+
+                            let has_sender = state.lighting_senders.contains_key(&sampler_id);
+                            if want && !has_sender {
+                                match build_dmx_sender(&lo.output_type, &lo.transport) {
+                                    Ok(sender) => {
+                                        state.lighting_senders.insert(sampler_id, sender);
+                                        engine.notify(
+                                            format!(
+                                                "{} output started: {}",
+                                                lo.output_type.label(),
+                                                lo.name
+                                            ),
+                                            rustjay_core::NotificationLevel::Success,
+                                            std::time::Duration::from_secs(3),
+                                        );
+                                    }
+                                    Err(e) => engine.notify(
+                                        format!("{} output failed: {e}", lo.output_type.label()),
+                                        rustjay_core::NotificationLevel::Error,
+                                        std::time::Duration::from_secs(4),
+                                    ),
+                                }
+                            } else if !want && has_sender {
+                                if let Some(sender) = state.lighting_senders.remove(&sampler_id) {
+                                    sender.shutdown();
+                                }
+                                state.lighting_last_frames.remove(&sampler_id);
+                            }
+
+                            if want {
+                                if let Some((px, layout)) = sub.pixel_sampler_atlas(sampler_id) {
+                                    let frame = build_dmx_frame(
+                                        lo,
+                                        &profiles,
+                                        px,
+                                        layout,
+                                    );
+                                    state.lighting_last_frames.insert(sampler_id, frame.clone());
+                                    if let Some(sender) = state.lighting_senders.get(&sampler_id) {
+                                        sender.submit(frame);
+                                    }
+                                }
+                                sink_labels.push(lo.output_type.label().to_string());
+                            }
+
+                            // Collect patch spans for overlap detection.
+                            for seg in lo.segments.iter().filter(|s| s.enabled) {
+                                let profile = profiles.iter().find(|p| p.id == seg.profile);
+                                let footprint = profile.map(|p| p.channels.len()).unwrap_or(3);
+                                let count = (seg.grid[0] as usize) * (seg.grid[1] as usize);
+                                overlap_spans.extend(rustjay_lighting::segment_spans(
+                                    lo.name.clone(),
+                                    seg.name.clone(),
+                                    seg.start_universe,
+                                    seg.start_channel,
+                                    footprint,
+                                    count,
+                                ));
+                            }
+                        }
+
+                        // Stop senders for outputs that no longer exist.
+                        let stale_senders: Vec<_> = state
+                            .lighting_senders
+                            .keys()
+                            .filter(|id| !active_ids.contains(id))
+                            .copied()
+                            .collect();
+                        for id in stale_senders {
+                            if let Some(sender) = state.lighting_senders.remove(&id) {
+                                sender.shutdown();
+                            }
+                            state.lighting_last_frames.remove(&id);
+                        }
+                        // Remove samplers for outputs that no longer exist.
+                        sub.remove_stale_pixel_samplers(&active_ids);
+
+                        // Compute overlap warnings for the UI.
+                        state.lighting_overlap_warnings = rustjay_lighting::find_overlaps(&overlap_spans);
+                    }
+
                     // Publish active output sinks (projectors + headless) for the
                     // top-bar status strip.
                     if let Ok(mut sinks) = engine.output_sinks.lock() {
@@ -2039,16 +2354,12 @@ impl EffectPlugin for VardaRootPlugin {
 
                     let source_key = surface.map(|s| s.source.label());
 
-                    // Compute UV transform for Mapped surfaces with Master source.
-                    let (uv_scale, uv_offset) = surface
-                        .filter(|s| s.source == SurfaceSource::Master && s.content_mapping == crate::stage::ContentMapping::Mapped)
-                        .map(|s| {
-                            let bb = s.bounding_box();
-                            let scale = [bb[2] - bb[0], bb[3] - bb[1]];
-                            let offset = [bb[0], bb[1]];
-                            (scale, offset)
-                        })
-                        .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
+                    // Cropping is driven solely by the surface's `uv_crop_rect`
+                    // (its position/size box over the master, kept in sync with
+                    // the surface rectangle in the Stage tab). The cropped region
+                    // fills the output quad, matching the Stage-tab canvas.
+                    let uv_scale = [1.0, 1.0];
+                    let uv_offset = [0.0, 0.0];
 
                     let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
 

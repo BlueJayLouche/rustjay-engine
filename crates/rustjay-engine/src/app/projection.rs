@@ -3,7 +3,7 @@
 //! Only compiled when the `projection` feature is enabled.
 
 use rustjay_projection::stage::ProjectionStage;
-use rustjay_projection::HeadlessOutput;
+use rustjay_projection::{AtlasLayout, HeadlessOutput, PixelSampler, SamplerId};
 use rustjay_io::{OutputManager, RecorderCodec};
 use std::path::Path;
 use std::sync::Arc;
@@ -514,6 +514,12 @@ pub struct ProjectionSubsystem {
     /// Per-headless output managers (recorder + NDI/Syphon/Spout/V4L2 senders),
     /// fed the BGRA offscreen texture each frame. Parallel to `headless_outputs`.
     headless_managers: Vec<Option<OutputManager>>,
+    /// Pixel samplers for lighting output: one atlas per lighting output that
+    /// packs all of its segments into a single small BGRA8 readback. Separate
+    /// from `headless_outputs` so lighting samplers don't appear as user outputs.
+    sampler_outputs: std::collections::HashMap<SamplerId, PixelSampler>,
+    /// Counter for generating stable sampler ids.
+    next_sampler_id: u64,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
@@ -548,6 +554,8 @@ impl ProjectionSubsystem {
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
             headless_managers: Vec::new(),
+            sampler_outputs: std::collections::HashMap::new(),
+            next_sampler_id: 1,
             pending: Vec::new(),
             last_render: None,
             device: None,
@@ -759,6 +767,59 @@ impl ProjectionSubsystem {
         self.headless_outputs.get(index)?.latest_frame()
     }
 
+    /// Add a pixel sampler for the given atlas layout. Returns a stable id that
+    /// survives output reordering/removal, or `None` if the GPU device is not yet
+    /// available.
+    pub fn add_pixel_sampler(&mut self, layout: AtlasLayout) -> Option<SamplerId> {
+        let Some(device) = self.device.clone() else {
+            log::error!("add_pixel_sampler called before create_pending — no GPU device available");
+            return None;
+        };
+        let id = SamplerId(self.next_sampler_id);
+        self.next_sampler_id += 1;
+        self.sampler_outputs.insert(id, PixelSampler::new(&device, layout));
+        Some(id)
+    }
+
+    /// Update the atlas layout of an existing pixel sampler.
+    pub fn update_pixel_sampler(&mut self, id: SamplerId, layout: AtlasLayout) {
+        let Some(device) = self.device.clone() else {
+            return;
+        };
+        if let Some(s) = self.sampler_outputs.get_mut(&id) {
+            s.set_layout(&device, layout);
+        }
+    }
+
+    /// Set per-segment source view overrides for a sampler (aligned to its atlas
+    /// tiles). Lets each segment sample its surface's source texture (e.g. a
+    /// mixer channel) instead of the master composite. `None` entries fall back
+    /// to master.
+    pub fn set_sampler_tile_sources(
+        &mut self,
+        id: SamplerId,
+        sources: &[Option<Arc<wgpu::TextureView>>],
+    ) {
+        if let Some(s) = self.sampler_outputs.get_mut(&id) {
+            s.set_tile_sources(sources);
+        }
+    }
+
+    /// Remove a pixel sampler by id.
+    pub fn remove_pixel_sampler(&mut self, id: SamplerId) {
+        self.sampler_outputs.remove(&id);
+    }
+
+    /// Remove all pixel samplers whose ids are not in `active`.
+    pub fn remove_stale_pixel_samplers(&mut self, active: &std::collections::HashSet<SamplerId>) {
+        self.sampler_outputs.retain(|id, _| active.contains(id));
+    }
+
+    /// The latest BGRA8 readback and atlas layout for a sampler, if available.
+    pub fn pixel_sampler_atlas(&self, id: SamplerId) -> Option<(&[u8], &AtlasLayout)> {
+        self.sampler_outputs.get(&id)?.latest_atlas()
+    }
+
     /// Render all projector and headless outputs from the given source texture.
     /// Throttled to ~60 Hz to avoid burning CPU/GPU on unbounded polls.
     pub fn render(
@@ -796,6 +857,12 @@ impl ProjectionSubsystem {
                     mgr.submit_frame(tex, device, queue);
                 }
             }
+        }
+        // Pixel samplers: pack each output's segments into an atlas, render it,
+        // and enqueue a readback. `pixel_sampler_atlas` exposes the result to the
+        // lighting reconcile loop.
+        for s in self.sampler_outputs.values_mut() {
+            s.render(device, queue, source_view, source_texture, source_size);
         }
     }
 
