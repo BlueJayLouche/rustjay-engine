@@ -587,12 +587,12 @@ impl EguiControlGui {
         let now = std::time::Instant::now();
         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         let notifs: Vec<rustjay_core::Notification> = {
-            if let Ok(mut guard) = state.notifications.lock() {
+            match state.notifications.lock() { Ok(mut guard) => {
                 guard.retain(|n| n.expires_at > now);
                 guard.clone()
-            } else {
+            } _ => {
                 Vec::new()
-            }
+            }}
         };
         drop(state);
 

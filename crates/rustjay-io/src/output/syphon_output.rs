@@ -45,7 +45,7 @@ impl SyphonOutput {
         self.width = width;
         self.height = height;
 
-        if let (Some(ref device), Some(ref queue)) = (&self.wgpu_device, &self.wgpu_queue) {
+        if let (Some(device), Some(queue)) = (&self.wgpu_device, &self.wgpu_queue) {
             match syphon_wgpu::SyphonWgpuOutput::new(
                 &self.server_name,
                 device,

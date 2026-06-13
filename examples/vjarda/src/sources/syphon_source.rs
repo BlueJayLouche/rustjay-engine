@@ -39,18 +39,18 @@ impl SyphonSource {
 impl EffectInstance for SyphonSource {
     fn prepare(&mut self, _engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         if !self.initialized {
-            if let Err(e) = self
+            match self
                 .receiver
                 .connect_by_uuid(&self.server_uuid, &self.server_name)
-            {
+            { Err(e) => {
                 log::warn!("[SyphonSource] Failed to connect: {}", e);
-            } else {
+            } _ => {
                 self.initialized = true;
                 log::info!(
                     "[SyphonSource] Connected to '{}'",
                     self.server_name
                 );
-            }
+            }}
         }
         self.receiver.try_receive_texture(device, queue);
     }

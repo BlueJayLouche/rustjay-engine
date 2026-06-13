@@ -27,7 +27,7 @@ members = [
     "examples/vjarda",
     "examples/decklink",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.dependencies]
 # Core utilities

@@ -640,7 +640,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         self.check_mesh_dirty(device, app_state);
 
         // Run compute pass if the plugin provides a compute shader.
-        if let (Some(ref pipeline), Some(ref bind_group)) =
+        if let (Some(pipeline), Some(bind_group)) =
             (&self.compute_pipeline, &self.compute_bind_group)
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -837,8 +837,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             }
             // Invalidate generation keys so bind groups are rebuilt even if
             // input_generation hasn't changed this frame (CORR-3).
-            for gen in &mut self.cached_pass_texture_gens {
-                *gen = u64::MAX;
+            for cached_gen in &mut self.cached_pass_texture_gens {
+                *cached_gen = u64::MAX;
             }
             for i in 0..needed_intermediates {
                 self.intermediate_textures

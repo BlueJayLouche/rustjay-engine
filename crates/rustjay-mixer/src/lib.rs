@@ -699,7 +699,7 @@ impl EffectInstance for Mixer {
         let active: Vec<usize> = eff
             .iter()
             .enumerate()
-            .filter(|(_, &op)| op >= 0.001)
+            .filter(|&(_, &op)| op >= 0.001)
             .map(|(i, _)| i)
             .collect();
 

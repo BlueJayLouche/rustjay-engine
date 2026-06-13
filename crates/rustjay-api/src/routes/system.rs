@@ -36,7 +36,7 @@ pub async fn health() -> impl IntoResponse {
 /// guard first so the inner lock is independent of (and outlives) the outer
 /// guard, and drops the engine lock before serialization.
 macro_rules! try_engine {
-    ($state:expr) => {{
+    ($state:expr_2021) => {{
         let engine_arc = match $state.lock() {
             Ok(guard) => match guard.engine_state.as_ref() {
                 Some(engine) => engine.clone(),

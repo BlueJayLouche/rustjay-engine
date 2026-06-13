@@ -689,7 +689,7 @@ impl ProjectionSubsystem {
                     winit::event::WindowEvent::CursorEntered { .. } => {
                         proj.hide_cursor();
                     }
-                    winit::event::WindowEvent::KeyboardInput { ref event, .. } => {
+                    winit::event::WindowEvent::KeyboardInput { event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) =
                             &event.logical_key
                         {

@@ -557,7 +557,7 @@ impl<P: EffectPlugin> App<P> {
                     midi_learn_active,
                     midi_learning_param_name,
                 ) = {
-                    if let Ok(state) = self.shared_state.lock() {
+                    match self.shared_state.lock() { Ok(state) => {
                         (
                             state.osc_enabled,
                             state.osc_port,
@@ -567,13 +567,13 @@ impl<P: EffectPlugin> App<P> {
                             state.midi_learn_active,
                             state.midi_learning_param_name.clone(),
                         )
-                    } else {
+                    } _ => {
                         (false, 9000, false, None, vec![], false, None)
-                    }
+                    }}
                 };
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
                     if let Some(ref m) = self.midi_manager {
-                        if let Ok(midi_st) = m.state().lock() {
+                        match m.state().lock() { Ok(midi_st) => {
                             midi_st
                                 .mappings
                                 .iter()
@@ -587,9 +587,9 @@ impl<P: EffectPlugin> App<P> {
                                     max_value: m.max_value,
                                 })
                                 .collect()
-                        } else {
+                        } _ => {
                             vec![]
-                        }
+                        }}
                     } else {
                         vec![]
                     };

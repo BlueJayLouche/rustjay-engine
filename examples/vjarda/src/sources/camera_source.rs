@@ -222,20 +222,19 @@ impl EffectInstance for CameraSource {
         let mut session = self.session.lock().unwrap();
         if !self.started {
             if !session.manager.is_active() {
-                if let Err(e) =
-                    session
+                match session
                         .manager
                         .start_webcam(self.device_index, self.width, self.height, 30)
-                {
+                { Err(e) => {
                     log::warn!(
                         "CameraSource failed to start webcam {}: {}",
                         self.device_index,
                         e
                     );
-                } else {
+                } _ => {
                     self.started = true;
                     log::info!("CameraSource started webcam {}", self.device_index);
-                }
+                }}
             } else {
                 self.started = true;
                 log::info!("CameraSource joined existing webcam {}", self.device_index);

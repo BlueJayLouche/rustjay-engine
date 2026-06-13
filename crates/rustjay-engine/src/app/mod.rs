@@ -564,11 +564,11 @@ impl<P: EffectPlugin> App<P> {
         if let Ok(state) = self.shared_state.lock() {
             self.config_manager.settings = AppSettings::from_state(&state);
         }
-        if let Err(e) = self.config_manager.save() {
+        match self.config_manager.save() { Err(e) => {
             log::error!("Failed to save settings: {}", e);
-        } else {
+        } _ => {
             log::info!("Settings saved");
-        }
+        }}
     }
 }
 

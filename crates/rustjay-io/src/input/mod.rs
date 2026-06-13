@@ -466,7 +466,7 @@ impl InputManager {
         let device = self.syphon_device.clone();
         let queue = self.syphon_queue.clone();
 
-        if let (Some(device), Some(queue)) = (device, queue) {
+        match (device, queue) { (Some(device), Some(queue)) => {
             self.stop();
 
             let mut receiver = SyphonInputReceiver::new();
@@ -483,11 +483,11 @@ impl InputManager {
                 server_uuid
             );
             Ok(())
-        } else {
+        } _ => {
             Err(anyhow::anyhow!(
                 "InputManager not initialized with wgpu device/queue"
             ))
-        }
+        }}
     }
 
     /// Start Syphon (stub on non-macOS)

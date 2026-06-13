@@ -262,11 +262,11 @@ impl<P: EffectPlugin> App<P> {
                             state.ndi_output.include_alpha,
                         )
                     };
-                    if let Err(e) = engine.start_ndi_output(&name, include_alpha) {
+                    match engine.start_ndi_output(&name, include_alpha) { Err(e) => {
                         log::error!("Failed to start NDI output: {:?}", e);
-                    } else {
+                    } _ => {
                         lock(&self.shared_state).ndi_output.is_active = true;
-                    }
+                    }}
                 }
             }
             #[cfg(feature = "ndi")]
@@ -280,11 +280,11 @@ impl<P: EffectPlugin> App<P> {
             OutputCommand::StartSyphon => {
                 if let Some(ref mut engine) = self.output_engine {
                     let name = lock(&self.shared_state).syphon_output.server_name.clone();
-                    if let Err(e) = engine.start_syphon_output(&name) {
+                    match engine.start_syphon_output(&name) { Err(e) => {
                         log::error!("Failed to start Syphon output: {:?}", e);
-                    } else {
+                    } _ => {
                         lock(&self.shared_state).syphon_output.enabled = true;
-                    }
+                    }}
                 }
             }
             #[cfg(target_os = "macos")]
@@ -336,11 +336,11 @@ impl<P: EffectPlugin> App<P> {
                 if let Some(ref mut engine) = self.output_engine {
                     let fps = lock(&self.shared_state).target_fps as f32;
                     let p = std::path::PathBuf::from(path);
-                    if let Err(e) = engine.start_recording(&p, fps, codec) {
+                    match engine.start_recording(&p, fps, codec) { Err(e) => {
                         log::error!("Failed to start recording: {}", e);
-                    } else {
+                    } _ => {
                         lock(&self.shared_state).recording_active = true;
-                    }
+                    }}
                 }
             }
             OutputCommand::StopRecording => {
@@ -579,11 +579,11 @@ impl<P: EffectPlugin> App<P> {
         match command {
             OscCommand::Start => {
                 if let Some(ref mut server) = self.osc_server {
-                    if let Err(e) = server.start() {
+                    match server.start() { Err(e) => {
                         log::error!("Failed to start OSC server: {}", e);
-                    } else {
+                    } _ => {
                         lock(&self.shared_state).osc_enabled = true;
-                    }
+                    }}
                 }
             }
             OscCommand::Stop => {
@@ -714,9 +714,9 @@ impl<P: EffectPlugin> App<P> {
         match command {
             WebCommand::Start => {
                 if let Some(ref mut server) = self.web_server {
-                    if let Err(e) = server.start() {
+                    match server.start() { Err(e) => {
                         log::error!("Failed to start web server: {}", e);
-                    } else {
+                    } _ => {
                         let token = server.get_token();
                         let full_url = server.get_full_url();
                         let mut state = lock(&self.shared_state);
@@ -724,7 +724,7 @@ impl<P: EffectPlugin> App<P> {
                         state.web_token = token;
                         state.web_full_url = full_url.clone();
                         log::info!("Web server started — access at {}", full_url);
-                    }
+                    }}
                 }
             }
             WebCommand::Stop => {

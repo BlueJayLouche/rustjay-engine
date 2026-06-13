@@ -404,11 +404,11 @@ impl ControlGui {
             ui.text(&url);
 
             if ui.button("Copy URL to Clipboard") {
-                if let Err(e) = crate::control_gui::copy_to_clipboard(&url) {
+                match crate::control_gui::copy_to_clipboard(&url) { Err(e) => {
                     log::warn!("Failed to copy URL to clipboard: {}", e);
-                } else {
+                } _ => {
                     ui.tooltip_text("URL copied!");
-                }
+                }}
             }
 
             ui.separator();

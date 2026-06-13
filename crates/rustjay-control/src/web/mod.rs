@@ -743,14 +743,14 @@ impl WebServer {
 
     /// Get the server URL (no token)
     pub fn get_url(&self) -> String {
-        if let Ok(state) = self.state.lock() {
+        match self.state.lock() { Ok(state) => {
             format!(
                 "http://{}:{}/{}",
                 state.config.host, state.config.port, state.config.app_name
             )
-        } else {
+        } _ => {
             String::new()
-        }
+        }}
     }
 
     /// Get the bearer token.
@@ -763,15 +763,15 @@ impl WebServer {
 
     /// Get the full access URL including the auth token, using the actual local IP.
     pub fn get_full_url(&self) -> String {
-        if let Ok(state) = self.state.lock() {
+        match self.state.lock() { Ok(state) => {
             let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
             format!(
                 "http://{}:{}/{}?token={}",
                 ip, state.config.port, state.config.app_name, state.bearer_token,
             )
-        } else {
+        } _ => {
             String::new()
-        }
+        }}
     }
 
     /// Live-update the LAN trust setting without restarting the server.
@@ -1007,7 +1007,7 @@ fn inject_token_into_html(html: &str, token: &str, app_name: &str) -> String {
 }
 
 /// Response with proper content type for HTML
-async fn index_handler(html: &str) -> impl IntoResponse {
+async fn index_handler(html: &str) -> impl IntoResponse + use<> {
     (
         [
             (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
