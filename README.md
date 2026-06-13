@@ -138,15 +138,11 @@ cargo run -p webapp        # Web control panel (open http://localhost:3000)
 
 | Platform | Notes |
 |----------|-------|
-| macOS    | Metal GPU. Syphon I/O via [`syphon-rs`](https://github.com/BlueJayLouche/syphon-rs). Requires [Syphon.framework](https://github.com/Syphon/Syphon-Framework) installed in `/Library/Frameworks/`. |
+| macOS    | Metal GPU. Syphon I/O via [`syphon-rs`](https://github.com/BlueJayLouche/syphon-rs) — framework bundled, no separate install needed. |
 | Windows  | Vulkan or DX12. Spout I/O via DirectX interop. |
 | Linux    | Vulkan. V4L2 loopback output. |
 
 NDI requires the [NDI SDK](https://ndi.video/download-ndi-sdk/) installed and the `ndi` feature enabled (default on).
-
-### macOS: installing Syphon
-
-Download and install [Syphon.framework](https://github.com/Syphon/Syphon-Framework/releases) into `/Library/Frameworks/`, or install a Syphon-aware app (Resolume, VDMX, MadMapper) which bundles it.
 
 ## Tempo sync
 
