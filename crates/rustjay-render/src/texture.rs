@@ -1,7 +1,4 @@
-//! # Texture Utilities
-//!
-//! Helper types for wgpu texture management.
-//! All textures use BGRA8 format for native macOS compatibility.
+//! Texture types for wgpu. All textures use BGRA8 format.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -10,17 +7,12 @@ static TEXTURE_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// A GPU texture with its view, sampler, and dimensions.
 pub struct Texture {
-    /// Underlying wgpu texture.
     pub texture: wgpu::Texture,
-    /// Default view of the texture.
     pub view: wgpu::TextureView,
-    /// Sampler for the texture.
     pub sampler: wgpu::Sampler,
-    /// Width in pixels.
     pub width: u32,
-    /// Height in pixels.
     pub height: u32,
-    /// Monotonic generation bumped on every new allocation.
+    /// Monotonic counter; bumped on every allocation for cache-key use.
     pub generation: u64,
 }
 
@@ -199,18 +191,14 @@ impl Texture {
     }
 }
 
-/// Wrapper that manages engine input textures, including external sources.
+/// Manages an engine input texture, including external (Syphon/NDI) sources.
 pub struct InputTexture {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    /// Owned texture, if any.
     pub texture: Option<Texture>,
     has_data: bool,
     ext_view: Option<wgpu::TextureView>,
     ext_sampler: Option<wgpu::Sampler>,
-    /// Generation counter bumped when the texture changes.
-    /// Drawn from the global `TEXTURE_GEN` so no two input textures can share
-    /// a generation (prevents stale cache hits on slot switching).
     pub texture_generation: u64,
 }
 
@@ -393,7 +381,6 @@ impl InputTexture {
 
 /// Texture that holds the previous frame's output for feedback effects.
 pub struct PreviousFrameTexture {
-    /// The underlying texture.
     pub texture: Texture,
 }
 

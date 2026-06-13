@@ -1,18 +1,4 @@
-//! [`EffectInstance`] adapter for [`EffectPlugin`]s (Phase B0.2).
-//!
-//! See `PHASE_B_ROADMAP.md` §2 and the `EffectInstance` docs in `rustjay-core`.
-//!
-//! ## Why a wrapper, not `impl EffectInstance for PluginRenderer<P>`
-//!
-//! An `EffectInstance` is **self-contained**: its `prepare`/`render_to` methods
-//! take no `app_state`, because a boxed effect must own everything it needs to
-//! render. But `PluginRenderer<P>` does **not** own the plugin's state — today
-//! `app_state: P::State` lives in the engine's `App` struct
-//! (`rustjay-engine/src/app/mod.rs:178`) and is threaded into
-//! `PluginRenderer::render(…, app_state, …)` from the caller.
-//!
-//! [`EffectNode<P>`] closes that gap: it bundles the `PluginRenderer<P>` with the
-//! `P::State` it drives, so the pair satisfies the erased, state-free trait.
+//! [`EffectInstance`] adapter that bundles a [`PluginRenderer<P>`] with its owned state.
 
 use rustjay_core::{
     EffectInput, EffectInstance, EffectPlugin, EngineState, ParameterDescriptor, RenderCtx,
@@ -21,18 +7,7 @@ use rustjay_core::{
 
 use crate::plugin_renderer::PluginRenderer;
 
-/// A boxable, nestable effect: a [`PluginRenderer<P>`] plus the [`P::State`] it
-/// renders from, exposed through the object-safe [`EffectInstance`] trait.
-///
-/// ```ignore
-/// // One channel of a mixer (B3):
-/// let mut node: Box<dyn EffectInstance> =
-///     Box::new(EffectNode::new(MyEffect, "channel A", &device, &queue, &engine));
-/// node.prepare(&engine, &device, &queue);
-/// node.render_to(&mut ctx, &inputs, &target_view, &engine);
-/// ```
-///
-/// [`P::State`]: rustjay_core::EffectPlugin::State
+/// Bundles a [`PluginRenderer<P>`] with its owned state, satisfying [`EffectInstance`].
 pub struct EffectNode<P: EffectPlugin> {
     renderer: PluginRenderer<P>,
     state: P::State,
@@ -75,12 +50,6 @@ impl<P: EffectPlugin> EffectNode<P> {
         &self.renderer.plugin
     }
 
-    /// Set the parameter prefix used when this effect looks up engine params.
-    ///
-    /// When non-empty, [`EffectNode::render_to`] temporarily sets this prefix
-    /// on the [`EngineState::param_lookup_prefix`] field so the nested plugin's
-    /// `build_uniforms` can use bare IDs (e.g. `"red"`) while the engine stores
-    /// the value under the fully-qualified name (e.g. `"ch_a_red"`).
     pub fn set_param_prefix(&mut self, prefix: &str) {
         self.param_prefix = prefix.to_string();
     }
