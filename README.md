@@ -138,7 +138,7 @@ cargo run -p webapp        # Web control panel (open http://localhost:3000)
 
 | Platform | Notes |
 |----------|-------|
-| macOS    | Metal GPU. Syphon I/O via [`syphon-rs`](https://crates.io/crates/syphon-rs) — framework bundled, no separate install needed. |
+| macOS    | Metal GPU. Syphon I/O via [`syphon-core`](https://crates.io/crates/syphon-core) / [`syphon-wgpu`](https://crates.io/crates/syphon-wgpu) 0.2 — framework bundled, no separate install needed. |
 | Windows  | Vulkan or DX12. Spout I/O via DirectX interop. |
 | Linux    | Vulkan. V4L2 loopback output. |
 
