@@ -21,6 +21,7 @@
 // <some change so we can call this 0.10.4>
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(unused, deprecated, unexpected_cfgs)]
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[macro_use]

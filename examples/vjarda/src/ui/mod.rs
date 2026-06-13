@@ -28,6 +28,7 @@ impl Default for MixerTab {
 enum AddSourceTab {
     File,
     Camera,
+    #[cfg(feature = "ndi")]
     Ndi,
     Syphon,
 }
@@ -39,6 +40,7 @@ pub struct DeckTab {
     add_tab: AddSourceTab,
     file_path: String,
     selected_camera_index: usize,
+    #[cfg(feature = "ndi")]
     selected_ndi_index: usize,
     selected_syphon_index: usize,
     /// Async result from the native file picker (source files).
@@ -54,6 +56,7 @@ impl Default for DeckTab {
             add_tab: AddSourceTab::File,
             file_path: String::new(),
             selected_camera_index: 0,
+            #[cfg(feature = "ndi")]
             selected_ndi_index: 0,
             selected_syphon_index: 0,
             pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
