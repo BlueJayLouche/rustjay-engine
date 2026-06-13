@@ -7,7 +7,6 @@ use crate::stage::ProjectionStage;
 use rustjay_core::RenderCtx;
 use wgpu::util::DeviceExt;
 
-/// Uniform buffer for blit UV transform.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlitParams {
@@ -16,18 +15,14 @@ struct BlitParams {
     uv_crop: [f32; 4],
 }
 
-/// Fullscreen vertex with position and UV.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlitVertex {
-    /// Clip-space position.
     pub position: [f32; 2],
-    /// Texture coordinates.
     pub texcoord: [f32; 2],
 }
 
 impl BlitVertex {
-    /// wgpu vertex buffer layout descriptor.
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
@@ -48,7 +43,6 @@ impl BlitVertex {
     }
 }
 
-/// A fullscreen-triangle pipeline that samples a source texture into a target.
 pub struct BlitPipeline {
     pub(crate) pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -58,7 +52,6 @@ pub struct BlitPipeline {
 }
 
 impl BlitPipeline {
-    /// Create a new blit pipeline for the given target format.
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Projection Blit Shader"),
@@ -162,7 +155,6 @@ impl BlitPipeline {
         }
     }
 
-    /// Update the UV transform and crop for the blit shader.
     pub fn set_uv_transform(&self, queue: &wgpu::Queue, scale: [f32; 2], offset: [f32; 2], uv_crop: [f32; 4]) {
         queue.write_buffer(
             &self.params_buffer,
@@ -175,7 +167,6 @@ impl BlitPipeline {
         );
     }
 
-    /// Create a bind group sampling `source_view` with the default linear sampler.
     pub fn create_bind_group(
         &self,
         device: &wgpu::Device,
@@ -184,7 +175,6 @@ impl BlitPipeline {
         self.create_bind_group_with_sampler(device, source_view, &self.sampler)
     }
 
-    /// Create a bind group sampling `source_view` with the nearest sampler.
     pub fn create_bind_group_nearest(
         &self,
         device: &wgpu::Device,
@@ -193,8 +183,7 @@ impl BlitPipeline {
         self.create_bind_group_with_sampler(device, source_view, &self.sampler_nearest)
     }
 
-    /// Create a bind group with the nearest sampler and a caller-supplied
-    /// uniform buffer (e.g. per-tile params in an atlas sampler).
+    /// Nearest sampler with a caller-supplied uniform buffer (e.g. per-tile atlas params).
     pub fn create_bind_group_nearest_with_uniform(
         &self,
         device: &wgpu::Device,
@@ -245,7 +234,6 @@ impl BlitPipeline {
         })
     }
 
-    /// Blit `source` (via bind_group) into `dest_view` using the shared vertex buffer.
     pub fn blit(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -276,10 +264,7 @@ impl BlitPipeline {
     }
 }
 
-/// Passthrough projection stage: copies input to output unchanged.
-///
-/// For snapshot tests, uses **nearest** sampling at matched resolution so the
-/// output is bit-exact (REQ-08.6).
+/// Uses nearest sampling for bit-exact snapshot tests (REQ-08.6).
 pub struct IdentityStage {
     blit: BlitPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -288,7 +273,6 @@ pub struct IdentityStage {
 }
 
 impl IdentityStage {
-    /// Create a new identity stage.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let blit = BlitPipeline::new(device, format);
         let vertices: &[BlitVertex] = &[

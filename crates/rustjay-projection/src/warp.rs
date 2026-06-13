@@ -29,7 +29,6 @@ pub struct WarpMesh {
 }
 
 impl WarpMesh {
-    /// Create an identity mesh (no warp) with the given grid dimensions.
     pub fn identity(cols: u32, rows: u32) -> Self {
         let mut points = Vec::with_capacity((cols * rows) as usize);
         for r in 0..rows {
@@ -72,7 +71,6 @@ impl WarpMesh {
         }
     }
 
-    /// Check if this mesh is an identity warp (positions == UVs).
     pub fn is_identity(&self) -> bool {
         self.points.iter().all(|p| {
             (p.position[0] - p.uv[0]).abs() < 1e-6 && (p.position[1] - p.uv[1]).abs() < 1e-6
@@ -94,19 +92,16 @@ pub enum WarpMode {
 }
 
 impl WarpMode {
-    /// Create a corner-pin warp from 4 corners.
     pub fn corner_pin(corners: [[f32; 2]; 4]) -> Self {
         Self::CornerPin { corners }
     }
 
-    /// Create an identity corner-pin (no warp, unit square).
     pub fn identity() -> Self {
         Self::CornerPin {
             corners: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         }
     }
 
-    /// Check if this warp mode is an identity (no warp effect).
     pub fn is_identity(&self) -> bool {
         match self {
             Self::CornerPin { corners } => {

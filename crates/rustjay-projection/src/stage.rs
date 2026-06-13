@@ -6,18 +6,11 @@ use rustjay_core::RenderCtx;
 /// Multi-input stages (e.g. dome cubemap) bind their fixed inputs as a single
 /// bind group; they do not accept a slice of arbitrary inputs.
 pub trait ProjectionStage: Send + 'static {
-    /// Human-readable label for profiling and UI.
     fn label(&self) -> &str {
         "projection-stage"
     }
 
-    /// Render this stage: read from `input`, write into `output`.
-    ///
-    /// `input` is the result of the previous stage (or the original composite
-    /// for the first stage). `input_texture` is the underlying texture when
-    /// available (some stages need it for copy operations). `output` is a
-    /// texture the stage fully owns for this frame; it may be ping-ponged by
-    /// the caller.
+    /// `input_texture` is the underlying wgpu::Texture when available (some stages need it for copies).
     fn render(
         &mut self,
         ctx: &mut RenderCtx<'_>,
@@ -30,9 +23,7 @@ pub trait ProjectionStage: Send + 'static {
     /// Called when the input texture generation changes (resize, reallocation).
     fn on_input_changed(&mut self, _device: &wgpu::Device, _size: [u32; 2]) {}
 
-    /// Whether this stage should be rendered this frame.
-    /// Stages that return `false` are skipped entirely — their input is passed
-    /// directly to the next active stage, avoiding a bypass blit.
+    /// Stages returning `false` are skipped — input passes directly to the next active stage.
     fn is_active(&self) -> bool {
         true
     }

@@ -43,7 +43,6 @@ pub struct HeadlessOutput {
 }
 
 impl HeadlessOutput {
-    /// Create a new headless output with the given size and stage chain.
     pub fn new(
         device: &wgpu::Device,
         width: u32,
@@ -375,7 +374,6 @@ impl HeadlessOutput {
         &self.offscreen_texture
     }
 
-    /// Current output size in pixels.
     pub fn size(&self) -> [u32; 2] {
         [self.width, self.height]
     }
