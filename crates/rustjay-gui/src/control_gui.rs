@@ -92,7 +92,6 @@ pub struct ControlGui {
 }
 
 impl ControlGui {
-    /// Create a new control GUI
     pub fn new(shared_state: Arc<Mutex<EngineState>>) -> anyhow::Result<Self> {
         // `ndi_name` is only read by the `ndi`-gated UI below.
         #[cfg_attr(not(feature = "ndi"), allow(unused_variables))]
@@ -170,31 +169,19 @@ impl ControlGui {
         })
     }
 
-    /// Set input preview texture ID
     pub fn set_input_preview_texture(&mut self, texture_id: imgui::TextureId) {
         self.input_preview_texture_id = Some(texture_id);
     }
 
-    /// Set second input preview texture ID
     pub fn set_second_input_preview_texture(&mut self, texture_id: imgui::TextureId) {
         self.second_input_preview_texture_id = Some(texture_id);
     }
 
-    /// Set output preview texture ID
     pub fn set_output_preview_texture(&mut self, texture_id: imgui::TextureId) {
         self.output_preview_texture_id = Some(texture_id);
     }
 
-    /// Update FPS counter (deprecated - FPS now tracked in output engine)
-    #[allow(dead_code)]
-    pub fn update_fps(&mut self) {
-        // FPS is now tracked in WgpuEngine and stored in EngineState.performance
-    }
-
-    /// Sync GUI device lists from the current InputManager state.
-    ///
-    /// Call this after [`poll_device_discovery`](the engine App::poll_device_discovery)
-    /// returns `true` (i.e. background discovery has finished).
+    /// Sync device lists after background discovery completes.
     pub fn update_device_lists(&mut self, input_manager: &InputManager) {
         self.webcam_devices = input_manager.webcam_devices().to_vec();
         #[cfg(feature = "ndi")]
@@ -230,15 +217,8 @@ impl ControlGui {
             }
         }
 
-        // Audio devices were enumerated in the background discovery thread.
-        self.audio_devices = input_manager.audio_devices().to_vec();
-        log::info!("[GUI] Found {} audio device(s)", self.audio_devices.len());
-        for device in &self.audio_devices {
-            log::info!("  - {}", device);
-        }
-
-        if let Ok(mut state) = self.shared_state.lock() {
-            state.audio.available_devices = self.audio_devices.clone();
+        if let Ok(state) = self.shared_state.lock() {
+            self.audio_devices = state.audio.available_devices.clone();
         }
     }
 

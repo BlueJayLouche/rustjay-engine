@@ -1,69 +1,21 @@
-//! # Input Module
-//!
-//! Handles video input sources:
-//! - Webcam capture (via nokhwa)
-//! - NDI input (Network Device Interface)
-//! - Syphon input (macOS GPU texture sharing)
-//!
-//! All inputs are converted to BGRA format for native macOS compatibility.
-
 use anyhow::Result;
 use std::sync::mpsc;
-
-/// Commands for changing the active input source
-// Superseded by `rustjay_core::InputCommand`; kept as the io-layer's own descriptor.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum InputCommand {
-    None,
-    StartWebcam {
-        device_index: usize,
-        width: u32,
-        height: u32,
-        fps: u32,
-    },
-    #[cfg(feature = "ndi")]
-    StartNdi {
-        source_name: String,
-    },
-    #[cfg(target_os = "macos")]
-    StartSyphon {
-        server_name: String,
-        server_uuid: String,
-    },
-    #[cfg(target_os = "windows")]
-    StartSpout {
-        sender_name: String,
-    },
-    #[cfg(target_os = "linux")]
-    StartV4l2 {
-        device_path: String,
-    },
-    StopInput,
-    RefreshDevices,
-}
 
 #[cfg(feature = "ndi")]
 pub mod ndi;
 #[cfg(feature = "ndi")]
 pub use ndi::{list_ndi_sources, NdiReceiver};
 
-/// Placeholder NDI receiver (NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
 #[allow(dead_code)]
 pub struct NdiReceiver;
-/// Placeholder NDI frame (NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
 #[allow(dead_code)]
 pub struct NdiFrame {
-    /// Frame pixel data.
     pub data: Vec<u8>,
-    /// Frame width in pixels.
     pub width: u32,
-    /// Frame height in pixels.
     pub height: u32,
 }
-/// List NDI sources (empty; NDI feature disabled).
 #[cfg(not(feature = "ndi"))]
 #[allow(dead_code)]
 pub fn list_ndi_sources(_timeout_ms: u64) -> Vec<String> {
@@ -112,16 +64,12 @@ pub use spout_input::{SpoutInputReceiver, SpoutSenderInfo};
 // Note: V4L2 input on Linux is handled by nokhwa (input-native maps to V4L2).
 // A separate v4l2_input module is only needed if nokhwa proves insufficient.
 
-/// Placeholder type on non-Windows platforms — the real struct lives in spout_input.rs
-/// Placeholder type on non-Windows platforms.
 #[cfg(not(target_os = "windows"))]
 #[derive(Debug, Clone)]
 pub struct SpoutSenderInfo {
-    /// Sender name.
     pub name: String,
 }
 
-/// Placeholder type on non-macOS platforms — the real struct lives in syphon_input.rs
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone)]
 pub struct SyphonServerInfo {
@@ -132,16 +80,6 @@ pub struct SyphonServerInfo {
 
 use rustjay_core::InputType;
 
-/// Frame data from any input source
-#[allow(dead_code)]
-pub struct InputFrame {
-    pub width: u32,
-    pub height: u32,
-    /// BGRA pixel data
-    pub data: Vec<u8>,
-    pub timestamp: std::time::Instant,
-}
-
 /// Results returned from the background discovery thread.
 ///
 /// NOTE: Syphon servers (macOS) are intentionally excluded — `SyphonServerDirectory`
@@ -149,7 +87,6 @@ pub struct InputFrame {
 /// with Metal's drawable pool when called off-thread, causing a deadlock).
 struct DiscoveryResults {
     webcam: Vec<String>,
-    audio: Vec<String>,
     #[cfg(feature = "ndi")]
     ndi: Vec<String>,
     #[cfg(target_os = "windows")]
@@ -197,7 +134,6 @@ pub struct InputManager {
 
     // Device lists — None = not yet discovered, Some([]) = discovered but none found
     webcam_devices: Option<Vec<String>>,
-    audio_devices: Option<Vec<String>>,
     #[cfg(feature = "ndi")]
     ndi_sources: Option<Vec<String>>,
     #[cfg(target_os = "macos")]
@@ -239,7 +175,6 @@ impl InputManager {
             spout_receiver: None,
             current_frame: None,
             webcam_devices: None,
-            audio_devices: None,
             #[cfg(feature = "ndi")]
             ndi_sources: None,
             #[cfg(target_os = "macos")]
@@ -276,14 +211,8 @@ impl InputManager {
         }
     }
 
-    /// Get cached list of webcam devices (empty until discovery completes)
     pub fn webcam_devices(&self) -> &[String] {
         self.webcam_devices.as_deref().unwrap_or(&[])
-    }
-
-    /// Get cached list of audio input devices (empty until discovery completes)
-    pub fn audio_devices(&self) -> &[String] {
-        self.audio_devices.as_deref().unwrap_or(&[])
     }
 
     /// Get cached list of NDI sources (empty until discovery completes)
@@ -325,7 +254,6 @@ impl InputManager {
         }
 
         self.webcam_devices = None;
-        self.audio_devices = None;
         #[cfg(feature = "ndi")]
         {
             self.ndi_sources = None;
@@ -371,18 +299,6 @@ impl InputManager {
             #[cfg(not(feature = "webcam"))]
             let webcam: Vec<String> = Vec::new();
 
-            // Audio device enumeration runs in the background to avoid blocking
-            // the main thread — cpal's CoreAudio backend can stall the main run loop.
-            let audio = {
-                log::debug!("[InputManager] Discovering audio input devices...");
-                let devices = rustjay_audio::list_audio_devices();
-                log::debug!(
-                    "[InputManager] Found {} audio input device(s)",
-                    devices.len()
-                );
-                devices
-            };
-
             #[cfg(feature = "ndi")]
             let ndi = {
                 log::debug!("[InputManager] Discovering NDI sources...");
@@ -422,7 +338,6 @@ impl InputManager {
 
             let _ = tx.send(DiscoveryResults {
                 webcam,
-                audio,
                 #[cfg(feature = "ndi")]
                 ndi,
                 #[cfg(target_os = "windows")]
@@ -446,7 +361,6 @@ impl InputManager {
         let result = self.discovery_rx.as_ref().and_then(|rx| rx.try_recv().ok());
         if let Some(result) = result {
             self.webcam_devices = Some(result.webcam);
-            self.audio_devices = Some(result.audio);
             #[cfg(feature = "ndi")]
             {
                 self.ndi_sources = Some(result.ndi);
@@ -552,7 +466,7 @@ impl InputManager {
         let device = self.syphon_device.clone();
         let queue = self.syphon_queue.clone();
 
-        if let (Some(device), Some(queue)) = (device, queue) {
+        match (device, queue) { (Some(device), Some(queue)) => {
             self.stop();
 
             let mut receiver = SyphonInputReceiver::new();
@@ -569,11 +483,11 @@ impl InputManager {
                 server_uuid
             );
             Ok(())
-        } else {
+        } _ => {
             Err(anyhow::anyhow!(
                 "InputManager not initialized with wgpu device/queue"
             ))
-        }
+        }}
     }
 
     /// Start Syphon (stub on non-macOS)

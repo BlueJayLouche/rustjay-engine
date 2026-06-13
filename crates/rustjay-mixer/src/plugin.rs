@@ -26,14 +26,12 @@ pub struct MixerPlugin {
 }
 
 impl MixerPlugin {
-    /// Wrap an existing mixer.
     pub fn new(mixer: Mixer) -> Self {
         Self {
             mixer: std::sync::Mutex::new(mixer),
         }
     }
 
-    /// Lock and return mutable access to the underlying mixer.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Mixer> {
         self.mixer.lock().unwrap_or_else(|e| e.into_inner())
     }

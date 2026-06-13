@@ -59,10 +59,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 use raw_window_handle::HasDisplayHandle as _;
                 use wgpu::hal::{api::Gles, Api as _, Instance as HalInstance};
 
-                // wgpu::Instance::new() always passes None as the display handle to
-                // wgpu-hal, causing EGL to use the surfaceless platform (no EGL_WINDOW_BIT
-                // configs). We bypass this by initialising the GLES HAL instance directly
-                // with the event loop's display handle (Wayland or X11).
                 let display_handle = event_loop.display_handle().ok();
 
                 let hal_desc = wgpu::hal::InstanceDescriptor {
@@ -194,7 +190,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 return; // skip wgpu engine init
             }
 
-            // ── wgpu path ────────────────────────────────────────────────────
             let shared_state = Arc::clone(&self.shared_state);
             let plugin = match self.plugin.take() {
                 Some(p) => p,
@@ -333,7 +328,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     gui.set_output_preview_texture(output_preview_id);
                                     log::info!("Created egui preview textures");
 
-                                    // Move custom tabs into the GUI
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_egui);
 
                                     self.egui_control_gui = Some(gui);
@@ -369,7 +363,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     gui.set_output_preview_texture(output_preview_id);
                                     log::info!("Created preview textures");
 
-                                    // Move custom tabs into the GUI
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_imgui);
 
                                     self.control_gui = Some(gui);
@@ -508,9 +501,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     };
                     renderer.handle_event(&winit_event);
                 }
-                // A control-window event arrived — rebuild the UI next frame
-                // immediately rather than waiting out the ~30 Hz throttle, so
-                // slider drags and tab clicks stay responsive.
                 self.ui_needs_redraw = true;
 
                 match event {
@@ -610,7 +600,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         self.update_osc();
         self.update_web();
 
-        // Create any pending projector windows queued at runtime (e.g. from UI).
         #[cfg(feature = "projection")]
         {
             let inst = self.wgpu_instance.as_ref();
@@ -671,7 +660,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         #[cfg(not(feature = "gles2"))]
         let gles2_rendered = false;
 
-        // Throttle the control-window UI (and preview texture updates) to ~30 Hz.
         let ui_due =
             self.ui_needs_redraw || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
 
@@ -685,7 +673,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        // Write CPU update time into performance metrics.
         {
             let cpu_update_ms = pre_render.duration_since(frame_start).as_secs_f32() * 1000.0;
             if let Ok(state) = self.shared_state.lock() {

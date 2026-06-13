@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Which corner of the fixture grid the wiring starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Corner {
     TopLeft,
@@ -15,14 +14,12 @@ pub enum Corner {
     BottomRight,
 }
 
-/// Primary wiring axis: fixtures are laid out along this axis first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Axis {
     Horizontal,
     Vertical,
 }
 
-/// Describes how to walk a fixture grid to produce the on-wire fixture order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanOrder {
     pub start_corner: Corner,
@@ -41,7 +38,6 @@ impl Default for ScanOrder {
 }
 
 impl Corner {
-    /// Short UI label for the start corner.
     pub fn label(&self) -> &'static str {
         match self {
             Corner::TopLeft => "TL",
@@ -53,7 +49,6 @@ impl Corner {
 }
 
 impl Axis {
-    /// Short UI label for the primary wiring axis.
     pub fn label(&self) -> &'static str {
         match self {
             Axis::Horizontal => "Horiz",

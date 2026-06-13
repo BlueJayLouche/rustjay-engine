@@ -730,14 +730,14 @@ impl VardaRootPlugin {
         // Channel A: ColorCycle (ISF) + Solid Color (red)
         let mut comp_a = DeckCompositor::new();
         let path_a1 = shaders_dir.join("ColorCycle.fs");
-        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_a1) {
+        match rustjay_isf::IsfEffect::from_path(&path_a1) { Ok(isf) => {
             let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
             let mut deck = Deck::new("a1", "ColorCycle", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_a1);
             comp_a.decks.push(deck);
-        } else {
+        } _ => {
             log::warn!("Failed to load ColorCycle.fs");
-        }
+        }}
         let solid = SolidColorSource::new(
             device,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -793,14 +793,14 @@ impl VardaRootPlugin {
         // Channel B: AuroraWaves (ISF) + Camera
         let mut comp_b = DeckCompositor::new();
         let path_b1 = shaders_dir.join("AuroraWaves.fs");
-        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&path_b1) {
+        match rustjay_isf::IsfEffect::from_path(&path_b1) { Ok(isf) => {
             let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
             let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node), SourceKind::Isf);
             deck.source_path = Some(path_b1);
             comp_b.decks.push(deck);
-        } else {
+        } _ => {
             log::warn!("Failed to load AuroraWaves.fs");
-        }
+        }}
         let camera = CameraSource::new(device, 0);
         comp_b
             .decks

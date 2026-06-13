@@ -61,7 +61,6 @@ impl AtlasLayout {
         }
     }
 
-    /// Empty atlas containing a single 1×1 black pixel.
     pub fn empty() -> Self {
         Self {
             size: [1, 1],
@@ -70,7 +69,6 @@ impl AtlasLayout {
     }
 }
 
-/// GPU draw state for one atlas tile.
 struct TileDraw {
     viewport: [f32; 4],
     uniform_buffer: wgpu::Buffer,
@@ -83,7 +81,6 @@ struct TileDraw {
     cached_src_ptr: Option<usize>,
 }
 
-/// Renders an arbitrary number of segment regions into a packed atlas.
 pub struct SampleStage {
     blit: BlitPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -93,7 +90,6 @@ pub struct SampleStage {
 }
 
 impl SampleStage {
-    /// Create a new sample stage for the given atlas layout.
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
@@ -116,7 +112,6 @@ impl SampleStage {
         stage
     }
 
-    /// Replace the atlas layout (and recreate per-tile GPU state).
     pub fn set_layout(&mut self, device: &wgpu::Device, layout: AtlasLayout) {
         if self.layout == layout {
             return;

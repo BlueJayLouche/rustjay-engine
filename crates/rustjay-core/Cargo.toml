@@ -1,7 +1,7 @@
 [package]
 name = "rustjay-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Shared types, traits, and state for rustjay-engine"
 license = "MIT"
 repository = "https://github.com/BlueJayLouche/rustjay-engine"
@@ -18,13 +18,8 @@ bytemuck   = { workspace = true }
 uuid       = { workspace = true }
 
 [features]
-# `ndi` is a flag feature gating NDI output command variants; opt-in via the
-# engine's `ndi` feature (which needs a proprietary SDK to build).
+# NDI output command variants; requires the proprietary NDI SDK.
 default = []
 ndi     = []
-# `modulation` was a transitional feature gate (Phase B). It is now unconditional.
-# Kept as a no-op for backward compatibility with downstream feature lists.
-modulation = []
-
-link   = []
-prodj  = []
+link    = []
+prodj   = []

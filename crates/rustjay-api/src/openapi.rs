@@ -81,5 +81,4 @@ use utoipa::OpenApi;
         (name = "App", description = "App-published state snapshot and hierarchical param I/O"),
     )
 )]
-/// OpenAPI documentation container.
 pub struct ApiDoc;

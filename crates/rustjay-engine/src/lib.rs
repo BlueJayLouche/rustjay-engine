@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! rustjay-engine — high-performance cross-platform VJ engine
 //!
 //! The engine facade. App authors implement [`EffectPlugin`] and call [`run()`].
@@ -176,11 +174,8 @@ pub fn run_with_egui_tabs<P: EffectPlugin>(
 
 /// Run the engine with egui custom tabs **and** projection mapping.
 ///
-/// This is the combined entrypoint for apps that need both the modern egui
-/// control panel and projector/output stage chains. The `setup` closure
-/// receives a [`ProjectionSubsystem`] where you register extra projector
-/// windows and their post-processing stage chains, exactly as with
-/// [`run_with_projection`].
+/// The `setup` closure receives a [`ProjectionSubsystem`] where you register
+/// extra projector windows and their post-processing stage chains.
 ///
 /// ```ignore
 /// use rustjay_engine::prelude::*;
@@ -235,7 +230,6 @@ where
     gles2::run_drm_gles2_headless_with_tabs(plugin, gles2)
 }
 
-/// Prelude module for convenient imports.
 pub mod prelude {
     #[cfg(feature = "gles2")]
     pub use crate::gles2::{run_gles2_headless_with_tabs, Gles2Effect};

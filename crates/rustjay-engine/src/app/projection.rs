@@ -15,30 +15,25 @@ pub type ProjectionSubsystemHandle = Arc<std::sync::Mutex<ProjectionSubsystem>>;
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
     window: Arc<Window>,
-    /// The winit window ID for event routing.
     pub window_id: winit::window::WindowId,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     /// Post-processing stages applied to the main render target before
     /// presentation on this projector.  Each stage is 1-in / 1-out.
     stages: Vec<Box<dyn ProjectionStage>>,
-    /// Ping-pong textures for the stage chain.
     textures: Vec<wgpu::Texture>,
     views: Vec<wgpu::TextureView>,
     width: u32,
     height: u32,
     /// Dummy vertex buffer for `RenderCtx` (projection stages may ignore it).
     _dummy_vb: wgpu::Buffer,
-    /// Whether this projector is currently fullscreen.
     fullscreen: bool,
     /// Offscreen texture used for recording (copy from surface before present).
     record_texture: Option<wgpu::Texture>,
-    /// Output manager with active recorder for this projector.
     record_manager: Option<OutputManager>,
 }
 
 impl ProjectorOutput {
-    /// Create a new projector output from an existing window and wgpu surface.
     pub fn new(
         window: Arc<Window>,
         instance: &wgpu::Instance,
@@ -131,7 +126,6 @@ impl ProjectorOutput {
         })
     }
 
-    /// Resize the projector surface.
     pub fn resize(&mut self, width: u32, height: u32, device: &wgpu::Device) {
         if width > 0 && height > 0 && (width != self.width || height != self.height) {
             self.width = width;
@@ -142,7 +136,6 @@ impl ProjectorOutput {
             // Drop stale record texture so it is recreated at the new size.
             self.record_texture = None;
 
-            // Recreate ping-pong textures at new size.
             let format = self.surface_config.format;
             self.textures.clear();
             self.views.clear();
@@ -166,7 +159,6 @@ impl ProjectorOutput {
         }
     }
 
-    /// Render the given input texture through the stage chain and present.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -190,7 +182,6 @@ impl ProjectorOutput {
 
         let active_count = self.stages.iter().filter(|s| s.is_active()).count();
         if active_count == 0 {
-            // No active stages — just present (surface shows whatever was there).
             queue.submit(std::iter::once(encoder.finish()));
             surface_texture.present();
             return;
@@ -313,7 +304,6 @@ impl ProjectorOutput {
         self.record_manager.get_or_insert_with(OutputManager::new)
     }
 
-    /// Start recording this projector's output to disk.
     pub fn start_recording(
         &mut self,
         path: &Path,
@@ -346,14 +336,12 @@ impl ProjectorOutput {
         }
     }
 
-    /// Whether this projector is currently recording to disk.
     pub fn is_recording(&self) -> bool {
         self.record_manager
             .as_ref()
             .map_or(false, |m| m.is_recording())
     }
 
-    /// Start publishing this projector's output as an NDI source named `name`.
     pub fn start_ndi(&mut self, name: &str) -> anyhow::Result<()> {
         let (w, h) = (self.width, self.height);
         let mgr = self.output_manager();
@@ -370,14 +358,12 @@ impl ProjectorOutput {
         }
     }
 
-    /// Whether this projector is publishing via NDI.
     pub fn is_ndi(&self) -> bool {
         self.record_manager
             .as_ref()
             .map_or(false, |m| m.is_ndi_active())
     }
 
-    /// Start publishing this projector's output as a Syphon server (macOS).
     #[cfg(target_os = "macos")]
     pub fn start_syphon(
         &mut self,
@@ -400,7 +386,6 @@ impl ProjectorOutput {
         }
     }
 
-    /// Whether this projector is publishing via Syphon.
     pub fn is_syphon(&self) -> bool {
         self.record_manager
             .as_ref()
@@ -425,14 +410,12 @@ impl ProjectorOutput {
         }
     }
 
-    /// Whether this projector is publishing via Spout.
     pub fn is_spout(&self) -> bool {
         self.record_manager
             .as_ref()
             .map_or(false, |m| m.is_spout_active())
     }
 
-    /// Start publishing this projector's output to a V4L2 loopback (Linux).
     #[cfg(target_os = "linux")]
     pub fn start_v4l2(&mut self, device_path: &str) -> anyhow::Result<()> {
         let (w, h) = (self.width, self.height);
@@ -451,14 +434,12 @@ impl ProjectorOutput {
         }
     }
 
-    /// Whether this projector is publishing via V4L2.
     pub fn is_v4l2(&self) -> bool {
         self.record_manager
             .as_ref()
             .map_or(false, |m| m.is_v4l2_active())
     }
 
-    /// Toggle fullscreen for this projector window.
     pub fn toggle_fullscreen(&mut self) {
         self.fullscreen = !self.fullscreen;
         let mode = if self.fullscreen {
@@ -470,12 +451,10 @@ impl ProjectorOutput {
         self.window.set_cursor_visible(false);
     }
 
-    /// Hide the cursor on this projector window.
     pub fn hide_cursor(&self) {
         self.window.set_cursor_visible(false);
     }
 
-    /// Returns true if this projector owns the given window ID.
     pub fn owns_window(&self, id: winit::window::WindowId) -> bool {
         self.window_id == id
     }
@@ -507,7 +486,6 @@ fn create_intermediate(
 
 /// Subsystem that manages all projector outputs.
 pub struct ProjectionSubsystem {
-    /// Active projector windows.
     pub projectors: Vec<ProjectorOutput>,
     /// Active headless outputs (offscreen texture + async readback).
     pub headless_outputs: Vec<HeadlessOutput>,
@@ -518,13 +496,11 @@ pub struct ProjectionSubsystem {
     /// packs all of its segments into a single small BGRA8 readback. Separate
     /// from `headless_outputs` so lighting samplers don't appear as user outputs.
     sampler_outputs: std::collections::HashMap<SamplerId, PixelSampler>,
-    /// Counter for generating stable sampler ids.
     next_sampler_id: u64,
     /// Staged projectors to create on next `resumed()`.
     pending: Vec<PendingProjector>,
     /// Last time projector outputs were rendered (for throttling).
     last_render: Option<std::time::Instant>,
-    /// Shared GPU device, set once `create_pending()` has run.
     device: Option<Arc<wgpu::Device>>,
     /// Shared GPU queue, set once `create_pending()` has run. Needed to start
     /// Syphon output senders (which require owned `Arc` handles).
@@ -548,7 +524,6 @@ impl Default for ProjectionSubsystem {
 }
 
 impl ProjectionSubsystem {
-    /// Create an empty projection subsystem.
     pub fn new() -> Self {
         Self {
             projectors: Vec::new(),
@@ -583,17 +558,14 @@ impl ProjectionSubsystem {
         });
     }
 
-    /// Number of projector windows waiting to be created.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
-    /// Clear all pending projector creation requests.
     pub fn clear_pending(&mut self) {
         self.pending.clear();
     }
 
-    /// Create any pending projector windows (call from `resumed()`).
     pub fn create_pending(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
@@ -614,7 +586,6 @@ impl ProjectionSubsystem {
                 }
             };
 
-            // Apply fullscreen if requested.
             let mut fullscreen = false;
             if let Some(idx) = pending.fullscreen_monitor {
                 let monitors: Vec<_> = event_loop.available_monitors().collect();
@@ -668,7 +639,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Route a window event to the matching projector, if any.
     pub fn handle_window_event(
         &mut self,
         window_id: winit::window::WindowId,
@@ -689,7 +659,7 @@ impl ProjectionSubsystem {
                     winit::event::WindowEvent::CursorEntered { .. } => {
                         proj.hide_cursor();
                     }
-                    winit::event::WindowEvent::KeyboardInput { ref event, .. } => {
+                    winit::event::WindowEvent::KeyboardInput { event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) =
                             &event.logical_key
                         {
@@ -738,7 +708,6 @@ impl ProjectionSubsystem {
         self.headless_managers.push(None);
     }
 
-    /// Remove a headless output by index.
     pub fn remove_headless_output(&mut self, index: usize) {
         if index < self.headless_outputs.len() {
             self.headless_outputs.remove(index);
@@ -762,7 +731,6 @@ impl ProjectionSubsystem {
         Some(self.headless_managers[index].get_or_insert_with(OutputManager::new))
     }
 
-    /// Returns the latest readback frame for a headless output, if available.
     pub fn headless_frame(&self, index: usize) -> Option<&[u8]> {
         self.headless_outputs.get(index)?.latest_frame()
     }
@@ -781,7 +749,6 @@ impl ProjectionSubsystem {
         Some(id)
     }
 
-    /// Update the atlas layout of an existing pixel sampler.
     pub fn update_pixel_sampler(&mut self, id: SamplerId, layout: AtlasLayout) {
         let Some(device) = self.device.clone() else {
             return;
@@ -805,17 +772,14 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Remove a pixel sampler by id.
     pub fn remove_pixel_sampler(&mut self, id: SamplerId) {
         self.sampler_outputs.remove(&id);
     }
 
-    /// Remove all pixel samplers whose ids are not in `active`.
     pub fn remove_stale_pixel_samplers(&mut self, active: &std::collections::HashSet<SamplerId>) {
         self.sampler_outputs.retain(|id, _| active.contains(id));
     }
 
-    /// The latest BGRA8 readback and atlas layout for a sampler, if available.
     pub fn pixel_sampler_atlas(&self, id: SamplerId) -> Option<(&[u8], &AtlasLayout)> {
         self.sampler_outputs.get(&id)?.latest_atlas()
     }
@@ -866,7 +830,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Start recording a projector output by index.
     pub fn start_projector_recording(
         &mut self,
         index: usize,
@@ -879,14 +842,12 @@ impl ProjectionSubsystem {
         proj.start_recording(path, fps, codec)
     }
 
-    /// Stop recording a projector output by index.
     pub fn stop_projector_recording(&mut self, index: usize) {
         if let Some(proj) = self.projectors.get_mut(index) {
             proj.stop_recording();
         }
     }
 
-    /// Whether a projector is recording.
     pub fn is_projector_recording(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_recording())
     }
@@ -895,7 +856,6 @@ impl ProjectionSubsystem {
     // Index is the position within the *enabled* projector list, matching the
     // recording methods above.
 
-    /// Start publishing projector `index` as an NDI source named `name`.
     pub fn start_projector_ndi(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let proj = self
             .projectors
@@ -904,19 +864,16 @@ impl ProjectionSubsystem {
         proj.start_ndi(name)
     }
 
-    /// Stop projector `index`'s NDI sender.
     pub fn stop_projector_ndi(&mut self, index: usize) {
         if let Some(proj) = self.projectors.get_mut(index) {
             proj.stop_ndi();
         }
     }
 
-    /// Whether projector `index` is publishing via NDI.
     pub fn is_projector_ndi(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_ndi())
     }
 
-    /// Start publishing projector `index` as a Syphon server (macOS).
     #[cfg(target_os = "macos")]
     pub fn start_projector_syphon(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let device = self
@@ -934,7 +891,6 @@ impl ProjectionSubsystem {
         proj.start_syphon(name, device, queue)
     }
 
-    /// Stop projector `index`'s Syphon server (macOS).
     #[cfg(target_os = "macos")]
     pub fn stop_projector_syphon(&mut self, index: usize) {
         if let Some(proj) = self.projectors.get_mut(index) {
@@ -942,12 +898,10 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether projector `index` is publishing via Syphon.
     pub fn is_projector_syphon(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_syphon())
     }
 
-    /// Start publishing projector `index` via Spout (Windows).
     #[cfg(target_os = "windows")]
     pub fn start_projector_spout(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let proj = self
@@ -957,7 +911,6 @@ impl ProjectionSubsystem {
         proj.start_spout(name)
     }
 
-    /// Stop projector `index`'s Spout sender (Windows).
     #[cfg(target_os = "windows")]
     pub fn stop_projector_spout(&mut self, index: usize) {
         if let Some(proj) = self.projectors.get_mut(index) {
@@ -965,12 +918,10 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether projector `index` is publishing via Spout.
     pub fn is_projector_spout(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_spout())
     }
 
-    /// Start publishing projector `index` to a V4L2 loopback device (Linux).
     #[cfg(target_os = "linux")]
     pub fn start_projector_v4l2(&mut self, index: usize, device_path: &str) -> anyhow::Result<()> {
         let proj = self
@@ -980,7 +931,6 @@ impl ProjectionSubsystem {
         proj.start_v4l2(device_path)
     }
 
-    /// Stop projector `index`'s V4L2 sender (Linux).
     #[cfg(target_os = "linux")]
     pub fn stop_projector_v4l2(&mut self, index: usize) {
         if let Some(proj) = self.projectors.get_mut(index) {
@@ -988,12 +938,10 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether projector `index` is publishing via V4L2.
     pub fn is_projector_v4l2(&self, index: usize) -> bool {
         self.projectors.get(index).map_or(false, |p| p.is_v4l2())
     }
 
-    /// Start recording a headless output by index.
     pub fn start_headless_recording(
         &mut self,
         index: usize,
@@ -1030,7 +978,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether a headless output is recording to disk.
     pub fn is_headless_recording(&self, index: usize) -> bool {
         self.headless_managers
             .get(index)
@@ -1040,7 +987,6 @@ impl ProjectionSubsystem {
 
     // ── Headless output senders (NDI / Syphon / Spout / V4L2) ───────────────
 
-    /// Start publishing headless output `index` as an NDI source named `name`.
     pub fn start_headless_ndi(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let [w, h] = self
             .headless_outputs
@@ -1056,14 +1002,12 @@ impl ProjectionSubsystem {
         mgr.start_ndi(name, w, h, false)
     }
 
-    /// Stop headless output `index`'s NDI sender.
     pub fn stop_headless_ndi(&mut self, index: usize) {
         if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
             mgr.stop_ndi();
         }
     }
 
-    /// Whether headless output `index` is publishing via NDI.
     pub fn is_headless_ndi(&self, index: usize) -> bool {
         self.headless_managers
             .get(index)
@@ -1071,7 +1015,6 @@ impl ProjectionSubsystem {
             .map_or(false, |m| m.is_ndi_active())
     }
 
-    /// Start publishing headless output `index` as a Syphon server (macOS).
     #[cfg(target_os = "macos")]
     pub fn start_headless_syphon(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let device = self
@@ -1091,7 +1034,6 @@ impl ProjectionSubsystem {
         mgr.start_syphon(name, device, queue)
     }
 
-    /// Stop headless output `index`'s Syphon server (macOS).
     #[cfg(target_os = "macos")]
     pub fn stop_headless_syphon(&mut self, index: usize) {
         if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
@@ -1099,7 +1041,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether headless output `index` is publishing via Syphon.
     pub fn is_headless_syphon(&self, index: usize) -> bool {
         self.headless_managers
             .get(index)
@@ -1107,7 +1048,6 @@ impl ProjectionSubsystem {
             .map_or(false, |m| m.is_syphon_active())
     }
 
-    /// Start publishing headless output `index` via Spout (Windows).
     #[cfg(target_os = "windows")]
     pub fn start_headless_spout(&mut self, index: usize, name: &str) -> anyhow::Result<()> {
         let mgr = self
@@ -1119,7 +1059,6 @@ impl ProjectionSubsystem {
         mgr.start_spout(name)
     }
 
-    /// Stop headless output `index`'s Spout sender (Windows).
     #[cfg(target_os = "windows")]
     pub fn stop_headless_spout(&mut self, index: usize) {
         if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
@@ -1127,7 +1066,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether headless output `index` is publishing via Spout.
     pub fn is_headless_spout(&self, index: usize) -> bool {
         self.headless_managers
             .get(index)
@@ -1135,7 +1073,6 @@ impl ProjectionSubsystem {
             .map_or(false, |m| m.is_spout_active())
     }
 
-    /// Start publishing headless output `index` to a V4L2 loopback (Linux).
     #[cfg(target_os = "linux")]
     pub fn start_headless_v4l2(&mut self, index: usize, device_path: &str) -> anyhow::Result<()> {
         let [w, h] = self
@@ -1152,7 +1089,6 @@ impl ProjectionSubsystem {
         mgr.start_v4l2(device_path, w, h)
     }
 
-    /// Stop headless output `index`'s V4L2 sender (Linux).
     #[cfg(target_os = "linux")]
     pub fn stop_headless_v4l2(&mut self, index: usize) {
         if let Some(Some(mgr)) = self.headless_managers.get_mut(index) {
@@ -1160,7 +1096,6 @@ impl ProjectionSubsystem {
         }
     }
 
-    /// Whether headless output `index` is publishing via V4L2.
     pub fn is_headless_v4l2(&self, index: usize) -> bool {
         self.headless_managers
             .get(index)

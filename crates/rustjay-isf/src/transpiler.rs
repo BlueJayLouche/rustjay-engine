@@ -3430,7 +3430,7 @@ fn resolve_function_overloads(src: &str) -> String {
     // --- Step 2: find overloaded names (count > 1) ---
     let overloaded_names: std::collections::HashSet<String> = name_count
         .iter()
-        .filter(|(_, &c)| c > 1)
+        .filter(|&(_, &c)| c > 1)
         .map(|(n, _)| n.clone())
         .collect();
 

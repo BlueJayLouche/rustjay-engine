@@ -5,7 +5,6 @@
 //! bits (low byte + `(>>8) & 0x7F` high byte = Net/Subnet/Universe nibbles).
 //! Unlike stageLX, the builder takes a per-universe `sequence` byte.
 
-/// UDP port for Art-Net, per the Art-Net 4 specification.
 pub const ARTNET_PORT: u16 = 6454;
 
 /// Build an ArtDMX packet (18-byte header + 512 data bytes).

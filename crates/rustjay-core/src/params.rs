@@ -153,7 +153,6 @@ pub enum ParamCategory {
 }
 
 impl ParamCategory {
-    /// Human-readable category name.
     pub fn name(&self) -> String {
         match self {
             ParamCategory::Color => "Color".to_string(),
@@ -163,11 +162,6 @@ impl ParamCategory {
             ParamCategory::Settings => "Settings".to_string(),
             ParamCategory::Custom(s) => s.clone(),
         }
-    }
-
-    /// Tab identifier — used for matching against `GuiTab` or custom tabs.
-    pub fn tab_name(&self) -> String {
-        self.name()
     }
 }
 

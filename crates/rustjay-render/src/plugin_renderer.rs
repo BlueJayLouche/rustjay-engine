@@ -55,9 +55,6 @@ pub(crate) struct PluginRenderer<P: EffectPlugin> {
     staging_belt: StagingBelt,
 }
 
-/// Generate mesh vertex and index data from a descriptor.
-///
-/// Returns `(vertices, indices)`. For `MeshTopology::Points`, `indices` is empty.
 fn generate_mesh_data(desc: MeshDescriptor) -> (Vec<Vertex>, Vec<u32>) {
     let cols = desc.cols.max(1);
     let rows = desc.rows.max(1);
@@ -118,9 +115,6 @@ fn generate_mesh_data(desc: MeshDescriptor) -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
-/// Create GPU buffers from mesh data.
-///
-/// Returns `(vertex_buffer, index_buffer, index_count)`.
 fn create_mesh_buffers(
     device: &wgpu::Device,
     vertices: &[Vertex],
@@ -171,10 +165,6 @@ fn wgpu_polygon_mode(topology: MeshTopology, device: &wgpu::Device) -> wgpu::Pol
     }
 }
 
-/// Build compute pipeline and bind group for GPU mesh deformation.
-///
-/// Dispatches 1D workgroups of size 256. The compute shader should use
-/// `@workgroup_size(256, 1, 1)` and index vertices with `id.x`.
 fn build_compute_resources(
     device: &wgpu::Device,
     compute_shader: &str,
@@ -597,17 +587,6 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         }
     }
 
-    /// Render into a raw [`wgpu::TextureView`], sampling from raw input slots.
-    ///
-    /// This is the [`EffectInstance`](rustjay_core::EffectInstance)-facing entry
-    /// point (Phase B0.2). It speaks in raw wgpu handles instead of the
-    /// `InputTexture` / `Texture` wrappers, so an effect can be driven as a
-    /// `dyn EffectInstance` (e.g. one channel of a mixer). `inputs[0]` is the
-    /// primary video input; `inputs[1]` (when present) is treated as feedback.
-    ///
-    /// Shares all rendering logic with [`render`](Self::render) via
-    /// [`render_core`](Self::render_core) — single-pass, multi-pass graph, and
-    /// the custom `EffectPlugin::render` hook are all covered.
     #[allow(clippy::too_many_arguments)]
     pub fn render_to_view(
         &mut self,
@@ -644,13 +623,6 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         );
     }
 
-    /// Shared render body for both [`render`](Self::render) (wrapper-sourced)
-    /// and [`render_to_view`](Self::render_to_view) (slice-sourced).
-    ///
-    /// Runs the compute pass, gives the plugin its custom render hook, then
-    /// dispatches to the multi-pass graph or the single-pass path. The only
-    /// difference between the two entry points is how `frame` / `target_*` are
-    /// sourced; everything below is identical.
     #[allow(clippy::too_many_arguments)]
     fn render_core(
         &mut self,
@@ -668,7 +640,7 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         self.check_mesh_dirty(device, app_state);
 
         // Run compute pass if the plugin provides a compute shader.
-        if let (Some(ref pipeline), Some(ref bind_group)) =
+        if let (Some(pipeline), Some(bind_group)) =
             (&self.compute_pipeline, &self.compute_bind_group)
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -743,9 +715,6 @@ impl<P: EffectPlugin> PluginRenderer<P> {
         self.staging_belt.finish();
     }
 
-    /// Single-pass render: one shader, one uniform block, optional input image.
-    /// Feedback bindings (2/3) always use the dummy — single-pass effects never
-    /// read feedback (that is a graph-only feature).
     #[allow(clippy::too_many_arguments)]
     fn run_single_pass(
         &mut self,
@@ -868,8 +837,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             }
             // Invalidate generation keys so bind groups are rebuilt even if
             // input_generation hasn't changed this frame (CORR-3).
-            for gen in &mut self.cached_pass_texture_gens {
-                *gen = u64::MAX;
+            for cached_gen in &mut self.cached_pass_texture_gens {
+                *cached_gen = u64::MAX;
             }
             for i in 0..needed_intermediates {
                 self.intermediate_textures

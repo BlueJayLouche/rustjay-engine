@@ -1,5 +1,3 @@
-//! Persistent configuration — save/load application settings.
-
 use rustjay_core::{EngineState, HsbParams};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -193,7 +191,6 @@ impl AppSettings {
         Ok(settings)
     }
 
-    /// Validate config fields are within acceptable ranges.
     fn validate(&self) -> anyhow::Result<()> {
         const MAX_DIM: u32 = 4096;
         const VALID_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
@@ -328,7 +325,6 @@ impl AppSettings {
             })
             .collect();
 
-        // Restore custom param values (only for params that are declared)
         for (id, value) in &self.custom_params {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
                 state.custom_param_bases[i] = *value;

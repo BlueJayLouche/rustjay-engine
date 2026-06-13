@@ -18,11 +18,8 @@ use winit::window::Window;
 pub struct WgpuEngine<P: EffectPlugin> {
     #[allow(dead_code)]
     instance: wgpu::Instance,
-    /// GPU adapter used by the engine.
     pub adapter: wgpu::Adapter,
-    /// Logical device handle.
     pub device: Arc<wgpu::Device>,
-    /// Command queue handle.
     pub queue: Arc<wgpu::Queue>,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -35,19 +32,12 @@ pub struct WgpuEngine<P: EffectPlugin> {
     plugin_renderer: PluginRenderer<P>,
     blit_pipeline: BlitPipeline,
 
-    /// Main render target texture.
     pub render_target: Texture,
-    /// Input texture received from the IO layer (slot 1).
     pub input_texture: InputTexture,
-    /// Input texture for slot 2.
     pub second_input_texture: InputTexture,
-    /// Cached view for slot 2 (updated when texture generation changes).
     second_input_view: Option<Arc<wgpu::TextureView>>,
-    /// Cached sampler for slot 2.
     second_input_sampler: Option<Arc<wgpu::Sampler>>,
-    /// Last seen texture generation for slot 2.
     second_input_cached_gen: u64,
-    /// Optional feedback texture for previous frame effects.
     pub previous_frame: Option<PreviousFrameTexture>,
 
     vertex_buffer: wgpu::Buffer,
@@ -60,8 +50,7 @@ pub struct WgpuEngine<P: EffectPlugin> {
     next_render_time: std::time::Instant,
 
     output_manager: OutputManager,
-    /// Command buffers enqueued by external subsystems (e.g. preview textures)
-    /// to be submitted together with the main encoder, reducing total submits.
+    /// Command buffers submitted with the main encoder to reduce total GPU submits.
     pending_commands: Vec<wgpu::CommandBuffer>,
 }
 
@@ -229,9 +218,6 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         }
     }
 
-    /// Enqueue a command buffer to be submitted together with the main
-    /// encoder on the next `render()` call. This reduces total submit count
-    /// when external subsystems (e.g. preview textures) produce GPU work.
     pub fn enqueue_command(&mut self, command_buffer: wgpu::CommandBuffer) {
         self.pending_commands.push(command_buffer);
     }
@@ -432,8 +418,6 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                 .iter()
                 .map(|d| format!("/rustjay/{}/{}", d.category.name().to_lowercase(), d.id))
                 .collect();
-            let n = new_descs.len();
-
             engine_state.param_descriptors = std::sync::Arc::new(new_descs);
             engine_state.custom_param_bases = new_bases.clone();
             engine_state.custom_params = new_bases;

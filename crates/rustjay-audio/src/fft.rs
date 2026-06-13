@@ -86,12 +86,8 @@ impl AudioConfig {
 // Available FFT sizes
 // ---------------------------------------------------------------------------
 
-/// Supported FFT window sizes.
 pub const FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192];
-/// Default FFT window size (4096 samples).
 pub const DEFAULT_FFT_SIZE: usize = 4096;
-
-/// Human-readable labels for the FFT size dropdown
 pub const FFT_SIZE_LABELS: &[&str] = &[
     "1024  (43 Hz, 23ms)",
     "2048  (21 Hz, 46ms)",
@@ -103,12 +99,7 @@ pub const FFT_SIZE_LABELS: &[&str] = &[
 // Real-time audio frame processing
 // ---------------------------------------------------------------------------
 
-/// Process a single audio frame — runs on the real-time audio callback thread.
-/// Reads config atomically, writes results atomically. No mutex involved.
-///
-/// `windowed_buf`, `spectrum_buf`, and `magnitudes_buf` must be pre-allocated
-/// to `fft_size`, `fft_size/2+1`, and `fft_size/2+1` elements respectively.
-/// Passing them in avoids heap allocation on the real-time thread.
+/// Real-time callback frame processor — pre-allocated bufs avoid RT-thread allocation.
 pub fn process_audio_frame(
     frame: &[f32],
     sample_rate: f32,
@@ -134,7 +125,6 @@ pub fn process_audio_frame(
         *w_out = s * w;
     }
 
-    // Perform FFT into pre-allocated spectrum buffer
     if r2c
         .process_with_scratch(windowed_buf, spectrum_buf, scratch)
         .is_err()
@@ -220,7 +210,6 @@ pub fn process_audio_frame(
     }
     *norm_peak = norm_peak.max(0.01); // Floor to prevent division by near-zero
 
-    // Write 8-band results atomically — smooth, optionally normalize, clamp to 0-1
     for (i, &band) in bands.iter().enumerate() {
         let scaled = if normalize {
             (band / *norm_peak).min(1.0)
@@ -274,8 +263,7 @@ pub fn process_audio_frame(
     output.beat_phase.store(phase.to_bits(), Ordering::Relaxed);
 }
 
-/// Calculate 8 logarithmic frequency bands from FFT magnitude bins (already in dB-normalized 0-1 range).
-/// Uses peak (max) per band — immune to bin-count dilution across octaves.
+/// Peak (max) per band — immune to bin-count dilution across octaves.
 pub fn calculate_bands(magnitudes: &[f32], sample_rate: f32) -> [f32; 8] {
     let mut bands = [0.0f32; 8];
     let nyquist = sample_rate / 2.0;
@@ -307,10 +295,7 @@ pub fn calculate_bands(magnitudes: &[f32], sample_rate: f32) -> [f32; 8] {
     bands
 }
 
-/// Return the pink-noise compensation gain for a given frequency in Hz.
-/// Maps the frequency to one of the 8 logarithmic bands and returns the
-/// corresponding gain multiplier (1.0 … 3.0). Frequencies outside the
-/// 20 Hz – 16 kHz range return 1.0 (no boost).
+/// Returns 1.0 for frequencies outside 20 Hz–16 kHz (no boost).
 pub fn pink_gain_for_freq(freq: f32) -> f32 {
     const PINK_GAINS: [f32; 8] = [
         1.0, 1.15, 1.30, 1.50, 1.80, 2.20, 2.60, 3.00,

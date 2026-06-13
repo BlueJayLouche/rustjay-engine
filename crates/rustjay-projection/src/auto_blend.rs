@@ -2,7 +2,6 @@
 //!
 //! Ported from Varda's edge_blend.rs auto-detection logic.
 
-/// Maximum number of overlap zones per surface.
 pub const MAX_OVERLAP_ZONES: usize = 4;
 
 /// A single overlap zone in surface-local UV space [0..1].
@@ -18,7 +17,6 @@ pub struct OverlapZone {
     pub ramp_y: f32,
 }
 
-/// Per-surface overlap zones for Auto mode blending.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SurfaceOverlapZones {
     /// Computed overlap zones, sorted by area descending.
@@ -26,7 +24,6 @@ pub struct SurfaceOverlapZones {
 }
 
 impl SurfaceOverlapZones {
-    /// Returns true if any overlap zones are present.
     pub fn any_enabled(&self) -> bool {
         !self.zones.is_empty()
     }

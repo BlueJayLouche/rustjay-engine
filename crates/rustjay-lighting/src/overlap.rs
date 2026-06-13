@@ -1,30 +1,22 @@
-//! DMX universe/channel overlap detection for lighting patches.
-
 use crate::dmx::DMX_UNIVERSE_SIZE;
 
-/// A contiguous channel range inside one universe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchSpan {
-    /// Human-readable owner, e.g. output name.
     pub owner: String,
-    /// Human-readable segment/profile name for detail.
     pub detail: String,
-    /// 1-based DMX universe.
     pub universe: u16,
-    /// 1-based first channel (inclusive).
+    /// 1-based, inclusive.
     pub start: u16,
-    /// 1-based last channel (inclusive).
+    /// 1-based, inclusive.
     pub end: u16,
 }
 
 impl PatchSpan {
-    /// Whether this span overlaps another in the same universe.
     pub fn overlaps(&self, other: &PatchSpan) -> bool {
         self.universe == other.universe && self.start <= other.end && other.start <= self.end
     }
 }
 
-/// A detected overlap between two spans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Overlap {
     pub a: PatchSpan,

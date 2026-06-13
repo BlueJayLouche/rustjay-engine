@@ -1,7 +1,7 @@
 [package]
 name = "rustjay-isf"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "ISF (Interactive Shader Format) support for rustjay-engine — GLSL→WGSL transpiler and EffectPlugin adapter"
 
 [dependencies]

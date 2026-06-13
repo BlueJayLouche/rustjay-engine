@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// How a channel is blended onto the running composite.
 ///
-/// Ported from Varda's mixer. The ordinal of each variant is its shader index
-/// (see [`BlendMode::to_index`]).
+/// The ordinal of each variant is its shader index (see [`BlendMode::to_index`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum BlendMode {
     /// Alpha-over: source replaces destination weighted by source alpha × opacity.
@@ -68,7 +67,6 @@ impl BlendMode {
         }
     }
 
-    /// Short label for compact UI (4 chars).
     pub fn short_name(self) -> &'static str {
         match self {
             BlendMode::Normal => "Norm",
@@ -89,7 +87,6 @@ impl BlendMode {
         }
     }
 
-    /// All variants in display / index order.
     pub fn all() -> &'static [BlendMode] {
         use BlendMode::*;
         &[
@@ -98,9 +95,6 @@ impl BlendMode {
         ]
     }
 
-    /// Reverse lookup from shader uniform index.
-    ///
-    /// Returns `None` for out-of-range indices.
     pub fn from_index(index: u32) -> Option<Self> {
         match index {
             0 => Some(BlendMode::Normal),

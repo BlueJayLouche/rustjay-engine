@@ -9,10 +9,7 @@
 
 use std::collections::BTreeMap;
 
-/// Number of DMX slots (channels) in one universe.
 pub const DMX_UNIVERSE_SIZE: usize = 512;
-
-/// One DMX slot buffer (512 channels, start code excluded).
 pub type Universe = [u8; DMX_UNIVERSE_SIZE];
 
 /// A sparse, sorted set of universes for a single network tick.
@@ -22,47 +19,37 @@ pub struct DmxFrame {
 }
 
 impl DmxFrame {
-    /// Create an empty frame.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Mutable access to a universe buffer, inserting a zeroed one if absent.
-    ///
-    /// This is the workhorse for the patch/packing layer: write fixture bytes
-    /// directly into the returned slice.
     pub fn universe_mut(&mut self, universe: u16) -> &mut Universe {
         self.universes
             .entry(universe)
             .or_insert([0u8; DMX_UNIVERSE_SIZE])
     }
 
-    /// Replace a whole universe buffer.
     pub fn set(&mut self, universe: u16, data: Universe) {
         self.universes.insert(universe, data);
     }
 
-    /// Read a universe buffer, if present.
     pub fn get(&self, universe: u16) -> Option<&Universe> {
         self.universes.get(&universe)
     }
 
-    /// Iterate universes in ascending universe order.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &Universe)> {
         self.universes.iter().map(|(u, d)| (*u, d))
     }
 
-    /// Number of populated universes.
     pub fn len(&self) -> usize {
         self.universes.len()
     }
 
-    /// Whether the frame has no universes.
     pub fn is_empty(&self) -> bool {
         self.universes.is_empty()
     }
 
-    /// Drop all universes (retains no allocation guarantees).
     pub fn clear(&mut self) {
         self.universes.clear();
     }

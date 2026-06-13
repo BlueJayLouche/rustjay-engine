@@ -5,7 +5,6 @@ use rustjay_core::RenderCtx;
 use wgpu::util::DeviceExt;
 
 /// Domemaster resolution presets.
-/// Domemaster resolution presets.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DomemasterResolution {
     /// 1024×1024
@@ -18,7 +17,6 @@ pub enum DomemasterResolution {
 }
 
 impl DomemasterResolution {
-    /// Pixel dimensions of the square output.
     pub fn pixels(self) -> u32 {
         match self {
             Self::R1K => 1024,
@@ -49,7 +47,6 @@ impl Default for DomemasterConfig {
     }
 }
 
-/// GPU uniform for the domemaster shader.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DomemasterParams {
@@ -70,14 +67,12 @@ const FACE_BACK: usize = 2;
 const FACE_LEFT: usize = 3;
 const FACE_TOP: usize = 4;
 
-/// Dome projection stage: captures input into cubemap faces and projects to fisheye.
 pub struct DomeStage {
     face_textures: Vec<wgpu::Texture>,
     face_views: Vec<wgpu::TextureView>,
     projection_pipeline: wgpu::RenderPipeline,
     projection_bind_group: wgpu::BindGroup,
     params_buffer: wgpu::Buffer,
-    /// Current domemaster configuration.
     pub config: DomemasterConfig,
     face_size: u32,
     /// Content rotation in radians: [azimuth, elevation, roll].
@@ -85,7 +80,6 @@ pub struct DomeStage {
 }
 
 impl DomeStage {
-    /// Create a new dome stage with the given configuration and target format.
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,

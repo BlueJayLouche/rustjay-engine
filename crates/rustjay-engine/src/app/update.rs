@@ -314,7 +314,6 @@ impl<P: EffectPlugin> App<P> {
             offsets
         };
 
-        // Re-acquire shared_state and write back.
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.modulation_offsets = offsets;
 
@@ -390,7 +389,6 @@ impl<P: EffectPlugin> App<P> {
             };
 
             if let Ok(mut shared) = self.shared_state.lock() {
-                // Sync learn state.
                 shared.midi_learn_active = learn_active;
                 if !learn_active {
                     shared.midi_learning_param_name = None;
@@ -399,7 +397,6 @@ impl<P: EffectPlugin> App<P> {
                 }
                 shared.midi_mappings = mapping_snapshot;
 
-                // Apply dirty parameter values.
                 for (path, value) in &self.midi_dirty_scratch {
                     match path.as_str() {
                         "color/hue_shift" => {
@@ -442,7 +439,6 @@ impl<P: EffectPlugin> App<P> {
         if let Some(ref server) = self.osc_server {
             if let Ok(mut shared) = self.shared_state.lock() {
                 if let Ok(mut osc_state) = server.state().lock() {
-                    // Hardcoded HSB / audio params (full OSC addresses)
                     if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/hue_shift") {
                         shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
                     }
@@ -462,7 +458,6 @@ impl<P: EffectPlugin> App<P> {
                         shared.audio.smoothing = v.clamp(0.0, 1.0);
                     }
 
-                    // Effect-declared custom params
                     let descriptors = Arc::clone(&shared.param_descriptors);
                     if !descriptors.is_empty() {
                         log::trace!("OSC checking {} custom params", descriptors.len());
@@ -473,7 +468,6 @@ impl<P: EffectPlugin> App<P> {
                                 log::debug!("OSC apply: {} ({}) = {}", desc.id, addr, v);
                                 shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
                             } else if !osc_state.message_log.is_empty() {
-                                // Debug: log if message exists but param wasn't dirty
                                 if osc_state.parameters.contains_key(addr) {
                                     log::trace!("OSC param not dirty: {}", addr);
                                 }
@@ -483,7 +477,6 @@ impl<P: EffectPlugin> App<P> {
                         }
                     }
 
-                    // Sync recent messages for GUI display
                     shared.osc_message_log = osc_state.message_log.clone();
                 }
             }
@@ -521,7 +514,6 @@ impl<P: EffectPlugin> App<P> {
                     "output/fullscreen",
                     if state.output_fullscreen { 1.0 } else { 0.0 },
                 );
-                // Broadcast custom param values
                 let descriptors = Arc::clone(&state.param_descriptors);
                 for (i, desc) in descriptors.iter().enumerate() {
                     if let Some(addr) = state.param_osc_addresses.get(i) {
@@ -533,7 +525,6 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
 
-            // Drain structural dirty flags for panel broadcasts.
             if server.input_dirty {
                 if let Ok(state) = self.shared_state.lock() {
                     server.send_input_state(&rustjay_control::InputStateJson {
@@ -557,7 +548,7 @@ impl<P: EffectPlugin> App<P> {
                     midi_learn_active,
                     midi_learning_param_name,
                 ) = {
-                    if let Ok(state) = self.shared_state.lock() {
+                    match self.shared_state.lock() { Ok(state) => {
                         (
                             state.osc_enabled,
                             state.osc_port,
@@ -567,13 +558,13 @@ impl<P: EffectPlugin> App<P> {
                             state.midi_learn_active,
                             state.midi_learning_param_name.clone(),
                         )
-                    } else {
+                    } _ => {
                         (false, 9000, false, None, vec![], false, None)
-                    }
+                    }}
                 };
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
                     if let Some(ref m) = self.midi_manager {
-                        if let Ok(midi_st) = m.state().lock() {
+                        match m.state().lock() { Ok(midi_st) => {
                             midi_st
                                 .mappings
                                 .iter()
@@ -587,9 +578,9 @@ impl<P: EffectPlugin> App<P> {
                                     max_value: m.max_value,
                                 })
                                 .collect()
-                        } else {
+                        } _ => {
                             vec![]
-                        }
+                        }}
                     } else {
                         vec![]
                     };

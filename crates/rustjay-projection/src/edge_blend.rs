@@ -29,18 +29,13 @@ impl Default for EdgeBlendEdge {
 /// Edge blending configuration for an output — four independent edges.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct EdgeBlendConfig {
-    /// Left edge blend.
     pub left: EdgeBlendEdge,
-    /// Right edge blend.
     pub right: EdgeBlendEdge,
-    /// Top edge blend.
     pub top: EdgeBlendEdge,
-    /// Bottom edge blend.
     pub bottom: EdgeBlendEdge,
 }
 
 impl EdgeBlendConfig {
-    /// Returns true if any edge has blending enabled.
     pub fn any_enabled(&self) -> bool {
         self.left.enabled || self.right.enabled || self.top.enabled || self.bottom.enabled
     }

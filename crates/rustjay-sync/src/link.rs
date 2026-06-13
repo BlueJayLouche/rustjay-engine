@@ -2,13 +2,8 @@
 
 use rustjay_core::LinkState;
 
-/// Manages an Ableton Link session and copies live tempo data into
-/// [`LinkState`] each frame.
-///
-/// Construct once and call [`update`](Self::update) every frame.
-/// All data is polled directly from the Link session state — no background
-/// callbacks are used, which avoids the use-after-free that rusty_link's
-/// callback API is susceptible to on its current version.
+/// Ableton Link session manager. Polls state each frame — no callbacks,
+/// avoiding the use-after-free in rusty_link's callback API.
 pub struct LinkManager {
     link: rusty_link::AblLink,
     last_enabled: bool,
@@ -16,7 +11,6 @@ pub struct LinkManager {
 }
 
 impl LinkManager {
-    /// Create a new Link manager with an initial tempo of 120 BPM.
     pub fn new() -> Self {
         let link = rusty_link::AblLink::new(120.0);
         link.enable(false);
@@ -29,17 +23,13 @@ impl LinkManager {
         }
     }
 
-    /// Explicitly disable the Link session.
     pub fn disable(&mut self) {
         self.link.enable(false);
         self.last_enabled = false;
     }
 
-    /// Poll Link state and write it into `state`.
-    ///
-    /// Call this once per frame from the main thread.
+    /// Call once per frame from the main thread.
     pub fn update(&mut self, state: &mut LinkState) {
-        // Handle enable/disable transitions
         if state.enabled != self.last_enabled {
             self.link.enable(state.enabled);
             self.last_enabled = state.enabled;
