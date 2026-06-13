@@ -690,7 +690,18 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
 
     // Presets — keep bank alive for the entire loop (WR-9.3)
     let mut preset_bank: Option<PresetBank> = presets_dir_for(&app_name).ok().map(|dir| {
-        let bank = PresetBank::new(dir);
+        let mut bank = PresetBank::new(dir);
+        let saved = {
+            let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            s.preset_quick_slot_names.clone()
+        };
+        for (i, maybe_name) in saved.iter().enumerate() {
+            if let Some(name) = maybe_name {
+                if let Some(idx) = bank.presets.iter().position(|p| &p.name == name) {
+                    let _ = bank.assign_to_slot(idx, i + 1);
+                }
+            }
+        }
         let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
         let slots: [Option<String>; 8] =
             std::array::from_fn(|i| bank.get_slot_name(i + 1).map(|s| s.to_string()));

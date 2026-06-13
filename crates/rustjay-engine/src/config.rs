@@ -111,6 +111,9 @@ pub(crate) struct AppSettings {
     /// Webcam device index to start automatically on launch (None = do not autostart).
     #[serde(default)]
     pub startup_webcam_device: Option<usize>,
+    /// Quick-slot assignments by preset name; index = slot - 1.
+    #[serde(default)]
+    pub preset_quick_slots: [Option<String>; 8],
 }
 
 impl Default for AppSettings {
@@ -152,6 +155,7 @@ impl Default for AppSettings {
             present_mode: rustjay_core::PresentMode::AutoVsync,
             custom_params: HashMap::new(),
             startup_webcam_device: None,
+            preset_quick_slots: [const { None }; 8],
         }
     }
 }
@@ -298,6 +302,7 @@ impl AppSettings {
         // the InputManager is ready (avoids the command being silently dropped
         // if it fires before the InputManager is initialised).
         state.startup_webcam_device = self.startup_webcam_device;
+        state.preset_quick_slot_names = self.preset_quick_slots.clone();
 
         // Restore MIDI device and mappings into EngineState so the GLES2 init
         // block can reconnect the manager after it is created.
@@ -401,6 +406,7 @@ impl AppSettings {
             // Fall back to the desired startup device if the webcam never started this
             // session (e.g. app was killed before device discovery completed).
             startup_webcam_device: state.input.device_index.or(state.startup_webcam_device),
+            preset_quick_slots: state.preset_quick_slot_names.clone(),
         }
     }
 }

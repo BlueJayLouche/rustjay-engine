@@ -534,6 +534,13 @@ mod egui_impl {
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Ndi, "📡 NDI");
                 #[cfg(target_os = "macos")]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Syphon, "🖥 Syphon");
+                if self.add_tab != AddSourceTab::File {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("⟳ Refresh").clicked() {
+                            state.registry.refresh_builtins();
+                        }
+                    });
+                }
             });
             ui.separator();
 

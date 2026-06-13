@@ -385,8 +385,22 @@ impl<P: EffectPlugin> App<P> {
         let preset_bank = match presets_dir_for(&app_name) {
             Ok(presets_dir) => {
                 log::info!("Preset bank initialized at {}", presets_dir.display());
-                let bank = PresetBank::new(presets_dir);
+                let mut bank = PresetBank::new(presets_dir);
                 {
+                    // Rebind quick slots from names saved in config (state.preset_quick_slot_names
+                    // was populated by apply_to_state before this point). Silently drops slots
+                    // whose preset was deleted since last run.
+                    let saved = {
+                        let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                        s.preset_quick_slot_names.clone()
+                    };
+                    for (i, maybe_name) in saved.iter().enumerate() {
+                        if let Some(name) = maybe_name {
+                            if let Some(idx) = bank.presets.iter().position(|p| &p.name == name) {
+                                let _ = bank.assign_to_slot(idx, i + 1);
+                            }
+                        }
+                    }
                     let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
                     let slot_names: [Option<String>; 8] =
                         std::array::from_fn(|i| bank.get_slot_name(i + 1).map(|s| s.to_string()));

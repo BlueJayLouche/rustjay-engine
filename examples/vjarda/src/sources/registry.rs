@@ -242,6 +242,52 @@ impl Registry {
         }
     }
 
+    /// Re-scan live devices (cameras, NDI, Syphon) without touching shaders/images/videos.
+    pub fn refresh_builtins(&mut self) {
+        let mut builtins = vec![SourceEntry {
+            id: "solid_color".to_string(),
+            name: "Solid Color".to_string(),
+            kind: SourceKind::SolidColor,
+            path: None,
+            device_index: 0,
+        }];
+        #[cfg(feature = "webcam")]
+        for (idx, name) in rustjay_io::list_cameras().into_iter().enumerate() {
+            builtins.push(SourceEntry {
+                id: format!("camera_{}", idx),
+                name,
+                kind: SourceKind::Camera,
+                path: None,
+                device_index: idx,
+            });
+        }
+        #[cfg(feature = "ndi")]
+        for (idx, name) in rustjay_io::list_ndi_sources(500).into_iter().enumerate() {
+            builtins.push(SourceEntry {
+                id: format!("ndi_{}", idx),
+                name,
+                kind: SourceKind::Ndi,
+                path: None,
+                device_index: 0,
+            });
+        }
+        #[cfg(target_os = "macos")]
+        for (idx, info) in rustjay_io::SyphonDiscovery::new()
+            .discover_servers()
+            .into_iter()
+            .enumerate()
+        {
+            builtins.push(SourceEntry {
+                id: format!("syphon_{}", idx),
+                name: info.name.clone(),
+                kind: SourceKind::Syphon,
+                path: Some(std::path::PathBuf::from(&info.uuid)),
+                device_index: 0,
+            });
+        }
+        self.builtins = builtins;
+    }
+
     /// All entries flattened.
     pub fn all(&self) -> Vec<&SourceEntry> {
         self.shaders
