@@ -9,7 +9,7 @@ keywords = ["vj", "video", "mixer", "compositing", "wgpu"]
 categories = ["graphics", "multimedia::video"]
 
 [dependencies]
-rustjay-core   = { workspace = true, features = ["modulation"] }
+rustjay-core   = { workspace = true }
 rustjay-render = { workspace = true }
 wgpu           = { workspace = true }
 bytemuck       = { workspace = true }

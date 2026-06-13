@@ -17,140 +17,109 @@ use std::sync::{Arc, Mutex};
 /// Commands sent to the input subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum InputCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start capturing from a webcam.
     StartWebcam {
-        /// Device index in the discovered list.
         device_index: usize,
-        /// Requested capture width.
         width: u32,
-        /// Requested capture height.
         height: u32,
-        /// Requested capture frame rate.
         fps: u32,
     },
-    /// Start receiving from an NDI source (NDI feature only).
+    /// NDI feature only.
     #[cfg(feature = "ndi")]
     StartNdi {
-        /// NDI source name to connect to.
         source_name: String,
     },
-    /// Start receiving from a Syphon server (macOS only).
+    /// macOS only.
     #[cfg(target_os = "macos")]
     StartSyphon {
-        /// Syphon server name.
         server_name: String,
-        /// Syphon server UUID.
         server_uuid: String,
     },
-    /// Start receiving from a Spout sender (Windows only).
+    /// Windows only.
     #[cfg(target_os = "windows")]
     StartSpout {
-        /// Spout sender name.
         sender_name: String,
     },
-    /// Start capturing from a V4L2 device (Linux only).
+    /// Linux only.
     #[cfg(target_os = "linux")]
     StartV4l2 {
-        /// V4L2 device path (e.g. `/dev/video0`).
         device_path: String,
     },
-    /// Stop the current input.
     StopInput,
-    /// Refresh the list of available input devices.
     RefreshDevices,
 }
 
 /// Target codec for disk recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecorderCodec {
-    /// H.264 / AVC.
     H264,
-    /// H.265 / HEVC.
     H265,
-    /// AV1.
     AV1,
-    /// Apple ProRes 422.
     ProRes422,
 }
 
 /// Commands sent to the output subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum OutputCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start NDI output streaming (NDI feature only).
+    /// NDI feature only.
     #[cfg(feature = "ndi")]
     StartNdi,
-    /// Stop NDI output streaming (NDI feature only).
+    /// NDI feature only.
     #[cfg(feature = "ndi")]
     StopNdi,
-    /// Start Syphon output server (macOS only).
+    /// macOS only.
     #[cfg(target_os = "macos")]
     StartSyphon,
-    /// Stop Syphon output server (macOS only).
+    /// macOS only.
     #[cfg(target_os = "macos")]
     StopSyphon,
-    /// Start Spout output sender (Windows only).
+    /// Windows only.
     #[cfg(target_os = "windows")]
     StartSpout {
-        /// Spout sender name.
         sender_name: String,
     },
-    /// Stop Spout output sender (Windows only).
+    /// Windows only.
     #[cfg(target_os = "windows")]
     StopSpout,
-    /// Start V4L2 loopback output (Linux only).
+    /// Linux only.
     #[cfg(target_os = "linux")]
     StartV4l2 {
-        /// V4L2 loopback device path.
         device_path: String,
     },
-    /// Stop V4L2 loopback output (Linux only).
+    /// Linux only.
     #[cfg(target_os = "linux")]
     StopV4l2,
-    /// Re-initialize outputs after a resolution change.
     ResizeOutput,
-    /// Start disk recording.
     StartRecording {
-        /// Output file path.
         path: String,
-        /// Target codec.
         codec: RecorderCodec,
     },
-    /// Stop disk recording.
     StopRecording,
 }
 
 /// Commands sent to the audio subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum AudioCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start audio capture and analysis.
     Start,
-    /// Stop audio capture.
     Stop,
-    /// Refresh the list of audio devices.
     RefreshDevices,
-    /// Select an audio input device by name.
     SelectDevice(String),
-    /// Change the FFT analysis window size.
     SetFftSize(usize),
 }
 
 /// The type of MIDI message used in a CC/Note/AT mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MidiMsgKind {
-    /// Control Change — continuous knobs, faders, pedals.
+    /// CC — continuous knobs, faders, pedals.
     Cc,
-    /// Note On / Note Off — pads, keys. Note Off drives the parameter to its minimum.
+    /// Note On/Off — pads/keys. Note Off → minimum.
     Note,
-    /// Channel Aftertouch — mono pressure from a keyboard or pad controller.
+    /// Channel Aftertouch — mono pressure.
     Aftertouch,
 }
 
@@ -176,166 +145,110 @@ pub struct MidiMappingSnapshot {
 /// Commands sent to the MIDI subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum MidiCommand {
-    /// No-op.
     #[default]
     None,
-    /// Refresh the list of MIDI devices.
     RefreshDevices,
-    /// Select a MIDI input device by name.
     SelectDevice(String),
-    /// Enter CC-learn mode for the given parameter.
     StartLearn {
-        /// Hierarchical path used to identify the parameter.
         param_path: String,
-        /// Human-readable parameter name.
         param_name: String,
-        /// Parameter minimum value (used to scale the CC output range).
+        /// Scales the CC output range.
         min: f32,
-        /// Parameter maximum value (used to scale the CC output range).
+        /// Scales the CC output range.
         max: f32,
     },
-    /// Cancel CC-learn mode.
     CancelLearn,
-    /// Clear all CC mappings.
     ClearMappings,
-    /// Disconnect the current MIDI device.
     Disconnect,
-    /// Replace all mappings (used when loading a preset).
+    /// Replace all mappings (preset restore).
     RestoreMappings(Vec<MidiMappingSnapshot>),
 }
 
 /// Commands sent to the modulation subsystem.
 #[derive(Debug, Clone, Default)]
 pub enum ModulationCommand {
-    /// No-op.
     #[default]
     None,
-    /// Add a modulation source.
     AddSource(crate::modulation::ModulationSource),
-    /// Add a modulation source with a specific UUID.
     AddSourceWithUuid {
-        /// Stable UUID for the source.
         uuid: String,
-        /// The modulation source to add.
         source: crate::modulation::ModulationSource,
     },
-    /// Remove a modulation source by UUID.
     RemoveSource(String),
-    /// Assign a source to a parameter.
     Assign {
-        /// Target parameter id.
         param: String,
-        /// Source UUID.
         source_id: String,
-        /// Modulation amount.
         amount: f32,
-        /// Optional component index (for color params).
+        /// Component index for color params.
         component: Option<usize>,
     },
-    /// Assign mod-on-mod (a modulator targets another source's param).
+    /// Mod-on-mod: a modulator targets another source's param.
     AssignModOnMod {
-        /// Target source UUID.
         target_uuid: String,
-        /// Target parameter within the source.
         param: String,
-        /// Modulator source UUID.
         modulator_uuid: String,
-        /// Modulation amount.
         amount: f32,
     },
-    /// Clear all assignments for a parameter.
     ClearAssignments(String),
-    /// Trigger an ADSR envelope.
     TriggerAdsr(String),
-    /// Release an ADSR envelope.
     ReleaseAdsr(String),
-    /// Replace the entire modulation engine state (preset restore).
+    /// Replace the full modulation engine state (preset restore).
     RestoreEngine(crate::modulation::ModulationEngine),
 }
 
 /// Commands sent to the OSC subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum OscCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start the OSC server.
     Start,
-    /// Stop the OSC server.
     Stop,
-    /// Change the OSC listen port.
     SetPort(u16),
-    /// Re-scan for auto-generated OSC addresses.
     RefreshAddresses,
 }
 
 /// Commands sent to the preset subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum PresetCommand {
-    /// No-op.
     #[default]
     None,
-    /// Save the current state as a new preset.
-    Save {
-        /// Preset name.
-        name: String,
-    },
-    /// Load a preset by index.
+    Save { name: String },
     Load(usize),
-    /// Delete a preset by index.
     Delete(usize),
-    /// Apply the preset assigned to a quick slot.
     ApplySlot(usize),
-    /// Assign a preset to a quick slot.
-    AssignSlot {
-        /// Index of the preset to assign.
-        preset_index: usize,
-        /// Quick slot number (1–8).
-        slot: usize,
-    },
-    /// Refresh the preset list from disk.
+    AssignSlot { preset_index: usize, slot: usize },
     Refresh,
 }
 
 /// Commands sent to the web remote subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum WebCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start the web remote server.
     Start,
-    /// Stop the web remote server.
     Stop,
-    /// Change the web server port.
     SetPort(u16),
-    /// Enable or disable LAN trust mode (skip token auth for local network clients).
+    /// Skip token auth for local network clients.
     SetLanTrust(bool),
 }
 
 /// Commands sent to the Ableton Link subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum LinkCommand {
-    /// No-op.
     #[default]
     None,
-    /// Enable Link session participation.
     Enable,
-    /// Disable Link session participation.
     Disable,
-    /// Change the musical quantum (e.g. 4.0 for a 4/4 bar).
+    /// Musical quantum, e.g. 4.0 for 4/4.
     SetQuantum(f64),
 }
 
 /// Commands sent to the ProDJ Link subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ProDjCommand {
-    /// No-op.
     #[default]
     None,
-    /// Start listening for ProDJ Link devices.
     Start,
-    /// Stop listening and clear discovered devices.
     Stop,
 }
 
