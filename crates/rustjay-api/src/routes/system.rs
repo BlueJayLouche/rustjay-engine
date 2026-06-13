@@ -11,10 +11,8 @@ use crate::SharedState;
 
 // ── Health ─────────────────────────────────────────────────────────
 
-/// Health check response.
 #[derive(serde::Serialize, ToSchema)]
 pub struct HealthResponse {
-    /// Service status.
     pub status: &'static str,
 }
 
@@ -141,10 +139,8 @@ pub async fn get_state_prodj(State(state): State<SharedState>) -> impl IntoRespo
 
 // ── Write commands ─────────────────────────────────────────────────
 
-/// Generic OK response body for command endpoints.
 #[derive(serde::Serialize, ToSchema)]
 pub struct CommandOk {
-    /// Status string.
     pub status: &'static str,
 }
 
@@ -167,12 +163,10 @@ fn send_command(state: &SharedState, cmd: rustjay_control::WebCommand) -> Result
 
 // ── Params ─────────────────────────────────────────────────────────
 
-/// Set a parameter value.
 #[derive(Deserialize, ToSchema)]
 pub struct SetParamBody {
-    /// Parameter identifier (e.g. `"color/hue_shift"`).
+    /// e.g. `"color/hue_shift"`
     pub id: String,
-    /// New value.
     pub value: f32,
 }
 
@@ -202,16 +196,11 @@ pub async fn set_param(
 
 // ── Input ──────────────────────────────────────────────────────────
 
-/// Start webcam request.
 #[derive(Deserialize, ToSchema)]
 pub struct StartWebcamBody {
-    /// Device index.
     pub device_index: usize,
-    /// Capture width.
     pub width: u32,
-    /// Capture height.
     pub height: u32,
-    /// Capture FPS.
     pub fps: u32,
 }
 

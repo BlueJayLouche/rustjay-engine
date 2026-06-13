@@ -1,12 +1,7 @@
-//! # rustjay-api — Optional REST/OpenAPI layer for rustjay-engine
+//! Optional REST/OpenAPI layer for rustjay-engine.
 //!
-//! Provides typed REST endpoints and OpenAPI/Swagger documentation.
-//!
-//! This crate is a leaf dependency of `rustjay-engine` and is **off by
-//! default**. When enabled, its router is merged into the existing
-//! `rustjay-control` web server so there is only one HTTP listener.
-
-#![warn(missing_docs)]
+//! Returns a `Router<SharedState>` without bound state; call `.with_state(shared)`
+//! to serve it, or let `rustjay-control` merge it under its protected tree.
 
 pub mod openapi;
 pub mod routes;
@@ -18,21 +13,10 @@ mod tests;
 use axum::Router;
 use std::sync::{Arc, Mutex};
 
-/// Re-export the control-layer state type so route handlers can use it
-/// directly.  The API is mounted under the same auth layer as the control
-/// server, so it shares `Arc<Mutex<WebServerState>>` as its router state.
+/// Shared state type for all API route handlers.
 pub type SharedState = Arc<Mutex<rustjay_control::WebServerState>>;
 
 /// Build the axum router with all API routes.
-///
-/// The returned router is *stateless* in the type sense: it is a
-/// `Router<SharedState>` whose handlers expect `State<SharedState>` but for
-/// which no state has been provided yet. `rustjay-control` merges it into its
-/// protected router and supplies the single shared state via `.with_state(...)`
-/// for the whole tree, so there is exactly one `WebServerState` instance.
-///
-/// To serve this router standalone (e.g. in tests), call `.with_state(shared)`
-/// on the result.
 pub fn build_router() -> Router<SharedState> {
     use axum::routing::{get, post, put};
     use utoipa::OpenApi;
@@ -198,299 +182,192 @@ pub fn build_router() -> Router<SharedState> {
 
 // ── Engine Snapshot DTOs ───────────────────────────────────────────────────
 
-/// A serializable snapshot of engine state, built on-demand in handlers.
+/// Serializable snapshot of engine state, returned by GET /api/state.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EngineSnapshot {
-    /// Output window state.
     pub output: OutputSnapshot,
-    /// Primary video input.
     pub input: InputSnapshot,
-    /// Secondary video input.
     pub second_input: InputSnapshot,
-    /// Audio analysis state.
     pub audio: AudioSnapshot,
-    /// Color / HSB state.
     pub color: ColorSnapshot,
-    /// MIDI control state.
     pub midi: MidiSnapshot,
-    /// OSC server state.
     pub osc: OscSnapshot,
-    /// Preset bank state.
     pub presets: PresetSnapshot,
-    /// Web remote state.
     pub web: WebSnapshot,
-    /// Ableton Link state.
     pub link: LinkSnapshot,
-    /// ProDJ Link state.
     pub prodj: ProDjSnapshot,
-    /// MIDI Timecode state.
     pub mtc: MtcSnapshot,
-    /// Rendering resolution.
     pub resolution: ResolutionSnapshot,
-    /// Frame-time metrics.
     pub performance: PerformanceSnapshot,
-    /// Effect-declared parameters and their current values.
     pub params: ParamsSnapshot,
-    /// LFO / audio-routing modulation state.
     pub modulation: ModulationSnapshot,
-    /// Target render FPS.
     pub target_fps: u32,
-    /// Currently selected GUI tab.
     pub current_tab: String,
-    /// Opaque JSON snapshot the active app published (or null). Included here
-    /// so the WebSocket delta stream carries app state changes.
+    /// Opaque JSON blob the active app published, or null.
     pub app_state: serde_json::Value,
 }
 
-/// Output subsystem snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OutputSnapshot {
-    /// Fullscreen flag.
     pub fullscreen: bool,
-    /// Output width in pixels.
     pub width: u32,
-    /// Output height in pixels.
     pub height: u32,
 }
 
-/// Video input snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct InputSnapshot {
-    /// Active input source type name.
     pub input_type: String,
-    /// Source name or identifier.
     pub source_name: String,
-    /// Whether the input is streaming.
     pub is_active: bool,
-    /// Capture width.
     pub width: u32,
-    /// Capture height.
     pub height: u32,
-    /// Capture FPS.
     pub fps: f32,
-    /// Webcam device index, if applicable.
     pub device_index: Option<usize>,
-    /// Discovered devices.
     pub available_devices: Vec<rustjay_core::InputDeviceInfo>,
 }
 
-/// Audio analysis snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AudioSnapshot {
-    /// Per-band FFT magnitudes (8 bands, 0–1).
+    /// 8-band FFT magnitudes (0–1).
     pub fft: [f32; 8],
-    /// Overall volume (0–1).
     pub volume: f32,
-    /// Beat detected this frame.
     pub beat: bool,
-    /// Estimated BPM.
     pub bpm: f32,
     /// Beat phase (0–1).
     pub beat_phase: f32,
-    /// Audio analysis active.
     pub enabled: bool,
-    /// Input gain.
     pub amplitude: f32,
-    /// Smoothing factor.
     pub smoothing: f32,
-    /// Selected device name.
     pub selected_device: Option<String>,
-    /// Discovered device names.
     pub available_devices: Vec<String>,
-    /// Normalisation enabled.
     pub normalize: bool,
-    /// Pink-noise shaping enabled.
     pub pink_noise_shaping: bool,
-    /// FFT window size.
     pub fft_size: usize,
-    /// Tap-tempo feedback.
     pub tap_tempo_info: String,
 }
 
-/// Color / HSB snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ColorSnapshot {
-    /// Hue shift (-180 to 180).
+    /// Degrees, -180 to 180.
     pub hue_shift: f32,
-    /// Saturation multiplier (0–2).
+    /// Multiplier, 0–2.
     pub saturation: f32,
-    /// Brightness multiplier (0–2).
+    /// Multiplier, 0–2.
     pub brightness: f32,
-    /// Color adjustment enabled.
     pub enabled: bool,
 }
 
-/// MIDI snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MidiSnapshot {
-    /// MIDI device connected.
     pub enabled: bool,
-    /// Selected device name.
     pub selected_device: Option<String>,
-    /// Discovered device names.
     pub available_devices: Vec<String>,
-    /// CC-learn active.
     pub learn_active: bool,
-    /// Parameter being learned.
     pub learning_param_name: Option<String>,
-    /// Active mappings.
     pub mappings: Vec<rustjay_core::MidiMappingSnapshot>,
 }
 
-/// OSC snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OscSnapshot {
-    /// OSC server running.
     pub enabled: bool,
-    /// Listen host.
     pub host: String,
-    /// Listen port.
     pub port: u16,
-    /// Recent message log (address, value, timestamp).
+    /// (address, value, timestamp) tuples.
     pub message_log: Vec<(String, f32, f64)>,
 }
 
-/// Preset bank snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PresetSnapshot {
-    /// Saved preset names.
     pub names: Vec<String>,
-    /// Quick-slot names (1–8).
+    /// Quick-slot assignments (indices 0–7).
     pub quick_slot_names: Vec<Option<String>>,
 }
 
-/// Web remote snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct WebSnapshot {
-    /// Server running.
     pub enabled: bool,
-    /// Listen host.
     pub host: String,
-    /// Listen port.
     pub port: u16,
-    /// App name path.
     pub app_name: String,
-    /// LAN trust mode.
     pub lan_trust: bool,
 }
 
-/// Ableton Link snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LinkSnapshot {
-    /// Link enabled.
     pub enabled: bool,
-    /// Peers in session.
     pub num_peers: usize,
-    /// Session BPM.
     pub bpm: f32,
     /// Beat phase (0–1).
     pub beat_phase: f32,
-    /// Musical quantum.
     pub quantum: f64,
-    /// Session playing.
     pub is_playing: bool,
 }
 
-/// ProDJ Link snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProDjSnapshot {
-    /// Discovery active.
     pub enabled: bool,
-    /// Discovered devices.
     pub devices: Vec<ProDjDeviceSnapshot>,
-    /// Master BPM.
     pub master_bpm: f32,
-    /// Master beat phase.
     pub master_beat_phase: f32,
-    /// Current track artist.
     pub current_track_artist: String,
-    /// Current track title.
     pub current_track_title: String,
 }
 
-/// Single CDJ device snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProDjDeviceSnapshot {
-    /// Device ID.
     pub device_id: u32,
-    /// Device name.
     pub name: String,
-    /// Currently playing.
     pub is_playing: bool,
-    /// Tempo master.
     pub is_master: bool,
-    /// BPM.
     pub bpm: Option<f32>,
 }
 
-/// MTC snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MtcSnapshot {
-    /// MTC messages received.
     pub running: bool,
-    /// Quarter-frames arriving.
     pub playing: bool,
-    /// Timecode position.
     pub position: String,
-    /// Source MIDI port.
     pub source_device: String,
 }
 
-/// Resolution snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ResolutionSnapshot {
-    /// Internal render width.
     pub internal_width: u32,
-    /// Internal render height.
     pub internal_height: u32,
-    /// Input texture width.
     pub input_width: u32,
-    /// Input texture height.
     pub input_height: u32,
 }
 
-/// Performance snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PerformanceSnapshot {
-    /// Current FPS.
     pub fps: f32,
-    /// Average frame time ms.
     pub frame_time_ms: f32,
-    /// CPU usage percentage (sysmon feature only; zero otherwise).
+    /// Zero when the `sysmon` feature is off.
     pub cpu_percent: f32,
-    /// Used memory in megabytes (sysmon feature only; zero otherwise).
+    /// Zero when the `sysmon` feature is off.
     pub mem_used_mb: u64,
-    /// Total memory in megabytes (sysmon feature only; zero otherwise).
+    /// Zero when the `sysmon` feature is off.
     pub mem_total_mb: u64,
 }
 
-/// Parameter snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ParamsSnapshot {
-    /// Parameter descriptors.
     pub descriptors: Vec<rustjay_core::ParameterDescriptor>,
-    /// Base (unmodulated) values.
+    /// Base (pre-modulation) values, parallel to `descriptors`.
     pub bases: Vec<f32>,
-    /// Modulated values.
+    /// Modulated live values, parallel to `descriptors`.
     pub values: Vec<f32>,
 }
 
-/// Modulation snapshot.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModulationSnapshot {
-    /// Legacy LFO bank state (shim).
+    /// Legacy LFO bank shim.
     pub lfos: Vec<rustjay_core::lfo::Lfo>,
-    /// Unified modulation engine sources.
     pub sources: Vec<rustjay_core::modulation::ModulationSourceEntry>,
-    /// Unified modulation engine assignments.
     pub assignments: std::collections::HashMap<String, Vec<rustjay_core::modulation::ParamModulation>>,
-    /// Audio routing matrix routes.
     pub audio_routes: Vec<rustjay_core::routing::AudioRoute>,
-    /// Audio routing enabled.
     pub audio_routing_enabled: bool,
-    /// Current BPM.
     pub bpm: f32,
-    /// Tap-tempo feedback.
     pub tap_tempo_info: String,
 }
 
