@@ -1,12 +1,9 @@
-//! # ImGui Renderer
-//!
 //! wgpu-based renderer for Dear ImGui.
 
 use anyhow::Result;
 use std::sync::Arc;
 use winit::window::Window;
 
-/// ImGui renderer using wgpu
 pub struct ImGuiRenderer {
     context: imgui::Context,
     renderer: imgui_wgpu::Renderer,
@@ -21,7 +18,6 @@ pub struct ImGuiRenderer {
 }
 
 impl ImGuiRenderer {
-    /// Create a new ImGui renderer
     pub async fn new(
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
@@ -32,7 +28,6 @@ impl ImGuiRenderer {
     ) -> Result<Self> {
         let size = window.inner_size();
 
-        // Create surface
         let surface = instance.create_surface(window.clone())?;
 
         let surface_caps = surface.get_capabilities(adapter);
@@ -58,11 +53,9 @@ impl ImGuiRenderer {
         };
         surface.configure(&device, &surface_config);
 
-        // Create ImGui context
         let mut context = imgui::Context::create();
         context.set_ini_filename(None);
 
-        // Set up platform
         let mut platform = imgui_winit_support::WinitPlatform::new(&mut context);
         platform.attach_window(
             context.io_mut(),
@@ -76,13 +69,11 @@ impl ImGuiRenderer {
         context.io_mut().display_size = [logical_width, logical_height];
         context.io_mut().display_framebuffer_scale = [scale_factor as f32, scale_factor as f32];
 
-        // Style configuration
         let style = context.style_mut();
         style.window_rounding = 4.0;
         style.frame_rounding = 4.0;
         style.scrollbar_rounding = 4.0;
 
-        // Create renderer
         let renderer_config = imgui_wgpu::RendererConfig {
             texture_format: surface_format,
             ..Default::default()
@@ -133,24 +124,21 @@ impl ImGuiRenderer {
             .handle_event(self.context.io_mut(), &self.window, event);
     }
 
-    /// Set display size (in logical points)
     pub fn set_display_size(&mut self, width: f32, height: f32) {
         self.context.io_mut().display_size = [width, height];
     }
 
-    /// Update scale factor (call when window moves to a different display)
+    /// Call when window moves to a different display.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         self.scale_factor = scale_factor;
         let sf = scale_factor as f32;
         self.context.io_mut().display_framebuffer_scale = [sf, sf];
     }
 
-    /// Get current scale factor
     pub fn scale_factor(&self) -> f64 {
         self.scale_factor
     }
 
-    /// Resize surface
     pub fn resize(&mut self, width: u32, height: u32) {
         if width > 0 && height > 0 {
             self.surface_config.width = width;
@@ -185,16 +173,13 @@ impl ImGuiRenderer {
         self.renderer.textures.get(texture_id).map(|t| t.view())
     }
 
-    /// Update a preview texture with texture data
     pub fn update_preview_texture(
         &mut self,
         texture_id: imgui::TextureId,
         source_texture: &wgpu::Texture,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        // Get the imgui texture
         if let Some(imgui_tex) = self.renderer.textures.get(texture_id) {
-            // Copy from source texture to ImGui texture
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: source_texture,
@@ -217,16 +202,13 @@ impl ImGuiRenderer {
         }
     }
 
-    /// Render a frame
     pub fn render_frame<F>(&mut self, build_ui: F) -> Result<()>
     where
         F: FnOnce(&mut imgui::Ui),
     {
-        // Prepare frame
         let io = self.context.io_mut();
         self.platform.prepare_frame(io, &self.window)?;
 
-        // Build UI
         let ui = self.context.frame();
         build_ui(ui);
         // ui borrows context mutably; NLL ends that borrow here so render()
@@ -235,7 +217,6 @@ impl ImGuiRenderer {
         // the next NewFrame() won't assert.
         let draw_data = self.context.render();
 
-        // Get surface texture
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -249,14 +230,12 @@ impl ImGuiRenderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Create encoder
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("ImGui Encoder"),
             });
 
-        // Render
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ImGui Render Pass"),
@@ -284,19 +263,16 @@ impl ImGuiRenderer {
                 .render(draw_data, &self.queue, &self.device, &mut render_pass)?;
         }
 
-        // Submit
         self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
 
         Ok(())
     }
 
-    /// Get device reference
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    /// Get queue reference
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
