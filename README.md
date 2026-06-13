@@ -2,7 +2,7 @@
 
 High-performance, cross-platform VJ engine built in Rust — for VJ applications what [Bevy](https://bevyengine.org/) is for games.
 
-**[📖 Guide](https://bluejalouche.github.io/rustjay-engine/)**
+**[📖 Guide](https://BlueJayLouche.github.io/rustjay-engine/)**
 
 ## What is it?
 
@@ -10,6 +10,7 @@ rustjay-engine is a Cargo workspace of focused crates that handles all the infra
 
 - GPU rendering via **wgpu** (Metal / Vulkan / DX12)
 - Video I/O — **Webcam**, **NDI**, **Syphon** (macOS), **Spout** (Windows), **V4L2** (Linux)
+- **DeckLink** capture input (Blackmagic)
 - Real-time audio analysis — FFT, beat detection, 8-band spectrum
 - Audio-reactive parameter routing — FFT bands → any parameter
 - **LFO** modulation (3 banks, 5 waveforms, tempo-sync to BPM)
@@ -19,6 +20,10 @@ rustjay-engine is a Cargo workspace of focused crates that handles all the infra
 - **OSC** server
 - **Web** parameter server (REST + live push)
 - **Presets** with quick-slots (Shift+F1–F8)
+- **Multi-channel mixer** — N-deck compositing with FX chains and scene persistence
+- **Projection mapping** — output post-processor with dome, warp, edge-blend, slicer
+- **DMX lighting output** — sACN / Art-Net with per-fixture pixel sampling
+- **ISF shaders** — load any Interactive Shader Format `.fs` at runtime
 - Dual-window architecture — Control (ImGui / egui) + Output (fullscreen GPU)
 
 You bring the shader and the idea. The engine handles everything else.
@@ -30,22 +35,32 @@ rustjay-engine/
 ├── crates/
 │   ├── rustjay-core        # EngineState, command enums, LFO, routing types
 │   ├── rustjay-audio       # AudioAnalyzer, FFT, beat detection
-│   ├── rustjay-io          # InputManager, OutputManager (Webcam/NDI/Syphon/Spout/V4L2)
+│   ├── rustjay-io          # InputManager, OutputManager (Webcam/NDI/Syphon/Spout/V4L2/DeckLink)
 │   ├── rustjay-control     # MIDI, OSC, Web server
 │   ├── rustjay-presets     # Preset save/load/quick-slots
-│   ├── rustjay-sync        # Ableton Link + ProDJ Link tempo sync (optional)
+│   ├── rustjay-sync        # Ableton Link + ProDJ Link + MTC tempo sync (optional)
 │   ├── rustjay-gui         # ImGui + egui control window, all built-in tabs
 │   ├── rustjay-render      # wgpu pipeline, blit, textures, uniforms
+│   ├── rustjay-mixer       # Multi-channel compositing mixer with FX chains
+│   ├── rustjay-projection  # Output post-processor (dome, warp, edge-blend, slicer)
+│   ├── rustjay-lighting    # DMX lighting output — sACN / Art-Net pixel sampling
+│   ├── rustjay-isf         # ISF shader support — GLSL→WGSL transpiler + EffectPlugin adapter
+│   ├── rustjay-api         # Optional REST/OpenAPI layer
 │   └── rustjay-engine      # Facade — app runner, config, re-exports
 ├── examples/
 │   ├── template            # HSB colour + full I/O (reference app)
 │   ├── delta               # RGB delay / motion extraction (ImGui)
 │   ├── delta-egui          # Same as delta with egui backend
+│   ├── flux                # Optical-flow warp with motion feedback trails
 │   ├── waaaves             # Multi-pass feedback pipeline
 │   ├── sputnik             # Indexed mesh + vertex-shader displacement (Rutt-Etra style)
 │   ├── isf-example         # Runtime ISF shader loader with auto-generated UI
-│   └── webapp              # Web-based control panel (React + WebSocket)
-└── guide/                  # mdBook user guide → https://bluejalouche.github.io/rustjay-engine/
+│   ├── mixer               # 2-channel mixer demonstrating rustjay-mixer
+│   ├── projection          # Projection mapping demonstrating rustjay-projection
+│   ├── decklink            # Blackmagic DeckLink capture input
+│   ├── vjarda              # Full multi-deck VJ application
+│   └── webapp              # Web-based control panel (React + WebSocket / WASM + WebGPU)
+└── guide/                  # mdBook user guide → https://BlueJayLouche.github.io/rustjay-engine/
 ```
 
 ## Quick start
@@ -93,7 +108,7 @@ fn main() -> anyhow::Result<()> {
 
 That's it — two windows open: a fullscreen GPU output and a tabbed control panel with input, audio, LFO, MIDI, OSC, presets, and output built in.
 
-See the **[guide](https://bluejalouche.github.io/rustjay-engine/)** for a full walkthrough.
+See the **[guide](https://BlueJayLouche.github.io/rustjay-engine/)** for a full walkthrough.
 
 ## Running the examples
 
@@ -103,9 +118,13 @@ cd rustjay-engine
 cargo run -p template      # HSB colour (reference)
 cargo run -p delta         # RGB delay / motion extraction
 cargo run -p delta-egui    # Same effect, egui backend
+cargo run -p flux          # Optical-flow warp
 cargo run -p waaaves       # Multi-pass feedback pipeline
 cargo run -p sputnik       # Mesh displacement (Rutt-Etra style)
 cargo run -p isf-example   # Load any .fs ISF shader at runtime
+cargo run -p mixer         # 2-channel compositor
+cargo run -p projection    # Projection mapping
+cargo run -p vjarda        # Full multi-deck VJ app (--all-features for NDI/Syphon/Spout)
 cargo run -p webapp        # Web control panel (open http://localhost:3000)
 ```
 
@@ -183,8 +202,12 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 | 6 | ✅ | Ableton Link + ProDJ Link tempo sync |
 | SG-6 | ✅ | MIDI Timecode, explicit sync source selector, LFO beat-phase fix |
 | 7 | ✅ | ISF shader viewer, web remote, egui backend, user guide |
+| 8 | ✅ | Windows support — Spout I/O, NDI robustness, CI |
+| 9 | ✅ | Multi-deck VJ app (vjarda) — mixer, FX chains, scene topology persistence |
+| 10 | ✅ | Projection mapping — output post-processor, headless NDI/Syphon/Spout/V4L2 sinks |
+| 11 | ✅ | DMX lighting output — sACN / Art-Net with per-fixture pixel sampling |
 
-Stretch goals: hot-reload plugins, timeline/sequencer.
+Stretch goals: hot-reload plugins, timeline/sequencer, VARDA full-parity port.
 
 ## License
 
