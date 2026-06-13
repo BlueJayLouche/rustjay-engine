@@ -2,17 +2,12 @@
 
 use rustjay_core::{CdjDevice, ProDjState};
 
-/// Manages a ProDJ Link client and copies discovered deck metadata into
-/// [`ProDjState`] each frame.
-///
-/// Construct once and call [`update`](Self::update) every frame.
 pub struct ProDjManager {
     client: prodjlink_rs::ProDjLinkClient,
     last_enabled: bool,
 }
 
 impl ProDjManager {
-    /// Create a new ProDJ Link manager.
     pub fn new() -> Self {
         Self {
             client: prodjlink_rs::ProDjLinkClient::new(),
@@ -20,9 +15,7 @@ impl ProDjManager {
         }
     }
 
-    /// Poll the ProDJ Link client and write discovered state into `state`.
-    ///
-    /// Call this once per frame from the main thread.
+    /// Call once per frame from the main thread.
     pub fn update(&mut self, state: &mut ProDjState) {
         if state.enabled != self.last_enabled {
             self.last_enabled = state.enabled;
@@ -47,7 +40,6 @@ impl ProDjManager {
         // Read lock-free snapshot — zero acquisitions of ProDjLinkState's mutex
         let snap = self.client.snapshot();
 
-        // Refresh discovered devices
         state.devices.clear();
         let mut master_bpm = 0.0f32;
         let mut has_master = false;
@@ -84,7 +76,6 @@ impl ProDjManager {
         // This is a best-effort approximation.
         state.master_beat_phase = Self::derive_beat_phase(master_bpm);
 
-        // Update current master track metadata
         if let Some(track) = &snap.current_track {
             state.current_track_artist.clone_from(&track.artist);
             state.current_track_title.clone_from(&track.title);
@@ -100,11 +91,7 @@ impl ProDjManager {
         }
     }
 
-    /// Derive a beat phase from BPM using the system clock.
-    ///
-    /// This is a fallback because the current `prodjlink-rs` API does not
-    /// expose explicit beat phase. When beat phase becomes available from
-    /// the protocol, this should be replaced.
+    /// Fallback: `prodjlink-rs` doesn't expose beat phase yet; replace when the API does.
     fn derive_beat_phase(bpm: f32) -> f32 {
         if bpm <= 0.0 {
             return 0.0;
