@@ -33,7 +33,6 @@ pub enum ChannelRole {
 }
 
 impl ChannelRole {
-    /// Short single-letter label used in UI lists.
     pub fn label(&self) -> String {
         match self {
             ChannelRole::Red => "R".into(),
@@ -48,7 +47,6 @@ impl ChannelRole {
     }
 }
 
-/// Description of one fixture type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FixtureProfile {
     pub id: ProfileId,
@@ -58,7 +56,6 @@ pub struct FixtureProfile {
 }
 
 impl FixtureProfile {
-    /// Channels per fixture.
     pub fn footprint(&self) -> usize {
         self.channels.len()
     }
@@ -83,7 +80,6 @@ impl Default for WhiteMode {
 }
 
 impl WhiteMode {
-    /// UI label for the white-extraction mode.
     pub fn label(&self) -> &'static str {
         match self {
             WhiteMode::Off => "Off",
@@ -96,16 +92,13 @@ impl WhiteMode {
 /// Per-segment colour adjustments applied after output gamma.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SegmentColor {
-    /// 0..=1 global scale.
     #[serde(default = "one_f32")]
     pub brightness: f32,
-    /// Per-channel R,G,B white-balance trim.
     #[serde(default = "default_gain")]
     pub gain: [f32; 3],
-    /// 0..=1, drives [`ChannelRole::Dimmer`].
+    /// Drives [`ChannelRole::Dimmer`].
     #[serde(default = "one_f32")]
     pub master_dimmer: f32,
-    /// White extraction for RGBW fixtures.
     #[serde(default)]
     pub white: WhiteMode,
 }
@@ -129,7 +122,6 @@ fn default_gain() -> [f32; 3] {
     [1.0; 3]
 }
 
-/// Built-in fixture profiles shipped with the engine.
 pub fn builtin_profiles() -> Vec<FixtureProfile> {
     vec![
         FixtureProfile {
@@ -199,7 +191,6 @@ pub fn color_pipeline(
     let mut g = (bgra[1] as f32 / 255.0).powf(gamma);
     let mut b = (bgra[0] as f32 / 255.0).powf(gamma);
 
-    // 2. Gain and brightness.
     r *= color.gain[0] * color.brightness;
     g *= color.gain[1] * color.brightness;
     b *= color.gain[2] * color.brightness;

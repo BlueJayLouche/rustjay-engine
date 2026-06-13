@@ -13,7 +13,6 @@ fn lock(state: &std::sync::Mutex<EngineState>) -> std::sync::MutexGuard<'_, Engi
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Convert a parameter id string to a [`ModulationTarget`] for audio routing.
 fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarget {
     for t in rustjay_core::ModulationTarget::all() {
         if t.param_id() == Some(param_id) {

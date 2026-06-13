@@ -349,7 +349,6 @@ impl<P: EffectPlugin> App<P> {
             }
         };
 
-        // Initialize effect-declared parameters
         let descriptors = plugin.parameters();
         let hidden = plugin.hidden_tabs();
         {

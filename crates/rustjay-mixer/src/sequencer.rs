@@ -4,36 +4,30 @@
 
 use crate::crossfade::{AutoCrossfade, Easing};
 
-/// One step in a transition sequence.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TransitionStep {
-    /// What this step does.
     pub kind: StepKind,
 }
 
 impl TransitionStep {
-    /// Convenience: create a crossfade step.
     pub fn crossfade(target: f32, beats: f32) -> Self {
         Self {
             kind: StepKind::Crossfade { target, beats },
         }
     }
 
-    /// Convenience: create a hold step.
     pub fn hold(beats: f32) -> Self {
         Self {
             kind: StepKind::Hold { beats },
         }
     }
 
-    /// Convenience: create a timed crossfade step (wall-clock seconds).
     pub fn timed_crossfade(target: f32, seconds: f32) -> Self {
         Self {
             kind: StepKind::TimedCrossfade { target, seconds },
         }
     }
 
-    /// Convenience: create a timed hold step (wall-clock seconds).
     pub fn timed_hold(seconds: f32) -> Self {
         Self {
             kind: StepKind::TimedHold { seconds },
@@ -41,35 +35,12 @@ impl TransitionStep {
     }
 }
 
-/// What a single transition step does.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum StepKind {
-    /// Crossfade to a target value over N beats.
-    Crossfade {
-        /// Target crossfader position (0–1).
-        target: f32,
-        /// Duration in beats.
-        beats: f32,
-    },
-    /// Hold the current crossfader position for N beats.
-    Hold {
-        /// Duration in beats.
-        beats: f32,
-    },
-    /// Crossfade to a target value over N seconds (wall-clock, independent of BPM).
-    TimedCrossfade {
-        /// Target crossfader position (0–1).
-        target: f32,
-        /// Duration in seconds.
-        seconds: f32,
-    },
-    /// Hold the current crossfader position for N seconds.
-    TimedHold {
-        /// Duration in seconds.
-        seconds: f32,
-    },
-    /// Placeholder for a transition effect (e.g. strobe, wipe).
-    ///
+    Crossfade { target: f32, beats: f32 },
+    Hold { beats: f32 },
+    TimedCrossfade { target: f32, seconds: f32 },
+    TimedHold { seconds: f32 },
     /// Not yet implemented — steps of this kind advance immediately.
     Effect(TransitionEffect),
 }
@@ -86,13 +57,9 @@ pub struct TransitionEffect;
 /// sequencer stops.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SequencerState {
-    /// Ordered steps.
     pub steps: Vec<TransitionStep>,
-    /// Current step index.
     pub index: usize,
-    /// Whether the sequencer is currently playing.
     pub playing: bool,
-    /// Whether to loop back to step 0 after the last step.
     pub looping: bool,
     /// True once play() has been called at least once; distinguishes "not yet
     /// started" from "finished" in is_done().
@@ -109,18 +76,15 @@ pub struct SequencerState {
 }
 
 impl SequencerState {
-    /// Create an empty, stopped sequencer.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Start playback from the current step.
     pub fn play(&mut self) {
         self.playing = true;
         self.has_run = true;
     }
 
-    /// Stop playback and reset to step 0.
     pub fn stop(&mut self) {
         self.playing = false;
         self.index = 0;
@@ -129,7 +93,6 @@ impl SequencerState {
         self.auto = None;
     }
 
-    /// Pause playback (resume with [`play`](Self::play)).
     pub fn pause(&mut self) {
         self.playing = false;
     }

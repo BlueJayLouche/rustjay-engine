@@ -10,11 +10,7 @@ use rustjay_control::InputWebCommand;
 use rustjay_core::EngineState;
 use std::sync::{Arc, Mutex};
 
-// ── Public trait ──────────────────────────────────────────────────────────────
-
-/// Implemented by effects that render via a native GLES 2.0 context.
 pub trait Gles2Effect: Send + 'static {
-    /// Called once after the GLES 2.0 context is ready.
     fn init_gl(
         &mut self,
         gl: &glow::Context,
@@ -34,8 +30,6 @@ pub trait Gles2Effect: Send + 'static {
         None
     }
 }
-
-// ── Type-erased wrapper ───────────────────────────────────────────────────────
 
 pub(crate) trait Gles2EffectDyn: Send + 'static {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()>;
@@ -61,8 +55,6 @@ impl<G: Gles2Effect> Gles2EffectDyn for G {
         Gles2Effect::get_input_state(self)
     }
 }
-
-// ── Shared EGL helpers ────────────────────────────────────────────────────────
 
 fn build_egl_instance() -> Result<Arc<khronos_egl::DynamicInstance<khronos_egl::EGL1_4>>> {
     use khronos_egl as egl;
@@ -122,8 +114,6 @@ fn load_glow(egl: &khronos_egl::DynamicInstance<khronos_egl::EGL1_4>) -> glow::C
         })
     }
 }
-
-// ── State ─────────────────────────────────────────────────────────────────────
 
 pub(crate) struct Gles2State {
     pub(crate) egl: Arc<khronos_egl::DynamicInstance<khronos_egl::EGL1_4>>,
@@ -223,8 +213,6 @@ impl Gles2State {
     }
 }
 
-// ── Wayland EGL context creation ──────────────────────────────────────────────
-
 pub(crate) fn try_create_gles2_context(
     wayland_display: *mut std::ffi::c_void,
     wayland_surface: *mut std::ffi::c_void,
@@ -289,8 +277,6 @@ pub(crate) fn try_create_gles2_context(
     })
 }
 
-// ── DRM/GBM context creation ──────────────────────────────────────────────────
-
 #[cfg(feature = "drm-gles2")]
 const EGL_PLATFORM_GBM_KHR: u32 = 0x31D7;
 
@@ -318,7 +304,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
     use khronos_egl as egl;
     use std::os::unix::io::{AsFd, AsRawFd};
 
-    // ── 1. Open DRM device, wrap in DrmCard, then in GBM ──
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -328,7 +313,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
     let gbm_dev: gbm::Device<DrmCard> =
         gbm::Device::new(card).map_err(|e| anyhow::anyhow!("gbm_create_device failed: {e}"))?;
 
-    // ── 2. Find a connected output and preferred mode ──
     // gbm::Device<DrmCard> derefs to DrmCard, which implements drm::control::Device,
     // so all DRM/KMS operations can be called directly on gbm_dev.
     let resources = DrmCtl::resource_handles(&*gbm_dev)
@@ -348,7 +332,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
     let (w, h) = (mode.size().0 as u32, mode.size().1 as u32);
     let connector_handle = conn_info.handle();
 
-    // ── 3. Find a usable CRTC ──
     let crtc_handle = resources
         .crtcs()
         .iter()
@@ -369,7 +352,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
         crtc_handle
     );
 
-    // ── 4. Create GBM surface ──
     let gbm_surface = gbm_dev
         .create_surface::<()>(
             w,
@@ -379,7 +361,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
         )
         .map_err(|e| anyhow::anyhow!("gbm_surface_create: {e}"))?;
 
-    // ── 5. EGL: get GBM display ──
     let egl_inst = build_egl_instance()?;
     let gbm_dev_ptr = gbm_dev.as_raw() as *mut std::ffi::c_void;
 
@@ -450,9 +431,6 @@ pub(crate) fn try_create_drm_gles2_context(drm_node: &str) -> Result<(Gles2State
     ))
 }
 
-// ── Public entry points ───────────────────────────────────────────────────────
-
-/// Run using a Wayland-backed GLES 2.0 context (requires a running compositor).
 pub fn run_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
 where
     P: rustjay_core::EffectPlugin,
@@ -462,7 +440,6 @@ where
     crate::app::run_gles2_app(shared_state, plugin, Box::new(gles2), false)
 }
 
-/// Convert a parameter id string to a ModulationTarget for audio routing.
 #[cfg(feature = "drm-gles2")]
 fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarget {
     for t in rustjay_core::ModulationTarget::all() {
@@ -476,7 +453,7 @@ fn param_id_to_modulation_target(param_id: &str) -> rustjay_core::ModulationTarg
 /// Run using a DRM/GBM-backed GLES 2.0 context — no compositor required.
 ///
 /// Opens `/dev/dri/card0` directly and renders fullscreen via KMS page flipping.
-/// No compositor required. All engine services (OSC, MIDI, audio, Web UI) run normally.
+/// All engine services (OSC, MIDI, audio, Web UI) run normally.
 #[cfg(feature = "drm-gles2")]
 pub fn run_drm_gles2_headless_with_tabs<P, G>(plugin: P, gles2: G) -> Result<()>
 where
@@ -547,7 +524,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     let app_name = plugin.app_name().to_string();
     let config_manager = ConfigManager::new(&app_name);
 
-    // Apply saved config and cap fps for headless
+    // Apply saved config; cap fps for headless path (no vsync throttle from window system)
     {
         let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
         config_manager.settings.apply_to_state(&mut state);
@@ -557,7 +534,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         }
     }
 
-    // Register effect parameters
     let descriptors = plugin.parameters();
     {
         let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -575,7 +551,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             .collect();
     }
 
-    // Audio
     let mut analyzer = AudioAnalyzer::new();
     let (fft_size, audio_dev) = {
         let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -593,7 +568,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         Err(e) => log::warn!("Audio: {e}"),
     }
 
-    // MIDI
     let midi_state = std::sync::Arc::new(Mutex::new(MidiState::default()));
     let mut midi_manager = MidiManager::new(midi_state).ok().map(|mut m| {
         let devs = m.refresh_devices();
@@ -636,7 +610,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         m
     });
 
-    // OSC
     let (osc_host, osc_port) = {
         let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
         (s.osc_host.clone(), s.osc_port)
@@ -648,7 +621,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     }
     log::info!("OSC server initialized");
 
-    // Web UI
     let (web_host, web_port, web_lan) = {
         let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
         (s.web_host.clone(), s.web_port, s.web_lan_trust)
@@ -731,7 +703,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     // Track last-broadcast MIDI mapping snapshot for change detection (WR-3.3 / WR-6)
     let mut last_broadcast_mappings: Vec<rustjay_core::MidiMappingSnapshot> = Vec::new();
 
-    // DRM/GBM/EGL context
     let (mut gles2_state, w, h) = try_create_drm_gles2_context("/dev/dri/card0")?;
     {
         let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -739,7 +710,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     }
     log::info!("DRM render loop starting at {w}×{h}");
 
-    // Main render loop
     let mut last_frame_start = std::time::Instant::now();
     let mut elapsed = 0.0f32;
     let mut spectrum_scratch = Vec::new();
@@ -752,8 +722,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
         last_frame_start = frame_start;
         elapsed += delta_time;
 
-        // ── Poll engine services ──────────────────────────────────────────────
-        // Audio: push latest FFT + spectrum + volume into shared state
         {
             let fft = analyzer.get_fft();
             analyzer.get_spectrum_into(&mut spectrum_scratch);
@@ -774,7 +742,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
-        // Apply dirty MIDI mapping values to parameters (desktop parity)
         if let Some(ref manager) = midi_manager {
             let dirty: Vec<(String, f32)> = {
                 if let Ok(mut midi_state) = manager.state().lock() {
@@ -881,7 +848,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             state.audio_routing.update_base_values(h, s, b);
         }
 
-        // OSC: sync dirty parameter values into shared state
         if let Ok(mut osc_st) = osc_server.state().lock() {
             if let Ok(mut state) = shared_state.lock() {
                 let descs = std::sync::Arc::clone(&state.param_descriptors);
@@ -895,7 +861,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
-        // Web: apply parameter changes from web clients
         let mut preset_dirty = false;
         {
             while let Ok(cmd) = web_server.command_rx.try_recv() {
@@ -1342,7 +1307,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             .unwrap_or_else(|e| e.into_inner())
             .target_fps;
 
-        // Web: broadcast current parameter values to connected clients
         if web_server.is_running() {
             if let Ok(state) = shared_state.lock() {
                 web_server.update_parameter("color/hue_shift", state.hsb_params.hue_shift);
@@ -1381,7 +1345,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
-        // Drain structural dirty flags — broadcast control/preset/input/modulation state to web panels.
         if web_server.is_running() {
             if web_server.input_dirty {
                 let mut input_state =
@@ -1487,7 +1450,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             }
         }
 
-        // Render frame
         let gl = gles2_state.gl.clone();
         let keep = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1508,7 +1470,6 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
             log::error!("DRM present: {e}");
         }
 
-        // Settings persist
         let should_save = {
             let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if s.save_settings_requested {

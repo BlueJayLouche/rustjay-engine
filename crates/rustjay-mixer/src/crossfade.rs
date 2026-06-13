@@ -2,21 +2,15 @@
 //!
 //! Implements REQ-04.1–04.4 (auto-crossfade + beat-synced crossfade).
 
-/// Easing curve for auto-crossfades.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Easing {
-    /// Linear interpolation.
     Linear,
-    /// Quadratic ease-in.
     EaseIn,
-    /// Quadratic ease-out.
     EaseOut,
-    /// Quadratic ease-in-out.
     EaseInOut,
 }
 
 impl Easing {
-    /// Apply the easing function to `t` in `[0, 1]`.
     pub fn apply(self, t: f32) -> f32 {
         match self {
             Easing::Linear => t,
@@ -33,11 +27,7 @@ impl Easing {
     }
 }
 
-/// Interpolates the crossfader from `from` to `to` over `duration` seconds.
-///
-/// Created via [`AutoCrossfade::new`]; tick every frame with [`AutoCrossfade::tick`].
-/// When `tick` returns `None` the crossfade is finished and the caller should
-/// snap the crossfader exactly to the target value.
+/// When [`tick`](Self::tick) returns `None` the crossfade is finished; snap the crossfader to the target value.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AutoCrossfade {
     from: f32,
@@ -48,7 +38,6 @@ pub struct AutoCrossfade {
 }
 
 impl AutoCrossfade {
-    /// Start a new auto-crossfade.
     pub fn new(from: f32, to: f32, duration: f32, easing: Easing) -> Self {
         Self {
             from,
@@ -59,9 +48,6 @@ impl AutoCrossfade {
         }
     }
 
-    /// Advance by `dt` seconds.
-    ///
-    /// Returns `Some(value)` while the crossfade is in progress.
     /// Returns `None` when the crossfade has reached its target.
     pub fn tick(&mut self, dt: f32) -> Option<f32> {
         self.elapsed += dt;
@@ -74,12 +60,10 @@ impl AutoCrossfade {
         }
     }
 
-    /// The target value this crossfade is moving toward.
     pub fn target(&self) -> f32 {
         self.to
     }
 
-    /// Whether the crossfade is still in progress.
     pub fn is_active(&self) -> bool {
         self.elapsed < self.duration
     }
@@ -89,9 +73,7 @@ impl AutoCrossfade {
 /// whose duration is derived from `beats × 60 / bpm`.
 #[derive(Clone, Debug)]
 pub struct BeatSyncCrossfade {
-    /// Target crossfader value.
     pub target: f32,
-    /// Number of beats the crossfade should last.
     pub beats: f32,
     /// Whether the beat-sync wait has completed and the auto-crossfade has started.
     started: bool,
@@ -100,7 +82,6 @@ pub struct BeatSyncCrossfade {
 }
 
 impl BeatSyncCrossfade {
-    /// Create a new beat-synced crossfade.
     pub fn new(target: f32, beats: f32) -> Self {
         Self {
             target,
@@ -150,7 +131,6 @@ impl BeatSyncCrossfade {
         }
     }
 
-    /// Whether the crossfade has finished.
     pub fn is_done(&self) -> bool {
         self.started && self.auto.is_none()
     }

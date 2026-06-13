@@ -49,28 +49,21 @@ pub const MIXER_STATE_VERSION: u32 = 2;
 /// Serialized mix settings for one channel, keyed by stable UUID.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelState {
-    /// Stable channel identity (matches [`Channel::uuid`](crate::Channel::uuid)).
+    /// Matches [`Channel::uuid`](crate::Channel::uuid).
     pub uuid: String,
-    /// Mix opacity, 0.0–1.0.
     pub opacity: f32,
-    /// Blend mode (serialized by variant name).
     pub blend_mode: BlendMode,
-    /// Solo flag.
     pub solo: bool,
-    /// Mute flag.
     pub mute: bool,
 }
 
 /// Serializable snapshot of a [`Mixer`]'s mix state (REQ-10.1).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MixerState {
-    /// Schema version for forward/backward compatibility.
     pub version: u32,
-    /// Crossfader position, 0.0–1.0.
     pub crossfader: f32,
-    /// Per-channel mix settings.
     pub channels: Vec<ChannelState>,
-    /// UUID-stable modulation sources and assignments (T13).
+    /// UUID-stable modulation (T13); present for backward compat only — mixer no longer owns it.
     #[serde(default)]
     pub modulation: ModulationEngine,
 }
@@ -105,7 +98,6 @@ impl MixerState {
         Ok(state)
     }
 
-    /// Serialize to a compact JSON string.
     pub fn to_json(&self) -> Result<String, String> {
         serde_json::to_string(self).map_err(|e| format!("failed to serialize mixer preset: {e}"))
     }

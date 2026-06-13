@@ -21,15 +21,12 @@ pub enum Dest {
     Unicast(Ipv4Addr),
 }
 
-/// A wire protocol that can transmit a [`DmxFrame`].
 pub trait DmxTransport: Send {
-    /// Packetise and send every universe in `frame`.
     fn send(&mut self, frame: &DmxFrame);
 }
 
 // ─── sACN ──────────────────────────────────────────────────────────────────
 
-/// sACN (E1.31) transmitter.
 pub struct SacnTransport {
     socket: UdpSocket,
     dest: Dest,
@@ -86,7 +83,6 @@ impl DmxTransport for SacnTransport {
 
 // ─── Art-Net ───────────────────────────────────────────────────────────────
 
-/// Art-Net (ArtDMX) transmitter.
 pub struct ArtNetTransport {
     socket: UdpSocket,
     dest: Dest,
@@ -95,7 +91,6 @@ pub struct ArtNetTransport {
 }
 
 impl ArtNetTransport {
-    /// Create a transmitter. Defaults elsewhere wire `dest` to [`Dest::Broadcast`].
     pub fn new(dest: Dest) -> std::io::Result<Self> {
         Ok(Self {
             socket: socket::tx_socket()?,

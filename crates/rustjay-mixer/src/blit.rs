@@ -6,7 +6,6 @@
 
 use rustjay_core::Vertex;
 
-/// Minimal blit pipeline: one texture + sampler, no uniforms.
 pub struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -14,7 +13,6 @@ pub struct BlitPipeline {
 }
 
 impl BlitPipeline {
-    /// Create the pipeline for the given output format.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Mixer Blit Shader"),
@@ -112,7 +110,6 @@ impl BlitPipeline {
         }
     }
 
-    /// Blit `source` into `dest` using the shared fullscreen `vertex_buffer`.
     pub fn blit(
         &self,
         device: &wgpu::Device,

@@ -14,7 +14,6 @@ use crossbeam::channel::{bounded, RecvTimeoutError, Sender};
 use crate::dmx::DmxFrame;
 use crate::transport::DmxTransport;
 
-/// Owns the transmit thread and the shared latest-frame cell.
 pub struct DmxSender {
     latest: Arc<Mutex<DmxFrame>>,
     shutdown: Sender<()>,
@@ -86,7 +85,6 @@ impl DmxSender {
         }
     }
 
-    /// Signal the transmit thread to stop and join it.
     pub fn shutdown(mut self) {
         self.stop();
     }

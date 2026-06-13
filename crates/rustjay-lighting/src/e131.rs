@@ -6,7 +6,6 @@
 
 use std::net::Ipv4Addr;
 
-/// UDP port for sACN (E1.31), per ANSI E1.31 §4.
 pub const SACN_PORT: u16 = 5568;
 
 /// ACN Packet Identifier per ANSI E1.17 (`"ASC-E1.17\0\0\0"`).
@@ -21,7 +20,6 @@ const CID: [u8; 16] = [
     0x7a, 0x9f, 0x3c, 0x2e, 0x4b, 0x1d, 0x4e, 0x8a, 0x9c, 0x6f, 0x1d, 0x2b, 0x3a, 0x4c, 0x5e, 0x6f,
 ];
 
-/// Total length of an E1.31 Data Packet (with a full 512-slot DMP property block).
 pub const SACN_PACKET_LEN: usize = 638;
 
 /// Encode a PDU Flags & Length field: top 4 bits = 0x7, bottom 12 bits =

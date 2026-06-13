@@ -1,22 +1,4 @@
-//! rustjay-mixer — multi-channel compositing mixer for rustjay-engine.
-//!
-//! Phase **B3** of `PHASE_B_ROADMAP.md`. A [`Mixer`] owns a list of [`Channel`]s,
-//! each driving a [`Box<dyn EffectInstance>`](rustjay_core::EffectInstance), and
-//! composites them via [`CompositePipeline`] using per-channel [`BlendMode`] and
-//! opacity, then runs a master effect chain. The mixer is itself an
-//! `EffectInstance`, so it composes, nests, previews, and projects like any
-//! single effect.
-//!
-//! **Status: B3 complete (T01–T19).** Channel rendering, effect chains, dynamic
-//! channel management, `EffectInstance` / `EffectPlugin` wrappers, parameter
-//! aggregation, modulatable crossfader, transition state machines (auto,
-//! beat-sync, sequencer), preset save/load ([`preset`]), UUID-stable
-//! modulation engine integration (T13), and the performance pass
-//! (dynamic-offset uniforms + generation-keyed composite bind-group cache)
-//! are wired. The GUI lives in `examples/mixer`. GPU flamegraph verification
-//! of T19 is a hardware follow-up.
-
-#![warn(missing_docs)]
+//! Multi-channel compositing mixer for rustjay-engine.
 
 mod blend;
 mod blit;
@@ -41,17 +23,13 @@ use rustjay_render::Texture;
 /// Which engine input slot a channel samples from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum InputSelect {
-    /// Sample from the engine's primary input (slot 1).
     #[default]
     Slot1,
-    /// Sample from the engine's second input (slot 2).
     Slot2,
-    /// Pass both inputs through to the effect (inputs[0]=slot1, inputs[1]=slot2).
     Both,
 }
 
 impl InputSelect {
-    /// Convert to a UI index.
     pub fn to_index(self) -> usize {
         match self {
             InputSelect::Slot1 => 0,
@@ -60,7 +38,6 @@ impl InputSelect {
         }
     }
 
-    /// Convert from a UI index.
     pub fn from_index(v: usize) -> Self {
         match v {
             0 => InputSelect::Slot1,
@@ -69,37 +46,27 @@ impl InputSelect {
         }
     }
 
-    /// Human-readable labels for combo boxes.
     pub fn labels() -> &'static [&'static str] {
         &["Slot 1", "Slot 2", "Both"]
     }
 }
 
-/// Tracks which of a channel's two textures holds the most recent render result.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum LastOutput {
-    /// The main channel texture.
     Texture,
-    /// The ping-pong scratch texture.
     Ping,
 }
 
 /// An effect in a chain with an on/off toggle and a stable UUID.
 pub struct EffectSlot {
-    /// The actual effect instance to render.
     pub effect: Box<dyn EffectInstance>,
-    /// Whether this slot is currently active in the chain.
     pub enabled: bool,
-    /// Stable identifier for this effect slot (used in param prefixes).
     pub uuid: String,
-    /// Origin of the effect (e.g. the `.fs` ISF shader path), if known. Recorded
-    /// so hosts can serialize and rebuild the chain across restarts. `None` for
-    /// effects with no on-disk source.
+    /// ISF/shader source path — used to rebuild the chain across restarts.
     pub source_path: Option<std::path::PathBuf>,
 }
 
 impl EffectSlot {
-    /// Create a new slot, enabled by default, with a generated UUID.
     pub fn new(effect: Box<dyn EffectInstance>) -> Self {
         Self {
             effect,
@@ -114,21 +81,14 @@ impl EffectSlot {
 pub struct Channel {
     /// Stable identity, persisted across presets (REQ-01.3).
     pub uuid: String,
-    /// Display name (e.g. "A", "B").
     pub name: String,
-    /// The effect this channel renders.
     pub effect: Box<dyn EffectInstance>,
-    /// Ordered post-effect chain applied before compositing (REQ-01.5).
+    /// Post-effect chain applied before compositing (REQ-01.5).
     pub chain: Vec<EffectSlot>,
-    /// Mix opacity, 0.0–1.0.
     pub opacity: f32,
-    /// How this channel blends onto the composite.
     pub blend_mode: BlendMode,
-    /// Which engine input this channel samples from.
     pub input_select: InputSelect,
-    /// Solo flag (UI/mix helper).
     pub solo: bool,
-    /// Mute flag (UI/mix helper).
     pub mute: bool,
 
     // GPU resources — allocated lazily, reallocated only on resize (REQ-11.2).
@@ -189,8 +149,6 @@ impl Channel {
         slot.effect.set_param_prefix(&prefix);
     }
 
-    /// Enable or disable the effect at `index` without removing it (per-effect
-    /// enable). Out-of-range indices are ignored.
     pub fn set_effect_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(slot) = self.chain.get_mut(index) {
             slot.enabled = enabled;
@@ -292,8 +250,6 @@ impl Channel {
         }
     }
 
-    /// The texture that holds the most recent render result.
-    ///
     /// Only valid after [`render`](Self::render) has been called for the current frame.
     pub fn output_texture(&self) -> Option<&Texture> {
         match self.last_output {
@@ -304,8 +260,6 @@ impl Channel {
 }
 
 impl Mixer {
-    /// Get a channel's output texture by UUID.
-    ///
     /// Only valid after the mixer has rendered for the current frame.
     pub fn channel_texture(&self, uuid: &str) -> Option<&Texture> {
         self.channels
@@ -317,18 +271,13 @@ impl Mixer {
 
 /// Multi-channel compositor.
 pub struct Mixer {
-    /// Channels, composited in index order.
     pub channels: Vec<Channel>,
-    /// Crossfader position (0.0 = channel 0, 1.0 = channel 1). Used only for the
-    /// 2-channel case; ignored when `channels.len() != 2`.
+    /// Ignored when `channels.len() != 2`.
     pub crossfader: f32,
-    /// Master effect chain applied after compositing (REQ-06).
+    /// Master effect chain (REQ-06).
     pub master: Vec<EffectSlot>,
-    /// Active auto-crossfade state machine (REQ-04.1).
     pub auto: Option<AutoCrossfade>,
-    /// Active beat-synced crossfade (REQ-04.3).
     pub beat_sync: Option<BeatSyncCrossfade>,
-    /// Transition sequencer (REQ-05).
     pub sequencer: SequencerState,
 
     // GPU resources — allocated lazily, reallocated only on resize or channel-count change.
@@ -346,10 +295,7 @@ pub struct Mixer {
 }
 
 impl Mixer {
-    /// Create an empty mixer.
-    ///
-    /// GPU resources (composite pipeline, accumulation textures, blit pipeline) are
-    /// allocated on first render when the target size is known.
+    /// GPU resources are allocated on first render.
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
@@ -487,7 +433,6 @@ impl Mixer {
             return None;
         }
 
-        // Beat-sync crossfade.
         if let Some(ref mut bs) = self.beat_sync {
             match bs.tick(self.crossfader, dt, bpm, beat_phase) {
                 Some(v) => {
@@ -503,7 +448,6 @@ impl Mixer {
             }
         }
 
-        // Plain auto crossfade.
         if let Some(ref mut auto) = self.auto {
             match auto.tick(dt) {
                 Some(v) => {
@@ -536,7 +480,6 @@ impl EffectInstance for Mixer {
     fn parameters(&self) -> Vec<ParameterDescriptor> {
         let mut out = Vec::new();
 
-        // Mixer-level params
         out.push(ParameterDescriptor::float(
             "crossfader",
             "Crossfader",
@@ -582,12 +525,10 @@ impl EffectInstance for Mixer {
                 ch.input_select.to_index(),
             ));
 
-            // Channel effect params
             for p in ch.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
             }
 
-            // Channel chain effect params
             for slot in ch.chain.iter() {
                 let chain_prefix = format!("{prefix}fx{}_", slot.uuid);
                 for p in slot.effect.parameters() {
@@ -596,7 +537,6 @@ impl EffectInstance for Mixer {
             }
         }
 
-        // Master chain params
         for slot in self.master.iter() {
             let prefix = format!("master_fx{}_", slot.uuid);
             for p in slot.effect.parameters() {
@@ -635,7 +575,7 @@ impl EffectInstance for Mixer {
             }
         }
 
-        // Tick transitions (auto, beat-sync, sequencer) before reading params.
+        // Tick transitions before reading params (ordering matters).
         let dt = engine
             .performance
             .lock()
@@ -646,7 +586,6 @@ impl EffectInstance for Mixer {
         let beat_phase = engine.effective_beat_phase();
         self.tick_transitions(dt, Some(bpm).filter(|&b| b > 0.0), beat_phase);
 
-        // Read mixer-level params from the unified engine.
         // Modulation offsets are already applied by EngineState::get_param().
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
 
@@ -671,7 +610,6 @@ impl EffectInstance for Mixer {
                 .collect()
         };
 
-        // 1. Render each active channel into its own texture (REQ-01.4, REQ-11.3).
         for (i, ch) in self.channels.iter_mut().enumerate() {
             if eff.get(i).copied().unwrap_or(0.0) < 0.001 {
                 continue;
@@ -688,12 +626,10 @@ impl EffectInstance for Mixer {
             ch.render(ctx, ch_inputs, engine);
         }
 
-        // 2. Composite channels onto the running accumulation (REQ-02.3).
         let acc_a = self.acc_a.as_ref().unwrap();
         let acc_b = self.acc_b.as_ref().unwrap();
         let composite = self.composite.as_ref().unwrap();
 
-        // Start with a cleared accumulator.
         clear_texture(ctx.encoder, &acc_a.view);
 
         let active: Vec<usize> = eff
@@ -742,7 +678,6 @@ impl EffectInstance for Mixer {
 
         let composite_out = written_acc.unwrap_or(acc_a);
 
-        // 3. Master effect chain (REQ-06).
         let master_ping = self.master_ping.as_ref().unwrap();
         let final_tex = run_chain(
             &mut self.master,
@@ -753,7 +688,6 @@ impl EffectInstance for Mixer {
             engine,
         );
 
-        // 4. Blit the final result to the given target (REQ-08.2).
         let blit = self.blit.as_ref().unwrap();
         blit.blit(
             ctx.device,
@@ -765,8 +699,6 @@ impl EffectInstance for Mixer {
     }
 }
 
-/// Prefix every field of a `ParameterDescriptor` so nested effect params are
-/// namespaced by channel UUID / master chain position.
 fn prefix_descriptor(prefix: &str, desc: &ParameterDescriptor) -> ParameterDescriptor {
     ParameterDescriptor {
         id: format!("{prefix}{}", desc.id),
@@ -780,13 +712,7 @@ fn prefix_descriptor(prefix: &str, desc: &ParameterDescriptor) -> ParameterDescr
     }
 }
 
-/// Run a slice of effects as a ping-pong chain.
-///
-/// `initial_input` is the source for the first effect. `ping` is a scratch
-/// texture of the same size. Returns a reference to whichever texture holds
-/// the final output (may be `initial_input` when `effects` is empty).
-///
-/// Shared between per-channel chains and the master chain (design.md §Q2).
+/// Returns whichever texture holds the final output (may be `initial_input` when `effects` is empty).
 fn run_chain<'a>(
     effects: &'a mut [EffectSlot],
     ctx: &mut RenderCtx<'_>,
