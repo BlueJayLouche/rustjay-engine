@@ -1,6 +1,5 @@
 //! Audio device enumeration and stream construction.
 
-// Stream-construction helpers thread many real-time params through one call.
 #![allow(clippy::too_many_arguments)]
 
 use crate::fft::{process_audio_frame, AudioConfig, AudioOutput};
@@ -12,7 +11,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// List available audio input devices
 pub fn list_audio_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.input_devices() {

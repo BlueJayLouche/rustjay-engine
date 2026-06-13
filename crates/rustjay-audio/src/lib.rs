@@ -3,11 +3,8 @@
 //! The main type is [`AudioAnalyzer`], which runs a lock-free audio callback
 //! and exposes 8-band FFT magnitudes, volume, and beat detection.
 
-#![warn(missing_docs)]
-
 pub(crate) mod device;
 pub(crate) mod fft;
-/// Re-exports of audio routing types from `rustjay-core`.
 pub mod routing;
 
 pub use device::list_audio_devices;
@@ -21,11 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Real-time audio analyser with FFT, beat detection, and tap tempo.
-///
-/// Create with [`AudioAnalyzer::new`], start capture with [`start`](Self::start)
-/// or [`start_with_device`](Self::start_with_device), then poll
-/// [`get_fft`](Self::get_fft), [`get_volume`](Self::get_volume), and
-/// [`is_beat`](Self::is_beat) each frame.
 pub struct AudioAnalyzer {
     stream: Option<cpal::Stream>,
     running: Arc<AtomicBool>,
@@ -37,7 +29,6 @@ pub struct AudioAnalyzer {
 }
 
 impl AudioAnalyzer {
-    /// Create a new analyser with default settings.
     pub fn new() -> Self {
         Self {
             stream: None,
@@ -50,34 +41,24 @@ impl AudioAnalyzer {
         }
     }
 
-    /// Check and clear the stream-error flag.
-    ///
-    /// Returns `true` if the audio callback has reported an error since the
-    /// last call.
+    /// Returns `true` if the audio callback errored since last call; clears the flag.
     pub fn take_stream_error(&self) -> bool {
         self.stream_error.swap(false, Ordering::Relaxed)
     }
 
-    /// Current FFT window size.
     pub fn fft_size(&self) -> usize {
         self.fft_size
     }
 
-    /// Set the FFT window size.
-    ///
-    /// Common values are 1024, 2048, 4096, and 8192. The change takes effect
-    /// the next time the stream is started.
+    /// Takes effect the next time the stream is started.
     pub fn set_fft_size(&mut self, size: usize) {
         self.fft_size = size;
     }
 
-    /// Start audio capture on the default input device.
     pub fn start(&mut self) -> anyhow::Result<String> {
         self.start_with_device(None)
     }
 
-    /// Start audio capture on the named device (or default if `None`).
-    ///
     /// Returns the actual device name that was opened.
     pub fn start_with_device(&mut self, device_name: Option<&str>) -> anyhow::Result<String> {
         log::info!(
@@ -164,7 +145,6 @@ impl AudioAnalyzer {
         Ok(actual_name)
     }
 
-    /// Stop audio capture.
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::Release);
         self.stream = None;
@@ -177,10 +157,7 @@ impl AudioAnalyzer {
         std::array::from_fn(|i| f32::from_bits(self.output.fft[i].load(Ordering::Relaxed)))
     }
 
-    /// Write the full per-bin FFT spectrum into `buf` (0–1, length = fft_size/2+1).
-    ///
-    /// Clears and resizes `buf` to match the spectrum length. Reuses the
-    /// caller's allocation — zero-allocation path for the hot frame loop.
+    /// Fill `buf` with the full per-bin FFT spectrum (0–1). Zero-allocation hot path.
     pub fn get_spectrum_into(&self, buf: &mut Vec<f32>) {
         buf.clear();
         buf.extend(
@@ -191,17 +168,13 @@ impl AudioAnalyzer {
         );
     }
 
-    /// Full per-bin FFT spectrum (0–1, length = fft_size/2+1).
-    ///
-    /// Convenience wrapper around [`get_spectrum_into`](Self::get_spectrum_into)
-    /// that allocates a fresh Vec. Prefer `get_spectrum_into` on the hot path.
+    /// Full per-bin FFT spectrum (0–1). Allocates; prefer [`get_spectrum_into`](Self::get_spectrum_into) on the hot path.
     pub fn get_spectrum(&self) -> Vec<f32> {
         let mut buf = Vec::new();
         self.get_spectrum_into(&mut buf);
         buf
     }
 
-    /// Sample rate of the running audio stream in Hz.
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
     }
@@ -211,19 +184,15 @@ impl AudioAnalyzer {
         f32::from_bits(self.output.volume.load(Ordering::Relaxed))
     }
 
-    /// Whether a beat was detected this frame.
-    ///
-    /// The flag is atomically cleared when read.
+    /// Beat detected this frame; atomically clears the flag when read.
     pub fn is_beat(&self) -> bool {
         self.output.beat.swap(false, Ordering::Relaxed)
     }
 
-    /// Current beat phase (0–1).
     pub fn get_beat_phase(&self) -> f32 {
         f32::from_bits(self.output.beat_phase.load(Ordering::Relaxed))
     }
 
-    /// Set input gain applied before FFT.
     pub fn set_amplitude(&self, v: f32) {
         self.config.amplitude.store(v.to_bits(), Ordering::Relaxed);
     }
@@ -233,19 +202,15 @@ impl AudioAnalyzer {
             .smoothing
             .store(v.clamp(0.0, 0.99).to_bits(), Ordering::Relaxed);
     }
-    /// Whether automatic peak normalisation is enabled.
     pub fn get_normalize(&self) -> bool {
         self.config.normalize.load(Ordering::Relaxed)
     }
-    /// Enable or disable automatic peak normalisation.
     pub fn set_normalize(&self, v: bool) {
         self.config.normalize.store(v, Ordering::Relaxed);
     }
-    /// Whether pink-noise compensation shaping is enabled.
     pub fn get_pink_noise_shaping(&self) -> bool {
         self.config.pink_noise_shaping.load(Ordering::Relaxed)
     }
-    /// Enable or disable pink-noise compensation shaping.
     pub fn set_pink_noise_shaping(&self, v: bool) {
         self.config.pink_noise_shaping.store(v, Ordering::Relaxed);
     }
@@ -263,5 +228,4 @@ impl Drop for AudioAnalyzer {
     }
 }
 
-// Re-export routing types from rustjay-core for backwards compatibility.
 pub use routing::AudioRoutingState;

@@ -2934,7 +2934,7 @@ mod egui_impl {
                                     }
                                 });
                                 // Editable value for the last channel if it is Static.
-                                if let Some(crate::stage::ChannelRole::Static(ref mut v)) = profile.channels.last_mut() {
+                                if let Some(crate::stage::ChannelRole::Static(v)) = profile.channels.last_mut() {
                                     ui.horizontal(|ui| {
                                         ui.label("static value:");
                                         if ui.add(egui::DragValue::new(v).speed(1).range(0..=255)).changed() {
