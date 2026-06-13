@@ -10,7 +10,6 @@ categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 rustjay-core  = { workspace = true }
-rustjay-audio = { workspace = true }
 log           = { workspace = true }
 anyhow       = { workspace = true }
 wgpu         = { workspace = true }

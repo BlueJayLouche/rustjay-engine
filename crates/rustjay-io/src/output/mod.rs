@@ -1,47 +1,4 @@
-//! # Output Module
-//!
-//! Video output to other applications via:
-//! - NDI (cross-platform network)
-//! - Syphon (macOS GPU texture sharing)
-//! - Spout (Windows GPU texture sharing)
-//! - v4l2loopback (Linux virtual camera) - TODO
-//! - Disk recorder (H.264, H.265, AV1, ProRes via ffmpeg subprocess)
-//!
-//! GPU readback uses a double-buffered staging pool so the render thread
-//! never blocks waiting for a GPU→CPU copy to complete.  Each frame the
-//! render thread submits a copy into the *current* staging slot and harvests
-//! the *previous* slot's data (which has had a full frame to finish mapping).
-
 use std::sync::Arc;
-
-/// Commands for output stream control
-// Superseded by `rustjay_core::OutputCommand`; kept as the io-layer's own descriptor.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OutputCommand {
-    None,
-    #[cfg(feature = "ndi")]
-    StartNdi,
-    #[cfg(feature = "ndi")]
-    StopNdi,
-    #[cfg(target_os = "macos")]
-    StartSyphon,
-    #[cfg(target_os = "macos")]
-    StopSyphon,
-    #[cfg(target_os = "windows")]
-    StartSpout {
-        sender_name: String,
-    },
-    #[cfg(target_os = "windows")]
-    StopSpout,
-    #[cfg(target_os = "linux")]
-    StartV4l2 {
-        device_path: String,
-    },
-    #[cfg(target_os = "linux")]
-    StopV4l2,
-    ResizeOutput,
-}
 
 pub mod recorder;
 #[cfg(feature = "ndi")]

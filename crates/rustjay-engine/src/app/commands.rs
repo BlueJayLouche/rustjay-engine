@@ -242,6 +242,9 @@ impl<P: EffectPlugin> App<P> {
                         lock(&self.shared_state).input_discovering = true;
                     }
                 }
+                if !is_second {
+                    self.process_audio_commands(AudioCommand::RefreshDevices);
+                }
             }
             _ => {}
         }

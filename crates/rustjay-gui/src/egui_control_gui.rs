@@ -269,9 +269,8 @@ impl EguiControlGui {
                 self.selected_v4l2_capture = 0;
             }
         }
-        self.audio_devices = input_manager.audio_devices().to_vec();
-        if let Ok(mut state) = self.shared_state.lock() {
-            state.audio.available_devices = self.audio_devices.clone();
+        if let Ok(state) = self.shared_state.lock() {
+            self.audio_devices = state.audio.available_devices.clone();
         }
     }
 

@@ -230,15 +230,8 @@ impl ControlGui {
             }
         }
 
-        // Audio devices were enumerated in the background discovery thread.
-        self.audio_devices = input_manager.audio_devices().to_vec();
-        log::info!("[GUI] Found {} audio device(s)", self.audio_devices.len());
-        for device in &self.audio_devices {
-            log::info!("  - {}", device);
-        }
-
-        if let Ok(mut state) = self.shared_state.lock() {
-            state.audio.available_devices = self.audio_devices.clone();
+        if let Ok(state) = self.shared_state.lock() {
+            self.audio_devices = state.audio.available_devices.clone();
         }
     }
 
