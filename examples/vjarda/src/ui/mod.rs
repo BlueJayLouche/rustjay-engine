@@ -681,10 +681,6 @@ mod egui_impl {
                         }
                     }
                 }
-                #[cfg(not(feature = "ndi"))]
-                AddSourceTab::Ndi => {
-                    ui.label("NDI support not enabled.");
-                }
                 #[cfg(target_os = "macos")]
                 AddSourceTab::Syphon => {
                     let servers: Vec<&crate::sources::SourceEntry> = state
