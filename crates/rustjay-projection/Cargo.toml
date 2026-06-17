@@ -26,6 +26,12 @@ usvg         = { version = "0.45", optional = true }
 dxf          = { version = "0.6", optional = true }
 thiserror    = { version = "2", optional = true }
 
+# Optional deps for videowall AprilTag auto-detection + marker generation
+# (C-FFI; needs a C toolchain). apriltag-sys pinned to 0.3 to match apriltag 0.4
+# (a direct 0.4 would double-link the C library).
+apriltag     = { version = "0.4", optional = true }
+apriltag-sys = { version = "0.3", optional = true }
+
 [dev-dependencies]
 pollster = { workspace = true }
 
@@ -33,3 +39,4 @@ pollster = { workspace = true }
 default = []
 surface-import = ["dep:image", "dep:imageproc", "dep:earcutr", "dep:usvg", "dep:dxf", "dep:thiserror"]
 auto-edge-blend = ["dep:geo"]
+videowall = ["dep:apriltag", "dep:apriltag-sys", "dep:image"]

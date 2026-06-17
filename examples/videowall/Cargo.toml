@@ -1,0 +1,28 @@
+[package]
+name = "videowall"
+version = "0.1.0"
+edition = "2024"
+description = "Video-wall / HDMI-matrix mapper — N projector outputs, each a grid of source→cell mappings with AprilTag auto-calibration"
+
+[features]
+default = ["egui", "webcam", "ndi", "videowall"]
+egui    = ["rustjay-engine/egui", "dep:egui"]
+webcam  = ["rustjay-engine/webcam"]
+ndi     = ["rustjay-engine/ndi"]
+# AprilTag auto-detect + tag-grid calibration (C-FFI; needs a C toolchain)
+videowall = ["rustjay-projection/videowall", "dep:image"]
+
+[dependencies]
+rustjay-engine     = { workspace = true, features = ["projection"] }
+rustjay-projection = { workspace = true }
+rustjay-core       = { workspace = true }
+wgpu               = { workspace = true }
+winit              = { workspace = true }
+egui               = { workspace = true, optional = true }
+anyhow             = { workspace = true }
+log                = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+env_logger         = "0.11"
+rfd                = "0.15"
+image              = { workspace = true, optional = true }

@@ -192,6 +192,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "apriltag"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3278ce87faf6559bf159b5d5920de622f39dfe7c035387a6e70854e3dfcfa55"
+dependencies = [
+ "apriltag-sys",
+ "libc",
+ "measurements",
+ "noisy_float",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "apriltag-sys"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "168f741d3e5f434b54fa6fa857e35093b631900addbb3fb452715a2a67cd14c2"
+dependencies = [
+ "anyhow",
+ "cc",
+ "cmake",
+ "glob",
+ "itertools 0.10.5",
+ "once_cell",
+ "pkg-config",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2843,6 +2871,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
@@ -3274,6 +3311,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "measurements"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f72b38901c571007811f0483e64a7e215ac9e6e3688e9f83705a717621d81513"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3550,6 +3596,15 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "noisy_float"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c16843be85dd410c6a12251c4eca0dd1d3ee8c5725f746c4d5e0fdcec0a864b2"
+dependencies = [
+ "num-traits 0.2.19",
+]
 
 [[package]]
 name = "nokhwa"
@@ -5188,6 +5243,8 @@ name = "rustjay-projection"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "apriltag",
+ "apriltag-sys",
  "bytemuck",
  "dxf",
  "earcutr 0.5.0",
@@ -5426,6 +5483,25 @@ dependencies = [
  "cfg-if 1.0.4",
  "cpufeatures 0.2.17",
  "digest",
+]
+
+[[package]]
+name = "shaderglass"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "egui",
+ "env_logger",
+ "log",
+ "objc",
+ "rfd",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-isf",
+ "rustjay-render",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]
@@ -6445,6 +6521,25 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "videowall"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "egui",
+ "env_logger",
+ "image",
+ "log",
+ "rfd",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-projection",
+ "serde",
+ "serde_json",
+ "wgpu",
+ "winit",
+]
 
 [[package]]
 name = "vjarda"

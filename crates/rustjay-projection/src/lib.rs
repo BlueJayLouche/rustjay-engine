@@ -20,8 +20,23 @@ pub use warp::{compute_forward_homography, MeshPoint, WarpMesh, WarpMode, WarpSt
 pub mod rotation;
 pub use rotation::{RotationStage, RotationSync};
 
+pub mod matrix;
+pub use matrix::{
+    resolve_source_rects, AspectRatio, GridCellMapping, GridPosition, GridSize, InputGridConfig,
+    MatrixStage, MatrixSync, Orientation, Rect, VideoMatrixConfig, MAX_MAPPINGS,
+};
+
 pub mod edge_blend;
 pub use edge_blend::{blend_alpha, EdgeBlendConfig, EdgeBlendEdge, EdgeBlendStage};
+
+#[cfg(feature = "videowall")]
+pub mod videowall;
+#[cfg(feature = "videowall")]
+pub use videowall::{
+    enhance_for_detection, generate_marker, texture_to_gray_image, AprilTagAutoDetector,
+    AprilTagDetection, AprilTagDetector, AprilTagFamily, AutoDetectConfig, CalibSync,
+    DetectedScreen, TagGridStage,
+};
 
 pub mod slicer;
 pub use slicer::{
