@@ -122,7 +122,7 @@ impl FfmpegSource {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    format: rustjay_core::working_format(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

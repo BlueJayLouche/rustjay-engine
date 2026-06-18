@@ -103,12 +103,20 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         let queue = Arc::new(queue);
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // Prefer linear Bgra8Unorm over its sRGB sibling: engine content is
+        // display-referred, so a linear surface passes it through unchanged. An
+        // sRGB surface would re-encode and lift the blacks (vs the GUI preview).
         let surface_format = surface_caps
             .formats
             .iter()
             .copied()
-            .find(|f| {
-                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
+            .or_else(|| {
+                surface_caps
+                    .formats
+                    .iter()
+                    .copied()
+                    .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb)
             })
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;

@@ -443,7 +443,7 @@ fn instantiate_source(
     deck_uuid: Option<&str>,
 ) -> anyhow::Result<crate::graph::Deck> {
     use crate::sources::{CameraSource, ImageSource, SolidColorSource, SourceKind};
-    let format = wgpu::TextureFormat::Bgra8Unorm;
+    let format = rustjay_core::working_format();
 
     let source: Box<dyn EffectInstance> = match entry.kind {
         SourceKind::Isf => {
@@ -740,7 +740,7 @@ impl VardaRootPlugin {
         }}
         let solid = SolidColorSource::new(
             device,
-            wgpu::TextureFormat::Bgra8Unorm,
+            rustjay_core::working_format(),
             [1.0, 0.0, 0.0, 1.0],
         );
         comp_a
@@ -1430,6 +1430,12 @@ impl EffectPlugin for VardaRootPlugin {
                     if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
                         if let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
                             self.params_dirty = true;
+                            // Purge orphaned modulation assignments for the deck's
+                            // source params AND every FX it carried (one prefix
+                            // sweep covers `<full_prefix>…` and `<full_prefix>fx…`).
+                            if let Ok(mut m) = engine.modulation.lock() {
+                                m.remove_assignments_with_prefix(deck.full_prefix());
+                            }
                             engine.notify(
                                 format!("Removed deck '{}' from {}", deck.name, channel.name),
                                 rustjay_core::NotificationLevel::Info,

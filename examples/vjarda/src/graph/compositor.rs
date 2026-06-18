@@ -69,7 +69,7 @@ impl DeckCompositor {
     /// Ensure GPU resources match `size`.
     fn ensure_resources(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if self.size != size || self.composite.is_none() {
-            let format = wgpu::TextureFormat::Bgra8Unorm;
+            let format = rustjay_core::working_format();
             self.composite = Some(CompositePipeline::new(device, format));
             self.blit = Some(BlitPipeline::new(device, format));
             self.acc_a = Some(Texture::create_render_target(

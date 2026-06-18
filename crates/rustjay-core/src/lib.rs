@@ -1,5 +1,6 @@
 //! rustjay-core — shared types, traits, and state for the rustjay-engine ecosystem.
 
+pub mod format;
 pub mod instance;
 pub mod lfo;
 pub mod modulation;
@@ -9,6 +10,7 @@ pub mod routing;
 pub mod state;
 pub mod vertex;
 
+pub use format::working_format;
 pub use instance::{EffectInput, EffectInstance, RenderCtx, RenderTarget};
 pub use lfo::{
     beat_division_to_hz, Lfo, LfoBank, LfoTarget, Waveform, BEAT_DIVISIONS,
