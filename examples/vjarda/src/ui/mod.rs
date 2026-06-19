@@ -253,6 +253,115 @@ mod egui_impl {
         }
     }
 
+    /// Deck control params already shown by dedicated widgets — excluded from the
+    /// generic source-parameter list so they aren't drawn twice.
+    const DECK_CONTROL_KEYS: &[&str] =
+        &["opacity", "blend", "playing", "speed", "loop", "position"];
+
+    /// One parameter control, reading/writing the live (base+mod) value through
+    /// the engine so the GUI stays co-equal with MIDI/OSC/LFO. Ported from
+    /// `examples/shaderglass`'s `draw_param`.
+    fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
+        let current = engine.get_param(&desc.id).unwrap_or(desc.default);
+        match &desc.param_type {
+            ParamType::Float => {
+                let mut v = current;
+                if ui
+                    .add(egui::Slider::new(&mut v, desc.min..=desc.max).text(&desc.name))
+                    .changed()
+                {
+                    engine.set_param_base(&desc.id, v);
+                }
+            }
+            ParamType::Int => {
+                let mut v = current as i32;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
+                            .text(&desc.name),
+                    )
+                    .changed()
+                {
+                    engine.set_param_base(&desc.id, v as f32);
+                }
+            }
+            ParamType::Bool => {
+                let mut on = current >= 0.5;
+                if ui.checkbox(&mut on, &desc.name).changed() {
+                    engine.set_param_base(&desc.id, if on { 1.0 } else { 0.0 });
+                }
+            }
+            ParamType::Enum { variants } => {
+                let mut idx = current as usize;
+                let sel = variants.get(idx).map(String::as_str).unwrap_or("?");
+                egui::ComboBox::from_id_salt(&desc.id)
+                    .selected_text(sel)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in variants.iter().enumerate() {
+                            ui.selectable_value(&mut idx, i, name);
+                        }
+                    });
+                if idx as f32 != current {
+                    engine.set_param_base(&desc.id, idx as f32);
+                }
+            }
+        }
+    }
+
+    /// Draw all exposed shader sliders for a deck: the source's own params (a
+    /// collapsing "Parameters" block) plus a block per FX slot. Source params are
+    /// those under `full_prefix` that aren't an FX param (`fx…`) or a deck control
+    /// key already shown by a dedicated widget.
+    fn deck_param_sliders(
+        ui: &mut egui::Ui,
+        engine: &mut EngineState,
+        full_prefix: &str,
+        chain: &[rustjay_mixer::EffectSlot],
+    ) {
+        let descriptors = engine.param_descriptors.clone();
+
+        // Source params.
+        let has_source = descriptors.iter().any(|d| {
+            d.id.strip_prefix(full_prefix).is_some_and(|r| {
+                !r.starts_with("fx") && !DECK_CONTROL_KEYS.contains(&r)
+            })
+        });
+        if has_source {
+            egui::CollapsingHeader::new("Parameters")
+                .id_salt(format!("{full_prefix}params"))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for desc in descriptors.iter() {
+                        let Some(rest) = desc.id.strip_prefix(full_prefix) else {
+                            continue;
+                        };
+                        if rest.starts_with("fx") || DECK_CONTROL_KEYS.contains(&rest) {
+                            continue;
+                        }
+                        draw_param(ui, engine, desc);
+                    }
+                });
+        }
+
+        // Per-FX-slot params.
+        for slot in chain {
+            let prefix = format!("{full_prefix}fx{}_", slot.uuid);
+            if !descriptors.iter().any(|d| d.id.starts_with(&prefix)) {
+                continue;
+            }
+            egui::CollapsingHeader::new(slot.effect.label())
+                .id_salt(&prefix)
+                .default_open(false)
+                .show(ui, |ui| {
+                    for desc in descriptors.iter() {
+                        if desc.id.starts_with(&prefix) {
+                            draw_param(ui, engine, desc);
+                        }
+                    }
+                });
+        }
+    }
+
     /// Helper: spawn a native ISF-shader file picker on a background thread; the
     /// chosen path is delivered into `pending` (polled next frame) and the UI is
     /// repainted. Shared by every "Add FX" button (deck / channel / master).
@@ -447,6 +556,14 @@ mod egui_impl {
                                             },
                                         );
                                     }
+
+                                    // Exposed shader sliders: source params + per-FX params.
+                                    deck_param_sliders(
+                                        ui,
+                                        engine,
+                                        &deck.full_prefix,
+                                        &deck.chain,
+                                    );
 
                                     // Playback controls for video sources.
                                     if deck.source_kind == crate::sources::SourceKind::Video {
@@ -680,10 +797,6 @@ mod egui_impl {
                             }
                         }
                     }
-                }
-                #[cfg(not(feature = "ndi"))]
-                AddSourceTab::Ndi => {
-                    ui.label("NDI support not enabled.");
                 }
                 #[cfg(target_os = "macos")]
                 AddSourceTab::Syphon => {

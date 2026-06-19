@@ -1,0 +1,115 @@
+{
+  "names": [
+    "Output 1"
+  ],
+  "configs": [
+    {
+      "input_grid": {
+        "grid_size": {
+          "columns": 4,
+          "rows": 1
+        },
+        "mappings": [
+          {
+            "input_cell": 0,
+            "output_position": {
+              "col": 0.0,
+              "row": 0.0,
+              "width": 1.0,
+              "height": 1.0
+            },
+            "aspect_ratio": "Ratio4_3",
+            "orientation": "Normal",
+            "enabled": true,
+            "display_id": 0,
+            "custom_source_rect": {
+              "x": 0.27483737,
+              "y": 0.020205043,
+              "width": 0.16788529,
+              "height": 0.16786994
+            },
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0
+          },
+          {
+            "input_cell": 1,
+            "output_position": {
+              "col": 1.0,
+              "row": 0.0,
+              "width": 1.0,
+              "height": 1.0
+            },
+            "aspect_ratio": "Ratio4_3",
+            "orientation": "Normal",
+            "enabled": true,
+            "display_id": 1,
+            "custom_source_rect": {
+              "x": 0.29477003,
+              "y": 0.46144915,
+              "width": 0.38751978,
+              "height": 0.38748434
+            },
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0
+          },
+          {
+            "input_cell": 2,
+            "output_position": {
+              "col": 2.0,
+              "row": 0.0,
+              "width": 1.0,
+              "height": 1.0
+            },
+            "aspect_ratio": "Ratio21_9",
+            "orientation": "Rotated270",
+            "enabled": true,
+            "display_id": 2,
+            "custom_source_rect": {
+              "x": 0.8321348,
+              "y": 0.45759532,
+              "width": 0.16786525,
+              "height": 0.5221997
+            },
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0
+          },
+          {
+            "input_cell": 3,
+            "output_position": {
+              "col": 1.0,
+              "row": 1.0,
+              "width": 1.0,
+              "height": 1.0
+            },
+            "aspect_ratio": "Ratio4_3",
+            "orientation": "Normal",
+            "enabled": true,
+            "display_id": 4,
+            "custom_source_rect": {
+              "x": 0.0,
+              "y": 0.5124208,
+              "width": 0.14552526,
+              "height": 0.14551197
+            },
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "gamma": 1.0
+          }
+        ]
+      },
+      "output_grid": {
+        "columns": 3,
+        "rows": 3
+      },
+      "background_color": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ]
+}

@@ -26,6 +26,7 @@ members = [
     "examples/projection",
     "examples/vjarda",
     "examples/decklink",
+    "examples/videowall",
 ]
 resolver = "3"
 

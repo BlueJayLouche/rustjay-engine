@@ -14,7 +14,7 @@
 //! * `bgl_c` — group 0, 2 texture+sampler pairs (pass B)
 //! * `bgl_uniform` — group 1, 1 uniform buffer (all passes)
 
-use rustjay_engine::prelude::Vertex;
+use rustjay_engine::prelude::{working_format, Vertex};
 
 const BLOCK_A_SHADER: &str = include_str!("../shaders/block_a.wgsl");
 const BLOCK_B_SHADER: &str = include_str!("../shaders/block_b.wgsl");
@@ -184,7 +184,7 @@ fn create_pipeline(
             module: &shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8Unorm,
+                format: working_format(),
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],

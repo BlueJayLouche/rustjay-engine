@@ -15,6 +15,35 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 /// The main wgpu rendering engine.
+/// Map the app's present mode to wgpu's, clamping to one the surface actually
+/// advertises. `Surface::configure` panics on an unsupported concrete mode
+/// (e.g. `Mailbox` on a surface that only offers `[Fifo, Immediate]`), so fall
+/// back to `Fifo`, which the spec guarantees is always available. The `Auto*`
+/// modes are always valid — wgpu resolves them internally.
+fn resolve_present_mode(
+    requested: rustjay_core::PresentMode,
+    supported: &[wgpu::PresentMode],
+) -> wgpu::PresentMode {
+    let desired = match requested {
+        rustjay_core::PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
+        rustjay_core::PresentMode::Immediate => wgpu::PresentMode::Immediate,
+        rustjay_core::PresentMode::Fifo => wgpu::PresentMode::Fifo,
+        rustjay_core::PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+    };
+    match desired {
+        wgpu::PresentMode::AutoVsync | wgpu::PresentMode::AutoNoVsync => desired,
+        m if supported.contains(&m) => m,
+        unsupported => {
+            log::warn!(
+                "Present mode {:?} not supported by surface (have {:?}); falling back to Fifo",
+                unsupported,
+                supported
+            );
+            wgpu::PresentMode::Fifo
+        }
+    }
+}
+
 pub struct WgpuEngine<P: EffectPlugin> {
     #[allow(dead_code)]
     instance: wgpu::Instance,
@@ -23,6 +52,12 @@ pub struct WgpuEngine<P: EffectPlugin> {
     pub queue: Arc<wgpu::Queue>,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
+    /// Present modes the surface advertises — cached so the runtime reconfigure
+    /// can clamp the requested mode without re-querying caps every frame.
+    supported_present_modes: Vec<wgpu::PresentMode>,
+    /// Last present mode requested by the app, so the per-frame reconfigure only
+    /// re-resolves (and reconfigures/logs) when the setting actually changes.
+    last_present_mode: rustjay_core::PresentMode,
 
     window_width: u32,
     window_height: u32,
@@ -103,25 +138,30 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         let queue = Arc::new(queue);
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // Prefer linear Bgra8Unorm over its sRGB sibling: engine content is
+        // display-referred, so a linear surface passes it through unchanged. An
+        // sRGB surface would re-encode and lift the blacks (vs the GUI preview).
         let surface_format = surface_caps
             .formats
             .iter()
             .copied()
-            .find(|f| {
-                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
+            .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
+            .or_else(|| {
+                surface_caps
+                    .formats
+                    .iter()
+                    .copied()
+                    .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb)
             })
             .or_else(|| surface_caps.formats.first().copied())
             .ok_or_else(|| anyhow::anyhow!("No surface formats available"))?;
 
-        let present_mode = {
+        let supported_present_modes = surface_caps.present_modes.clone();
+        let requested_present_mode = {
             let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            match s.present_mode {
-                rustjay_core::PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
-                rustjay_core::PresentMode::Immediate => wgpu::PresentMode::Immediate,
-                rustjay_core::PresentMode::Fifo => wgpu::PresentMode::Fifo,
-                rustjay_core::PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
-            }
+            s.present_mode
         };
+        let present_mode = resolve_present_mode(requested_present_mode, &supported_present_modes);
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
@@ -201,6 +241,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             fps_frame_count: 0,
             fps_current: 0.0,
             next_render_time: std::time::Instant::now(),
+            supported_present_modes,
+            last_present_mode: requested_present_mode,
             output_manager: OutputManager::new(),
             pending_commands: Vec::new(),
         })
@@ -337,21 +379,34 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager.is_recording()
     }
 
+    /// When the next frame is allowed to render, per the fixed-cadence
+    /// `target_fps` software cap. The event loop sleeps until this instant
+    /// (`ControlFlow::WaitUntil`) instead of busy-spinning. It's a fixed
+    /// cadence (advanced by `+= interval`), not a drifting `now + interval`,
+    /// so it doesn't beat against hardware vsync.
+    pub fn next_render_time(&self) -> std::time::Instant {
+        self.next_render_time
+    }
+
     /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
         // Reconfigure surface if present_mode changed at runtime.
         {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let desired = match state.present_mode {
-                rustjay_core::PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
-                rustjay_core::PresentMode::Immediate => wgpu::PresentMode::Immediate,
-                rustjay_core::PresentMode::Fifo => wgpu::PresentMode::Fifo,
-                rustjay_core::PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+            let requested = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.present_mode
             };
-            if self.surface_config.present_mode != desired {
-                self.surface_config.present_mode = desired;
-                self.surface.configure(&self.device, &self.surface_config);
-                log::info!("Output present_mode changed to {:?}", desired);
+            // Only re-resolve (and log/reconfigure) when the setting actually
+            // changes — otherwise a persisted unsupported mode would warn every
+            // frame.
+            if requested != self.last_present_mode {
+                self.last_present_mode = requested;
+                let desired = resolve_present_mode(requested, &self.supported_present_modes);
+                if self.surface_config.present_mode != desired {
+                    self.surface_config.present_mode = desired;
+                    self.surface.configure(&self.device, &self.surface_config);
+                    log::info!("Output present_mode changed to {:?}", desired);
+                }
             }
         }
 

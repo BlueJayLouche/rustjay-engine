@@ -105,12 +105,32 @@ impl Texture {
         }
     }
 
-    /// Create a render-target texture with the given dimensions.
+    /// Create a render-target texture at the working format (8-bit, or f16 when
+    /// `RUSTJAY_RT_FORMAT=f16`). Use [`Self::create_render_target_with_format`] for
+    /// textures that must hold a specific format — e.g. a `copy_texture_to_texture`
+    /// destination of an 8-bit input, where a raw copy requires matching formats.
     pub fn create_render_target(
         device: &wgpu::Device,
         width: u32,
         height: u32,
         label: &str,
+    ) -> Self {
+        Self::create_render_target_with_format(
+            device,
+            width,
+            height,
+            label,
+            rustjay_core::working_format(),
+        )
+    }
+
+    /// Create a render-target texture with an explicit format.
+    pub fn create_render_target_with_format(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        label: &str,
+        format: wgpu::TextureFormat,
     ) -> Self {
         let size = wgpu::Extent3d {
             width,
@@ -123,7 +143,7 @@ impl Texture {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC

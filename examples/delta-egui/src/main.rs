@@ -124,11 +124,14 @@ impl FrameHistory {
         let max_history = max_history.clamp(1, Self::MAX_HISTORY);
         let mut frames = Vec::with_capacity(max_history);
         for i in 0..max_history {
-            frames.push(Texture::create_render_target(
+            // Bgra8Unorm: push_frame copies the 8-bit input here via
+            // copy_texture_to_texture, which requires matching formats (not f16).
+            frames.push(Texture::create_render_target_with_format(
                 device,
                 1920,
                 1080,
                 &format!("Frame History {}", i),
+                wgpu::TextureFormat::Bgra8Unorm,
             ));
         }
         Self {
@@ -144,11 +147,12 @@ impl FrameHistory {
         if self.width != width || self.height != height {
             self.frames.clear();
             for i in 0..self.max_history {
-                self.frames.push(Texture::create_render_target(
+                self.frames.push(Texture::create_render_target_with_format(
                     device,
                     width,
                     height,
                     &format!("Frame History {}", i),
+                    wgpu::TextureFormat::Bgra8Unorm,
                 ));
             }
             self.width = width;
@@ -429,7 +433,7 @@ impl EffectPlugin for DeltaEffect {
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    format: working_format(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

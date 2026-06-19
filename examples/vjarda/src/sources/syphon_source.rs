@@ -25,7 +25,7 @@ impl SyphonSource {
         let server_uuid = server_uuid.into();
         let mut receiver = rustjay_io::SyphonInputReceiver::new();
         receiver.initialize(device, queue);
-        let pipeline = BlitPipeline::new(device, wgpu::TextureFormat::Bgra8Unorm);
+        let pipeline = BlitPipeline::new(device, rustjay_core::working_format());
         Self {
             receiver,
             server_name,

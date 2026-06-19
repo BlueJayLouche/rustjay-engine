@@ -21,7 +21,7 @@ impl NdiSource {
     pub fn new(device: &wgpu::Device, source_name: impl Into<String>) -> Self {
         let source_name = source_name.into();
         let receiver = rustjay_io::NdiReceiver::new(&source_name);
-        let pipeline = BlitPipeline::new(device, wgpu::TextureFormat::Bgra8Unorm);
+        let pipeline = BlitPipeline::new(device, rustjay_core::working_format());
         Self {
             receiver,
             source_name,

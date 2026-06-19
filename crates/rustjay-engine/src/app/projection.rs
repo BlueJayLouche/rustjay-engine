@@ -12,6 +12,25 @@ use winit::window::Window;
 /// Opaque handle type for sharing the projection subsystem with the plugin.
 pub type ProjectionSubsystemHandle = Arc<std::sync::Mutex<ProjectionSubsystem>>;
 
+/// Pick the projector surface format, preferring linear `Bgra8Unorm` over its
+/// sRGB sibling. The engine's content is display-referred, so a linear surface
+/// passes it through unchanged (matching the GUI preview); an sRGB surface would
+/// re-encode it and lift the blacks. Both surface-selection sites use this so the
+/// stage pipelines and the configured surface always agree.
+fn pick_projector_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    formats
+        .iter()
+        .copied()
+        .find(|f| *f == wgpu::TextureFormat::Bgra8Unorm)
+        .or_else(|| {
+            formats
+                .iter()
+                .copied()
+                .find(|f| *f == wgpu::TextureFormat::Bgra8UnormSrgb)
+        })
+        .or_else(|| formats.first().copied())
+}
+
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
     window: Arc<Window>,
@@ -47,14 +66,7 @@ impl ProjectorOutput {
         let surface = instance.create_surface(Arc::clone(&window))?;
 
         let caps = surface.get_capabilities(adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| {
-                *f == wgpu::TextureFormat::Bgra8UnormSrgb || *f == wgpu::TextureFormat::Bgra8Unorm
-            })
-            .or_else(|| caps.formats.first().copied())
+        let format = pick_projector_format(&caps.formats)
             .ok_or_else(|| anyhow::anyhow!("No surface formats available for projector"))?;
 
         // Use Fifo (vsync) for projector outputs to eliminate tearing.
@@ -614,15 +626,7 @@ impl ProjectionSubsystem {
                 }
             };
             let caps = temp_surface.get_capabilities(adapter);
-            let format = caps
-                .formats
-                .iter()
-                .copied()
-                .find(|f| {
-                    *f == wgpu::TextureFormat::Bgra8UnormSrgb
-                        || *f == wgpu::TextureFormat::Bgra8Unorm
-                })
-                .or_else(|| caps.formats.first().copied())
+            let format = pick_projector_format(&caps.formats)
                 .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
             drop(temp_surface);
 

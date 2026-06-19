@@ -238,7 +238,7 @@ impl FluxEffect {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
+                    format: working_format(),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -284,11 +284,14 @@ impl FluxEffect {
             .as_ref()
             .is_none_or(|t| t.width != w || t.height != h);
         if needs {
-            self.prev_frame = Some(Texture::create_render_target(
+            // Bgra8Unorm: step 4 copies the 8-bit input here via
+            // copy_texture_to_texture, which requires matching formats (not f16).
+            self.prev_frame = Some(Texture::create_render_target_with_format(
                 device,
                 w,
                 h,
                 "Flux Prev Frame",
+                wgpu::TextureFormat::Bgra8Unorm,
             ));
         }
         if let Some(f) = &mut self.flow {
