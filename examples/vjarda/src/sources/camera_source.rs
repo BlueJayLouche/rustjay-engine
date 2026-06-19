@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 struct CameraSession {
     manager: InputManager,
-    frame: Option<Arc<Vec<u8>>>,
     resolution: (u32, u32),
 }
 
@@ -28,7 +27,6 @@ fn get_session(device_index: usize) -> Arc<Mutex<CameraSession>> {
         .or_insert_with(|| {
             Arc::new(Mutex::new(CameraSession {
                 manager: InputManager::new(),
-                frame: None,
                 resolution: (1280, 720),
             }))
         })
@@ -259,18 +257,23 @@ impl EffectInstance for CameraSource {
         }
 
         {
-            let mut session = self.session.lock().unwrap();
-            session.manager.update();
-            if let Some(frame) = session.manager.take_frame() {
-                session.resolution = session.manager.resolution();
-                session.frame = Some(Arc::new(frame));
-            }
+            // Only upload to the GPU when the camera delivered a NEW frame.
+            // The webcam runs ~30fps while the render loop runs >=60, so
+            // re-uploading the same frame every render (on the main thread)
+            // was pure waste. self.texture persists between uploads, so the
+            // pass below keeps sampling the most recent frame.
+            let (new_frame, w, h) = {
+                let mut session = self.session.lock().unwrap();
+                session.manager.update();
+                let new_frame = session.manager.take_frame();
+                if new_frame.is_some() {
+                    session.resolution = session.manager.resolution();
+                }
+                let (w, h) = session.resolution;
+                (new_frame, w, h)
+            };
 
-            let frame_arc: Option<Arc<Vec<u8>>> = session.frame.clone();
-            let (w, h) = session.resolution;
-            drop(session);
-
-            if let Some(frame) = frame_arc {
+            if let Some(frame) = new_frame {
                 self.ensure_texture(ctx.device, w, h);
                 if let Some(ref texture) = self.texture {
                     ctx.queue.write_texture(
