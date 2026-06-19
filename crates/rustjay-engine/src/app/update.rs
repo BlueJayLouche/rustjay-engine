@@ -324,16 +324,44 @@ impl<P: EffectPlugin> App<P> {
 
     #[cfg(feature = "link")]
     pub(super) fn update_link(&mut self) {
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        // Lazily construct/drop around the `enabled` toggle. LinkManager::new()
+        // spawns Ableton Link's background threads (Link Main/Dispatcher), so
+        // keeping it alive while disabled burned idle CPU for nothing.
+        match (state.link.enabled, self.link_manager.is_some()) {
+            (true, false) => self.link_manager = Some(rustjay_sync::LinkManager::new()),
+            (false, true) => {
+                // One last update lets the manager leave the session and clear
+                // the UI state before we drop it (which stops the threads).
+                if let Some(ref mut manager) = self.link_manager {
+                    manager.update(&mut state.link);
+                }
+                self.link_manager = None;
+            }
+            _ => {}
+        }
         if let Some(ref mut manager) = self.link_manager {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             manager.update(&mut state.link);
         }
     }
 
     #[cfg(feature = "prodj")]
     pub(super) fn update_prodj(&mut self) {
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        // Lazily construct/drop around the `enabled` toggle. ProDjManager::new()
+        // binds UDP 50000/50002 and JOINS the Pro DJ Link network on construction,
+        // so every launch was joining a DJ network for a feature nobody enabled.
+        match (state.prodj.enabled, self.prodj_manager.is_some()) {
+            (true, false) => self.prodj_manager = Some(rustjay_sync::ProDjManager::new()),
+            (false, true) => {
+                if let Some(ref mut manager) = self.prodj_manager {
+                    manager.update(&mut state.prodj);
+                }
+                self.prodj_manager = None;
+            }
+            _ => {}
+        }
         if let Some(ref mut manager) = self.prodj_manager {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             manager.update(&mut state.prodj);
         }
     }

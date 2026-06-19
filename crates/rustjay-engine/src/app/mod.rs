@@ -486,10 +486,13 @@ impl<P: EffectPlugin> App<P> {
             web_server,
             web_command_tx,
             config_manager,
+            // Constructed lazily on enable (see update_link/update_prodj):
+            // their background threads otherwise burn idle CPU — and ProDJ
+            // would join the Pro DJ Link network — for features nobody enabled.
             #[cfg(feature = "link")]
-            link_manager: Some(rustjay_sync::LinkManager::new()),
+            link_manager: None,
             #[cfg(feature = "prodj")]
-            prodj_manager: Some(rustjay_sync::ProDjManager::new()),
+            prodj_manager: None,
             #[cfg(feature = "mtc")]
             mtc_receiver: Some(MtcReceiver::new()),
             shift_pressed: false,
