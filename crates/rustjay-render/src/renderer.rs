@@ -345,6 +345,15 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager.is_recording()
     }
 
+    /// When the next frame is allowed to render, per the fixed-cadence
+    /// `target_fps` software cap. The event loop sleeps until this instant
+    /// (`ControlFlow::WaitUntil`) instead of busy-spinning. It's a fixed
+    /// cadence (advanced by `+= interval`), not a drifting `now + interval`,
+    /// so it doesn't beat against hardware vsync.
+    pub fn next_render_time(&self) -> std::time::Instant {
+        self.next_render_time
+    }
+
     /// Render a single frame.
     pub fn render(&mut self, occluded: bool, app_state: &mut P::State) {
         // Reconfigure surface if present_mode changed at runtime.

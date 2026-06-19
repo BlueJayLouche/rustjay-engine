@@ -738,11 +738,23 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        // Use Poll so the event loop wakes every frame; actual pacing is handled
-        // by the renderer's next_render_time software cap and/or the surface
-        // present mode (AutoVsync/Fifo). The old WaitUntil throttle fought against
-        // hardware vsync and caused beat-frequency jitter on high-refresh displays.
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // Sleep until the next frame is due instead of busy-spinning (which
+        // burned ~a full core at idle). The deadline is the renderer's
+        // FIXED-CADENCE software cap (`target_fps`) — advanced by `+= interval`,
+        // not a drifting `now + interval`. The drifting variant is what fought
+        // hardware vsync and caused the beat-frequency jitter that made us drop
+        // WaitUntil before; a fixed cadence stays phase-aligned with vsync for
+        // harmonic ratios (e.g. 60 on 120 Hz). WaitUntil still wakes immediately
+        // on OS/input events, so the UI stays responsive. Bounded by the UI
+        // redraw cadence, and falls back to a short tick before the engine is up.
+        let ui_deadline = self.last_ui_render + UI_RENDER_INTERVAL;
+        let deadline = self
+            .output_engine
+            .as_ref()
+            .map(|e| e.next_render_time())
+            .unwrap_or_else(|| std::time::Instant::now() + UI_RENDER_INTERVAL)
+            .min(ui_deadline);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
