@@ -1,0 +1,28 @@
+[package]
+name = "shaderglass"
+version = "0.1.0"
+edition = "2024"
+description = "ShaderGlass-style shader overlay — a source (Syphon/NDI/webcam/…) filtered through an ISF shader, with an egui control window"
+
+[features]
+default = ["egui", "ndi", "webcam"]
+egui    = ["rustjay-engine/egui"]
+ndi     = ["rustjay-engine/ndi"]
+webcam  = ["rustjay-engine/webcam"]
+
+[dependencies]
+rustjay-engine = { workspace = true }
+rustjay-isf    = { workspace = true }
+rustjay-core   = { workspace = true }
+rustjay-render = { workspace = true }
+wgpu           = { workspace = true }
+egui           = { workspace = true }
+anyhow         = { workspace = true }
+log            = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+env_logger     = "0.11"
+rfd            = "0.15"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

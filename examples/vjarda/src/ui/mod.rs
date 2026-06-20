@@ -258,11 +258,12 @@ mod egui_impl {
     const DECK_CONTROL_KEYS: &[&str] =
         &["opacity", "blend", "playing", "speed", "loop", "position"];
 
-    /// One parameter control, reading/writing the live (base+mod) value through
-    /// the engine so the GUI stays co-equal with MIDI/OSC/LFO. Ported from
-    /// `examples/shaderglass`'s `draw_param`.
+    /// One parameter control. Reads/writes the **base** value (not base+mod) so
+    /// the slider acts as a stable offset and modulation (LFO/audio/MIDI) is
+    /// applied additively on top when the shader reads `get_param` — matching the
+    /// `examples/delta-egui` convention. Stays co-equal with OSC/MIDI/LFO.
     fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
-        let current = engine.get_param(&desc.id).unwrap_or(desc.default);
+        let current = engine.get_param_base(&desc.id).unwrap_or(desc.default);
         match &desc.param_type {
             ParamType::Float => {
                 let mut v = current;
@@ -390,7 +391,16 @@ mod egui_impl {
     /// applying removals in place. Returns `true` if a slot was removed — a
     /// structural edit the caller should surface via `params_dirty_request` so
     /// the plugin re-registers parameters and drops the orphaned descriptors.
-    fn fx_chain_ui(ui: &mut egui::Ui, chain: &mut Vec<rustjay_mixer::EffectSlot>) -> bool {
+    ///
+    /// On removal it also purges any orphaned modulation assignments targeting
+    /// the removed FX's params, keyed by `<chain_prefix>fx<uuid>_` (where
+    /// `chain_prefix` is `master_`, `ch_<uuid>_`, or a deck's full prefix).
+    fn fx_chain_ui(
+        ui: &mut egui::Ui,
+        chain: &mut Vec<rustjay_mixer::EffectSlot>,
+        chain_prefix: &str,
+        engine: &mut EngineState,
+    ) -> bool {
         let mut removals: Vec<usize> = Vec::new();
         let mut i = 0;
         while i < chain.len() {
@@ -410,7 +420,10 @@ mod egui_impl {
         }
         let removed = !removals.is_empty();
         for idx in removals.into_iter().rev() {
-            chain.remove(idx);
+            let slot = chain.remove(idx);
+            if let Ok(mut m) = engine.modulation.lock() {
+                m.remove_assignments_with_prefix(&format!("{chain_prefix}fx{}_", slot.uuid));
+            }
         }
         removed
     }
@@ -466,7 +479,7 @@ mod egui_impl {
             // Master FX list + add button
             ui.separator();
             ui.label(egui::RichText::new("Master FX").strong());
-            if fx_chain_ui(ui, &mut mixer.master) {
+            if fx_chain_ui(ui, &mut mixer.master, "master_", engine) {
                 state.params_dirty_request = true;
             }
             if ui.button("➕ Add Master FX…").clicked() {
@@ -543,7 +556,8 @@ mod egui_impl {
                                     if !deck.chain.is_empty() {
                                         ui.label("FX:");
                                     }
-                                    if fx_chain_ui(ui, &mut deck.chain) {
+                                    let deck_prefix = deck.full_prefix.clone();
+                                    if fx_chain_ui(ui, &mut deck.chain, &deck_prefix, engine) {
                                         fx_removed = true;
                                     }
                                     if ui.small_button("➕ Add FX…").clicked() {
@@ -1015,7 +1029,8 @@ mod egui_impl {
                         if !ch.chain.is_empty() {
                             ui.label("Channel FX:");
                         }
-                        if fx_chain_ui(ui, &mut ch.chain) {
+                        let ch_prefix = format!("ch_{}_", ch.uuid);
+                        if fx_chain_ui(ui, &mut ch.chain, &ch_prefix, engine) {
                             fx_removed = true;
                         }
                         if ui.small_button("➕ Add Channel FX…").clicked() {
@@ -1040,7 +1055,8 @@ mod egui_impl {
                                 if !deck.chain.is_empty() {
                                     ui.label(format!("Deck {} FX:", deck.name));
                                 }
-                                if fx_chain_ui(ui, &mut deck.chain) {
+                                let deck_prefix = deck.full_prefix.clone();
+                                if fx_chain_ui(ui, &mut deck.chain, &deck_prefix, engine) {
                                     fx_removed = true;
                                 }
                                 if ui.small_button("➕ Add Deck FX…").clicked() {
@@ -1061,7 +1077,7 @@ mod egui_impl {
 
             // Master FX list + add button
             ui.collapsing("Master FX", |ui| {
-                if fx_chain_ui(ui, &mut mixer.master) {
+                if fx_chain_ui(ui, &mut mixer.master, "master_", engine) {
                     fx_removed = true;
                 }
                 if ui.small_button("➕ Add Master FX…").clicked() {

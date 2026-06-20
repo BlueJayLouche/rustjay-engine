@@ -120,6 +120,50 @@ fn strip_isf_comment(src: &str) -> &str {
     src
 }
 
+/// Remove `//` line comments and `/* */` block comments from GLSL.
+///
+/// WGSL keeps comments verbatim, and naga rejects non-ASCII bytes that appear in
+/// them (e.g. CJK author notes in Shadertoy ports); stray comment text can also
+/// confuse the line-based rewrites below. GLSL has no string literals, so a
+/// char-level scan is safe; block-comment newlines are preserved to keep line
+/// numbers roughly aligned for error reporting.
+fn strip_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    while let Some(&c2) = chars.peek() {
+                        if c2 == '\n' {
+                            break;
+                        }
+                        chars.next();
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next(); // consume '*'
+                    let mut prev = '\0';
+                    for c2 in chars.by_ref() {
+                        if prev == '*' && c2 == '/' {
+                            break;
+                        }
+                        if c2 == '\n' {
+                            out.push('\n');
+                        }
+                        prev = c2;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Preamble generation
 // ---------------------------------------------------------------------------
@@ -190,7 +234,9 @@ fn preprocess_glsl(
     has_main_image: bool,
     has_image_input: bool,
 ) -> String {
-    let mut src = glsl.to_owned();
+    // Strip comments first so non-ASCII author notes never reach WGSL and stray
+    // comment text can't confuse the line-based rewrites below.
+    let mut src = strip_comments(glsl);
 
     // Detect GLSL-450 style before stripping.
     let is_glsl450 = src.contains("layout(");

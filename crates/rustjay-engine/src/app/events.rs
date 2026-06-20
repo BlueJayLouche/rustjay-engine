@@ -472,7 +472,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     WindowEvent::Occluded(occluded) => {
                         self.output_occluded = occluded;
                     }
-                    WindowEvent::Resized(size) if !self.output_occluded => {
+                    // Always reconfigure the surface on resize, even while
+                    // occluded: going fullscreen behind another app delivers
+                    // Resized while still Occluded(true), and skipping it leaves
+                    // the Metal surface at the old size → present stalls → freeze.
+                    // `engine.resize` already ignores 0×0 (minimize).
+                    WindowEvent::Resized(size) => {
                         if let Some(ref mut engine) = self.output_engine {
                             engine.resize(size.width, size.height);
                         }
