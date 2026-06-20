@@ -26,6 +26,8 @@ pub use egui_control_gui::EguiControlGui;
 pub use egui_renderer::EguiRenderer;
 #[cfg(feature = "egui")]
 pub use egui_tab::{param_slider, param_slider_int, AnyEguiTab};
+#[cfg(feature = "egui")]
+pub use egui_widgets::key_color_picker;
 
 /// Type-erased GUI tab used by [`ControlGui`].
 /// Implementors downcast `app_state` via [`std::any::Any`].

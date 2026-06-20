@@ -248,7 +248,7 @@ pub mod prelude {
         RenderHookCtx, Vertex, Waveform, WebCommand, BEAT_DIVISIONS, BEAT_DIVISION_NAMES,
     };
     #[cfg(feature = "egui")]
-    pub use rustjay_gui::{param_slider, param_slider_int, AnyEguiTab};
+    pub use rustjay_gui::{param_slider, param_slider_int, key_color_picker, AnyEguiTab};
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
     pub use rustjay_render::{InputTexture, PreviousFrameTexture, Texture, WgpuEngine};
 }

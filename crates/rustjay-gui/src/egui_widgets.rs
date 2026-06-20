@@ -539,6 +539,55 @@ pub fn parameter_card_f32(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Keying colour picker — swatch + three modulatable RGB param sliders
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Modulation-compatible chroma/luma key colour picker.
+///
+/// Shows a `color_edit_button_rgb` swatch alongside individual `R/G/B` sliders,
+/// all bound to engine params so MIDI/OSC/LFO can control the key colour.
+///
+/// `prefix` is the channel prefix (e.g. `"ch_pad0_"`). Binds to
+/// `{prefix}key_r`, `{prefix}key_g`, `{prefix}key_b`.
+pub fn key_color_picker(
+    ui: &mut egui::Ui,
+    engine: &mut rustjay_core::EngineState,
+    prefix: &str,
+) {
+    let r_key = format!("{prefix}key_r");
+    let g_key = format!("{prefix}key_g");
+    let b_key = format!("{prefix}key_b");
+
+    let r = engine.get_param_base(&r_key).unwrap_or(0.0);
+    let g = engine.get_param_base(&g_key).unwrap_or(1.0);
+    let b = engine.get_param_base(&b_key).unwrap_or(0.0);
+    let mut color = [r, g, b];
+
+    ui.horizontal(|ui| {
+        if ui.color_edit_button_rgb(&mut color).changed() {
+            engine.set_param_base(&r_key, color[0]);
+            engine.set_param_base(&g_key, color[1]);
+            engine.set_param_base(&b_key, color[2]);
+        }
+        ui.label("Key colour");
+    });
+
+    // Individual sliders so LFO/MIDI can modulate per-channel.
+    let mut r = engine.get_param_base(&r_key).unwrap_or(0.0);
+    if ui.add(egui::Slider::new(&mut r, 0.0f32..=1.0).text("R")).changed() {
+        engine.set_param_base(&r_key, r);
+    }
+    let mut g = engine.get_param_base(&g_key).unwrap_or(1.0);
+    if ui.add(egui::Slider::new(&mut g, 0.0f32..=1.0).text("G")).changed() {
+        engine.set_param_base(&g_key, g);
+    }
+    let mut b = engine.get_param_base(&b_key).unwrap_or(0.0);
+    if ui.add(egui::Slider::new(&mut b, 0.0f32..=1.0).text("B")).changed() {
+        engine.set_param_base(&b_key, b);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Formatting helpers (match the web's number formatting)
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -6571,6 +6571,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vp404"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "egui",
+ "env_logger",
+ "hap-wgpu",
+ "log",
+ "rfd",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-io",
+ "rustjay-mixer",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
 name = "waaaves"
 version = "0.1.0"
 dependencies = [

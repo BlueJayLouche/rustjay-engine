@@ -1,0 +1,29 @@
+[package]
+name = "vp404"
+version = "0.1.0"
+edition = "2021"
+description = "VP-404 — SP-404-style video sampler (port of rustjay-404)."
+
+[features]
+default = ["egui", "mixer"]
+egui    = ["rustjay-engine/egui"]
+mixer   = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
+# Live sampling pulls in rustjay-io capture (webcam / platform Syphon/Spout).
+# Keep it off the default build so headless/Pi builds stay lean.
+capture = ["dep:rustjay-io", "rustjay-io/webcam"]
+ndi     = ["rustjay-engine/ndi"]
+
+[dependencies]
+rustjay-engine = { workspace = true }
+rustjay-mixer  = { workspace = true, optional = true }
+rustjay-core   = { workspace = true }
+rustjay-io     = { workspace = true, optional = true, default-features = false }
+wgpu           = { workspace = true }
+egui           = { workspace = true }
+hap-wgpu       = "0.1.0"
+anyhow         = { workspace = true }
+log            = { workspace = true }
+serde          = { workspace = true }
+bytemuck       = { version = "1.14", features = ["derive"] }
+env_logger     = "0.11"
+rfd            = "0.15"

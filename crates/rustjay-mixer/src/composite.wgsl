@@ -5,15 +5,24 @@
 // BlendState::REPLACE). You cannot sample the texture you are rendering into, so
 // the mixer ping-pongs two accumulation textures.
 //
-// `CompositeParams` is 32 bytes (8 × f32). The `mode == Nu` branches must match
-// `BlendMode::to_index` in blend.rs.
+// `CompositeParams` is 64 bytes (16 × f32). The `mode == Nu` branches must match
+// `BlendMode::to_index` in blend.rs. `key_mode`: 0=none, 1=chroma, 2=luma.
 
 struct CompositeParams {
     opacity: f32,
     blend_mode: u32,
     uv_scale: vec2<f32>,
     uv_offset: vec2<f32>,
-    _pad: vec2<f32>,
+    key_mode: u32,
+    luma_invert: u32,
+    key_r: f32,
+    key_g: f32,
+    key_b: f32,
+    key_threshold: f32,
+    key_smoothness: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 @group(0) @binding(0) var texture_sampler: sampler;
@@ -22,6 +31,20 @@ struct CompositeParams {
 @group(0) @binding(3) var<uniform> params: CompositeParams;
 
 const EPSILON: f32 = 0.001;
+
+fn chroma_key_alpha(rgb: vec3<f32>) -> f32 {
+    let key = vec3<f32>(params.key_r, params.key_g, params.key_b);
+    let d = rgb - key;
+    let weights = vec3<f32>(0.299, 0.587, 0.114);
+    let dist = sqrt(dot(d * d, weights));
+    return smoothstep(params.key_threshold, params.key_threshold + max(params.key_smoothness, EPSILON), dist);
+}
+
+fn luma_key_alpha(rgb: vec3<f32>) -> f32 {
+    let luma = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let a = smoothstep(params.key_threshold, params.key_threshold + max(params.key_smoothness, EPSILON), luma);
+    return select(a, 1.0 - a, params.luma_invert != 0u);
+}
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -52,7 +75,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Destination is the full composite-so-far, sampled at raw UV.
     let dst = textureSample(dest_texture, texture_sampler, uv);
 
-    let src_a = src.a * params.opacity;
+    var key_alpha: f32 = 1.0;
+    if params.key_mode == 1u {
+        key_alpha = chroma_key_alpha(src.rgb);
+    } else if params.key_mode == 2u {
+        key_alpha = luma_key_alpha(src.rgb);
+    }
+    let src_a = src.a * params.opacity * key_alpha;
     if (src_a <= 0.0) {
         return dst;
     }

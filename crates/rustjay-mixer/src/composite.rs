@@ -12,7 +12,34 @@ use crate::blend::BlendMode;
 use crate::preset::MAX_CHANNELS;
 use rustjay_core::Vertex;
 
-/// GPU uniform for one composite invocation. 32 bytes; mirrors `CompositeParams`
+/// Key parameters for chroma/luma keying. Passed to [`CompositePipeline::blend`].
+#[derive(Copy, Clone)]
+pub struct KeyParams {
+    /// 0 = none, 1 = chroma, 2 = luma.
+    pub mode: u32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub threshold: f32,
+    pub smoothness: f32,
+    pub luma_invert: bool,
+}
+
+impl Default for KeyParams {
+    fn default() -> Self {
+        Self {
+            mode: 0,
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+            threshold: 0.3,
+            smoothness: 0.1,
+            luma_invert: false,
+        }
+    }
+}
+
+/// GPU uniform for one composite invocation. 64 bytes; mirrors `CompositeParams`
 /// in `composite.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -21,7 +48,14 @@ struct CompositeParams {
     blend_mode: u32,
     uv_scale: [f32; 2],
     uv_offset: [f32; 2],
-    _pad: [f32; 2],
+    key_mode: u32,
+    luma_invert: u32,
+    key_r: f32,
+    key_g: f32,
+    key_b: f32,
+    key_threshold: f32,
+    key_smoothness: f32,
+    _pad: [f32; 3],
 }
 
 /// Shader-based compositor supporting every [`BlendMode`] via a uniform index.
@@ -190,6 +224,7 @@ impl CompositePipeline {
         out: &wgpu::TextureView,
         opacity: f32,
         blend_mode: BlendMode,
+        key: KeyParams,
         vertex_buffer: &wgpu::Buffer,
     ) {
         debug_assert!(
@@ -212,7 +247,14 @@ impl CompositePipeline {
             blend_mode: blend_mode.to_index(),
             uv_scale: [1.0, 1.0],
             uv_offset: [0.0, 0.0],
-            _pad: [0.0, 0.0],
+            key_mode: key.mode,
+            luma_invert: key.luma_invert as u32,
+            key_r: key.r,
+            key_g: key.g,
+            key_b: key.b,
+            key_threshold: key.threshold,
+            key_smoothness: key.smoothness,
+            _pad: [0.0; 3],
         };
         queue.write_buffer(&self.uniform_buffer, offset, bytemuck::bytes_of(&params));
 

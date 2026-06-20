@@ -269,6 +269,7 @@ impl EffectInstance for DeckCompositor {
                 &write_acc.view,
                 self.eff_opacity[i],
                 self.eff_blend[i],
+                rustjay_mixer::KeyParams::default(),
                 ctx.vertex_buffer,
             );
             written_acc = Some(write_acc);

@@ -28,6 +28,7 @@ members = [
     "examples/decklink",
     "examples/shaderglass",
     "examples/videowall",
+    "examples/vp404",
 ]
 resolver = "3"
 

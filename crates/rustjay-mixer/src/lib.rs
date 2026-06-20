@@ -10,7 +10,7 @@ pub mod sequencer;
 
 pub use blend::BlendMode;
 pub use blit::BlitPipeline;
-pub use composite::CompositePipeline;
+pub use composite::{CompositePipeline, KeyParams};
 pub use crossfade::{AutoCrossfade, BeatSyncCrossfade, Easing};
 pub use preset::{ChannelState, MixerState, MAX_CHANNELS, MIXER_STATE_VERSION};
 pub use sequencer::{SequencerState, StepKind, TransitionEffect, TransitionStep};
@@ -90,6 +90,18 @@ pub struct Channel {
     pub input_select: InputSelect,
     pub solo: bool,
     pub mute: bool,
+    /// When `false` the channel is skipped entirely: no effect render pass and
+    /// no composite step. Used by hosts (e.g. VP-404) to elide idle pads.
+    pub active: bool,
+
+    // Chroma/luma key defaults (engine params override these each frame).
+    pub key_mode: u32,       // 0=none, 1=chroma, 2=luma
+    pub key_r: f32,
+    pub key_g: f32,
+    pub key_b: f32,
+    pub key_threshold: f32,
+    pub key_smoothness: f32,
+    pub luma_invert: bool,
 
     // GPU resources — allocated lazily, reallocated only on resize (REQ-11.2).
     texture: Option<Texture>,
@@ -101,6 +113,13 @@ pub struct Channel {
     opacity_key: String,
     blend_key: String,
     input_select_key: String,
+    key_mode_key: String,
+    key_r_key: String,
+    key_g_key: String,
+    key_b_key: String,
+    key_threshold_key: String,
+    key_smoothness_key: String,
+    key_luma_invert_key: String,
     /// Last-seen count of enabled FX; used to detect parity flips that change
     /// `output_texture()` and invalidate the composite cache (CORR-2).
     last_enabled_count: usize,
@@ -122,6 +141,13 @@ impl Channel {
             opacity_key: format!("ch_{}_opacity", &uuid),
             blend_key: format!("ch_{}_blend", &uuid),
             input_select_key: format!("ch_{}_input_select", &uuid),
+            key_mode_key: format!("ch_{}_key_mode", &uuid),
+            key_r_key: format!("ch_{}_key_r", &uuid),
+            key_g_key: format!("ch_{}_key_g", &uuid),
+            key_b_key: format!("ch_{}_key_b", &uuid),
+            key_threshold_key: format!("ch_{}_key_threshold", &uuid),
+            key_smoothness_key: format!("ch_{}_key_smoothness", &uuid),
+            key_luma_invert_key: format!("ch_{}_key_luma_invert", &uuid),
             uuid,
             name,
             effect,
@@ -131,6 +157,14 @@ impl Channel {
             input_select: InputSelect::default(),
             solo: false,
             mute: false,
+            active: true,
+            key_mode: 0,
+            key_r: 0.0,
+            key_g: 1.0,
+            key_b: 0.0,
+            key_threshold: 0.3,
+            key_smoothness: 0.1,
+            luma_invert: false,
             texture: None,
             ping: None,
             size: [0, 0],
@@ -316,10 +350,10 @@ impl Mixer {
 
     /// Add a channel, returning its index.
     ///
-    /// Fails if the mixer already has 8 channels (REQ-01.2).
-    pub fn add_channel(&mut self, channel: Channel) -> Result<usize, &'static str> {
-        if self.channels.len() >= 8 {
-            return Err("maximum 8 channels");
+    /// Fails if the mixer already has [`MAX_CHANNELS`] channels (REQ-01.2).
+    pub fn add_channel(&mut self, channel: Channel) -> Result<usize, String> {
+        if self.channels.len() >= MAX_CHANNELS {
+            return Err(format!("maximum channels ({MAX_CHANNELS})"));
         }
         self.channels.push(channel);
         // The new channel's textures are allocated lazily at the top of the next
@@ -374,11 +408,22 @@ impl Mixer {
     pub fn effective_opacities(&self) -> Vec<f32> {
         if self.channels.len() == 2 {
             vec![
-                (1.0 - self.crossfader) * self.channels[0].opacity,
-                self.crossfader * self.channels[1].opacity,
+                if self.channels[0].active {
+                    (1.0 - self.crossfader) * self.channels[0].opacity
+                } else {
+                    0.0
+                },
+                if self.channels[1].active {
+                    self.crossfader * self.channels[1].opacity
+                } else {
+                    0.0
+                },
             ]
         } else {
-            self.channels.iter().map(|c| c.opacity).collect()
+            self.channels
+                .iter()
+                .map(|c| if c.active { c.opacity } else { 0.0 })
+                .collect()
         }
     }
 
@@ -525,6 +570,50 @@ impl EffectInstance for Mixer {
                 ch.input_select.to_index(),
             ));
 
+            out.push(ParameterDescriptor::enum_param(
+                format!("{prefix}key_mode"),
+                format!("{} Key", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                vec!["None".to_string(), "Chroma".to_string(), "Luma".to_string()],
+                ch.key_mode as usize,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_r"),
+                format!("{} Key R", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, ch.key_r, 0.01,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_g"),
+                format!("{} Key G", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, ch.key_g, 0.01,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_b"),
+                format!("{} Key B", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, ch.key_b, 0.01,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_threshold"),
+                format!("{} Key Threshold", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, ch.key_threshold, 0.01,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_smoothness"),
+                format!("{} Key Smoothness", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, ch.key_smoothness, 0.01,
+            ));
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}key_luma_invert"),
+                format!("{} Luma Invert", ch.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0, 1.0, if ch.luma_invert { 1.0 } else { 0.0 }, 1.0,
+            ));
+
             for p in ch.effect.parameters() {
                 out.push(prefix_descriptor(&prefix, &p));
             }
@@ -590,22 +679,34 @@ impl EffectInstance for Mixer {
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
 
         let eff: Vec<f32> = if self.channels.len() == 2 {
-            let ch0_opacity = engine
-                .get_param(&self.channels[0].opacity_key)
-                .unwrap_or(self.channels[0].opacity);
-            let ch1_opacity = engine
-                .get_param(&self.channels[1].opacity_key)
-                .unwrap_or(self.channels[1].opacity);
+            let ch0_opacity = if self.channels[0].active {
+                engine
+                    .get_param(&self.channels[0].opacity_key)
+                    .unwrap_or(self.channels[0].opacity)
+            } else {
+                0.0
+            };
+            let ch1_opacity = if self.channels[1].active {
+                engine
+                    .get_param(&self.channels[1].opacity_key)
+                    .unwrap_or(self.channels[1].opacity)
+            } else {
+                0.0
+            };
 
             vec![(1.0 - crossfader) * ch0_opacity, crossfader * ch1_opacity]
         } else {
             self.channels
                 .iter()
                 .map(|ch| {
-                    engine
-                        .get_param(&ch.opacity_key)
-                        .unwrap_or(ch.opacity)
-                        .clamp(0.0, 1.0)
+                    if ch.active {
+                        engine
+                            .get_param(&ch.opacity_key)
+                            .unwrap_or(ch.opacity)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
                 })
                 .collect()
         };
@@ -652,6 +753,22 @@ impl EffectInstance for Mixer {
                 .and_then(|v| BlendMode::from_index(v as u32))
                 .unwrap_or(ch.blend_mode);
 
+            let key = KeyParams {
+                mode: engine
+                    .get_param_base(&ch.key_mode_key)
+                    .map(|v| v.round() as u32)
+                    .unwrap_or(ch.key_mode),
+                r: engine.get_param(&ch.key_r_key).unwrap_or(ch.key_r),
+                g: engine.get_param(&ch.key_g_key).unwrap_or(ch.key_g),
+                b: engine.get_param(&ch.key_b_key).unwrap_or(ch.key_b),
+                threshold: engine.get_param(&ch.key_threshold_key).unwrap_or(ch.key_threshold),
+                smoothness: engine.get_param(&ch.key_smoothness_key).unwrap_or(ch.key_smoothness),
+                luma_invert: engine
+                    .get_param_base(&ch.key_luma_invert_key)
+                    .map(|v| v > 0.5)
+                    .unwrap_or(ch.luma_invert),
+            };
+
             let (read_acc, write_acc) = match written_acc {
                 None => (acc_a, acc_b),
                 Some(w) if std::ptr::eq(w as *const _, acc_a as *const _) => (acc_a, acc_b),
@@ -671,6 +788,7 @@ impl EffectInstance for Mixer {
                 &write_acc.view,
                 eff[i],
                 blend_mode,
+                key,
                 ctx.vertex_buffer,
             );
             written_acc = Some(write_acc);
@@ -819,7 +937,7 @@ mod tests {
     #[test]
     fn channel_count_clamped() {
         let mut mixer = Mixer::new();
-        for i in 0..8 {
+        for i in 0..MAX_CHANNELS {
             assert!(mixer
                 .add_channel(Channel::new(
                     format!("{i}"),
@@ -833,7 +951,7 @@ mod tests {
             .is_err());
 
         // Can't remove below 1
-        for _ in 0..7 {
+        for _ in 0..MAX_CHANNELS - 1 {
             mixer.remove_channel(0).unwrap();
         }
         assert!(mixer.remove_channel(0).is_err());
