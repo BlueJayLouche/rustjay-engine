@@ -264,10 +264,30 @@ mod egui_impl {
     /// `examples/delta-egui` convention. Stays co-equal with OSC/MIDI/LFO.
     fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
         let current = engine.get_param_base(&desc.id).unwrap_or(desc.default);
+        // In MIDI-learn / LFO-assign map mode the slider is shown disabled with a
+        // clickable outline so it can be bound — see `apply_param_map_overlay`.
+        let map_mode = map_mode_active(engine);
         match &desc.param_type {
             ParamType::Float => {
                 let mut v = current;
-                if ui
+                if map_mode {
+                    let scope = ui.scope(|ui| {
+                        ui.disable();
+                        ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).text(&desc.name));
+                    });
+                    let midi_path =
+                        format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
+                    apply_param_map_overlay(
+                        ui,
+                        engine,
+                        scope.response.rect,
+                        &desc.id,
+                        &desc.name,
+                        &midi_path,
+                        desc.min,
+                        desc.max,
+                    );
+                } else if ui
                     .add(egui::Slider::new(&mut v, desc.min..=desc.max).text(&desc.name))
                     .changed()
                 {
@@ -276,7 +296,27 @@ mod egui_impl {
             }
             ParamType::Int => {
                 let mut v = current as i32;
-                if ui
+                if map_mode {
+                    let scope = ui.scope(|ui| {
+                        ui.disable();
+                        ui.add(
+                            egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
+                                .text(&desc.name),
+                        );
+                    });
+                    let midi_path =
+                        format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
+                    apply_param_map_overlay(
+                        ui,
+                        engine,
+                        scope.response.rect,
+                        &desc.id,
+                        &desc.name,
+                        &midi_path,
+                        desc.min,
+                        desc.max,
+                    );
+                } else if ui
                     .add(
                         egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
                             .text(&desc.name),

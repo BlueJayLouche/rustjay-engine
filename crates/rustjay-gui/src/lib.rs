@@ -21,7 +21,7 @@ pub use control_gui::ControlGui;
 pub use renderer::ImGuiRenderer;
 
 #[cfg(feature = "egui")]
-pub use egui_control_gui::EguiControlGui;
+pub use egui_control_gui::{apply_param_map_overlay, map_mode_active, EguiControlGui};
 #[cfg(feature = "egui")]
 pub use egui_renderer::EguiRenderer;
 #[cfg(feature = "egui")]

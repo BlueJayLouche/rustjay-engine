@@ -5,7 +5,7 @@ use rustjay_audio::AudioAnalyzer;
 #[cfg(feature = "mtc")]
 use rustjay_control::MtcReceiver;
 use rustjay_control::OscServer;
-use rustjay_control::{MidiManager, MidiState};
+use rustjay_control::{MidiManager, MidiMapping, MidiState};
 use rustjay_control::{WebCommand as WebServerCommand, WebConfig, WebServer};
 use rustjay_core::EffectPlugin;
 use rustjay_core::EngineState;
@@ -330,7 +330,7 @@ impl<P: EffectPlugin> App<P> {
             Err(e) => log::warn!("Failed to start audio analyzer: {}", e),
         }
 
-        let midi_manager = {
+        let mut midi_manager = {
             let midi_state = Arc::new(std::sync::Mutex::new(MidiState::default()));
             match MidiManager::new(midi_state) {
                 Ok(mut manager) => {
@@ -348,6 +348,51 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
         };
+
+        // Restore the saved MIDI device connection + learned mappings into the
+        // *live* MidiState. `apply_to_state` only populated the EngineState
+        // snapshot, so without this the device reads "connected" but no input
+        // callback runs (needing a manual reconnect) and mappings are dropped.
+        if let Some(ref mut manager) = midi_manager {
+            let (saved_device, saved_mappings) = {
+                let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                (
+                    state.midi_selected_device.clone(),
+                    state.midi_mappings.clone(),
+                )
+            };
+            if !saved_mappings.is_empty() {
+                if let Ok(mut ms) = manager.state().lock() {
+                    ms.mappings = saved_mappings
+                        .iter()
+                        .map(|s| {
+                            MidiMapping::new(
+                                s.kind,
+                                s.selector,
+                                s.channel,
+                                &s.name,
+                                &s.param_path,
+                                s.min_value,
+                                s.max_value,
+                            )
+                        })
+                        .collect();
+                    log::info!("Restored {} saved MIDI mappings", ms.mappings.len());
+                }
+            }
+            let connected = match saved_device {
+                Some(ref dev) => match manager.connect(dev) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("MIDI: could not reconnect saved device '{dev}': {e}");
+                        false
+                    }
+                },
+                None => false,
+            };
+            let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.midi_enabled = connected;
+        }
 
         let descriptors = plugin.parameters();
         let hidden = plugin.hidden_tabs();

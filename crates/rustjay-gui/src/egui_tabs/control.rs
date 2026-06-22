@@ -94,15 +94,41 @@ impl EguiControlGui {
             }
         }
 
-        let (learn_active, learning_param_name, midi_mappings, descriptors) = {
+        let (learn_active, learning_param_name, midi_mappings, descriptors, last_input) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.midi_learn_active,
                 state.midi_learning_param_name.clone(),
                 state.midi_mappings.clone(),
                 state.param_descriptors.clone(),
+                state.midi_last_input,
             )
         };
+
+        // MIDI monitor — confirms messages are actually reaching the engine.
+        ui.horizontal(|ui| {
+            ui.label("Last input:");
+            match last_input {
+                Some((kind, ch, sel, val)) => {
+                    let k = match kind {
+                        MidiMsgKind::Cc => "CC",
+                        MidiMsgKind::Note => "Note",
+                        MidiMsgKind::Aftertouch => "AT",
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{k} ch{ch} #{sel} v{val}"))
+                            .color(ACCENT_CYAN)
+                            .monospace(),
+                    );
+                }
+                None => {
+                    ui.label(
+                        egui::RichText::new("none yet — move a control")
+                            .color(TEXT_SECONDARY),
+                    );
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.separator();

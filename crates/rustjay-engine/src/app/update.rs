@@ -389,7 +389,7 @@ impl<P: EffectPlugin> App<P> {
         if let Some(ref manager) = self.midi_manager {
             // Collect dirty MIDI values and snapshot learn/mapping state in one lock.
             self.midi_dirty_scratch.clear();
-            let (learn_active, learning_name, mapping_snapshot) = {
+            let (learn_active, learning_name, mapping_snapshot, last_input) = {
                 let midi_state_arc = manager.state();
                 let mut midi_state = midi_state_arc.lock().unwrap_or_else(|e| e.into_inner());
                 for mapping in &mut midi_state.mappings {
@@ -400,6 +400,9 @@ impl<P: EffectPlugin> App<P> {
                 }
                 let learn_active = midi_state.learn_state != rustjay_control::LearnState::Idle;
                 let learning_name = midi_state.learning_param_name.clone();
+                let last_input = midi_state
+                    .last_input
+                    .map(|e| (e.kind, e.channel, e.selector, e.value));
                 let mapping_snapshot: Vec<rustjay_core::MidiMappingSnapshot> = midi_state
                     .mappings
                     .iter()
@@ -413,10 +416,11 @@ impl<P: EffectPlugin> App<P> {
                         max_value: m.max_value,
                     })
                     .collect();
-                (learn_active, learning_name, mapping_snapshot)
+                (learn_active, learning_name, mapping_snapshot, last_input)
             };
 
             if let Ok(mut shared) = self.shared_state.lock() {
+                shared.midi_last_input = last_input;
                 shared.midi_learn_active = learn_active;
                 if !learn_active {
                     shared.midi_learning_param_name = None;
