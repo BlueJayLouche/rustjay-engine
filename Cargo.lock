@@ -6578,14 +6578,17 @@ dependencies = [
  "bytemuck",
  "egui",
  "env_logger",
+ "hap-qt",
  "hap-wgpu",
  "log",
+ "rayon",
  "rfd",
  "rustjay-core",
  "rustjay-engine",
  "rustjay-io",
  "rustjay-mixer",
  "serde",
+ "serde_json",
  "wgpu",
 ]
 
