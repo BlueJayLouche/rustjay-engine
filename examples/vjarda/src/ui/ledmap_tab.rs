@@ -109,7 +109,9 @@ impl LedMapTab {
             self.on_level,
             self.threshold,
         );
-        let session = CalibrationSession::new(cal, self.hold_frames);
+        // Subtract an ambient reference (LEDs held off first) so static room
+        // lights don't dominate detection — matches ledmap-studio.
+        let session = CalibrationSession::with_background_subtraction(cal, self.hold_frames);
         *self.run.lock().unwrap() = Some(Run { dmx, _cam: cam, rx, session });
         self.saved_path = None;
         self.status = "Calibrating…".into();
@@ -124,11 +126,11 @@ impl LedMapTab {
     }
 
     /// One render-frame step: drain to the newest webcam frame, tick the
-    /// session, drive the result. Returns `(step, total, done)`.
-    fn pump(&self) -> (u32, u32, bool) {
+    /// session, drive the result. Returns `(step, total, done, capturing_reference)`.
+    fn pump(&self) -> (u32, u32, bool, bool) {
         let mut guard = self.run.lock().unwrap();
         let Some(run) = guard.as_mut() else {
-            return (0, 0, false);
+            return (0, 0, false, false);
         };
 
         // Skip stale frames; only the most recent matters.
@@ -145,7 +147,7 @@ impl LedMapTab {
 
         let tick = run.session.tick(luma);
         run.dmx.submit(tick.frame);
-        (tick.step, tick.total, tick.done)
+        (tick.step, tick.total, tick.done, tick.capturing_reference)
     }
 
     /// Blackout, export the map, and clear the run.
@@ -223,9 +225,14 @@ impl AnyEguiTab for LedMapTab {
                 self.start();
             }
         } else {
-            let (step, total, done) = self.pump();
+            let (step, total, done, capturing_ref) = self.pump();
             let frac = if total > 0 { step as f32 / total as f32 } else { 0.0 };
-            ui.add(egui::ProgressBar::new(frac).text(format!("LED {step} / {total}")));
+            let label = if capturing_ref {
+                "Hold still — capturing reference…".to_string()
+            } else {
+                format!("LED {step} / {total}")
+            };
+            ui.add(egui::ProgressBar::new(frac).text(label));
             ui.add_space(8.0);
             if ui.button("⏹ Stop").clicked() {
                 self.stop();
