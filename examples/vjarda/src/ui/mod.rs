@@ -9,6 +9,11 @@
 //!
 //! See VARDA_PORT.md §5 and `examples/delta-egui`.
 
+#[cfg(feature = "webcam")]
+pub mod ledmap_tab;
+#[cfg(feature = "webcam")]
+pub use ledmap_tab::LedMapTab;
+
 /// Mixer tab — crossfader, per-channel opacity, master FX.
 pub struct MixerTab {
     /// Async result from the native file picker for master FX.

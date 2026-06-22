@@ -23,6 +23,8 @@ fn main() -> anyhow::Result<()> {
             Box::new(vjarda::ui::OutputsTab::new()),
             Box::new(vjarda::ui::SequencerTab),
             Box::new(vjarda::ui::InspectorTab),
+            #[cfg(feature = "webcam")]
+            Box::new(vjarda::ui::LedMapTab::new()),
         ];
         let plugin = vjarda::VardaRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
@@ -115,6 +117,8 @@ fn main() -> anyhow::Result<()> {
             Box::new(vjarda::ui::OutputsTab::new()),
             Box::new(vjarda::ui::SequencerTab),
             Box::new(vjarda::ui::InspectorTab),
+            #[cfg(feature = "webcam")]
+            Box::new(vjarda::ui::LedMapTab::new()),
         ];
         rustjay_engine::run_with_egui_tabs(vjarda::VardaRootPlugin::new(), tabs)
     }

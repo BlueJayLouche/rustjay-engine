@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["mixer", "egui", "webcam"]
+default = ["mixer", "egui", "webcam", "led"]
 mixer = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
 webcam = ["rustjay-engine/webcam", "rustjay-io/webcam"]
+led = ["rustjay-io/led"]
 api = ["rustjay-engine/api", "dep:rustjay-api"]
 egui = ["rustjay-engine/egui", "dep:egui"]
 projection = ["rustjay-engine/projection", "dep:rustjay-projection", "rustjay-projection/surface-import"]
@@ -30,6 +31,7 @@ rustjay-io     = { workspace = true }
 rustjay-api    = { workspace = true, optional = true }
 rustjay-projection = { workspace = true, optional = true }
 rustjay-lighting   = { workspace = true }
+rustjay-ledmap     = { workspace = true }
 wgpu           = { workspace = true }
 bytemuck       = { workspace = true }
 anyhow         = { workspace = true }
