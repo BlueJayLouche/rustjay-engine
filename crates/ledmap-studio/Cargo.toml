@@ -1,0 +1,19 @@
+[package]
+name = "ledmap-studio"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone CV LED-mapping tool: calibrate addressable strips over sACN and export ledmap.json"
+license = "MIT"
+
+[[bin]]
+name = "ledmap-studio"
+path = "src/main.rs"
+
+[dependencies]
+eframe           = "0.34"
+nokhwa           = { version = "0.10", features = ["input-native"] }
+rustjay-ledmap   = { workspace = true }
+rustjay-lighting = { workspace = true }
+anyhow           = { workspace = true }
+log              = { workspace = true }
+env_logger       = "0.11"
