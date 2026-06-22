@@ -321,6 +321,8 @@ pub struct InputState {
     pub input_type: InputType,
     /// Name or identifier of the current source.
     pub source_name: String,
+    /// Platform UUID of the current source (Syphon only; empty for all other types).
+    pub source_uuid: String,
     /// Whether the input is currently streaming.
     pub is_active: bool,
     /// Capture width in pixels.
@@ -925,6 +927,17 @@ pub struct EngineState {
     /// Whether disk recording is currently active.
     pub recording_active: bool,
 
+    /// Set by the engine's keyboard handler when Shift+Space is pressed in any
+    /// window (output or control). Plugins should read and clear this in
+    /// `prepare()` to trigger a phase reset. Cleared automatically each frame
+    /// after `prepare()` runs.
+    pub shift_space_pressed: bool,
+
+    /// Set by the engine's keyboard handler when Space (without Shift) is pressed
+    /// in any window. Consumed by whoever handles play/pause (e.g. the sequencer
+    /// tab's `draw()`). Cleared automatically each frame after `prepare()` runs.
+    pub space_pressed: bool,
+
     /// Syphon output state (macOS only).
     #[cfg(target_os = "macos")]
     pub syphon_output: SyphonOutputState,
@@ -978,8 +991,16 @@ pub struct EngineState {
     pub midi_learn_active: bool,
     /// Human-readable name of the parameter currently being learned.
     pub midi_learning_param_name: Option<String>,
+    /// UI map mode: clicking a mappable param arms MIDI learn for it.
+    /// Set by the GUI top bar; read by any tab that renders mappable params.
+    pub midi_learn_mode: bool,
+    /// UI map mode: clicking a mappable param opens an LFO-assign popup.
+    pub lfo_assign_mode: bool,
     /// Active mappings, synced each frame from MidiState (includes min/max for preset round-trip).
     pub midi_mappings: Vec<MidiMappingSnapshot>,
+    /// Last MIDI message received, for the MIDI monitor display:
+    /// `(kind, channel, selector, value)`. `None` until the first message.
+    pub midi_last_input: Option<(MidiMsgKind, u8, u8, u8)>,
     /// Pending OSC command.
     pub osc_command: OscCommand,
     /// Whether the OSC server is running.
@@ -1076,6 +1097,18 @@ pub struct EngineState {
     /// the WebSocket delta stream.
     pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
 
+    /// Optional HTML page the app wants the API server to serve at
+    /// `GET /api/app/ui`. Set this in `on_engine_ready` and the generic
+    /// `rustjay-api` route will serve it as `text/html`. `None` → 404.
+    pub app_ui_html: Option<Arc<String>>,
+
+    /// Opaque commands posted by web clients via `POST /api/app/command` and
+    /// drained by the app in `prepare()`. This is the write direction of the
+    /// `app_state` / `app_command_queue` split: app_state is engine→web (read),
+    /// app_command_queue is web→engine (write). Always present; empty when the
+    /// `api` feature is off.
+    pub app_command_queue: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+
     /// Transient toast notifications posted by the app or engine.
     /// Rendered globally by the control GUI and expired automatically.
     pub notifications: Arc<Mutex<Vec<Notification>>>,
@@ -1161,6 +1194,9 @@ impl EngineState {
             midi_enabled: false,
             midi_learn_active: false,
             midi_learning_param_name: None,
+            midi_learn_mode: false,
+            lfo_assign_mode: false,
+            midi_last_input: None,
             midi_mappings: Vec::new(),
             osc_command: OscCommand::None,
             osc_enabled: false,
@@ -1224,11 +1260,15 @@ impl EngineState {
             param_lookup_prefix: RefCell::new(None),
             param_resolver: None,
             app_state: Arc::new(std::sync::Mutex::new(None)),
+            app_ui_html: None,
+            app_command_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             notifications: Arc::new(Mutex::new(Vec::new())),
             output_sinks: Arc::new(Mutex::new(Vec::new())),
             param_restore: Arc::new(Mutex::new(Vec::new())),
             next_notification_id: AtomicU64::new(0),
             recording_active: false,
+            shift_space_pressed: false,
+            space_pressed: false,
             projection_handle: None,
         }
     }

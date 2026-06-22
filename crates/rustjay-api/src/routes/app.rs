@@ -93,6 +93,94 @@ fn clamp_to_descriptor(engine: &rustjay_core::EngineState, id: &str, value: f32)
         .unwrap_or(value)
 }
 
+// ── App UI page ──────────────────────────────────────────────────────
+
+/// `GET /api/app/ui` — serve the HTML page the app registered in
+/// `EngineState::app_ui_html`, or 404 if none was registered.
+#[utoipa::path(
+    get,
+    path = "/api/app/ui",
+    responses(
+        (status = 200, description = "App-provided HTML page"),
+        (status = 404, description = "No app UI page registered"),
+        (status = 503, description = "Engine not yet initialized")
+    ),
+    tag = "App"
+)]
+pub async fn get_app_ui(State(state): State<SharedState>) -> impl IntoResponse {
+    use axum::http::StatusCode;
+
+    // Pull the HTML and the bearer token together under one lock.
+    let (html_opt, token) = {
+        let ws = match state.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned").into_response()
+            }
+        };
+        let html = ws
+            .engine_state
+            .as_ref()
+            .and_then(|arc| arc.lock().ok())
+            .and_then(|e| e.app_ui_html.clone());
+        let token = ws.bearer_token.clone();
+        (html, token)
+    };
+
+    match html_opt {
+        None => (StatusCode::NOT_FOUND, "No app UI registered").into_response(),
+        Some(html) => {
+            // Inject the bearer token so the page can authenticate API calls.
+            let script =
+                format!(r#"<script>window.RUSTJAY_TOKEN = "{token}";</script>"#);
+            let html = html.replacen("<head>", &format!("<head>{script}"), 1);
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (axum::http::header::CACHE_CONTROL, "no-store"),
+                ],
+                html,
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── App command ──────────────────────────────────────────────────────
+
+/// `POST /api/app/command` — post an opaque JSON command to the app.
+///
+/// The body is pushed onto [`EngineState::app_command_queue`]; the app drains
+/// it in `prepare()` and interprets the payload (type-tag, arguments, etc.).
+/// The generic API layer is unaware of the command schema — that lives in the
+/// app, mirroring the `app_state` / `param_resolver` split.
+#[utoipa::path(
+    post,
+    path = "/api/app/command",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Command enqueued"),
+        (status = 503, description = "Engine not yet initialized")
+    ),
+    tag = "App"
+)]
+pub async fn post_app_command(
+    State(state): State<SharedState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    match try_engine(&state, |engine| {
+        engine
+            .app_command_queue
+            .lock()
+            .map(|mut q| q.push(body.clone()))
+            .is_ok()
+    }) {
+        Ok(true) => command_ok().into_response(),
+        Ok(false) => command_err("command queue lock failed").into_response(),
+        Err(resp) => resp.into_response(),
+    }
+}
+
 // ── App state ────────────────────────────────────────────────────────
 
 /// `GET /api/app/state` — the opaque JSON snapshot the active app published,

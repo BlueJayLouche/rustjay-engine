@@ -465,6 +465,9 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.plugin_renderer
             .plugin
             .prepare(app_state, &engine_state, &self.device, &self.queue);
+        // One-shot flags: clear after the plugin has had a chance to read them.
+        engine_state.shift_space_pressed = false;
+        engine_state.space_pressed = false;
 
         // If the plugin's parameter list changed (e.g. ISF hot reload), refresh EngineState.
         if self.plugin_renderer.plugin.parameters_dirty() {

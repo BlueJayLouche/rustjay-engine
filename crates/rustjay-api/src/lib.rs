@@ -168,6 +168,8 @@ pub fn build_router() -> Router<SharedState> {
         )
         // ── Generic app routes (app-published state + hierarchical params) ─
         .route("/api/app/state", get(routes::app::get_app_state))
+        .route("/api/app/ui", get(routes::app::get_app_ui))
+        .route("/api/app/command", post(routes::app::post_app_command))
         .route(
             "/api/app/params",
             get(routes::app::list_params).put(routes::app::set_param_by_path),

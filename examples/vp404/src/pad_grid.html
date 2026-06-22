@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VP-404</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; color: #eee; font-family: monospace; padding: 10px; font-size: 13px; }
+  h2 { font-size: 0.85rem; letter-spacing: 0.12em; color: #888; margin: 10px 0 6px; text-transform: uppercase; }
+
+  /* ── Pad grid ── */
+  #pads { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; max-width: 380px; }
+  .pad {
+    aspect-ratio: 1; border: 2px solid #333; border-radius: 4px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    font-size: 0.75rem; font-weight: bold; user-select: none; touch-action: none;
+    background: #1e1e1e; transition: border-color 0.05s;
+  }
+  .pad.loaded  { border-color: #555; }
+  .pad.playing { border-color: #fff; }
+  .pad .pname  { font-size: 0.6rem; color: #aaa; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Sequencer ── */
+  #seq-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  #seq-controls button { background: #222; color: #ccc; border: 1px solid #444; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 12px; }
+  #seq-controls button:hover { background: #333; }
+  #seq-controls select { background: #222; color: #ccc; border: 1px solid #444; padding: 2px 4px; border-radius: 3px; font-size: 12px; }
+
+  #seq-grid { overflow-x: auto; max-width: 100%; }
+  table { border-collapse: collapse; }
+  td { padding: 1px; }
+  .step {
+    width: 16px; height: 20px; background: #252525; border: 1px solid #333;
+    border-radius: 2px; cursor: pointer; display: block;
+  }
+  .step.active  { background: #46b3e6; border-color: #6dd; }
+  .step.playhead { border-color: #fff !important; }
+  .step.edit    { border-color: #ff0 !important; }
+  .trk-label { font-size: 10px; color: #666; text-align: right; padding-right: 4px; width: 22px; }
+  .cursor-row td { vertical-align: middle; }
+
+  #status { margin-top: 8px; font-size: 0.65rem; color: #444; }
+</style>
+</head>
+<body>
+<h2>VP-404 — Pads</h2>
+<div id="pads"></div>
+
+<h2>Sequencer</h2>
+<div id="seq-controls">
+  <button id="btn-play">▶ Play</button>
+  <button id="btn-reset">⏮ Reset</button>
+  <button id="btn-rec" title="Step-write: pad hits record steps at cursor">⏺ Rec</button>
+  <span style="color:#555">Pattern:</span>
+  <select id="sel-pattern"></select>
+  <span style="color:#555">Length:</span>
+  <select id="sel-length">
+    <option value="16">16</option>
+    <option value="32">32</option>
+    <option value="48">48</option>
+    <option value="64">64</option>
+  </select>
+  <span style="color:#555" id="edit-cursor-label">Cursor: 1</span>
+</div>
+<div id="seq-grid"><table id="seq-table"></table></div>
+<div id="status">connecting…</div>
+
+<script>
+const TOKEN = window.RUSTJAY_TOKEN || '';
+const BASE  = location.origin;
+
+const headers = TOKEN ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TOKEN}` }
+                       : { 'Content-Type': 'application/json' };
+
+function api(method, path, body) {
+  return fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined })
+    .catch(() => {});
+}
+
+function setParam(id, value) {
+  return api('PUT', '/api/app/params', { path: id, value });
+}
+
+function appCmd(body) {
+  return api('POST', '/api/app/command', body);
+}
+
+// ── Pad grid ────────────────────────────────────────────────────────
+
+const padsEl = document.getElementById('pads');
+const held = new Set();
+const padEls = Array.from({ length: 16 }, (_, i) => {
+  const el = document.createElement('div');
+  el.className = 'pad';
+  el.innerHTML = `<span>${i + 1}</span><span class="pname"></span>`;
+  el.dataset.i = i;
+  padsEl.appendChild(el);
+
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault(); el.setPointerCapture(e.pointerId);
+    held.add(i); setParam(`pad${i}_trig`, 1.0);
+  });
+  const up = () => { held.delete(i); setParam(`pad${i}_trig`, 0.0); };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  return el;
+});
+
+// ── Sequencer controls ────────────────────────────────────────────
+
+const btnPlay   = document.getElementById('btn-play');
+const btnReset  = document.getElementById('btn-reset');
+const btnRec    = document.getElementById('btn-rec');
+const selPat    = document.getElementById('sel-pattern');
+const selLen    = document.getElementById('sel-length');
+const cursorLbl = document.getElementById('edit-cursor-label');
+const seqTable  = document.getElementById('seq-table');
+const statusEl  = document.getElementById('status');
+
+// ── State ───────────────────────────────────────────────────────────
+
+let state = null;
+
+function applyState(s) {
+  if (!s) return;
+  state = s;
+
+  // Pads
+  (s.pads || []).forEach((p, i) => {
+    const el = padEls[i]; if (!el) return;
+    el.className = 'pad' + (p.loaded ? ' loaded' : '') + (p.playing ? ' playing' : '');
+    const [r, g, b] = p.color || [80, 80, 80];
+    const dim = p.playing ? 0.85 : (p.loaded ? 0.32 : 0.12);
+    el.style.background = `rgba(${r},${g},${b},${dim})`;
+    el.querySelector('span').textContent = i + 1;
+    el.querySelector('.pname').textContent = p.loaded && p.name ? p.name : '';
+  });
+
+  // Transport button labels
+  btnPlay.textContent = s.sequencer_playing ? '⏹ Stop' : '▶ Play';
+  btnRec.style.background = s.record_mode ? '#a00' : '';
+  btnRec.style.color = s.record_mode ? '#fff' : '';
+
+  // Pattern selector
+  const nPat = (s.steps || []).length > 0 ? 8 : 8; // always show 8 pattern slots
+  while (selPat.options.length < 8) {
+    const o = document.createElement('option');
+    o.value = selPat.options.length;
+    o.textContent = `Pattern ${selPat.options.length + 1}`;
+    selPat.appendChild(o);
+  }
+  selPat.value = s.current_pattern ?? 0;
+
+  // Length selector
+  selLen.value = s.pattern_length || 16;
+
+  // Edit cursor label
+  cursorLbl.textContent = `Cursor: ${(s.edit_step ?? 0) + 1}`;
+
+  // Step grid
+  rebuildGrid(s);
+}
+
+function rebuildGrid(s) {
+  const steps = s.steps || [];
+  const len = s.pattern_length || 16;
+  const playhead = s.sequencer_step;
+  const editStep = s.edit_step ?? 0;
+  const nTracks = 16;
+
+  seqTable.innerHTML = '';
+
+  for (let t = 0; t < nTracks; t++) {
+    const row = document.createElement('tr');
+
+    // Track label
+    const lbl = document.createElement('td');
+    lbl.className = 'trk-label';
+    lbl.textContent = t + 1;
+    row.appendChild(lbl);
+
+    // Step cells (wrap at 16 per visual row; but keep in one table row here — horizontal scroll)
+    for (let step = 0; step < len; step++) {
+      const td = document.createElement('td');
+      const btn = document.createElement('div');
+      btn.className = 'step';
+      const active = (steps[t] || [])[step];
+      if (active) btn.classList.add('active');
+      if (step === playhead) btn.classList.add('playhead');
+      if (step === editStep && !s.sequencer_playing) btn.classList.add('edit');
+      btn.addEventListener('click', () => {
+        appCmd({ type: 'toggle_step', track: t, step });
+      });
+      td.appendChild(btn);
+      row.appendChild(td);
+    }
+    seqTable.appendChild(row);
+  }
+}
+
+// ── Control bindings ────────────────────────────────────────────────
+
+btnPlay.addEventListener('click', () => appCmd({ type: 'toggle_play' }));
+btnReset.addEventListener('click', () => {
+  appCmd({ type: 'reset_position' });
+  appCmd({ type: 'set_edit_step', step: 0 });
+});
+btnRec.addEventListener('click', () => {
+  const next = !(state && state.record_mode);
+  appCmd({ type: 'set_record', enabled: next });
+});
+
+selPat.addEventListener('change', () => {
+  appCmd({ type: 'select_pattern', index: +selPat.value });
+});
+
+selLen.addEventListener('change', () => {
+  appCmd({ type: 'set_length', steps: +selLen.value });
+});
+
+// ── Live updates: poll + WS ─────────────────────────────────────────
+
+async function pollState() {
+  try {
+    const r = await fetch(`${BASE}/api/app/state`, {
+      headers: TOKEN ? { 'Authorization': `Bearer ${TOKEN}` } : {}
+    });
+    if (r.ok) applyState(await r.json());
+  } catch (_) {}
+}
+
+function connectWs() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const q = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '';
+  const ws = new WebSocket(`${proto}://${location.host}/api/ws${q}`);
+  ws.onopen  = () => { statusEl.textContent = 'connected'; };
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.app_state) applyState(msg.app_state);
+    } catch (_) {}
+  };
+  ws.onerror  = () => { statusEl.textContent = 'ws error — polling'; };
+  ws.onclose  = () => { statusEl.textContent = 'ws closed'; setTimeout(connectWs, 3000); };
+}
+
+connectWs();
+setInterval(pollState, 200);
+pollState();
+</script>
+</body>
+</html>

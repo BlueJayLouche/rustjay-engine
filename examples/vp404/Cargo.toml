@@ -12,6 +12,9 @@ mixer   = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
 # Keep it off the default build so headless/Pi builds stay lean.
 capture = ["dep:rustjay-io", "rustjay-io/webcam"]
 ndi     = ["rustjay-engine/ndi"]
+# REST/WebSocket API layer + browser pad-grid page.
+# Gate off by default so the base build stays lean (no tokio/axum/utoipa).
+api     = ["rustjay-engine/api", "dep:serde_json"]
 
 [dependencies]
 rustjay-engine = { workspace = true }
@@ -21,9 +24,12 @@ rustjay-io     = { workspace = true, optional = true, default-features = false }
 wgpu           = { workspace = true }
 egui           = { workspace = true }
 hap-wgpu       = "0.1.0"
+hap-qt         = "0.1.0"
+rayon          = "1"
 anyhow         = { workspace = true }
 log            = { workspace = true }
 serde          = { workspace = true }
+serde_json     = { workspace = true, optional = true }
 bytemuck       = { version = "1.14", features = ["derive"] }
 env_logger     = "0.11"
 rfd            = "0.15"

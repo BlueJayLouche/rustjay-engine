@@ -242,6 +242,40 @@ same accumulated-beat clock used for tempo-sync pads; 404's standalone
 play/stop/reset/clear, per-track mutes, and pattern queue/select. Distinct from the
 engine's modulation `StepSequencer` (a mod source).
 
+**Phase C — Sequencer step-editing via web + MIDI step-record DONE (2026-06-21).**
+`POST /api/app/command` generic route added to `rustjay-api` (opaque JSON body →
+`EngineState::app_command_queue`; always present, populated by web layer when `api`
+is on). VP-404 drains it in `prepare()` and interprets `SeqCmd` (`ToggleStep`,
+`SetStep`, `SetLength`, `SelectPattern`, `SetEditStep`). MIDI step-record: while
+sequencer is stopped, any `pad<i>_trig` rising edge writes track `i` as active at
+`self.edit_step` (via pure `api_state::step_write`) and advances the cursor, then
+still triggers the pad for audition. `pad_grid.html` extended with a full 16-track ×
+N-step grid (horizontal-scroll for 32/48/64 steps), pattern/length selectors, edit
+cursor indicator, step-toggle via `POST /api/app/command`. 4 new unit tests
+(step_write records+advances, cursor wraps, SeqCmd toggle, SeqCmd set-length).
+Default build (no `api`): 22 tests. With `api`: 24 tests.
+
+**Phase B — Browser pad grid via rustjay-api DONE (2026-06-21).**
+`api` feature added to `vp404/Cargo.toml` (forwards to `rustjay-engine/api`; off by
+default). `api_state.rs` (app-owned) defines `Vp404Snapshot`/`PadSnapshot` +
+`build_snapshot(bank, seq)`; published into `EngineState::app_state` each frame from
+`render()`. `pad_grid.html` (16-button touch grid, pointer events → `PUT
+/api/app/params` setting `pad<i>_trig`, live state via polling `GET /api/app/state`
++ WS delta stream). `on_engine_ready()` sets `engine.app_ui_html` (new generic field
+on `EngineState` in `rustjay-core`) so `GET /api/app/ui` (new route in
+`rustjay-api::build_router`) serves the page. No VP-404 types leaked into shared
+crates; schema is vp404-internal. Build clean with and without `api` feature.
+
+**Phase A — Trigger params + expandable sequencer DONE (2026-06-21).**
+16 `pad<i>_trig` params (0..1, default 0) registered in `parameters()`. Edge
+detector in `prepare()` reads each param via `get_param_base`, fires `pad.trigger()`
+on rising edge (>0.5) and `pad.release()` on falling — one trigger path for MIDI,
+OSC, web, and the grid UI. Grid-tab buttons now set `pad<i>_trig` via
+`engine.set_param_base` instead of posting `PadCmd::Trigger/Release` directly.
+`SequencerTab` now renders `pattern.length()` steps (wrapped into rows of 16) and
+adds a length combo (16/32/48/64) that calls `Pattern::set_length`. 3 edge-detector
+unit tests added.
+
 **Phase 3 — Keying. DONE.**
 Per-channel chroma/luma key added to `rustjay-mixer`: `key_mode` (None/Chroma/Luma),
 `key_r/g/b` (LFO-modulatable colour), `key_threshold`, `key_smoothness`,
@@ -267,6 +301,26 @@ buttons in `PadGridTab`. Pad thumbnails deferred (low priority per user).
 **Phase 5 — Output senders.**
 Wire `rustjay-io` `OutputManager` for NDI/Syphon/Spout/V4L2 out + recording. Reuse
 the top-bar output pills pattern from vjarda; no new code in shared crates.
+
+**Phase 6 — Control QoL (2026-06-22).**
+- **Draggable multi-step gates.** The sequencer step grid is a painted lane:
+  click toggles a step (default 1-step gate); drag a step's gate rightward to tie
+  it across cells. `Step.gate_length` is now measured in **steps** (>1 = tied);
+  the engine's upper clamp is removed. Tails crossing a 16-step sub-row boundary
+  fire correctly but aren't drawn.
+- **SP-404 start/end trim.** Global mappable `in_point` / `out_point` knobs
+  retrim the **last-pressed** pad's `Sample` range, applied only when a knob
+  actually moves so idle pads keep their own trim. On-screen slider doesn't
+  follow selection (fine for endless encoders) because `prepare()` only gets
+  `&EngineState`.
+- **MIDI note triggers.** `pad{i}_trig` descriptors make pads MIDI-learnable; a
+  learned **Note** now acts as a button — Note-On drives the param to **max**
+  (ignoring velocity so soft pad hits still fire), Note-Off to min.
+- These ride on engine-wide control upgrades (shared, benefit every example):
+  top-bar **MIDI MAP / LFO MAP** modes (`map_mode_active` +
+  `apply_param_map_overlay`), a **MIDI monitor** (`EngineState.midi_last_input`),
+  re-learn **overwrites** instead of stacking, and saved device+mappings now
+  **reconnect and restore** on launch in the winit path.
 
 ## 6. Open questions / risks (decide at implementation)
 

@@ -315,6 +315,8 @@ impl EguiControlGui {
             osc_enabled,
             osc_port,
             output_sinks,
+            lfo_assign_mode,
+            midi_learn_mode,
         ) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
@@ -338,6 +340,8 @@ impl EguiControlGui {
                     .lock()
                     .map(|g| g.clone())
                     .unwrap_or_default(),
+                state.lfo_assign_mode,
+                state.midi_learn_mode,
             )
         };
 
@@ -483,6 +487,45 @@ impl EguiControlGui {
                             .clicked()
                         {
                             self.show_preferences = !self.show_preferences;
+                        }
+                        ui.add_space(6.0);
+                        // LFO-assign mode: highlight params to bind an LFO source.
+                        if ui
+                            .button(
+                                egui::RichText::new("〰 LFO MAP")
+                                    .size(11.0)
+                                    .color(if lfo_assign_mode { AMBER } else { INK_2 }),
+                            )
+                            .on_hover_text("Click a parameter to assign a modulation source")
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.lfo_assign_mode = !state.lfo_assign_mode;
+                            if state.lfo_assign_mode {
+                                state.midi_learn_mode = false;
+                            }
+                        }
+                        ui.add_space(6.0);
+                        // MIDI-learn mode: click a param, then move a control to map it.
+                        if ui
+                            .button(
+                                egui::RichText::new("🎹 MIDI MAP")
+                                    .size(11.0)
+                                    .color(if midi_learn_mode { AMBER } else { INK_2 }),
+                            )
+                            .on_hover_text("Click a parameter, then move/press a MIDI control")
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.midi_learn_mode = !state.midi_learn_mode;
+                            if state.midi_learn_mode {
+                                state.lfo_assign_mode = false;
+                            } else {
+                                // Leaving map mode cancels any pending arm.
+                                state.midi_command = rustjay_core::MidiCommand::CancelLearn;
+                            }
                         }
                         ui.add_space(6.0);
                         if ui
@@ -1351,18 +1394,42 @@ impl EguiControlGui {
             ParamType::Float => {
                 let mut v = value;
                 let id_tag = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
-                let (changed, reset) = crate::egui_widgets::parameter_card_f32(
-                    ui,
-                    &desc.name,
-                    &id_tag,
-                    &mut v,
-                    desc.min..=desc.max,
-                    "",
-                );
-                if reset {
-                    state.set_param_base(&desc.id, desc.default);
-                } else if changed {
-                    state.set_param_base(&desc.id, v);
+                if state.midi_learn_mode || state.lfo_assign_mode {
+                    let scope = ui.scope(|ui| {
+                        ui.disable();
+                        crate::egui_widgets::parameter_card_f32(
+                            ui,
+                            &desc.name,
+                            &id_tag,
+                            &mut v,
+                            desc.min..=desc.max,
+                            "",
+                        )
+                    });
+                    apply_param_map_overlay(
+                        ui,
+                        &mut **state,
+                        scope.response.rect,
+                        &desc.id,
+                        &desc.name,
+                        &format!("{}/{}", desc.category.name().to_lowercase(), desc.id),
+                        desc.min,
+                        desc.max,
+                    );
+                } else {
+                    let (changed, reset) = crate::egui_widgets::parameter_card_f32(
+                        ui,
+                        &desc.name,
+                        &id_tag,
+                        &mut v,
+                        desc.min..=desc.max,
+                        "",
+                    );
+                    if reset {
+                        state.set_param_base(&desc.id, desc.default);
+                    } else if changed {
+                        state.set_param_base(&desc.id, v);
+                    }
                 }
             }
             ParamType::Int => {
@@ -1370,7 +1437,26 @@ impl EguiControlGui {
                 let min = desc.min as i32;
                 let max = desc.max as i32;
                 log::trace!("Int slider {}: {} (range {}..{})", desc.id, v, min, max);
-                if ui
+                if state.midi_learn_mode || state.lfo_assign_mode {
+                    let scope = ui.scope(|ui| {
+                        ui.disable();
+                        ui.add(
+                            egui::Slider::new(&mut v, min..=max)
+                                .show_value(true)
+                                .trailing_fill(true),
+                        )
+                    });
+                    apply_param_map_overlay(
+                        ui,
+                        &mut **state,
+                        scope.response.rect,
+                        &desc.id,
+                        &desc.name,
+                        &format!("{}/{}", desc.category.name().to_lowercase(), desc.id),
+                        desc.min,
+                        desc.max,
+                    );
+                } else if ui
                     .add(
                         egui::Slider::new(&mut v, min..=max)
                             .show_value(true)
@@ -1424,5 +1510,136 @@ impl EguiControlGui {
                 PillState::Offline
             },
         );
+    }
+}
+
+/// True when either top-bar map mode (MIDI learn / LFO assign) is active.
+///
+/// Custom egui tabs that render their own param sliders should check this and,
+/// when true, render the slider disabled and call [`apply_param_map_overlay`]
+/// so their params participate in the map modes like the built-in tabs do.
+pub fn map_mode_active(engine: &EngineState) -> bool {
+    engine.midi_learn_mode || engine.lfo_assign_mode
+}
+
+/// Draw the active map-mode outline over `rect` and handle clicks on a param.
+///
+/// In MIDI-learn mode a click arms `StartLearn` for the param; in LFO-assign
+/// mode a click opens a popup listing modulation sources to bind. `midi_path`
+/// is the learn target path (conventionally `"<category>/<id>"`), `id` is the
+/// engine param id (also the modulation-assignment key). No-op when neither
+/// mode is active.
+#[allow(deprecated)] // egui::Popup builder migration is project-wide; tracked separately
+pub fn apply_param_map_overlay(
+    ui: &mut egui::Ui,
+    engine: &mut EngineState,
+    rect: egui::Rect,
+    id: &str,
+    name: &str,
+    midi_path: &str,
+    min: f32,
+    max: f32,
+) {
+    use crate::egui_theme::colors::*;
+
+    if engine.midi_learn_mode {
+        let armed = engine.midi_learn_active
+            && engine.midi_learning_param_name.as_deref() == Some(name);
+        let color = if armed {
+            egui::Color32::from_rgb(255, 120, 50) // armed: orange
+        } else {
+            egui::Color32::from_rgb(180, 80, 220) // mappable: purple
+        };
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            0.0,
+            egui::Stroke::new(2.0, color),
+            egui::StrokeKind::Outside,
+        );
+        let click_id = ui.make_persistent_id(("midi_map_click", id));
+        if ui.interact(rect, click_id, egui::Sense::click()).clicked() {
+            engine.midi_command = rustjay_core::MidiCommand::StartLearn {
+                param_path: midi_path.to_string(),
+                param_name: name.to_string(),
+                min,
+                max,
+            };
+        }
+        return;
+    }
+
+    if !engine.lfo_assign_mode {
+        return;
+    }
+
+    // LFO-assign mode.
+    let (assigned, sources) = {
+        let mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+        let assigned = mod_eng.assignments.get(id).is_some_and(|v| !v.is_empty());
+        let sources: Vec<(String, &'static str)> = mod_eng
+            .sources
+            .iter()
+            .map(|e| (e.uuid.clone(), mod_source_short(&e.source)))
+            .collect();
+        (assigned, sources)
+    };
+    let color = if assigned { ACCENT_GREEN } else { ACCENT_CYAN };
+    ui.painter().rect_stroke(
+        rect.expand(2.0),
+        0.0,
+        egui::Stroke::new(2.0, color),
+        egui::StrokeKind::Outside,
+    );
+    let click_id = ui.make_persistent_id(("lfo_map_click", id));
+    let resp = ui.interact(rect, click_id, egui::Sense::click());
+    let popup_id = ui.make_persistent_id(("lfo_assign_popup", id));
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup_below_widget(
+        ui,
+        popup_id,
+        &resp,
+        egui::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(150.0);
+            ui.label(egui::RichText::new(format!("Modulate {name}")).small().strong());
+            if sources.is_empty() {
+                ui.label(
+                    egui::RichText::new("No sources — add one in Modulation")
+                        .small()
+                        .weak(),
+                );
+            }
+            for (uuid, ty) in &sources {
+                let tag = &uuid[..4.min(uuid.len())];
+                if ui.button(format!("+ {ty} {tag}")).clicked() {
+                    let mut mod_eng =
+                        engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    // Single active source per param: replace any existing.
+                    mod_eng.assignments.remove(id);
+                    mod_eng.assign(id, uuid, 0.5, None);
+                }
+            }
+            if assigned {
+                ui.separator();
+                if ui.button(egui::RichText::new("✕ Clear").small()).clicked() {
+                    let mut mod_eng =
+                        engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    mod_eng.assignments.remove(id);
+                }
+            }
+        },
+    );
+}
+
+/// Short label for a modulation source, used by the LFO-assign popup.
+fn mod_source_short(src: &rustjay_core::modulation::ModulationSource) -> &'static str {
+    use rustjay_core::modulation::ModulationSource as S;
+    match src {
+        S::LFO { .. } => "LFO",
+        S::AudioBand { .. } => "Audio",
+        S::ADSR { .. } => "ADSR",
+        S::StepSequencer { .. } => "Step",
     }
 }

@@ -92,6 +92,15 @@ impl MidiMapping {
         }
     }
 
+    /// Drive the mapping to its maximum value (used for Note On — a note acts
+    /// as a button, ignoring velocity so soft hits still trigger).
+    pub fn drive_to_max(&mut self) {
+        if (self.value - self.max_value).abs() > 0.001 {
+            self.value = self.max_value;
+            self.dirty = true;
+        }
+    }
+
     /// Get the scaled value and clear dirty flag
     pub fn get_scaled_value(&mut self) -> f32 {
         self.dirty = false;
@@ -202,8 +211,13 @@ impl MidiState {
     /// Complete learning with the received message
     pub fn complete_learning(&mut self, kind: MidiMsgKind, selector: u8, channel: u8) {
         if let (Some(path), Some(name)) = (&self.learning_param_path, &self.learning_param_name) {
-            self.mappings
-                .retain(|m| !(m.kind == kind && m.selector == selector && m.channel == channel));
+            // Drop any prior mapping that used this same control (one control →
+            // one param) AND any prior mapping for this param (re-learning
+            // overwrites instead of stacking a duplicate).
+            self.mappings.retain(|m| {
+                !(m.kind == kind && m.selector == selector && m.channel == channel)
+                    && m.param_path != *path
+            });
             let mapping = MidiMapping::new(
                 kind,
                 selector,
@@ -258,11 +272,14 @@ impl MidiState {
                     {
                         continue;
                     }
-                    if kind == MidiMsgKind::Note && value == 0 {
-                        // Note Off: drive to minimum
-                        mapping.drive_to_min();
-                    } else {
-                        mapping.update_from_midi(value);
+                    match kind {
+                        // Notes act as buttons: any Note On drives the param to
+                        // its max (so velocity-sensitive pads still trigger on
+                        // soft hits), Note Off drives to min. CC/Aftertouch scale
+                        // continuously.
+                        MidiMsgKind::Note if value == 0 => mapping.drive_to_min(),
+                        MidiMsgKind::Note => mapping.drive_to_max(),
+                        _ => mapping.update_from_midi(value),
                     }
                 }
             }
@@ -518,5 +535,43 @@ pub fn list_midi_devices() -> Vec<String> {
             .collect()
     } else {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A learned Note must drive the param to its max on *any* velocity (so
+    /// velocity-sensitive pads still trigger on soft hits) and to min on Note Off.
+    #[test]
+    fn note_acts_as_button_ignoring_velocity() {
+        let mut state = MidiState::default();
+        state.start_learning("pads/pad0_trig", "Pad 1 Trigger", 0.0, 1.0);
+        state.handle_message(MidiMsgKind::Note, 0, 48, 100); // learn on this note
+        assert_eq!(state.mappings.len(), 1);
+
+        // Soft hit (velocity 1) must still reach max (1.0), well above the 0.5
+        // trigger threshold the host uses.
+        state.handle_message(MidiMsgKind::Note, 0, 48, 1);
+        assert_eq!(state.mappings[0].peek_value(), 1.0);
+
+        // Note Off drives back to min.
+        state.handle_message(MidiMsgKind::Note, 0, 48, 0);
+        assert_eq!(state.mappings[0].peek_value(), 0.0);
+    }
+
+    /// Re-learning a param overwrites its mapping instead of stacking duplicates.
+    #[test]
+    fn relearn_overwrites_mapping() {
+        let mut state = MidiState::default();
+        state.start_learning("pads/pad0_trig", "Pad 1 Trigger", 0.0, 1.0);
+        state.handle_message(MidiMsgKind::Note, 0, 48, 100);
+
+        state.start_learning("pads/pad0_trig", "Pad 1 Trigger", 0.0, 1.0);
+        state.handle_message(MidiMsgKind::Note, 0, 51, 100);
+
+        assert_eq!(state.mappings.len(), 1, "re-learn should replace, not append");
+        assert_eq!(state.mappings[0].selector, 51);
     }
 }

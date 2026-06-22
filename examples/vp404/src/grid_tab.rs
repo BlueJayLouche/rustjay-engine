@@ -1,9 +1,10 @@
 //! The "Pads" egui tab: a 4×4 momentary pad grid + a selected-pad panel.
 //!
-//! Buttons are momentary (press → `Trigger`, release → `Release`) so all three
-//! trigger modes work with a mouse: Gate plays while held, Latch toggles on press,
-//! One-Shot fires on press. Everything is posted as a [`PadCmd`]; pad state is read
-//! back from the published roster.
+//! Buttons are momentary: press sets `pad<i>_trig` param to 1.0, release sets it
+//! to 0.0. The edge detector in `prepare()` fires `trigger()`/`release()` on the
+//! pad, so MIDI/OSC/web and the grid button all share the same code path.
+//! Load/Clear/SetMode/SetRange are still posted as [`PadCmd`]s (they need render-
+//! thread resources). Pad state is read back from the published roster.
 //!
 //! Per-pad mix/playback params are driven through the engine (so MIDI/OSC/LFO
 //! stay authoritative) using `param_slider` / `param_slider_int` with the channel
@@ -164,9 +165,9 @@ impl AnyEguiTab for PadGridTab {
                     }
                     let down = resp.is_pointer_button_down_on();
                     if down && !self.was_down[i] {
-                        self.handle.post(PadCmd::Trigger(i));
+                        engine.set_param_base(&format!("pad{i}_trig"), 1.0);
                     } else if !down && self.was_down[i] {
-                        self.handle.post(PadCmd::Release(i));
+                        engine.set_param_base(&format!("pad{i}_trig"), 0.0);
                     }
                     self.was_down[i] = down;
                 }
@@ -355,25 +356,123 @@ impl AnyEguiTab for PadGridTab {
     }
 }
 
-/// Run `ffmpeg -y -i <src> -c:v hap -format hap_q -chunks 4 -an <dst>`.
+/// Convert any video to HAP using ffmpeg for *decode* and hap-qt for *encode*.
+///
+/// ffmpeg decodes to raw RGBA via stdout; we feed that into `HapFrameEncoder`
+/// (DXT5/Snappy = Hap5) + `QtHapWriter`. This avoids the broken `-c:v hap`
+/// ffmpeg path (the homebrew ffmpeg 8 build has no HAP encoder) and the
+/// invalid `-chunks` flag that was removed in ffmpeg 6+.
 fn ffmpeg_to_hap(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
-    let output = std::process::Command::new("ffmpeg")
+    use std::io::{BufReader, Read};
+    use std::process::{Command, Stdio};
+    use hap_qt::{CompressionMode, HapFormat, HapFrameEncoder, QtHapWriter, VideoConfig};
+    use rayon::prelude::*;
+
+    // --- probe: get width, height, fps via ffprobe -------------------------
+    let probe = Command::new("ffprobe")
         .args([
-            "-y",
-            "-i",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate",
+            "-of", "csv=p=0",
             src.to_str().unwrap_or_default(),
-            "-c:v",
-            "hap",
-            "-format",
-            "hap_q",
-            "-chunks",
-            "4",
-            "-an",
-            dst.to_str().unwrap_or_default(),
         ])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+        .output()
+        .map_err(|e| anyhow::anyhow!("ffprobe not found: {e}"))?;
+    if !probe.status.success() {
+        anyhow::bail!("ffprobe failed: {}", String::from_utf8_lossy(&probe.stderr));
     }
+    let probe_str = String::from_utf8_lossy(&probe.stdout);
+    let parts: Vec<&str> = probe_str.trim().split(',').collect();
+    let width: u32 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(1920);
+    let height: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1080);
+    let fps: f32 = parts.get(2).map(|s| {
+        if let Some((n, d)) = s.split_once('/') {
+            let n: f32 = n.parse().unwrap_or(30.0);
+            let d: f32 = d.parse().unwrap_or(1.0);
+            if d > 0.0 { n / d } else { 30.0 }
+        } else {
+            s.parse().unwrap_or(30.0)
+        }
+    }).unwrap_or(30.0);
+
+    log::info!(
+        "VP-404 convert: {src:?} → {dst:?} ({width}x{height} @ {fps:.2} fps)"
+    );
+
+    // --- decode: ffmpeg → raw RGBA on stdout ------------------------------
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-y", "-i", src.to_str().unwrap_or_default(),
+            "-f", "rawvideo", "-pix_fmt", "rgba", "-an", "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("ffmpeg not found: {e}"))?;
+
+    let stdout = child.stdout.take().unwrap();
+    // Drain stderr in background to avoid pipe deadlock.
+    let stderr = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let Some(s) = stderr else { return String::new() };
+        let mut buf = String::new();
+        let _ = BufReader::new(s).read_to_string(&mut buf);
+        buf
+    });
+
+    // --- encode: hap-qt (DXT5 + Snappy = Hap5) ----------------------------
+    let hap_format = HapFormat::Hap5;
+    let video_config = VideoConfig::new(width, height, fps, hap_format);
+    let mut writer = QtHapWriter::create(dst, video_config)
+        .map_err(|e| anyhow::anyhow!("QtHapWriter::create failed: {e}"))?;
+
+    let frame_size = (width * height * 4) as usize;
+    let mut reader = BufReader::with_capacity(frame_size * 2, stdout);
+    let mut frame_count = 0u32;
+
+    const BATCH: usize = 16;
+    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(BATCH);
+
+    loop {
+        batch.clear();
+        for _ in 0..BATCH {
+            let mut buf = vec![0u8; frame_size];
+            match reader.read_exact(&mut buf) {
+                Ok(()) => batch.push(buf),
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => anyhow::bail!("ffmpeg stdout read error: {e}"),
+            }
+        }
+        if batch.is_empty() { break; }
+
+        // Parallel DXT5 + Snappy compress
+        let encoded: Vec<Vec<u8>> = batch
+            .par_iter()
+            .map(|frame| {
+                let mut enc = HapFrameEncoder::new(hap_format, width, height)
+                    .map_err(|e| anyhow::anyhow!("HapFrameEncoder::new: {e}"))?;
+                enc.set_compression(CompressionMode::Snappy);
+                enc.encode(frame).map_err(|e| anyhow::anyhow!("encode frame: {e}"))
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        for hap_frame in &encoded {
+            writer.write_frame(hap_frame)
+                .map_err(|e| anyhow::anyhow!("write_frame: {e}"))?;
+            frame_count += 1;
+        }
+    }
+
+    writer.finalize().map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
+    let _ = child.wait();
+
+    if let Ok(err_str) = stderr_thread.join() {
+        if !err_str.is_empty() {
+            log::debug!("ffmpeg stderr (last line): {}", err_str.lines().last().unwrap_or(""));
+        }
+    }
+
+    log::info!("VP-404 convert done: {frame_count} frames → {dst:?}");
     Ok(())
 }
