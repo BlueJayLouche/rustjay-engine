@@ -16,6 +16,7 @@ mod pad_channel;
 mod sample;
 mod sequencer;
 mod sequencer_tab;
+mod api_state;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -58,6 +59,19 @@ struct Vp404 {
     mixer: Arc<Mutex<Mixer>>,
     /// Cached parameter keys for each pad.
     pad_param_keys: Vec<PadParamKeys>,
+    /// Previous `pad<i>_trig` param values — used for edge detection in prepare().
+    prev_trig: Vec<f32>,
+    /// Previous `in_point`/`out_point` knob values — used to detect a knob move
+    /// so the SP-404 trim only re-ranges the last pad when actually adjusted.
+    prev_in: f32,
+    prev_out: f32,
+    /// MIDI step-write cursor: the step position where the next stopped-mode
+    /// pad trigger will be recorded. Wraps at `pattern.length()`.
+    edit_step: usize,
+    /// When true, pad triggers while the sequencer is stopped write steps
+    /// instead of (or in addition to) triggering playback. Off by default so
+    /// normal pad triggering works without accidentally entering record mode.
+    record_mode: bool,
     /// Total elapsed beats from the engine tempo clock, used for synced pads.
     accumulated_beats: f32,
     last_tick: Instant,
@@ -96,6 +110,11 @@ impl Vp404 {
             handle,
             mixer: Arc::new(Mutex::new(mixer)),
             pad_param_keys,
+            prev_trig: vec![0.0; PAD_COUNT],
+            prev_in: 0.0,
+            prev_out: 1.0,
+            edit_step: 0,
+            record_mode: false,
             accumulated_beats: 0.0,
             last_tick: Instant::now(),
             #[cfg(feature = "capture")]
@@ -113,7 +132,10 @@ impl EffectPlugin for Vp404 {
     }
 
     fn input_count(&self) -> u32 {
-        0 // we render our own pixels; no engine input source needed
+        // 1 so the engine's active input (webcam/Syphon/NDI/…) is available
+        // as ctx.input in render() for live sampling. Vp404 still renders its
+        // own pads (render() returns true), so the input is not displayed.
+        1
     }
 
     fn shader_source(&self) -> &'static str {
@@ -125,10 +147,51 @@ impl EffectPlugin for Vp404 {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        // Export the mixer's channel params (opacity/blend/input) plus the
-        // per-channel `speed` param declared by PadChannel.
+        let mut params: Vec<ParameterDescriptor> = (0..PAD_COUNT)
+            .map(|i| {
+                ParameterDescriptor::float(
+                    &format!("pad{i}_trig"),
+                    &format!("Pad {} Trigger", i + 1),
+                    ParamCategory::Custom("Pads".into()),
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.01,
+                )
+            })
+            .collect();
+        // Global SP-404 trim knobs — adjust the last-pressed pad's play range.
+        params.push(ParameterDescriptor::float(
+            "in_point",
+            "Start (last pad)",
+            ParamCategory::Custom("Pad".into()),
+            0.0,
+            1.0,
+            0.0,
+            0.001,
+        ));
+        params.push(ParameterDescriptor::float(
+            "out_point",
+            "End (last pad)",
+            ParamCategory::Custom("Pad".into()),
+            0.0,
+            1.0,
+            1.0,
+            0.001,
+        ));
         let mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        mixer.parameters()
+        params.extend(mixer.parameters());
+        params
+    }
+
+    #[allow(unused_variables)]
+    fn on_engine_ready(&mut self, engine: &mut EngineState) {
+        #[cfg(feature = "api")]
+        {
+            engine.app_ui_html =
+                Some(std::sync::Arc::new(include_str!("pad_grid.html").to_string()));
+            log::info!("VP-404: pad-grid UI registered at /api/app/ui");
+        }
     }
 
     fn init(&mut self, device: &wgpu::Device, _queue: &wgpu::Queue) {
@@ -187,6 +250,30 @@ impl EffectPlugin for Vp404 {
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
+        // Shift+Space: reset master beat clock, sequencer, and all synced pads.
+        if engine.shift_space_pressed {
+            self.accumulated_beats = 0.0;
+            state.sequencer.reset_with_clock(0.0);
+            let mut bank = self.bank.lock().unwrap_or_else(|e| e.into_inner());
+            for pad in &mut bank.pads {
+                if pad.playback_mode == PlaybackMode::Synced {
+                    pad.current_frame = pad.sample
+                        .as_ref()
+                        .map(|s| s.in_point as f32)
+                        .unwrap_or(0.0);
+                }
+            }
+            log::info!("VP-404: phase reset");
+        }
+
+        // Space: play/pause the sequencer. Consumed HERE (not in the tab's draw)
+        // because the engine clears `space_pressed` right after `prepare()`; the
+        // control-window tab draws in a separate pass and would race that clear,
+        // making Space intermittently miss. The on-screen Play button is unaffected.
+        if engine.space_pressed {
+            state.sequencer.toggle_playback();
+        }
+
         // 1. Drain UI commands (Load does not need GPU resources; decode is deferred
         //    to PadChannel::render_to).
         let cmds = self
@@ -242,7 +329,13 @@ impl EffectPlugin for Vp404 {
                     PadCmd::StartSampling(i, frame_count) => {
                         if let Some(sampler) = self.live_sampler.as_mut() {
                             let sampler = sampler.get_mut().unwrap_or_else(|e| e.into_inner());
-                            if let Err(e) = sampler.start_recording(i, frame_count) {
+                            if let Err(e) = sampler.start_recording(
+                                i,
+                                frame_count,
+                                engine.input.width,
+                                engine.input.height,
+                                engine.input.fps,
+                            ) {
                                 log::error!("VP-404 start sampling: {e}");
                             }
                         }
@@ -261,6 +354,8 @@ impl EffectPlugin for Vp404 {
             {
                 if let Some(sampler) = self.live_sampler.as_mut() {
                     let sampler = sampler.get_mut().unwrap_or_else(|e| e.into_inner());
+                    // Collect any completed GPU→CPU readback submitted last frame.
+                    sampler.poll_readback();
                     let status = match sampler.state() {
                         live_sampler::SamplerState::Idle => bank::SamplerStatus::Idle,
                         live_sampler::SamplerState::Recording => bank::SamplerStatus::Recording,
@@ -292,7 +387,76 @@ impl EffectPlugin for Vp404 {
                 }
             }
 
-            // 2. Apply per-pad engine params (MIDI/OSC/LFO reach these) and sync
+            // 2a. Drain sequencer commands from `POST /api/app/command` (api feature).
+            #[cfg(feature = "api")]
+            {
+                let cmds: Vec<serde_json::Value> = engine
+                    .app_command_queue
+                    .lock()
+                    .map(|mut g| std::mem::take(&mut *g))
+                    .unwrap_or_default();
+                for v in cmds {
+                    if let Ok(cmd) = serde_json::from_value::<api_state::SeqCmd>(v) {
+                        // SetRecord touches plugin state, not the sequencer.
+                        if let api_state::SeqCmd::SetRecord { enabled } = cmd {
+                            self.record_mode = enabled;
+                        } else {
+                            cmd.apply(&mut state.sequencer, &mut self.edit_step);
+                        }
+                    }
+                }
+            }
+
+            // 2b. Edge-detect pad trig params — MIDI Note-On/Off, OSC, and web all
+            // set `pad<i>_trig`; rising edge fires trigger (or step-write when
+            // sequencer is stopped), falling fires release.
+            for i in 0..bank.pads.len() {
+                let val = engine
+                    .get_param_base(&format!("pad{i}_trig"))
+                    .unwrap_or(0.0);
+                let prev = self.prev_trig.get(i).copied().unwrap_or(0.0);
+                match trig_edge(val, prev) {
+                    Some(true) => {
+                        if self.record_mode && !state.sequencer.is_playing {
+                            // Step-write: record track i at cursor, then audition.
+                            self.edit_step =
+                                api_state::step_write(&mut state.sequencer, i, self.edit_step);
+                        }
+                        bank.pads[i].trigger();
+                        bank.last_triggered = Some(i);
+                    }
+                    Some(false) => bank.pads[i].release(),
+                    None => {}
+                }
+                if let Some(p) = self.prev_trig.get_mut(i) {
+                    *p = val;
+                }
+            }
+
+            // 2c. SP-404-style start/end trim: the global `in_point`/`out_point`
+            // knobs adjust the *last-pressed* pad. Applied only when a knob
+            // actually moves (MIDI/OSC/LFO/UI) so idle pads keep their own trim.
+            {
+                let in_v = engine.get_param("in_point").unwrap_or(0.0).clamp(0.0, 1.0);
+                let out_v = engine.get_param("out_point").unwrap_or(1.0).clamp(0.0, 1.0);
+                let moved =
+                    (in_v - self.prev_in).abs() > 1e-4 || (out_v - self.prev_out).abs() > 1e-4;
+                self.prev_in = in_v;
+                self.prev_out = out_v;
+                if moved {
+                    if let Some(pad) = bank.last_triggered.and_then(|i| bank.pads.get_mut(i)) {
+                        if let Some(sample) = pad.sample.as_mut() {
+                            let last = sample.frame_count.saturating_sub(1) as f32;
+                            sample.set_range(
+                                (in_v * last).round() as u32,
+                                (out_v * last).round() as u32,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // 3. Apply per-pad engine params (MIDI/OSC/LFO reach these) and sync
             // the mixer channel's `active` flag to the pad's playing state so
             // idle channels are elided (no render pass, no composite step).
             {
@@ -321,7 +485,7 @@ impl EffectPlugin for Vp404 {
                 }
             }
 
-            // 3. Advance the global beat clock and all pads.
+            // 4. Advance the global beat clock and all pads.
             let now = Instant::now();
             let dt = now - self.last_tick;
             self.last_tick = now;
@@ -332,12 +496,13 @@ impl EffectPlugin for Vp404 {
                 p.update(dt, self.accumulated_beats);
             }
 
-            // 4. Tick the pad sequencer from the same master clock.
+            // 5. Tick the pad sequencer from the same master clock.
             state.sequencer.tick(self.accumulated_beats, &self.handle);
         }
     }
 
-    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, _state: &mut Self::State) -> bool {
+    #[allow(unused_variables)]
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, state: &mut Self::State) -> bool {
         // 1. Publish pad state for the grid tab.
         if let Ok(mut roster) = self.handle.roster.lock() {
             let bank = self.bank.lock().unwrap_or_else(|e| e.into_inner());
@@ -356,7 +521,32 @@ impl EffectPlugin for Vp404 {
             }));
         }
 
-        // 2. Composite all playing pads through the mixer.
+        // 2. Publish snapshot for GET /api/app/state each frame (api feature only).
+        #[cfg(feature = "api")]
+        {
+            let bank = self.bank.lock().unwrap_or_else(|e| e.into_inner());
+            let snapshot =
+                api_state::build_snapshot(&bank, &state.sequencer, self.edit_step, self.record_mode);
+            drop(bank);
+            if let Ok(json) = serde_json::to_value(&snapshot) {
+                if let Ok(mut guard) = ctx.engine_state.app_state.lock() {
+                    *guard = Some(json);
+                }
+            }
+        }
+
+        // 3. Submit GPU→CPU readback of the engine's input for live sampling.
+        #[cfg(feature = "capture")]
+        if let Some(sampler) = self.live_sampler.as_mut() {
+            let sampler = sampler.get_mut().unwrap_or_else(|e| e.into_inner());
+            if sampler.state() == live_sampler::SamplerState::Recording {
+                if let Some(texture) = ctx.input.as_ref().and_then(|i| i.texture) {
+                    sampler.submit_readback(texture);
+                }
+            }
+        }
+
+        // 3. Composite all playing pads through the mixer.
         let size = [
             ctx.engine_state.resolution.internal_width,
             ctx.engine_state.resolution.internal_height,
@@ -375,6 +565,41 @@ impl EffectPlugin for Vp404 {
         mixer.render_to(&mut render_ctx, &[], target, ctx.engine_state);
 
         true
+    }
+}
+
+/// Rising → `Some(true)`, falling → `Some(false)`, no edge → `None`.
+fn trig_edge(val: f32, prev: f32) -> Option<bool> {
+    if val > 0.5 && prev <= 0.5 {
+        Some(true)
+    } else if val <= 0.5 && prev > 0.5 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trig_edge;
+
+    #[test]
+    fn edge_rising_above_threshold() {
+        assert_eq!(trig_edge(1.0, 0.0), Some(true));
+        assert_eq!(trig_edge(0.51, 0.49), Some(true));
+    }
+
+    #[test]
+    fn edge_falling_below_threshold() {
+        assert_eq!(trig_edge(0.0, 1.0), Some(false));
+        assert_eq!(trig_edge(0.49, 0.51), Some(false));
+    }
+
+    #[test]
+    fn no_edge_when_stable() {
+        assert_eq!(trig_edge(1.0, 1.0), None);
+        assert_eq!(trig_edge(0.0, 0.0), None);
+        assert_eq!(trig_edge(0.5, 0.5), None); // exactly at threshold = no edge
     }
 }
 

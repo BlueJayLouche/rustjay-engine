@@ -443,25 +443,45 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                         self.trigger_tap_tempo();
                                     }
                                 }
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+                                    if !self.shift_pressed =>
+                                {
+                                    let mut state = self
+                                        .shared_state
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    state.space_pressed = true;
+                                }
                                 winit::keyboard::Key::Named(named) if self.shift_pressed => {
-                                    let slot = match named {
-                                        winit::keyboard::NamedKey::F1 => Some(1),
-                                        winit::keyboard::NamedKey::F2 => Some(2),
-                                        winit::keyboard::NamedKey::F3 => Some(3),
-                                        winit::keyboard::NamedKey::F4 => Some(4),
-                                        winit::keyboard::NamedKey::F5 => Some(5),
-                                        winit::keyboard::NamedKey::F6 => Some(6),
-                                        winit::keyboard::NamedKey::F7 => Some(7),
-                                        winit::keyboard::NamedKey::F8 => Some(8),
-                                        _ => None,
-                                    };
-                                    if let Some(s) = slot {
-                                        if let Some(ref mut bank) = self.preset_bank {
+                                    match named {
+                                        winit::keyboard::NamedKey::Space => {
                                             let mut state = self
                                                 .shared_state
                                                 .lock()
                                                 .unwrap_or_else(|e| e.into_inner());
-                                            let _ = bank.apply_slot(s, &mut state);
+                                            state.shift_space_pressed = true;
+                                        }
+                                        _ => {
+                                            let slot = match named {
+                                                winit::keyboard::NamedKey::F1 => Some(1),
+                                                winit::keyboard::NamedKey::F2 => Some(2),
+                                                winit::keyboard::NamedKey::F3 => Some(3),
+                                                winit::keyboard::NamedKey::F4 => Some(4),
+                                                winit::keyboard::NamedKey::F5 => Some(5),
+                                                winit::keyboard::NamedKey::F6 => Some(6),
+                                                winit::keyboard::NamedKey::F7 => Some(7),
+                                                winit::keyboard::NamedKey::F8 => Some(8),
+                                                _ => None,
+                                            };
+                                            if let Some(s) = slot {
+                                                if let Some(ref mut bank) = self.preset_bank {
+                                                    let mut state = self
+                                                        .shared_state
+                                                        .lock()
+                                                        .unwrap_or_else(|e| e.into_inner());
+                                                    let _ = bank.apply_slot(s, &mut state);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -532,6 +552,17 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     let key = ch.to_lowercase();
                                     if self.shift_pressed && key == "t" {
                                         self.trigger_tap_tempo();
+                                    }
+                                }
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => {
+                                    let mut state = self
+                                        .shared_state
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    if self.shift_pressed {
+                                        state.shift_space_pressed = true;
+                                    } else {
+                                        state.space_pressed = true;
                                     }
                                 }
                                 _ => {}

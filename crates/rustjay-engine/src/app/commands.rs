@@ -155,6 +155,7 @@ impl<P: EffectPlugin> App<P> {
                             input.is_active = true;
                             input.input_type = rustjay_core::InputType::Syphon;
                             input.source_name = server_name;
+                            input.source_uuid = server_uuid;
                         }
                         Err(e) => log::error!("{} failed to start Syphon: {:?}", slot_prefix, e),
                     }
