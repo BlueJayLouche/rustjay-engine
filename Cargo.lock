@@ -5177,6 +5177,8 @@ dependencies = [
  "nokhwa",
  "objc",
  "rustjay-core",
+ "rustjay-ledmap",
+ "rustjay-lighting",
  "serde",
  "serde_json",
  "syphon-core",
@@ -5198,6 +5200,17 @@ dependencies = [
  "rustjay-core",
  "serde",
  "wgpu",
+]
+
+[[package]]
+name = "rustjay-ledmap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rustjay-lighting",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6559,6 +6572,7 @@ dependencies = [
  "rustjay-engine",
  "rustjay-io",
  "rustjay-isf",
+ "rustjay-ledmap",
  "rustjay-lighting",
  "rustjay-mixer",
  "rustjay-projection",

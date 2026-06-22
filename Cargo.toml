@@ -14,6 +14,7 @@ members = [
     "crates/rustjay-api",
     "crates/rustjay-projection",
     "crates/rustjay-lighting",
+    "crates/rustjay-ledmap",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
@@ -103,6 +104,7 @@ rustjay-api     = { path = "crates/rustjay-api",     version = "0.1.0" }
 isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
 rustjay-projection = { path = "crates/rustjay-projection", version = "0.1.0" }
 rustjay-lighting   = { path = "crates/rustjay-lighting",   version = "0.1.0" }
+rustjay-ledmap     = { path = "crates/rustjay-ledmap",     version = "0.1.0" }
 syphon-core     = "0.2.0"
 syphon-metal    = "0.2.0"
 syphon-wgpu     = "0.2.0"

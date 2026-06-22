@@ -1,0 +1,16 @@
+[package]
+name = "rustjay-ledmap"
+version = "0.1.0"
+edition = "2024"
+description = "CV-based addressable-LED mapping: flash a calibration pattern, recover per-LED positions, export a map"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["led", "calibration", "computer-vision", "ws2811", "mapping"]
+categories = ["multimedia"]
+
+[dependencies]
+log              = { workspace = true }
+serde            = { workspace = true, features = ["derive"] }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+rustjay-lighting = { path = "../rustjay-lighting" }

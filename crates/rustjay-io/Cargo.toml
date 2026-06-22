@@ -10,6 +10,8 @@ categories = ["graphics", "multimedia::video"]
 
 [dependencies]
 rustjay-core  = { workspace = true }
+rustjay-ledmap   = { workspace = true, optional = true }
+rustjay-lighting = { workspace = true, optional = true }
 log           = { workspace = true }
 anyhow       = { workspace = true }
 wgpu         = { workspace = true }
@@ -67,6 +69,8 @@ default = ["webcam"]
 webcam  = ["nokhwa"]
 ndi     = ["grafton-ndi"]
 ffmpeg  = ["dep:ffmpeg-next"]
+# Mapped-LED (sACN) output from a ledmap.json.
+led     = ["dep:rustjay-ledmap", "dep:rustjay-lighting"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
