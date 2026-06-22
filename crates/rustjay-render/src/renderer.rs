@@ -300,6 +300,20 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager.stop_ndi();
     }
 
+    /// Start mapped-LED (sACN) output from a `ledmap.json`.
+    pub fn start_led_output(
+        &mut self,
+        map_path: &std::path::Path,
+        priority: u8,
+    ) -> anyhow::Result<()> {
+        self.output_manager.start_led(map_path, priority)
+    }
+
+    /// Stop mapped-LED output.
+    pub fn stop_led_output(&mut self) {
+        self.output_manager.stop_led();
+    }
+
     #[cfg(target_os = "macos")]
     /// Start Syphon output (macOS only).
     pub fn start_syphon_output(&mut self, server_name: &str) -> anyhow::Result<()> {

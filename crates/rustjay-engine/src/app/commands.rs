@@ -348,6 +348,19 @@ impl<P: EffectPlugin> App<P> {
                 }
                 lock(&self.shared_state).recording_active = false;
             }
+            OutputCommand::StartLed { path, priority } => {
+                if let Some(ref mut engine) = self.output_engine {
+                    let p = std::path::PathBuf::from(path);
+                    if let Err(e) = engine.start_led_output(&p, priority) {
+                        log::error!("Failed to start LED output: {}", e);
+                    }
+                }
+            }
+            OutputCommand::StopLed => {
+                if let Some(ref mut engine) = self.output_engine {
+                    engine.stop_led_output();
+                }
+            }
             OutputCommand::ResizeOutput => {
                 if let (Some(output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())

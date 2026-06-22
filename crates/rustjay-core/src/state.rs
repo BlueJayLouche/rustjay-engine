@@ -98,6 +98,13 @@ pub enum OutputCommand {
         codec: RecorderCodec,
     },
     StopRecording,
+    /// Start mapped-LED (sACN) output from a ledmap.json (needs the `led` feature).
+    StartLed {
+        path: String,
+        priority: u8,
+    },
+    /// Stop mapped-LED output.
+    StopLed,
 }
 
 /// Commands sent to the audio subsystem.
