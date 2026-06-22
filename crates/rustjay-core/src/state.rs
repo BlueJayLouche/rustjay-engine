@@ -105,6 +105,11 @@ pub enum OutputCommand {
     },
     /// Stop mapped-LED output.
     StopLed,
+    /// Place the LED layout into a canvas region: `[TL, TR, BR, BL]` corners in
+    /// normalized `[0,1]`, or `None` for whole-canvas.
+    SetLedPlacement {
+        quad: Option<[[f32; 2]; 4]>,
+    },
 }
 
 /// Commands sent to the audio subsystem.

@@ -124,6 +124,10 @@ pub struct StageTab {
     /// `(lighting_output_index, segment_index)`.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
     selected_light_segment: Option<(usize, usize)>,
+    /// Tracks whether the LED surface's sACN output is currently running, so the
+    /// tab issues StartLed/StopLed only on the enable/disable edge.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    led_active: bool,
 }
 
 impl Default for StageTab {
@@ -145,6 +149,8 @@ impl StageTab {
             lighting_regions_active: false,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             selected_light_segment: None,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            led_active: false,
         }
     }
 }
@@ -1198,6 +1204,29 @@ mod egui_impl {
                 // Surface list + 2D editor canvas (live master-output preview).
                 self.draw_stage_tab(ui, state, master_res, preview_tex);
 
+                // Drive the LED surface through the existing sACN LedOutput
+                // backend: StartLed/StopLed on the enable edge, SetLedPlacement
+                // each frame while live (keeps the strip synced as you drag).
+                let led = state.stage.led_surface.as_ref().filter(|s| s.enabled);
+                match (led, self.led_active) {
+                    (Some(s), false) => {
+                        _engine.output_command = rustjay_core::OutputCommand::StartLed {
+                            path: s.path.clone(),
+                            priority: s.priority,
+                        };
+                        self.led_active = true;
+                    }
+                    (None, true) => {
+                        _engine.output_command = rustjay_core::OutputCommand::StopLed;
+                        self.led_active = false;
+                    }
+                    (Some(s), true) => {
+                        _engine.output_command =
+                            rustjay_core::OutputCommand::SetLedPlacement { quad: Some(s.quad) };
+                    }
+                    (None, false) => {}
+                }
+
                 // Geometry of the selected surface lives below the canvas so the
                 // canvas can use the full panel width (merged in from the former
                 // standalone Geometry tab).
@@ -1217,6 +1246,14 @@ mod egui_impl {
                 ui.label("Projection feature is not enabled. Enable it to use surfaces.");
             }
         }
+    }
+
+    /// Bilinear map of `(u,v)` across a placement quad `[TL, TR, BR, BL]`.
+    #[cfg(feature = "projection")]
+    fn led_bilerp(q: &[[f32; 2]; 4], u: f32, v: f32) -> (f32, f32) {
+        let top = [q[0][0] + (q[1][0] - q[0][0]) * u, q[0][1] + (q[1][1] - q[0][1]) * u];
+        let bot = [q[3][0] + (q[2][0] - q[3][0]) * u, q[3][1] + (q[2][1] - q[3][1]) * u];
+        (top[0] + (bot[0] - top[0]) * v, top[1] + (bot[1] - top[1]) * v)
     }
 
     #[cfg(feature = "projection")]
@@ -1244,6 +1281,45 @@ mod egui_impl {
             let mut warp_dirty = false;
             // Set when a lighting segment region is edited this frame.
             let mut regions_dirty = false;
+
+            // ── LED surface (placeable ledmap → sACN) ──────────────────────
+            ui.collapsing("LED Surface", |ui| {
+                if state.stage.led_surface.is_none() {
+                    if ui.button("+ Add LED surface").clicked() {
+                        state.stage.led_surface = Some(crate::stage::LedSurface::default());
+                    }
+                }
+                let mut remove = false;
+                if let Some(led) = state.stage.led_surface.as_mut() {
+                    ui.horizontal(|ui| {
+                        ui.label("Map file");
+                        ui.text_edit_singleline(&mut led.path);
+                        if ui.button("Load").clicked() {
+                            match rustjay_ledmap::LedMap::load(&led.path) {
+                                Ok(map) => {
+                                    led.points = map.leds.iter().map(|l| [l.u, l.v]).collect();
+                                    log::info!("[LED] loaded {} LEDs from {}", led.points.len(), led.path);
+                                }
+                                Err(e) => log::error!("[LED] load failed: {e}"),
+                            }
+                        }
+                    });
+                    ui.label(format!("{} LEDs loaded", led.points.len()));
+                    ui.add(egui::Slider::new(&mut led.priority, 0..=200).text("sACN priority"));
+                    ui.checkbox(&mut led.enabled, "Drive sACN output");
+                    ui.label(
+                        egui::RichText::new("Drag the green corner handles on the canvas to place / warp.")
+                            .size(11.0)
+                            .weak(),
+                    );
+                    if ui.button("Remove").clicked() {
+                        remove = true;
+                    }
+                }
+                if remove {
+                    state.stage.led_surface = None;
+                }
+            });
 
             // Left panel: surface list
             ui.horizontal(|ui| {
@@ -1769,6 +1845,56 @@ mod egui_impl {
                             }
                             warp_dirty = true;
                         }
+                    }
+                }
+
+                // ── LED surface overlay: dots at placed positions + quad handles ──
+                if let Some(led) = state.stage.led_surface.as_mut() {
+                    for uv in &led.points {
+                        let (cu, cv) = led_bilerp(&led.quad, uv[0], uv[1]);
+                        painter.circle_filled(
+                            Pos2::new(
+                                canvas_rect.min.x + cu * canvas_rect.width(),
+                                canvas_rect.min.y + cv * canvas_rect.height(),
+                            ),
+                            2.0,
+                            Color32::from_rgb(0, 255, 120),
+                        );
+                    }
+                    let mut corners = [Pos2::ZERO; 4];
+                    for i in 0..4 {
+                        let pos = Pos2::new(
+                            canvas_rect.min.x + led.quad[i][0] * canvas_rect.width(),
+                            canvas_rect.min.y + led.quad[i][1] * canvas_rect.height(),
+                        );
+                        corners[i] = pos;
+                        let hr = ui.interact(
+                            Rect::from_center_size(pos, Vec2::splat(12.0)),
+                            ui.id().with(("led_quad_handle", i)),
+                            egui::Sense::drag(),
+                        );
+                        let col = if hr.dragged() {
+                            Color32::from_rgb(0, 255, 120)
+                        } else if hr.hovered() {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_rgb(120, 220, 160)
+                        };
+                        painter.circle_filled(pos, 5.0, col);
+                        if hr.dragged() {
+                            handle_dragged = true;
+                            led.quad[i][0] =
+                                (led.quad[i][0] + hr.drag_delta().x / canvas_rect.width()).clamp(0.0, 1.0);
+                            led.quad[i][1] =
+                                (led.quad[i][1] + hr.drag_delta().y / canvas_rect.height()).clamp(0.0, 1.0);
+                        }
+                    }
+                    for i in 0..4 {
+                        let j = (i + 1) % 4;
+                        painter.line_segment(
+                            [corners[i], corners[j]],
+                            egui::Stroke::new(1.0, Color32::from_rgb(0, 180, 90)),
+                        );
                     }
                 }
 

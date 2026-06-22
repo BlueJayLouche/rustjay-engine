@@ -362,6 +362,11 @@ impl<P: EffectPlugin> App<P> {
                     engine.stop_led_output();
                 }
             }
+            OutputCommand::SetLedPlacement { quad } => {
+                if let Some(ref mut engine) = self.output_engine {
+                    engine.set_led_placement(quad);
+                }
+            }
             OutputCommand::ResizeOutput => {
                 if let (Some(output_window), Some(ref mut engine)) =
                     (self.output_window.as_ref(), self.output_engine.as_mut())

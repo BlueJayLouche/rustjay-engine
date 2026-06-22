@@ -457,6 +457,19 @@ impl OutputManager {
         false
     }
 
+    /// Set the LED placement quad (`[TL, TR, BR, BL]` in `[0,1]`), or `None` for
+    /// whole-canvas. No-op if LED output isn't running.
+    #[cfg(feature = "led")]
+    pub fn set_led_placement(&mut self, quad: Option<[[f32; 2]; 4]>) {
+        if let Some(led) = &mut self.led_output {
+            led.set_placement(quad);
+        }
+    }
+
+    /// Set the LED placement quad (no-op; `led` feature disabled).
+    #[cfg(not(feature = "led"))]
+    pub fn set_led_placement(&mut self, _quad: Option<[[f32; 2]; 4]>) {}
+
     /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder, LED) needs readback.
     fn needs_readback(&self) -> bool {
         if self.recorder.is_some() {

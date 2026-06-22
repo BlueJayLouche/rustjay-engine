@@ -34,6 +34,12 @@ impl LedOutput {
         self.map.len()
     }
 
+    /// Place the LED layout into a canvas region (move/scale/corner-pin). `quad`
+    /// is `[TL, TR, BR, BL]` in `[0,1]`; `None` samples the whole canvas.
+    pub fn set_placement(&mut self, quad: Option<[[f32; 2]; 4]>) {
+        self.map.set_placement(quad);
+    }
+
     /// Sample a BGRA8 frame and stream it to the strip.
     pub fn submit(&self, bgra: &[u8], width: u32, height: u32) {
         self.sender

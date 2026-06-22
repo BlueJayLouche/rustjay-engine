@@ -35,7 +35,14 @@ struct Point {
 /// Samples a rendered frame into DMX channels per a [`LedMap`].
 pub struct PointMap {
     points: Vec<Point>,
+    /// Optional placement quad — canvas corners `[TL, TR, BR, BL]` in `[0,1]`
+    /// that each LED's `(u,v)` is bilinearly mapped through before sampling.
+    /// `None` = identity (sample the whole canvas at the raw `(u,v)`).
+    placement: Option<[[f32; 2]; 4]>,
 }
+
+/// Identity placement quad: the full canvas, `[TL, TR, BR, BL]`.
+pub const IDENTITY_QUAD: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
 impl PointMap {
     /// Build from a loaded map. Unknown order letters are ignored; an LED with
@@ -68,12 +75,20 @@ impl PointMap {
                 })
             })
             .collect();
-        Self { points }
+        Self { points, placement: None }
     }
 
     /// Convenience: load a `ledmap.json` and build the sampler.
     pub fn load(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         Ok(Self::from_ledmap(&LedMap::load(path)?))
+    }
+
+    /// Place the LED layout into a canvas region. `quad` is `[TL, TR, BR, BL]`
+    /// in normalized canvas coords `[0,1]`; each LED's `(u,v)` is bilinearly
+    /// mapped through it before sampling. Pass `None` (or [`IDENTITY_QUAD`]) to
+    /// sample the whole canvas. Enables move / scale / corner-pin from one knob.
+    pub fn set_placement(&mut self, quad: Option<[[f32; 2]; 4]>) {
+        self.placement = quad.filter(|q| *q != IDENTITY_QUAD);
     }
 
     /// Number of LEDs that will be driven.
@@ -111,8 +126,13 @@ impl PointMap {
             return frame;
         }
         for p in &self.points {
-            let px = ((p.u.clamp(0.0, 1.0) * (w - 1) as f32).round() as usize).min(w - 1);
-            let py = ((p.v.clamp(0.0, 1.0) * (h - 1) as f32).round() as usize).min(h - 1);
+            // Map (u,v) through the placement quad if any, else use it directly.
+            let (cu, cv) = match &self.placement {
+                Some(q) => bilerp(q, p.u, p.v),
+                None => (p.u, p.v),
+            };
+            let px = ((cu.clamp(0.0, 1.0) * (w - 1) as f32).round() as usize).min(w - 1);
+            let py = ((cv.clamp(0.0, 1.0) * (h - 1) as f32).round() as usize).min(h - 1);
             let i = (py * w + px) * 4;
             let (b, g, r) = (bgra[i], bgra[i + 1], bgra[i + 2]);
 
@@ -132,6 +152,19 @@ impl PointMap {
         }
         frame
     }
+}
+
+/// Bilinear interpolation across quad corners `[TL, TR, BR, BL]` at `(u,v)`.
+fn bilerp(q: &[[f32; 2]; 4], u: f32, v: f32) -> (f32, f32) {
+    let top = [
+        q[0][0] + (q[1][0] - q[0][0]) * u,
+        q[0][1] + (q[1][1] - q[0][1]) * u,
+    ];
+    let bot = [
+        q[3][0] + (q[2][0] - q[3][0]) * u,
+        q[3][1] + (q[2][1] - q[3][1]) * u,
+    ];
+    (top[0] + (bot[0] - top[0]) * v, top[1] + (bot[1] - top[1]) * v)
 }
 
 #[cfg(test)]
@@ -182,6 +215,27 @@ mod tests {
         let frame = pm.sample(&bgra, 1, 1);
         let u = frame.get(2).unwrap();
         assert_eq!(&u[0..4], &[200, 80, 40, 40]); // R,G,B,W(min)
+    }
+
+    /// A placement quad remaps where LEDs sample: an LED at u=0 placed into the
+    /// right half samples the right pixel.
+    #[test]
+    fn placement_quad_remaps_sample() {
+        let bgra = [
+            0, 0, 255, 255, // (0,0) red
+            0, 255, 0, 255, // (1,0) green
+        ];
+        let leds = vec![Led {
+            i: 0, u: 0.0, v: 0.0, w: None, universe: 1, channel: 1, order: "RGB".into(), conf: 1.0,
+        }];
+        let mut pm = PointMap::from_ledmap(&map_with(leds));
+        // No placement → samples left (red): R=255.
+        assert_eq!(pm.sample(&bgra, 2, 1).get(1).unwrap()[0], 255);
+        // Placed into the right half → u=0 maps to canvas u=0.5 → green pixel: R=0,G=255.
+        pm.set_placement(Some([[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]]));
+        let u = pm.sample(&bgra, 2, 1);
+        let buf = u.get(1).unwrap();
+        assert_eq!(&buf[0..3], &[0, 255, 0]);
     }
 
     #[test]
