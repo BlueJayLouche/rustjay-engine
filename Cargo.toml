@@ -15,6 +15,7 @@ members = [
     "crates/rustjay-projection",
     "crates/rustjay-lighting",
     "crates/rustjay-ledmap",
+    "crates/ledmap-studio",
     "examples/template",
     "examples/delta",
     "examples/waaaves",
