@@ -25,5 +25,5 @@ pub mod session;
 pub use calibrate::SequentialCalibrator;
 pub use detect::{brightest_blob, detect_blobs, Blob};
 pub use format::{Led, LedMap, Source, Space, LEDMAP_VERSION};
-pub use sampler::PointMap;
+pub use sampler::{PointMap, IDENTITY_QUAD};
 pub use session::{CalibrationSession, Tick};

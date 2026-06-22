@@ -222,6 +222,43 @@ impl VardaSurface {
     }
 }
 
+/// A placeable freeform-LED surface: a recovered `ledmap.json` positioned on the
+/// stage canvas via a quad (`[TL, TR, BR, BL]` in `[0,1]`), driven to the sACN
+/// LED output. Unlike grid [`LightingOutput`]s, the sample positions are the
+/// LEDs' own recovered `(u,v)` (mapped through the quad), not a `cols×rows` grid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedSurface {
+    /// Path to the `ledmap.json`.
+    pub path: String,
+    /// Placement quad on the stage canvas: `[TL, TR, BR, BL]`, normalized.
+    pub quad: [[f32; 2]; 4],
+    /// Whether the sACN LED output is live.
+    pub enabled: bool,
+    /// sACN priority (0–200).
+    #[serde(default = "led_priority_default")]
+    pub priority: u8,
+    /// Runtime cache of each LED's `(u,v)` loaded from `path`, for drawing.
+    #[serde(skip)]
+    pub points: Vec<[f32; 2]>,
+}
+
+fn led_priority_default() -> u8 {
+    100
+}
+
+impl Default for LedSurface {
+    fn default() -> Self {
+        Self {
+            path: "ledmap.json".to_string(),
+            // A visible centered box so the handles are easy to grab initially.
+            quad: [[0.2, 0.35], [0.8, 0.35], [0.8, 0.65], [0.2, 0.65]],
+            enabled: false,
+            priority: 100,
+            points: Vec::new(),
+        }
+    }
+}
+
 /// The stage holds all surfaces, projector configs, and headless output configs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VardaStage {
@@ -235,6 +272,9 @@ pub struct VardaStage {
     /// Pixel-mapped DMX lighting outputs (sACN / Art-Net).
     #[serde(default)]
     pub lighting_outputs: Vec<LightingOutput>,
+    /// Optional placeable freeform-LED surface (CV-mapped strip → sACN).
+    #[serde(default)]
+    pub led_surface: Option<LedSurface>,
     /// Fixture profile library. Built-in profiles are injected on load if missing.
     #[serde(default)]
     pub fixture_profiles: Vec<FixtureProfile>,
@@ -281,6 +321,7 @@ impl VardaStage {
             projectors: Vec::new(),
             headless_outputs: Vec::new(),
             lighting_outputs: Vec::new(),
+            led_surface: None,
             fixture_profiles: builtin_fixture_profiles(),
             selected_surface_index: 0,
             cached_source_options: Vec::new(),

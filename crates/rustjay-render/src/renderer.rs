@@ -314,6 +314,11 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         self.output_manager.stop_led();
     }
 
+    /// Place the LED layout into a canvas region (move/scale/corner-pin).
+    pub fn set_led_placement(&mut self, quad: Option<[[f32; 2]; 4]>) {
+        self.output_manager.set_led_placement(quad);
+    }
+
     #[cfg(target_os = "macos")]
     /// Start Syphon output (macOS only).
     pub fn start_syphon_output(&mut self, server_name: &str) -> anyhow::Result<()> {
