@@ -9,6 +9,8 @@ pub mod spout_output;
 pub mod syphon_output;
 #[cfg(target_os = "linux")]
 pub mod v4l2_output;
+#[cfg(feature = "led")]
+pub mod led_output;
 
 #[cfg(feature = "ndi")]
 use ndi_output::NdiOutputSender;
@@ -213,6 +215,10 @@ pub struct OutputManager {
     #[cfg(target_os = "linux")]
     v4l2_output: Option<v4l2_output::V4l2LoopbackOutput>,
 
+    /// Mapped-LED (sACN) output — drives a recovered ledmap.json from the frame.
+    #[cfg(feature = "led")]
+    led_output: Option<led_output::LedOutput>,
+
     /// Async readback pool for CPU-path outputs (NDI, V4L2, Recorder).
     readback_pool: ReadbackPool,
 
@@ -234,6 +240,8 @@ impl OutputManager {
             spout_output: None,
             #[cfg(target_os = "linux")]
             v4l2_output: None,
+            #[cfg(feature = "led")]
+            led_output: None,
             readback_pool: ReadbackPool::new(),
             recorder: None,
             frame_count: 0,
@@ -320,6 +328,7 @@ impl OutputManager {
             || self.is_syphon_active()
             || self.is_spout_active()
             || self.is_v4l2_active()
+            || self.is_led_active()
     }
 
     /// Start Syphon output (macOS only)
@@ -402,7 +411,53 @@ impl OutputManager {
         false
     }
 
-    /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder) needs readback.
+    /// Start mapped-LED (sACN) output from a `ledmap.json`.
+    #[cfg(feature = "led")]
+    pub fn start_led(&mut self, map_path: &std::path::Path, priority: u8) -> anyhow::Result<()> {
+        let out = led_output::LedOutput::new(map_path, priority)?;
+        log::info!(
+            "LED output started: {} LEDs from {}",
+            out.led_count(),
+            map_path.display()
+        );
+        self.led_output = Some(out);
+        Ok(())
+    }
+
+    /// Start mapped-LED output (errors; `led` feature disabled).
+    #[cfg(not(feature = "led"))]
+    pub fn start_led(&mut self, _map_path: &std::path::Path, _priority: u8) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "LED output not compiled. Enable the 'led' feature."
+        ))
+    }
+
+    /// Stop mapped-LED output (blacks out the strip first).
+    #[cfg(feature = "led")]
+    pub fn stop_led(&mut self) {
+        if let Some(out) = self.led_output.take() {
+            out.blackout();
+            log::info!("LED output stopped");
+        }
+    }
+
+    /// Stop mapped-LED output (no-op; `led` feature disabled).
+    #[cfg(not(feature = "led"))]
+    pub fn stop_led(&mut self) {}
+
+    /// Whether mapped-LED output is active.
+    #[cfg(feature = "led")]
+    pub fn is_led_active(&self) -> bool {
+        self.led_output.is_some()
+    }
+
+    /// Whether mapped-LED output is active (always `false`; `led` feature off).
+    #[cfg(not(feature = "led"))]
+    pub fn is_led_active(&self) -> bool {
+        false
+    }
+
+    /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder, LED) needs readback.
     fn needs_readback(&self) -> bool {
         if self.recorder.is_some() {
             return true;
@@ -417,6 +472,10 @@ impl OutputManager {
         }
         #[cfg(target_os = "linux")]
         if self.v4l2_output.is_some() {
+            return true;
+        }
+        #[cfg(feature = "led")]
+        if self.led_output.is_some() {
             return true;
         }
         false
@@ -461,6 +520,11 @@ impl OutputManager {
                     if let Err(e) = v4l2.send_frame(&_data, _width, _height) {
                         log::error!("V4L2 output error: {}", e);
                     }
+                }
+
+                #[cfg(feature = "led")]
+                if let Some(ref led) = self.led_output {
+                    led.submit(&_data, _width, _height);
                 }
 
                 if let Some(ref mut rec) = self.recorder {
@@ -520,6 +584,7 @@ impl OutputManager {
         self.stop_spout();
         #[cfg(target_os = "linux")]
         self.stop_v4l2();
+        self.stop_led();
     }
 
     /// Drain readback pool (call when GPU device is still alive).
