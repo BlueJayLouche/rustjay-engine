@@ -16,7 +16,8 @@ pub struct Step {
     pub ratchet: u8,
     /// Time between ratchets as fraction of step duration.
     pub ratchet_spacing: f32,
-    /// Gate length as fraction of step duration (0.0 - 1.0).
+    /// Gate length measured in steps: values <1 are a short gate within one
+    /// step, values >1 tie the gate across several steps (drag to extend).
     #[serde(default = "default_gate_length")]
     pub gate_length: f32,
     /// Per-step parameter locks (reserved for future use).

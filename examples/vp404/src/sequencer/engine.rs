@@ -108,10 +108,20 @@ impl SequencerEngine {
     }
 
     pub fn reset_position(&mut self) {
-        // Note: deliberately does NOT touch `last_clock`, so the next delta stays
-        // small — the playhead actually holds at 0 instead of snapping back to the
-        // global clock's position.
+        // Deliberately does NOT touch `last_clock` — the external clock keeps
+        // running, so the next delta stays small rather than snapping the
+        // playhead to wherever the clock currently is.
         self.rewind();
+    }
+
+    /// Hard reset: rewind the playhead AND sync `last_clock` to `clock`.
+    ///
+    /// Use this when the *external* clock is also being reset (shift+space).
+    /// The next `tick(clock)` will produce a delta ≈ 0 instead of a large
+    /// negative value that would stall the sequencer.
+    pub fn reset_with_clock(&mut self, clock: f32) {
+        self.rewind();
+        self.last_clock = clock;
     }
 
     pub fn current_pattern(&self) -> &Pattern {
@@ -253,7 +263,9 @@ impl SequencerEngine {
 
                 if track.should_trigger() {
                     let step = &track.steps[track.current_step];
-                    let gate_beats = step.gate_length.clamp(0.0, 1.0) * BEATS_PER_STEP;
+                    // gate_length is measured in steps: <1 = short gate within a
+                    // step, >1 = a tied gate spanning several steps.
+                    let gate_beats = step.gate_length.max(0.0) * BEATS_PER_STEP;
                     track.active_gates.push(ActiveGate {
                         end_beat: beat + gate_beats,
                         step_index: track.current_step,
@@ -319,6 +331,25 @@ mod tests {
         assert!(seq.current_pattern().tracks[0].active_gates.len() > 0);
 
         seq.tick(0.40, &handle); // after gate end
+        assert!(seq.current_pattern().tracks[0].active_gates.is_empty());
+    }
+
+    #[test]
+    fn multi_step_gate_holds_across_steps() {
+        let mut seq = SequencerEngine::new(4);
+        seq.toggle_step(0, 0);
+        // Tie the gate across two steps (gate_length is now in step units).
+        seq.current_pattern_mut().tracks[0].steps[0].gate_length = 2.0;
+        let handle = BankHandle::new();
+        seq.play();
+
+        seq.tick(0.05, &handle); // cross step 0 → trigger; gate end ≈ 0.05 + 2*0.25
+        assert!(!seq.current_pattern().tracks[0].active_gates.is_empty());
+
+        seq.tick(0.40, &handle); // playhead now in step 1, but gate still held
+        assert!(!seq.current_pattern().tracks[0].active_gates.is_empty());
+
+        seq.tick(0.60, &handle); // past the tied gate end → released
         assert!(seq.current_pattern().tracks[0].active_gates.is_empty());
     }
 
