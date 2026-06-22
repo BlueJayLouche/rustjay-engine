@@ -250,8 +250,9 @@ impl Default for LedSurface {
     fn default() -> Self {
         Self {
             path: "ledmap.json".to_string(),
-            // A visible centered box so the handles are easy to grab initially.
-            quad: [[0.2, 0.35], [0.8, 0.35], [0.8, 0.65], [0.2, 0.65]],
+            // Full canvas by default — the LED layout maps across the whole
+            // output; drag the corners in to confine it to a sub-region.
+            quad: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             enabled: false,
             priority: 100,
             points: Vec::new(),

@@ -125,10 +125,15 @@ impl App {
             255,
             self.threshold,
         );
-        self.run = Some(Run { dmx, session: CalibrationSession::new(cal, self.hold_frames) });
+        self.run = Some(Run {
+            dmx,
+            // Subtract an ambient reference so static room lights don't dominate
+            // detection — capture starts with LEDs held off.
+            session: CalibrationSession::with_background_subtraction(cal, self.hold_frames),
+        });
         self.result = None;
         self.saved = None;
-        self.status = "Calibrating…".into();
+        self.status = "Hold still — capturing ambient reference…".into();
     }
 
     fn stop(&mut self) {
@@ -146,7 +151,11 @@ impl App {
             .session
             .tick(luma.as_ref().map(|(l, w, h)| (l.as_slice(), *w, *h)));
         run.dmx.submit(tick.frame);
-        self.status = format!("Calibrating LED {} / {}", tick.step, tick.total);
+        self.status = if tick.capturing_reference {
+            "Hold still — capturing ambient reference…".into()
+        } else {
+            format!("Calibrating LED {} / {}", tick.step, tick.total)
+        };
         tick.done
     }
 
