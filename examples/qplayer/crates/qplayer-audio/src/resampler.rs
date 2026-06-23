@@ -191,7 +191,11 @@ impl SampleProvider for ResamplerProcessor {
     }
 
     fn position(&self) -> usize {
-        self.source.position()
+        // Report in target-rate samples to stay consistent with `length()`.
+        // (Currently shadowed by BufferedSource's own read position, but keep the
+        // trait contract self-consistent for any direct consumer.)
+        let inner = self.inner();
+        (self.source.position() as f64 * inner.target_rate as f64 / inner.source_rate as f64) as usize
     }
 
     fn length(&self) -> Option<usize> {

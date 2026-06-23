@@ -23,6 +23,8 @@ struct Inner {
     read_pos: AtomicUsize,
     /// EOF reached on source.
     eof: AtomicBool,
+    /// Set on Drop so the background thread exits instead of looping forever.
+    shutdown: AtomicBool,
     /// Seek target sample (set by audio thread, consumed by BG thread).
     seek_target: AtomicUsize,
     /// Source is behind a Mutex — only the BG thread ever locks it.
@@ -48,6 +50,7 @@ impl BufferedSource {
             write_pos: AtomicUsize::new(0),
             read_pos: AtomicUsize::new(0),
             eof: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
             seek_target: AtomicUsize::new(usize::MAX), // MAX = no seek pending
             source: Mutex::new(source),
         });
@@ -66,6 +69,11 @@ impl BufferedSource {
     fn bg_loop(inner: Arc<Inner>) {
         let mut temp = vec![0.0f32; 4096];
         loop {
+            // Exit once the owning BufferedSource has been dropped (no thread leak).
+            if inner.shutdown.load(Ordering::Acquire) {
+                return;
+            }
+
             // Check for pending seek
             let seek = inner.seek_target.swap(usize::MAX, Ordering::Acquire);
             if seek != usize::MAX {
@@ -177,6 +185,15 @@ impl SampleProvider for BufferedSource {
 
     fn channels(&self) -> u16 {
         self.inner.channels
+    }
+}
+
+impl Drop for BufferedSource {
+    fn drop(&mut self) {
+        // Signal the background thread to exit. It drops its Arc<Inner> and ends,
+        // so a cue's decode thread is reclaimed when the cue stops — not leaked.
+        // Not joined: avoids blocking on an in-flight source.read().
+        self.inner.shutdown.store(true, Ordering::Release);
     }
 }
 

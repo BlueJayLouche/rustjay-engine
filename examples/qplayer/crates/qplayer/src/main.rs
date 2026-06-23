@@ -54,6 +54,10 @@ struct ActiveCue {
     /// Loop boundaries in frames, for computing loop-relative position.
     loop_start_frame: u64,
     loop_end_frame: u64,
+    /// Tail fade-out (seconds) — begins `fade_out` before the cue's natural end.
+    fade_out: f32,
+    fade_type: qplayer_core::FadeType,
+    fade_out_started: bool,
 }
 
 /// A cue that is waiting for its delay timer to expire before playing.
@@ -511,13 +515,13 @@ impl App {
         }
 
         match cue {
-            qplayer_core::Cue::Sound { path, start_time, duration, volume, fade_in, fade_out, fade_type, .. } => {
+            qplayer_core::Cue::Sound { path, start_time, duration, volume, fade_in, fade_out, fade_type, eq, .. } => {
                 log::info!("Go SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, false);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, false);
             }
-            qplayer_core::Cue::Video { path, start_time, duration, volume, fade_in, fade_out, fade_type, .. } => {
+            qplayer_core::Cue::Video { path, start_time, duration, volume, fade_in, fade_out, fade_type, eq, .. } => {
                 log::info!("Go VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, false);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, false);
                 self.play_video(path, qid, event_loop);
             }
             qplayer_core::Cue::Stop { stop_qid, fade_out_time, fade_type, .. } => {
@@ -605,8 +609,9 @@ impl App {
         duration: qplayer_core::Timespan,
         volume: f32,
         fade_in: f32,
-        _fade_out: f32,
+        fade_out: f32,
         fade_type: qplayer_core::FadeType,
+        eq: Option<qplayer_core::EQSettings>,
         preload_only: bool,
     ) {
         let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
@@ -616,6 +621,9 @@ impl App {
         match FileDecoder::open(&resolved) {
             Ok(decoder) => {
                 let sample_rate = decoder.sample_rate();
+                // input.position()/length() are reported in device-rate samples (post-resample),
+                // so anything compared against them (loop bounds, fade trigger) must scale too.
+                let out_scale = self.audio_engine.sample_rate() as f64 / sample_rate as f64;
                 let start_frame = (start_time.as_secs_f64() * sample_rate as f64) as u64;
                 let end_frame = if duration.as_secs_f64() > 0.0 {
                     start_frame + (duration.as_secs_f64() * sample_rate as f64) as u64
@@ -643,8 +651,17 @@ impl App {
                     }
                 };
 
-                // Wire fade processor for fade-in
                 let mut source: Box<dyn SampleProvider> = Box::new(loop_proc);
+
+                // Per-cue EQ (4-band + HPF/LPF), applied before fade. `Some` means the user
+                // enabled EQ in the inspector; the inner `enabled` flag is redundant with the
+                // Option, so force it on (also covers show-files saved before this fix).
+                if let Some(mut eq_settings) = eq {
+                    eq_settings.enabled = true;
+                    source = Box::new(qplayer_audio::EqProcessor::new(source, eq_settings));
+                }
+
+                // Wire fade processor for fade-in
                 if fade_in > 0.0 {
                     let fade_proc = qplayer_audio::FadeProcessor::new(source, 0.0);
                     let fade_in_frames = (fade_in * sample_rate as f32) as u32;
@@ -673,8 +690,12 @@ impl App {
                     state,
                     loop_counter,
                     video_loop_count: 0,
-                    loop_start_frame: start_frame,
-                    loop_end_frame: end_frame,
+                    // Device-rate frames, to match input.position()/length() (post-resample).
+                    loop_start_frame: (start_frame as f64 * out_scale) as u64,
+                    loop_end_frame: (end_frame as f64 * out_scale) as u64,
+                    fade_out,
+                    fade_type,
+                    fade_out_started: false,
                 });
             }
             Err(e) => {
@@ -737,13 +758,13 @@ impl App {
         }
 
         match cue {
-            qplayer_core::Cue::Sound { ref path, start_time, duration, volume, fade_in, fade_out, fade_type, .. } => {
+            qplayer_core::Cue::Sound { ref path, start_time, duration, volume, fade_in, fade_out, fade_type, eq, .. } => {
                 log::info!("Preload SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, true);
             }
-            qplayer_core::Cue::Video { ref path, start_time, duration, volume, fade_in, fade_out, fade_type, .. } => {
+            qplayer_core::Cue::Video { ref path, start_time, duration, volume, fade_in, fade_out, fade_type, eq, .. } => {
                 log::info!("Preload VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, true);
             }
             other => {
                 log::info!("Preload not supported for cue type: {:?}", std::mem::discriminant(&other));
@@ -772,6 +793,33 @@ impl App {
                         state.audio_device_name = name;
                     }
                 }
+            }
+        }
+    }
+
+    /// Start a cue's tail fade-out when playback reaches `fade_out` seconds before
+    /// its end. Mirrors C# SoundCue, where FadeOut begins (Duration - FadeOut)
+    /// before the natural end. Looping cues are skipped (state != Playing).
+    fn check_fade_outs(&mut self) {
+        let sr = self.audio_engine.sample_rate();
+        for ac in &mut self.active_cues {
+            if ac.fade_out <= 0.0 || ac.fade_out_started || ac.state != CueState::Playing {
+                continue;
+            }
+            // End position in interleaved (stereo) samples.
+            let end_samples = if ac.loop_end_frame > 0 {
+                ac.loop_end_frame as usize * 2
+            } else if let Some(len) = ac.input.length() {
+                len
+            } else {
+                continue; // unknown length — can't schedule a tail fade
+            };
+            let fade_frames = (ac.fade_out * sr as f32) as u32;
+            let trigger = end_samples.saturating_sub(fade_frames as usize * 2);
+            if ac.input.position() >= trigger {
+                ac.input.start_fade(0.0, fade_frames.max(1), ac.fade_type);
+                ac.fade_out_started = true;
+                log::info!("Tail fade-out Q{} over {} frames", ac.qid, fade_frames);
             }
         }
     }
@@ -1275,6 +1323,7 @@ impl App {
     }
 
     fn render_control(&mut self, event_loop: &ActiveEventLoop) {
+        self.check_fade_outs();
         self.check_finished_cues(event_loop);
 
         // Check for video cues that have looped and restart their video threads.

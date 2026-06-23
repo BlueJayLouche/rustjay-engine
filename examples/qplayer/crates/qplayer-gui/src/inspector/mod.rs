@@ -7,19 +7,24 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.heading("Inspector");
     ui.separator();
 
-    // Spawn waveform generation for the selected cue if needed
+    // Spawn waveform generation for the selected cue at most once per path.
+    // The path is marked in-flight BEFORE spawning (via HashSet::insert), and a
+    // failed result is cached as an empty sentinel — so a dataless/unreadable file
+    // (e.g. an un-downloaded iCloud file) is decoded once, not re-spawned every
+    // frame. Without this the inspector leaked a decode thread per frame until the
+    // OS thread limit was hit and the app panicked on thread::spawn.
     let waveform_path = {
-        let Ok(state) = state.lock() else { return };
-        if let Some(cue) = state.selected_cue() {
-            let path = match cue {
-                qplayer_core::Cue::Sound { path, .. } | qplayer_core::Cue::Video { path, .. } => path.clone(),
-                _ => String::new(),
-            };
-            if !path.is_empty() && !state.waveform_cache.contains_key(&path) && !state.pending_waveforms.contains(&path) {
-                Some(path)
-            } else {
-                None
-            }
+        let Ok(mut state) = state.lock() else { return };
+        let path = match state.selected_cue() {
+            Some(qplayer_core::Cue::Sound { path, .. } | qplayer_core::Cue::Video { path, .. })
+                if !path.is_empty() => path.clone(),
+            _ => String::new(),
+        };
+        if !path.is_empty()
+            && !state.waveform_cache.contains_key(&path)
+            && state.pending_waveforms.insert(path.clone())
+        {
+            Some(path)
         } else {
             None
         }
@@ -27,13 +32,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     if let Some(path) = waveform_path {
         let state_clone = std::sync::Arc::clone(state);
         std::thread::spawn(move || {
-            if let Some(peaks) = crate::waveform::generate_peaks(&path, 200) {
-                if let Ok(mut state) = state_clone.lock() {
-                    state.waveform_cache.insert(path.clone(), peaks);
-                    state.pending_waveforms.remove(&path);
-                }
-            } else if let Ok(mut state) = state_clone.lock() {
+            // unwrap_or_default(): cache an empty Vec on failure so we don't retry.
+            let peaks = crate::waveform::generate_peaks(&path, 200).unwrap_or_default();
+            if let Ok(mut state) = state_clone.lock() {
                 state.pending_waveforms.remove(&path);
+                state.waveform_cache.insert(path, peaks);
             }
         });
     }
@@ -400,7 +403,9 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<qplayer_core::EQSettings>, chang
     if ui.checkbox(&mut enabled, "Enabled").changed() {
         *changed = true;
         if enabled {
-            *eq = Some(qplayer_core::EQSettings::default());
+            // Some == EQ on. The inner `enabled` flag must agree, else the audio
+            // EqProcessor (which reads it) builds no filters and EQ is silent.
+            *eq = Some(qplayer_core::EQSettings { enabled: true, ..Default::default() });
         } else {
             *eq = None;
         }
