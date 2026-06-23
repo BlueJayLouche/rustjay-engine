@@ -60,6 +60,29 @@ impl Default for CueBase {
 /// ```json
 /// { "$type": "SoundCue", "qid": 1, "name": "Intro", "path": "intro.wav" }
 /// ```
+/// Lightweight per-cue output routing: the cue's stereo signal is sent to one
+/// output pair (0 = outs 1-2, 1 = 3-4, 2 = 5-6, 3 = 7-8) at a send level.
+/// A strict subset of a future input×output crosspoint matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AudioRouting {
+    /// Output pair index (clamped to the device's available pairs at play time).
+    #[serde(default)]
+    pub out_pair: u8,
+    /// Routing send level (linear gain), the "fader". Default 1.0.
+    #[serde(default = "unity_send")]
+    pub send: f32,
+}
+
+fn unity_send() -> f32 {
+    1.0
+}
+
+impl Default for AudioRouting {
+    fn default() -> Self {
+        Self { out_pair: 0, send: 1.0 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "$type")]
 pub enum Cue {
@@ -97,6 +120,8 @@ pub enum Cue {
         fade_type: FadeType,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         eq: Option<crate::EQSettings>,
+        #[serde(default)]
+        routing: AudioRouting,
     },
 
     #[serde(rename = "TimeCodeCue")]
@@ -159,6 +184,8 @@ pub enum Cue {
         fade_type: FadeType,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         eq: Option<crate::EQSettings>,
+        #[serde(default)]
+        routing: AudioRouting,
     },
 
     #[serde(rename = "OSCCue")]
@@ -291,6 +318,7 @@ mod tests {
             fade_out: 3.0,
             fade_type: FadeType::SCurve,
             eq: None,
+            routing: AudioRouting::default(),
         };
 
         let json = serde_json::to_string_pretty(&cue).unwrap();
@@ -395,6 +423,7 @@ mod tests {
             fade_out: 1.0,
             fade_type: FadeType::SCurve,
             eq: None,
+            routing: AudioRouting::default(),
         };
         let json = serde_json::to_string(&cue).unwrap();
         let de: Cue = serde_json::from_str(&json).unwrap();

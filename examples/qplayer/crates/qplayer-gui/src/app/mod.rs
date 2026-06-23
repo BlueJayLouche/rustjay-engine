@@ -1178,6 +1178,7 @@ impl QPlayerApp {
                                 fade_out: 0.0,
                                 fade_type: qplayer_core::FadeType::Linear,
                                 eq: None,
+                                routing: qplayer_core::AudioRouting::default(),
                             },
                             CueType::Video => qplayer_core::Cue::Video {
                                 base,
@@ -1190,6 +1191,7 @@ impl QPlayerApp {
                                 fade_out: 0.0,
                                 fade_type: qplayer_core::FadeType::Linear,
                                 eq: None,
+                                routing: qplayer_core::AudioRouting::default(),
                             },
                             CueType::Stop => qplayer_core::Cue::Stop {
                                 base,
@@ -1526,6 +1528,7 @@ mod tests {
                 fade_out: 0.0,
                 fade_type: qplayer_core::FadeType::Linear,
                 eq: None,
+                routing: qplayer_core::AudioRouting::default(),
             });
         }
         assert_eq!(show.cues.len(), 500);
@@ -1549,6 +1552,7 @@ mod tests {
             fade_out: 0.0,
             fade_type: qplayer_core::FadeType::Linear,
             eq: None,
+            routing: qplayer_core::AudioRouting::default(),
         });
 
         // Capture snapshot, then mutate
@@ -1569,6 +1573,7 @@ mod tests {
             fade_out: 0.0,
             fade_type: qplayer_core::FadeType::Linear,
             eq: None,
+            routing: qplayer_core::AudioRouting::default(),
         });
         assert_eq!(state.show_file.cues.len(), 2);
 

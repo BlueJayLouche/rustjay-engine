@@ -7,6 +7,14 @@ the model below is shaped so it can grow into one).
 
 Scope decided 2026-06-23: 8 outs, lightweight assignment, faders.
 
+**Status (2026-06-23): M0–M3 DONE.** 8-ch device open + N-ch mixer
+(`mix_stereo_into_pair`), `AudioRouting { out_pair, send }` on Sound/Video,
+inspector Output section (pair + send fader), serde save/load. Stereo output
+unchanged. **Limitation found:** cues are folded to stereo, so a multichannel
+source (e.g. interleaved 5.1) can't route its tracks to discrete outputs — that
+needs the **crosspoint matrix** (being built next; see "M4 — later" / Deferred).
+The lightweight model is a strict subset of it, so the upgrade is additive.
+
 ---
 
 ## Current state (what we're changing)

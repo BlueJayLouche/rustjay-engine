@@ -12,7 +12,7 @@ pub mod showfile;
 pub mod timespan;
 
 pub use colour::SerializedColour;
-pub use cue::{Cue, CueBase, DummyCue, GroupCue, SoundCue, StopCue, TimeCodeCue, VolumeCue};
+pub use cue::{AudioRouting, Cue, CueBase, DummyCue, GroupCue, SoundCue, StopCue, TimeCodeCue, VolumeCue};
 pub use cue::{FadeType, LoopMode, StopMode, TriggerMode};
 pub use eq::{EQBand, EQBandShape, EQFilter, EQFilterOrder, EQSettings};
 pub use peakfile::{PeakFile, PeakFileError, PeakFileReader, PeakFileWriter};

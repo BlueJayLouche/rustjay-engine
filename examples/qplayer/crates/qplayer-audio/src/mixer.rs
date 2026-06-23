@@ -49,6 +49,10 @@ pub struct MixerInput {
     volume: AtomicU32, // f32::to_bits() stored in AtomicU32
     /// Pan: -1.0 = full left, 0.0 = center, 1.0 = full right.
     pan: AtomicU32,
+    /// Output pair index (0 = outs 1-2, 1 = 3-4, ...) for routing.
+    out_pair: std::sync::atomic::AtomicU8,
+    /// Routing send level (linear gain), f32::to_bits.
+    send: AtomicU32,
     /// Set to false to remove from mixing. The audio callback skips inactive inputs.
     active: AtomicBool,
     /// Set to true when the source has returned 0 samples (EOF reached).
@@ -71,6 +75,8 @@ impl MixerInput {
             source,
             volume: AtomicU32::new(1.0f32.to_bits()),
             pan: AtomicU32::new(0.0f32.to_bits()),
+            out_pair: std::sync::atomic::AtomicU8::new(0),
+            send: AtomicU32::new(1.0f32.to_bits()),
             active: AtomicBool::new(true),
             finished: AtomicBool::new(false),
             temp_buffer: Mutex::new(vec![0.0f32; max_buffer_samples]),
@@ -101,6 +107,23 @@ impl MixerInput {
     #[inline]
     pub fn set_pan(&self, pan: f32) {
         self.pan.store(pan.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn out_pair(&self) -> usize {
+        self.out_pair.load(Ordering::Relaxed) as usize
+    }
+
+    #[inline]
+    pub fn send(&self) -> f32 {
+        f32::from_bits(self.send.load(Ordering::Relaxed))
+    }
+
+    /// Set output routing: destination pair index + send level (linear).
+    #[inline]
+    pub fn set_routing(&self, out_pair: u8, send: f32) {
+        self.out_pair.store(out_pair, Ordering::Relaxed);
+        self.send.store(send.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
     #[inline]
@@ -236,7 +259,9 @@ impl Mixer {
                 Err(_) => continue, // Should never happen
             };
 
-            let needed = buffer.len();
+            // The cue chain is always stereo; read frames*2 samples and route into
+            // the N-channel output below (regardless of device channel count).
+            let needed = frames * 2;
             if temp.len() < needed {
                 temp.resize(needed, 0.0);
             }
@@ -262,7 +287,7 @@ impl Mixer {
                     _ => FadeType::Linear,
                 };
 
-                let ch = self.channels.max(1) as usize;
+                let ch = 2usize; // cue signal is stereo
                 let frames = read / ch;
 
                 for frame in 0..frames {
@@ -301,12 +326,9 @@ impl Mixer {
 
             let pan = input.pan();
 
-            // Apply volume + pan and mix into output
-            if self.channels == 2 {
-                apply_volume_pan_mix_stereo(&temp[..read], buffer, volume, pan);
-            } else {
-                apply_volume_pan_mix_mono(&temp[..read], buffer, volume);
-            }
+            // Route the cue's stereo signal into the N-channel output.
+            // M0: every cue -> pair 0 (outs 1-2); M1 reads out_pair/send per input.
+            mix_stereo_into_pair(&temp[..read], buffer, self.channels as usize, input.out_pair(), volume, pan, input.send());
         }
 
         // Advance the master audio clock.
@@ -334,75 +356,39 @@ fn fade_curve(t: f32, fade_type: FadeType) -> f32 {
     }
 }
 
-/// Apply volume and linear pan, mixing into a stereo buffer.
-///
-/// This loop is written to autovectorize: LLVM generates NEON on Apple Silicon
-/// and AVX2 on x86_64 without any explicit intrinsics.
+/// Route a cue's stereo signal into output `pair` (channels `pair*2`, `pair*2+1`)
+/// of an N-channel interleaved buffer, applying volume, linear pan, and a send
+/// gain. For a 2-ch buffer + pair 0 this is the classic stereo mix; folds L+R
+/// into one channel when the pair's right channel would exceed the buffer.
 #[inline]
-fn apply_volume_pan_mix_stereo(src: &[f32], dst: &mut [f32], volume: f32, pan: f32) {
-    let gain_l = volume * (1.0 - pan.max(0.0));
-    let gain_r = volume * (1.0 + pan.min(0.0));
+fn mix_stereo_into_pair(
+    src: &[f32],
+    dst: &mut [f32],
+    n_channels: usize,
+    pair: usize,
+    volume: f32,
+    pan: f32,
+    send: f32,
+) {
+    let g = volume * send;
+    let gain_l = g * (1.0 - pan.max(0.0));
+    let gain_r = g * (1.0 + pan.min(0.0));
+    let n = n_channels.max(1);
+    let l = (pair * 2).min(n - 1);
+    let r = l + 1;
+    let frames = (src.len() / 2).min(dst.len() / n);
 
-    let frames = src.len().min(dst.len()) / 2;
-    let src = &src[..frames * 2];
-    let dst = &mut dst[..frames * 2];
-
-    // Process 4 stereo frames (8 floats) at a time for better vectorization
-    let chunks = frames / 4;
-    for c in 0..chunks {
-        let i = c * 8;
-        dst[i]     += src[i]     * gain_l;
-        dst[i + 1] += src[i + 1] * gain_r;
-        dst[i + 2] += src[i + 2] * gain_l;
-        dst[i + 3] += src[i + 3] * gain_r;
-        dst[i + 4] += src[i + 4] * gain_l;
-        dst[i + 5] += src[i + 5] * gain_r;
-        dst[i + 6] += src[i + 6] * gain_l;
-        dst[i + 7] += src[i + 7] * gain_r;
-    }
-
-    // Scalar tail
-    for f in (chunks * 4)..frames {
-        let i = f * 2;
-        dst[i]     += src[i]     * gain_l;
-        dst[i + 1] += src[i + 1] * gain_r;
-    }
-}
-
-/// Apply volume, mixing into a mono or arbitrary-channel buffer.
-///
-/// Autovectorizes via LLVM when channel count is known at compile time.
-#[inline]
-fn apply_volume_pan_mix_mono(src: &[f32], dst: &mut [f32], volume: f32) {
-    let len = src.len().min(dst.len());
-    let src = &src[..len];
-    let dst = &mut dst[..len];
-
-    // Process 16 samples at a time for vectorization
-    let chunks = len / 16;
-    for c in 0..chunks {
-        let i = c * 16;
-        dst[i]      += src[i]      * volume;
-        dst[i + 1]  += src[i + 1]  * volume;
-        dst[i + 2]  += src[i + 2]  * volume;
-        dst[i + 3]  += src[i + 3]  * volume;
-        dst[i + 4]  += src[i + 4]  * volume;
-        dst[i + 5]  += src[i + 5]  * volume;
-        dst[i + 6]  += src[i + 6]  * volume;
-        dst[i + 7]  += src[i + 7]  * volume;
-        dst[i + 8]  += src[i + 8]  * volume;
-        dst[i + 9]  += src[i + 9]  * volume;
-        dst[i + 10] += src[i + 10] * volume;
-        dst[i + 11] += src[i + 11] * volume;
-        dst[i + 12] += src[i + 12] * volume;
-        dst[i + 13] += src[i + 13] * volume;
-        dst[i + 14] += src[i + 14] * volume;
-        dst[i + 15] += src[i + 15] * volume;
-    }
-
-    // Scalar tail
-    for i in (chunks * 16)..len {
-        dst[i] += src[i] * volume;
+    if r < n {
+        for f in 0..frames {
+            let b = f * n;
+            dst[b + l] += src[f * 2] * gain_l;
+            dst[b + r] += src[f * 2 + 1] * gain_r;
+        }
+    } else {
+        // Mono output channel: fold L+R together.
+        for f in 0..frames {
+            dst[f * n + l] += src[f * 2] * gain_l + src[f * 2 + 1] * gain_r;
+        }
     }
 }
 

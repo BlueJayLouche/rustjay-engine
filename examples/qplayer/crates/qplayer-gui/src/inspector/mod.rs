@@ -185,7 +185,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.separator();
 
     match cue {
-        qplayer_core::Cue::Sound { path, volume, pan, fade_in, fade_out, fade_type, eq, .. } => {
+        qplayer_core::Cue::Sound { path, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
             ui.label(RichText::new("Sound Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -245,8 +245,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     });
             });
             eq_editor(ui, eq, &mut changed);
+            routing_editor(ui, routing, &mut changed);
         }
-        qplayer_core::Cue::Video { path, volume, pan, fade_in, fade_out, fade_type, eq, .. } => {
+        qplayer_core::Cue::Video { path, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
             ui.label(RichText::new("Video Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -306,6 +307,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     });
             });
             eq_editor(ui, eq, &mut changed);
+            routing_editor(ui, routing, &mut changed);
         }
         qplayer_core::Cue::Group { .. } => {
             ui.label(RichText::new("Group Cue").monospace().size(12.0));
@@ -393,6 +395,35 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // Write back waveform zoom/scroll (separate borrow to avoid conflict with cue editing)
     state.waveform_zoom = waveform_zoom;
     state.waveform_scroll = waveform_scroll;
+}
+
+/// Lightweight per-cue output routing: destination pair + send fader.
+fn routing_editor(ui: &mut egui::Ui, routing: &mut qplayer_core::AudioRouting, changed: &mut bool) {
+    ui.separator();
+    ui.label(egui::RichText::new("Output").strong().size(12.0));
+    const PAIRS: [&str; 4] = ["1-2", "3-4", "5-6", "7-8"];
+    ui.horizontal(|ui| {
+        ui.label("Pair:");
+        let cur = (routing.out_pair as usize).min(PAIRS.len() - 1);
+        egui::ComboBox::from_id_salt("out_pair")
+            .selected_text(PAIRS[cur])
+            .show_ui(ui, |ui| {
+                for (i, label) in PAIRS.iter().enumerate() {
+                    if ui.selectable_value(&mut routing.out_pair, i as u8, *label).clicked() {
+                        *changed = true;
+                    }
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label("Send (dB):");
+        let mut db = if routing.send > 0.0 { 20.0 * routing.send.log10() } else { -60.0 };
+        let response = ui.add(egui::Slider::new(&mut db, -60.0..=6.0));
+        if response.changed() {
+            routing.send = if db <= -60.0 { 0.0 } else { 10.0f32.powf(db / 20.0) };
+            *changed = true;
+        }
+    });
 }
 
 fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<qplayer_core::EQSettings>, changed: &mut bool) {

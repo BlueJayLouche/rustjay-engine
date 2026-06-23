@@ -60,21 +60,35 @@ impl AudioEngine {
     /// Create an audio engine with a specific device.
     pub fn new(device: &cpal::Device) -> Result<Self, AudioError> {
         let all_configs: Vec<_> = device.supported_output_configs()?.collect();
-        // Prefer stereo F32 to avoid channel-count mismatches that cause wrong playback speed.
-        // Fall back to any F32 config if stereo is unavailable.
+        // Prefer the F32 config with the most channels (capped at TARGET_OUTPUTS),
+        // then one that supports ~48 kHz. Falls back to stereo/mono and whatever
+        // rate the device offers.
+        const TARGET_OUTPUTS: u16 = 8;
+        const TARGET_RATE: u32 = 48_000;
+        let max_ch = all_configs
+            .iter()
+            .filter(|c| c.sample_format() == cpal::SampleFormat::F32)
+            .map(|c| c.channels().min(TARGET_OUTPUTS))
+            .max()
+            .ok_or(AudioError::NoF32Format)?;
         let config = all_configs
             .iter()
-            .find(|c| c.sample_format() == cpal::SampleFormat::F32 && c.channels() == 2)
-            .or_else(|| {
-                all_configs
-                    .iter()
-                    .find(|c| c.sample_format() == cpal::SampleFormat::F32)
+            .filter(|c| {
+                c.sample_format() == cpal::SampleFormat::F32
+                    && c.channels().min(TARGET_OUTPUTS) == max_ch
+            })
+            .min_by_key(|c| {
+                // 0 if the range covers 48 kHz, else distance from it.
+                if (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&TARGET_RATE) {
+                    0u64
+                } else {
+                    (c.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+                }
             })
             .ok_or(AudioError::NoF32Format)?
             .clone();
 
-        // Prefer 48kHz stereo, but accept whatever the device supports
-        let sample_rate = config.min_sample_rate().0.max(48_000).min(config.max_sample_rate().0);
+        let sample_rate = TARGET_RATE.clamp(config.min_sample_rate().0, config.max_sample_rate().0);
         let buffer_size = cpal::BufferSize::Default;
         let channels = config.channels();
 
@@ -192,8 +206,9 @@ impl AudioEngine {
             );
         }
 
-        // Up-mix mono to stereo if needed
-        if source.channels() == 1 && self.channels == 2 {
+        // Up-mix mono to stereo (cues are always stereo; the mixer routes them
+        // into the N-channel output).
+        if source.channels() == 1 {
             source = Box::new(MonoToStereo::new(source));
         }
 
@@ -242,7 +257,7 @@ impl AudioEngine {
             );
         }
 
-        if chain.channels() == 1 && self.channels == 2 {
+        if chain.channels() == 1 {
             chain = Box::new(MonoToStereo::new(chain));
         }
 

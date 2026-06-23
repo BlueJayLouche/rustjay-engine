@@ -178,6 +178,7 @@ mod tests {
                 fade_out: 0.0,
                 fade_type: crate::FadeType::SCurve,
                 eq: None,
+                routing: crate::AudioRouting::default(),
             }],
             ..Default::default()
         };
