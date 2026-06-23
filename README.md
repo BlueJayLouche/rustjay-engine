@@ -44,8 +44,10 @@ rustjay-engine/
 │   ├── rustjay-mixer       # Multi-channel compositing mixer with FX chains
 │   ├── rustjay-projection  # Output post-processor (dome, warp, edge-blend, slicer)
 │   ├── rustjay-lighting    # DMX lighting output — sACN / Art-Net pixel sampling
+│   ├── rustjay-ledmap      # CV-based addressable-LED mapping (flash pattern → per-LED positions)
 │   ├── rustjay-isf         # ISF shader support — GLSL→WGSL transpiler + EffectPlugin adapter
 │   ├── rustjay-api         # Optional REST/OpenAPI layer
+│   ├── ledmap-studio       # Standalone CV LED-mapping tool — calibrate strips, export ledmap.json
 │   └── rustjay-engine      # Facade — app runner, config, re-exports
 ├── examples/
 │   ├── template            # HSB colour + full I/O (reference app)
@@ -55,9 +57,12 @@ rustjay-engine/
 │   ├── waaaves             # Multi-pass feedback pipeline
 │   ├── sputnik             # Indexed mesh + vertex-shader displacement (Rutt-Etra style)
 │   ├── isf-example         # Runtime ISF shader loader with auto-generated UI
+│   ├── shaderglass         # Source → ISF-shader overlay with egui control window
 │   ├── mixer               # 2-channel mixer demonstrating rustjay-mixer
 │   ├── projection          # Projection mapping demonstrating rustjay-projection
+│   ├── videowall           # HDMI-matrix mapper — N outputs, source→cell grids, AprilTag calibration
 │   ├── decklink            # Blackmagic DeckLink capture input
+│   ├── vp404               # SP-404-style video sampler (port of rustjay-404)
 │   ├── vjarda              # Full multi-deck VJ application
 │   └── webapp              # Web-based control panel (React + WebSocket / WASM + WebGPU)
 └── guide/                  # mdBook user guide → https://BlueJayLouche.github.io/rustjay-engine/
@@ -122,10 +127,16 @@ cargo run -p flux          # Optical-flow warp
 cargo run -p waaaves       # Multi-pass feedback pipeline
 cargo run -p sputnik       # Mesh displacement (Rutt-Etra style)
 cargo run -p isf-example   # Load any .fs ISF shader at runtime
+cargo run -p shaderglass   # Source → ISF-shader overlay
 cargo run -p mixer         # 2-channel compositor
 cargo run -p projection    # Projection mapping
+cargo run -p videowall     # HDMI-matrix / video-wall mapper
+cargo run -p vp404         # SP-404-style video sampler
 cargo run -p vjarda        # Full multi-deck VJ app (--all-features for NDI/Syphon/Spout)
 cargo run -p webapp        # Web control panel (open http://localhost:3000)
+
+# Standalone CV LED-mapping tool (calibrate addressable strips over sACN):
+cargo run -p ledmap-studio
 ```
 
 **Keyboard shortcuts** (output window):
