@@ -32,13 +32,20 @@ rustjay-engine = {
 
 | Feature | Description | Extra dependency |
 |---|---|---|
+| `webcam` | Webcam capture input | None |
 | `ndi` | NDI video input and output | NDI SDK installed system-wide |
 | `link` | Ableton Link tempo sync | CMake ≥ 3.14; makes binary GPL-2.0+ |
 | `prodj` | Pioneer ProDJ Link tempo sync | None (binds UDP 50000/50002) |
 | `mtc` | MIDI Timecode receive | None (uses existing `midir` dep) |
 | `egui` | egui control backend (alt to ImGui) | None |
+| `mixer` | Multi-channel compositing mixer | None |
+| `projection` | Output post-processor (dome, warp, edge-blend, slicer) | None |
+| `api` | REST / OpenAPI layer | None |
+| `spout` | Spout I/O (Windows) | None |
+| `v4l2` | V4L2 loopback output (Linux) | None |
+| `gles2` / `drm-gles2` | GLES2 / DRM-KMS backend for Raspberry Pi | None |
 
-Default features: `ndi` is on by default. All others are off.
+Default features: `webcam` is on by default. All others are off.
 
 To disable NDI (e.g. SDK not installed):
 
@@ -95,4 +102,10 @@ WS   /ws                       — live update stream
 | `rustjay-sync` | Ableton Link + ProDJ Link (optional) |
 | `rustjay-gui` | ImGui / egui control window |
 | `rustjay-render` | wgpu pipeline, textures, uniforms |
+| `rustjay-mixer` | Multi-channel compositing mixer with FX chains |
+| `rustjay-projection` | Output post-processor (dome, warp, edge-blend, slicer) |
+| `rustjay-lighting` | DMX lighting output — sACN / Art-Net pixel sampling |
+| `rustjay-ledmap` | CV-based addressable-LED mapping |
+| `rustjay-isf` | ISF shader support — GLSL→WGSL transpiler + adapter |
+| `rustjay-api` | Optional REST / OpenAPI layer |
 | `rustjay-engine` | Facade: `run()`, `run_with_tabs()`, re-exports |

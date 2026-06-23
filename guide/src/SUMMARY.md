@@ -32,6 +32,7 @@
 
 - [Video I/O](video-io.md)
 - [External Control](external-control.md)
+- [Lighting & LED Output](lighting.md)
 - [Presets](presets.md)
 
 # Rendering Techniques
@@ -49,6 +50,8 @@
 - [Waaaves — Multi-Pass Feedback](examples/waaaves.md)
 - [Sputnik — Rutt-Etra Mesh Displacement](examples/sputnik.md)
 - [ISF Shader Viewer](examples/isf-example.md)
+- [videowall — HDMI-Matrix Mapper](examples/videowall.md)
+- [vjarda — Full Multi-Deck VJ App](examples/vjarda.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
 # Deployment
