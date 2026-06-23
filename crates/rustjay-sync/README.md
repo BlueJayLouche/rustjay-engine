@@ -15,7 +15,12 @@ Provides optional support for two industry-standard protocols:
 
 ## Build requirements
 
-- **For `link`:** CMake ≥ 3.14 must be installed on your system.
+- **For `link`:** CMake ≥ 3.14 **and** Ninja must be installed on your system.
+  The build is configured (in `.cargo/config.toml`) to use the Ninja CMake
+  generator on all platforms, so Ninja is required even though it isn't the
+  default CMake backend. Install via `brew install cmake ninja` (macOS),
+  `apt install cmake ninja-build` (Ubuntu), or
+  `winget install Kitware.CMake Ninja-build.Ninja` (Windows).
 - **For `prodj`:** No extra system dependencies.
 
 ## Usage

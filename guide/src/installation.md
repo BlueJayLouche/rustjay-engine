@@ -57,17 +57,31 @@ rustjay-engine = { git = "...", default-features = false }
 
 ## Ableton Link (optional)
 
-The `link` feature requires **CMake ≥ 3.14**:
+The `link` feature builds Ableton Link's native C++ via CMake, which this repo
+configures to use the **Ninja** generator (see `.cargo/config.toml`). You need
+both **CMake ≥ 3.14** and **Ninja** installed:
 
 ```sh
 # macOS
-brew install cmake
+brew install cmake ninja
 
-# Ubuntu
-sudo apt install cmake
+# Ubuntu (the Ninja binary ships in the "ninja-build" package)
+sudo apt install cmake ninja-build
 
-# Windows — download from https://cmake.org/download/
+# Fedora
+sudo dnf install cmake ninja-build
+
+# Arch
+sudo pacman -S cmake ninja
+
+# Windows
+winget install Kitware.CMake Ninja-build.Ninja
+# (or download CMake from https://cmake.org/download/ and Ninja from
+#  https://github.com/ninja-build/ninja/releases)
 ```
+
+If Ninja is missing you'll see `CMake was unable to find a build program
+corresponding to "Ninja"` when building the `link` feature.
 
 Enabling the `link` feature links against Ableton Link, which is **GPL-2.0+**. This changes the license of your resulting binary.
 
