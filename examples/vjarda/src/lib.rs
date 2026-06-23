@@ -541,6 +541,16 @@ fn instantiate_source(
                 return Err(anyhow::anyhow!("Syphon is only available on macOS"));
             }
         }
+        SourceKind::Spout => {
+            #[cfg(target_os = "windows")]
+            {
+                Box::new(crate::sources::SpoutSource::new(device, entry.name.clone())?)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                return Err(anyhow::anyhow!("Spout is only available on Windows"));
+            }
+        }
     };
 
     let deck_uuid = deck_uuid
@@ -2568,6 +2578,7 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
             SourceKind::Camera => "camera",
             SourceKind::Ndi => "ndi",
             SourceKind::Syphon => "syphon",
+            SourceKind::Spout => "spout",
             SourceKind::Srt => "srt",
             SourceKind::Hls => "hls",
             SourceKind::Dash => "dash",

@@ -59,7 +59,7 @@ pub use syphon_input::{SyphonDiscovery, SyphonInputReceiver, SyphonServerInfo};
 #[cfg(target_os = "windows")]
 pub mod spout_input;
 #[cfg(target_os = "windows")]
-pub use spout_input::{SpoutInputReceiver, SpoutSenderInfo};
+pub use spout_input::{SpoutDiscovery, SpoutInputReceiver, SpoutSenderInfo};
 
 // Note: V4L2 input on Linux is handled by nokhwa (input-native maps to V4L2).
 // A separate v4l2_input module is only needed if nokhwa proves insufficient.

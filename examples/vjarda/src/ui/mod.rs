@@ -36,6 +36,7 @@ enum AddSourceTab {
     #[cfg(feature = "ndi")]
     Ndi,
     Syphon,
+    Spout,
 }
 
 /// Deck tab — source picker, opacity/blend/scaling, deck FX.
@@ -48,6 +49,7 @@ pub struct DeckTab {
     #[cfg(feature = "ndi")]
     selected_ndi_index: usize,
     selected_syphon_index: usize,
+    selected_spout_index: usize,
     /// Async result from the native file picker (source files).
     pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// Async result from the native file picker (effect shaders).
@@ -64,6 +66,7 @@ impl Default for DeckTab {
             #[cfg(feature = "ndi")]
             selected_ndi_index: 0,
             selected_syphon_index: 0,
+            selected_spout_index: 0,
             pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
@@ -714,11 +717,16 @@ mod egui_impl {
 
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::File, "📁 File");
+                #[cfg(target_os = "linux")]
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera / V4L2");
+                #[cfg(not(target_os = "linux"))]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera");
                 #[cfg(feature = "ndi")]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Ndi, "📡 NDI");
                 #[cfg(target_os = "macos")]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Syphon, "🖥 Syphon");
+                #[cfg(target_os = "windows")]
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Spout, "🖥 Spout");
                 if self.add_tab != AddSourceTab::File {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("⟳ Refresh").clicked() {
@@ -897,6 +905,41 @@ mod egui_impl {
                 #[cfg(not(target_os = "macos"))]
                 AddSourceTab::Syphon => {
                     ui.label("Syphon is only available on macOS.");
+                }
+                #[cfg(target_os = "windows")]
+                AddSourceTab::Spout => {
+                    let senders: Vec<&crate::sources::SourceEntry> = state
+                        .registry
+                        .builtins
+                        .iter()
+                        .filter(|e| e.kind == crate::sources::SourceKind::Spout)
+                        .collect();
+                    if senders.is_empty() {
+                        ui.label("No Spout senders found.");
+                    } else {
+                        let names: Vec<String> = senders.iter().map(|s| s.name.clone()).collect();
+                        egui::ComboBox::from_id_salt("deck_add_spout")
+                            .selected_text(
+                                names.get(self.selected_spout_index).map(|s| s.as_str()).unwrap_or("--"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_spout_index, i, name);
+                                }
+                            });
+                        if ui.button("Add Spout").clicked() {
+                            if let Some(entry) = senders.get(self.selected_spout_index) {
+                                state.pending_decks.push(crate::PendingDeck {
+                                    channel_uuid: target_uuid.clone(),
+                                    source: (*entry).clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                AddSourceTab::Spout => {
+                    ui.label("Spout is only available on Windows.");
                 }
             }
         }
