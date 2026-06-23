@@ -546,6 +546,26 @@ impl App {
                     log::warn!("OSC manager not available, cannot send: {}", command);
                 }
             }
+            qplayer_core::Cue::Group { .. } => {
+                // A group "owns" the consecutive cues after it, up to the next group.
+                // Going the group fires that whole block (each via the normal play
+                // path, so per-cue delay and the enabled flag still apply).
+                let members: Vec<qplayer_core::Cue> = {
+                    let state = self.qplayer.state().lock().unwrap();
+                    match state.show_file.cues.iter().position(|c| c.base().qid == qid) {
+                        Some(idx) => state.show_file.cues[idx + 1..]
+                            .iter()
+                            .take_while(|c| !matches!(c, qplayer_core::Cue::Group { .. }))
+                            .cloned()
+                            .collect(),
+                        None => Vec::new(),
+                    }
+                };
+                log::info!("Go GroupCue Q{} — firing {} member(s)", qid, members.len());
+                for member in members {
+                    self.play_cue(&member, event_loop);
+                }
+            }
             other => {
                 log::info!("Go on unsupported cue type: {:?}", std::mem::discriminant(other));
             }
@@ -1651,9 +1671,13 @@ impl ApplicationHandler<AppEvent> for App {
             .unwrap_or(false);
 
         if is_control {
-            if let (Some(egui_state), Some(window)) = (self.egui_state.as_mut(), self.control_window.as_ref()) {
-                let _response = egui_state.on_window_event(window, &event);
-            }
+            let egui_consumed = if let (Some(egui_state), Some(window)) =
+                (self.egui_state.as_mut(), self.control_window.as_ref())
+            {
+                egui_state.on_window_event(window, &event).consumed
+            } else {
+                false
+            };
 
             match event {
                 WindowEvent::CloseRequested => {
@@ -1706,6 +1730,21 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     self.modifiers = modifiers.state();
+                }
+                WindowEvent::KeyboardInput { event: key_event, .. } if !egui_consumed => {
+                    // Toggle the video-output window fullscreen from the control window
+                    // (Ctrl/Cmd+F or F11) so it works while operating the cue list.
+                    // Creates the output window first if it isn't open yet.
+                    if key_event.state == winit::event::ElementState::Pressed {
+                        use winit::keyboard::{Key, KeyCode, PhysicalKey};
+                        let is_f11 = matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F11));
+                        let is_f = key_event.logical_key == Key::Character("f".into());
+                        let has_ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+                        if is_f11 || (is_f && has_ctrl) {
+                            self.create_video_window(event_loop);
+                            self.toggle_video_fullscreen();
+                        }
+                    }
                 }
                 _ => {}
             }
