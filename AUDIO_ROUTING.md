@@ -7,13 +7,16 @@ the model below is shaped so it can grow into one).
 
 Scope decided 2026-06-23: 8 outs, lightweight assignment, faders.
 
-**Status (2026-06-23): M0–M3 DONE.** 8-ch device open + N-ch mixer
-(`mix_stereo_into_pair`), `AudioRouting { out_pair, send }` on Sound/Video,
-inspector Output section (pair + send fader), serde save/load. Stereo output
-unchanged. **Limitation found:** cues are folded to stereo, so a multichannel
-source (e.g. interleaved 5.1) can't route its tracks to discrete outputs — that
-needs the **crosspoint matrix** (being built next; see "M4 — later" / Deferred).
-The lightweight model is a strict subset of it, so the upgrade is additive.
+**Status (2026-06-23): M0–M3 + crosspoint matrix DONE.** 8-ch device open;
+N-ch mixer (`route_cue`) reads each source at its **native** channel count;
+`AudioRouting { out_pair, send, crosspoints }` on Sound/Video; inspector Output
+section (pair + send fader, plus a per-channel crosspoint list); serde save/load.
+Stereo output unchanged. Multichannel sources (e.g. interleaved 5.1) now read at
+native channels and route **per-channel via the crosspoint matrix**
+(`Crosspoint { in_ch, out_ch, gain }`); with no matrix they pass through 1:1.
+`AudioRouting` is no longer `Copy`. Headless test: `test_crosspoint_matrix_routing`.
+GUI shows channels 1-based; storage stays 0-based. The lightweight pair route is
+a strict subset (empty crosspoints), so both models coexist.
 
 ---
 

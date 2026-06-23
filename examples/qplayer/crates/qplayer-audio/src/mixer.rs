@@ -53,6 +53,12 @@ pub struct MixerInput {
     out_pair: std::sync::atomic::AtomicU8,
     /// Routing send level (linear gain), f32::to_bits.
     send: AtomicU32,
+    /// Source channel count, captured at creation (2 for mono/stereo cues, or the
+    /// native count for multichannel, e.g. 6 for 5.1).
+    input_channels: usize,
+    /// Crosspoint matrix, set once at play time; read in render via try_lock.
+    /// Empty => use the out_pair/send lightweight route.
+    crosspoints: Mutex<Vec<qplayer_core::Crosspoint>>,
     /// Set to false to remove from mixing. The audio callback skips inactive inputs.
     active: AtomicBool,
     /// Set to true when the source has returned 0 samples (EOF reached).
@@ -71,12 +77,15 @@ pub struct MixerInput {
 
 impl MixerInput {
     pub fn new(source: Box<dyn SampleProvider>, max_buffer_samples: usize) -> Self {
+        let input_channels = (source.channels() as usize).max(1);
         Self {
             source,
             volume: AtomicU32::new(1.0f32.to_bits()),
             pan: AtomicU32::new(0.0f32.to_bits()),
             out_pair: std::sync::atomic::AtomicU8::new(0),
             send: AtomicU32::new(1.0f32.to_bits()),
+            input_channels,
+            crosspoints: Mutex::new(Vec::new()),
             active: AtomicBool::new(true),
             finished: AtomicBool::new(false),
             temp_buffer: Mutex::new(vec![0.0f32; max_buffer_samples]),
@@ -119,11 +128,14 @@ impl MixerInput {
         f32::from_bits(self.send.load(Ordering::Relaxed))
     }
 
-    /// Set output routing: destination pair index + send level (linear).
-    #[inline]
-    pub fn set_routing(&self, out_pair: u8, send: f32) {
+    /// Set output routing: lightweight pair + send, plus the crosspoint matrix
+    /// (empty = use the pair route). Called once at play time.
+    pub fn set_routing(&self, out_pair: u8, send: f32, crosspoints: Vec<qplayer_core::Crosspoint>) {
         self.out_pair.store(out_pair, Ordering::Relaxed);
         self.send.store(send.max(0.0).to_bits(), Ordering::Relaxed);
+        if let Ok(mut cps) = self.crosspoints.lock() {
+            *cps = crosspoints;
+        }
     }
 
     #[inline]
@@ -259,9 +271,10 @@ impl Mixer {
                 Err(_) => continue, // Should never happen
             };
 
-            // The cue chain is always stereo; read frames*2 samples and route into
-            // the N-channel output below (regardless of device channel count).
-            let needed = frames * 2;
+            // Read `frames` worth of the source's native channels, then route into
+            // the N-channel output below.
+            let in_ch = input.input_channels.max(1);
+            let needed = frames * in_ch;
             if temp.len() < needed {
                 temp.resize(needed, 0.0);
             }
@@ -287,7 +300,7 @@ impl Mixer {
                     _ => FadeType::Linear,
                 };
 
-                let ch = 2usize; // cue signal is stereo
+                let ch = in_ch;
                 let frames = read / ch;
 
                 for frame in 0..frames {
@@ -326,9 +339,12 @@ impl Mixer {
 
             let pan = input.pan();
 
-            // Route the cue's stereo signal into the N-channel output.
-            // M0: every cue -> pair 0 (outs 1-2); M1 reads out_pair/send per input.
-            mix_stereo_into_pair(&temp[..read], buffer, self.channels as usize, input.out_pair(), volume, pan, input.send());
+            // Route into the N-channel output: crosspoint matrix if set, else the
+            // lightweight pair route. try_lock is uncontended — routing is set
+            // before the input goes live, and not changed during playback.
+            if let Ok(cps) = input.crosspoints.try_lock() {
+                route_cue(&temp[..read], in_ch, buffer, self.channels as usize, &cps, input.out_pair(), volume, pan, input.send());
+            }
         }
 
         // Advance the master audio clock.
@@ -356,38 +372,68 @@ fn fade_curve(t: f32, fade_type: FadeType) -> f32 {
     }
 }
 
-/// Route a cue's stereo signal into output `pair` (channels `pair*2`, `pair*2+1`)
-/// of an N-channel interleaved buffer, applying volume, linear pan, and a send
-/// gain. For a 2-ch buffer + pair 0 this is the classic stereo mix; folds L+R
-/// into one channel when the pair's right channel would exceed the buffer.
+/// Route a cue's interleaved `in_ch`-channel signal into the `n_out`-channel
+/// output buffer.
+///
+/// - With a crosspoint matrix: each crosspoint scatters one source channel to one
+///   output channel at its gain (× cue volume). This is the multichannel path.
+/// - Without one, a 2-ch source uses volume + pan + send into one output pair
+///   (the lightweight route); any other channel count passes through 1:1.
 #[inline]
-fn mix_stereo_into_pair(
+fn route_cue(
     src: &[f32],
+    in_ch: usize,
     dst: &mut [f32],
-    n_channels: usize,
-    pair: usize,
+    n_out: usize,
+    crosspoints: &[qplayer_core::Crosspoint],
+    out_pair: usize,
     volume: f32,
     pan: f32,
     send: f32,
 ) {
-    let g = volume * send;
-    let gain_l = g * (1.0 - pan.max(0.0));
-    let gain_r = g * (1.0 + pan.min(0.0));
-    let n = n_channels.max(1);
-    let l = (pair * 2).min(n - 1);
-    let r = l + 1;
-    let frames = (src.len() / 2).min(dst.len() / n);
+    let in_ch = in_ch.max(1);
+    let n = n_out.max(1);
+    let frames = (src.len() / in_ch).min(dst.len() / n);
 
-    if r < n {
+    if !crosspoints.is_empty() {
         for f in 0..frames {
-            let b = f * n;
-            dst[b + l] += src[f * 2] * gain_l;
-            dst[b + r] += src[f * 2 + 1] * gain_r;
+            let sb = f * in_ch;
+            let db = f * n;
+            for cp in crosspoints {
+                let i = cp.in_ch as usize;
+                let o = cp.out_ch as usize;
+                if i < in_ch && o < n {
+                    dst[db + o] += src[sb + i] * cp.gain * volume;
+                }
+            }
+        }
+    } else if in_ch == 2 {
+        // Lightweight stereo: volume + pan + send into one output pair.
+        let g = volume * send;
+        let gain_l = g * (1.0 - pan.max(0.0));
+        let gain_r = g * (1.0 + pan.min(0.0));
+        let l = (out_pair * 2).min(n - 1);
+        let r = l + 1;
+        if r < n {
+            for f in 0..frames {
+                dst[f * n + l] += src[f * 2] * gain_l;
+                dst[f * n + r] += src[f * 2 + 1] * gain_r;
+            }
+        } else {
+            for f in 0..frames {
+                dst[f * n + l] += src[f * 2] * gain_l + src[f * 2 + 1] * gain_r;
+            }
         }
     } else {
-        // Mono output channel: fold L+R together.
+        // Multichannel with no matrix: 1:1 passthrough, volume + send.
+        let g = volume * send;
+        let cols = in_ch.min(n);
         for f in 0..frames {
-            dst[f * n + l] += src[f * 2] * gain_l + src[f * 2 + 1] * gain_r;
+            let sb = f * in_ch;
+            let db = f * n;
+            for c in 0..cols {
+                dst[db + c] += src[sb + c] * g;
+            }
         }
     }
 }
@@ -395,6 +441,47 @@ fn mix_stereo_into_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_crosspoint_matrix_routing() {
+        use qplayer_core::Crosspoint;
+        // 4-channel source: channel c emits the constant 0.1*(c+1).
+        let src = Box::new(crate::FnSource::new(
+            |buf| {
+                for (i, s) in buf.iter_mut().enumerate() {
+                    *s = 0.1 * ((i % 4) as f32 + 1.0); // 0.1, 0.2, 0.3, 0.4, ...
+                }
+                buf.len()
+            },
+            48000,
+            4,
+        ));
+        let input = std::sync::Arc::new(MixerInput::new(src, 48000 * 8));
+        // Route source ch0 -> out2, source ch3 -> out0.
+        input.set_routing(
+            0,
+            1.0,
+            vec![
+                Crosspoint { in_ch: 0, out_ch: 2, gain: 1.0 },
+                Crosspoint { in_ch: 3, out_ch: 0, gain: 1.0 },
+            ],
+        );
+
+        let mixer = Mixer::new(8, 48000);
+        mixer.add_input(input);
+        mixer.refresh_snapshot();
+
+        let mut buf = vec![0.0f32; 8 * 4]; // 4 frames * 8 channels
+        mixer.render(&mut buf);
+
+        // Frame 0: out0 = src ch3 = 0.4, out2 = src ch0 = 0.1, others silent.
+        assert!((buf[0] - 0.4).abs() < 1e-4, "out0 should be src ch3 (0.4), got {}", buf[0]);
+        assert!((buf[2] - 0.1).abs() < 1e-4, "out2 should be src ch0 (0.1), got {}", buf[2]);
+        assert!(buf[1].abs() < 1e-4, "out1 unrouted, got {}", buf[1]);
+        assert!(buf[3].abs() < 1e-4, "out3 unrouted, got {}", buf[3]);
+        // Same pattern on the next frame.
+        assert!((buf[8] - 0.4).abs() < 1e-4 && (buf[10] - 0.1).abs() < 1e-4);
+    }
 
     #[test]
     fn test_db_conversions() {

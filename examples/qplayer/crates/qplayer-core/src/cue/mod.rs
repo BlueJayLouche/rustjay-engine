@@ -60,17 +60,34 @@ impl Default for CueBase {
 /// ```json
 /// { "$type": "SoundCue", "qid": 1, "name": "Intro", "path": "intro.wav" }
 /// ```
-/// Lightweight per-cue output routing: the cue's stereo signal is sent to one
-/// output pair (0 = outs 1-2, 1 = 3-4, 2 = 5-6, 3 = 7-8) at a send level.
-/// A strict subset of a future input×output crosspoint matrix.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Per-cue output routing.
+///
+/// `crosspoints` empty → lightweight stereo: the cue's stereo signal goes to one
+/// output pair (0 = outs 1-2, 1 = 3-4, ...) at `send`. Non-empty → full
+/// input×output matrix: each [`Crosspoint`] routes one source channel to one
+/// output channel at a gain (handles multichannel sources such as 5.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioRouting {
-    /// Output pair index (clamped to the device's available pairs at play time).
+    /// Output pair index for the lightweight route (used when `crosspoints` empty).
     #[serde(default)]
     pub out_pair: u8,
-    /// Routing send level (linear gain), the "fader". Default 1.0.
+    /// Send level (linear gain) for the lightweight pair route. Default 1.0.
     #[serde(default = "unity_send")]
     pub send: f32,
+    /// Crosspoint matrix. When non-empty, overrides the pair route.
+    #[serde(default)]
+    pub crosspoints: Vec<Crosspoint>,
+}
+
+/// One source-channel → output-channel routing at a linear gain.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Crosspoint {
+    #[serde(default)]
+    pub in_ch: u8,
+    #[serde(default)]
+    pub out_ch: u8,
+    #[serde(default = "unity_send")]
+    pub gain: f32,
 }
 
 fn unity_send() -> f32 {
@@ -79,7 +96,13 @@ fn unity_send() -> f32 {
 
 impl Default for AudioRouting {
     fn default() -> Self {
-        Self { out_pair: 0, send: 1.0 }
+        Self { out_pair: 0, send: 1.0, crosspoints: Vec::new() }
+    }
+}
+
+impl Default for Crosspoint {
+    fn default() -> Self {
+        Self { in_ch: 0, out_ch: 0, gain: 1.0 }
     }
 }
 

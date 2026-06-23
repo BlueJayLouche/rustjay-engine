@@ -424,6 +424,55 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut qplayer_core::AudioRouting, c
             *changed = true;
         }
     });
+
+    // Crosspoint matrix: when non-empty, overrides the pair/send route above.
+    // Each row maps one source channel -> one output channel at a gain — this is
+    // how a multichannel source (e.g. 5.1) routes its tracks to chosen outputs.
+    if routing.crosspoints.is_empty() {
+        if ui.button("+ Matrix routing (per-channel)").clicked() {
+            routing.crosspoints.push(qplayer_core::Crosspoint::default());
+            *changed = true;
+        }
+    } else {
+        ui.label(egui::RichText::new("Matrix (overrides pair):").italics().size(11.0));
+        let mut remove: Option<usize> = None;
+        for (i, cp) in routing.crosspoints.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                // Display channels 1-based; store 0-based.
+                ui.label("in");
+                let mut in_disp = cp.in_ch as i32 + 1;
+                if ui.add(egui::DragValue::new(&mut in_disp).range(1..=32)).changed() {
+                    cp.in_ch = (in_disp - 1).clamp(0, 31) as u8;
+                    *changed = true;
+                }
+                ui.label("→ out");
+                let mut out_disp = cp.out_ch as i32 + 1;
+                if ui.add(egui::DragValue::new(&mut out_disp).range(1..=8)).changed() {
+                    cp.out_ch = (out_disp - 1).clamp(0, 7) as u8;
+                    *changed = true;
+                }
+                let mut db = if cp.gain > 0.0 { 20.0 * cp.gain.log10() } else { -60.0 };
+                if ui
+                    .add(egui::DragValue::new(&mut db).speed(0.5).range(-60.0..=6.0).suffix(" dB"))
+                    .changed()
+                {
+                    cp.gain = if db <= -60.0 { 0.0 } else { 10.0f32.powf(db / 20.0) };
+                    *changed = true;
+                }
+                if ui.small_button("✕").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            routing.crosspoints.remove(i);
+            *changed = true;
+        }
+        if ui.button("+ Add crosspoint").clicked() {
+            routing.crosspoints.push(qplayer_core::Crosspoint::default());
+            *changed = true;
+        }
+    }
 }
 
 fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<qplayer_core::EQSettings>, changed: &mut bool) {

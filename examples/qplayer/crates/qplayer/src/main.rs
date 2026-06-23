@@ -517,11 +517,11 @@ impl App {
         match cue {
             qplayer_core::Cue::Sound { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
                 log::info!("Go SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, *routing, false);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
             }
             qplayer_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
                 log::info!("Go VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, *routing, false);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
                 self.play_video(path, qid, event_loop);
             }
             qplayer_core::Cue::Stop { stop_qid, fade_out_time, fade_type, .. } => {
@@ -674,7 +674,7 @@ impl App {
                 let input = self.audio_engine.play(source);
                 input.set_volume(volume);
                 input.set_pan(pan);
-                input.set_routing(routing.out_pair, routing.send);
+                input.set_routing(routing.out_pair, routing.send, routing.crosspoints);
 
                 if preload_only {
                     input.set_active(false);
@@ -762,13 +762,13 @@ impl App {
         }
 
         match cue {
-            qplayer_core::Cue::Sound { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
+            qplayer_core::Cue::Sound { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
                 log::info!("Preload SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing, true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true);
             }
-            qplayer_core::Cue::Video { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
+            qplayer_core::Cue::Video { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
                 log::info!("Preload VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing, true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true);
             }
             other => {
                 log::info!("Preload not supported for cue type: {:?}", std::mem::discriminant(&other));
