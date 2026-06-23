@@ -1,0 +1,18 @@
+[package]
+name = "qplayer-protocols"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OSC, MSC, and remote control networking"
+
+[dependencies]
+qplayer-core = { workspace = true }
+rosc = { workspace = true }
+tokio = { workspace = true }
+midir = { workspace = true }
+bitflags = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

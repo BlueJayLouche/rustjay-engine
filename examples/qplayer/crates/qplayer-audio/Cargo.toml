@@ -1,0 +1,17 @@
+[package]
+name = "qplayer-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Real-time audio engine (cpal + symphonia + custom DSP)"
+
+[dependencies]
+qplayer-core = { workspace = true }
+cpal = { workspace = true }
+symphonia = { workspace = true }
+rubato = { workspace = true }
+crossbeam = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

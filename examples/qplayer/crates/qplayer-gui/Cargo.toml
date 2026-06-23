@@ -1,0 +1,24 @@
+[package]
+name = "qplayer-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "egui + wgpu user interface"
+
+[dependencies]
+qplayer-core = { workspace = true }
+qplayer-audio = { workspace = true }
+egui = { workspace = true }
+egui-winit = { workspace = true }
+egui-wgpu = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+chrono = { workspace = true }
+env_logger = "0.11"
+log = { workspace = true }
+pathdiff = "0.2"
+serde_json = { workspace = true }
+rust_decimal = { workspace = true }
+rfd = { workspace = true }
