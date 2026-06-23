@@ -37,6 +37,8 @@ pub enum SourceKind {
     Ndi,
     /// Syphon server (macOS).
     Syphon,
+    /// Spout sender (Windows).
+    Spout,
     /// SRT stream.
     Srt,
     /// HLS stream.
@@ -237,6 +239,21 @@ impl Registry {
                         });
                     }
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    for (idx, info) in rustjay_io::SpoutDiscovery::list_senders()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        builtins.push(SourceEntry {
+                            id: format!("spout_{}", idx),
+                            name: info.name.clone(),
+                            kind: SourceKind::Spout,
+                            path: None,
+                            device_index: 0,
+                        });
+                    }
+                }
                 builtins
             },
         }
@@ -282,6 +299,19 @@ impl Registry {
                 name: info.name.clone(),
                 kind: SourceKind::Syphon,
                 path: Some(std::path::PathBuf::from(&info.uuid)),
+                device_index: 0,
+            });
+        }
+        #[cfg(target_os = "windows")]
+        for (idx, info) in rustjay_io::SpoutDiscovery::list_senders()
+            .into_iter()
+            .enumerate()
+        {
+            builtins.push(SourceEntry {
+                id: format!("spout_{}", idx),
+                name: info.name.clone(),
+                kind: SourceKind::Spout,
+                path: None,
                 device_index: 0,
             });
         }
