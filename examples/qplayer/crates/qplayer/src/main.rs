@@ -1571,7 +1571,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::VideoFrame(frame) => {
                 self.latest_video_frame = Some(frame);
@@ -1582,6 +1582,47 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::VideoEof => {
                 log::info!("Video EOF");
+                // What the output window shows after a clip ends:
+                //   Looped/LoopedInfinite -> restart (video-only here; audio-backed
+                //     clips restart via the audio loop_counter, so skip those),
+                //   HoldLast -> keep the final frame on screen,
+                //   OneShot (default) -> blank the window to black.
+                if let Some(qid) = self.current_video_qid {
+                    let has_audio_cue = self.active_cues.iter().any(|ac| ac.qid == qid);
+                    let cue_info = {
+                        let state = self.qplayer.state().lock().unwrap();
+                        state.show_file.cues.iter()
+                            .find(|c| c.base().qid == qid)
+                            .and_then(|c| match c {
+                                qplayer_core::Cue::Video { path, .. } => {
+                                    Some((c.base().loop_mode, path.clone()))
+                                }
+                                _ => None,
+                            })
+                    };
+                    match cue_info {
+                        Some((
+                            qplayer_core::LoopMode::Looped | qplayer_core::LoopMode::LoopedInfinite,
+                            path,
+                        )) => {
+                            if !has_audio_cue {
+                                self.restart_video(&path, qid, event_loop);
+                            }
+                        }
+                        Some((qplayer_core::LoopMode::HoldLast, _)) => {
+                            // Hold the last frame — leave the video state untouched.
+                        }
+                        _ => {
+                            // OneShot (or cue gone): blank the output to black.
+                            self.current_video_qid = None;
+                            self.latest_video_frame = None;
+                            self.video_frame_dirty = true;
+                            if let Some(window) = self.video_window.as_ref() {
+                                window.request_redraw();
+                            }
+                        }
+                    }
+                }
             }
         }
     }

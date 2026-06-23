@@ -16,6 +16,9 @@ wgpu = { workspace = true }
 winit = { workspace = true }
 pollster = { workspace = true }
 
+# Video decoding
+ffmpeg-next = { workspace = true }
+
 # Utils
 log = { workspace = true }
 thiserror = { workspace = true }

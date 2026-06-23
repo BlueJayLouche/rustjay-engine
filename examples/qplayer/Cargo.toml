@@ -18,10 +18,11 @@ anyhow = "1.0"
 log = "0.4"
 rust_decimal = { version = "1.36", features = ["serde"] }
 
-# Audio
+# Audio / Video
 cpal = "0.15"
 rubato = "0.16"
 symphonia = { version = "0.5", features = ["all"] }
+ffmpeg-next = "8.1"
 
 # GPU / UI
 wgpu = "25.0"

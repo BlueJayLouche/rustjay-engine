@@ -18,6 +18,9 @@ Cargo.lock
 *.dylib
 *.dll
 
+# App runtime (single-instance lock file, created in CWD)
+QPlayer_rust_port
+
 # Node (docs)
 node_modules/
 dist/

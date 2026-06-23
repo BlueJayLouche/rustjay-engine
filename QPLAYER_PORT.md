@@ -28,6 +28,28 @@ app logic (audio + cues + OSC) as a standalone app; the engine is the
 - **Distortion verdict (settled):** resampler exonerated by unit test; the old hand-rolled FFmpeg decoder was the culprit; symphonia swap fixed it.
 - **macOS gotcha:** media in `~/Music`/`~/Desktop`/`~/Documents`/`~/Downloads` is TCC-protected → `File::open` EPERM from a terminal without Full Disk Access. Real releases need FDA or "Pack Project" (P2). Keep test media in unprotected dirs (e.g. `testFiles/`, `/tmp`).
 
+## Status — Phase C (MVP fixes) + video DONE (2026-06-23)
+
+- Cue workflow driven in the GUI; fixed **EQ** (never wired into the play chain +
+  inspector left the inner `enabled=false`), **fade-out tail** (C#-parity, starts
+  `fade_out`s before the natural end), **resample timing** (loop/trim bounds were
+  source-rate vs device-rate `position()`), a **waveform thread-storm crash** (a
+  per-frame decode-thread spawn with no in-flight guard exhausted threads on a
+  dataless iCloud file), and a **`BufferedSource` thread leak** (bg thread never
+  exited).
+- **Video RESTORED with FFmpeg — plan correction:** the engine's *own* video
+  playback (vjarda's `FfmpegSource`, gated on `rustjay-io/ffmpeg`) is **also
+  FFmpeg** under the hood; there is no generic non-FFmpeg decoder (`hap-*` is
+  HAP-codec only). So FFmpeg is the correct decoder — restoring it is not a
+  regression. The engine's real value is **output** (NDI/Syphon/projection),
+  which is separate from decode and remains the add-on. `ffmpeg-next` is back in
+  `qplayer-video`; the default build now needs FFmpeg (pkg-config finds it).
+- Video cues play in the dual-window blit, **loop** (video-only via `VideoEof`;
+  audio-backed via the loop counter), and the output **blanks to black** on
+  OneShot end / **holds the last frame** on HoldLast.
+- Remaining: optional opt-in `--features video` to keep a lean FFmpeg-free
+  default; engine **output routing** (NDI/Syphon/projection).
+
 ## Where it lives
 
 `examples/qplayer/` as a **nested workspace** (the engine root lists explicit
