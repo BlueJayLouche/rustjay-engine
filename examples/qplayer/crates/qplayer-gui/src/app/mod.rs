@@ -210,6 +210,10 @@ pub struct SharedState {
     pub plugin_list: Vec<(String, String)>,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
     pub progress_overlay: Option<ProgressOverlay>,
+    /// If Some, the next received MIDI event should be stored as this cue's MIDI trigger.
+    pub pending_midi_learn: Option<Decimal>,
+    /// If Some, the current show time should be stored as this cue's timecode trigger.
+    pub pending_timecode_capture: Option<Decimal>,
 }
 
 /// State for the progress overlay modal.
@@ -251,6 +255,8 @@ impl Default for SharedState {
             quit: false,
             plugin_list: Vec::new(),
             progress_overlay: None,
+            pending_midi_learn: None,
+            pending_timecode_capture: None,
         }
     }
 }
@@ -318,6 +324,8 @@ pub enum AppCommand {
     UpdateCueQid { qid: Decimal, new_qid: Decimal },
     UpdateCueName { qid: Decimal, name: String },
     UpdateCueTrigger { qid: Decimal, trigger: qplayer_core::TriggerMode },
+    LearnMidiTrigger { qid: Decimal },
+    CaptureTimecodeTrigger { qid: Decimal },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +338,9 @@ pub enum CueType {
     Dummy,
     TimeCode,
     Osc,
+    Text,
+    Image,
+    Goto,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1288,6 +1299,22 @@ impl QPlayerApp {
                             CueType::Osc => qplayer_core::Cue::Osc {
                                 base,
                                 command: String::new(),
+                            },
+                            CueType::Text => qplayer_core::Cue::Text {
+                                base,
+                                text: String::new(),
+                                font_size: 48.0,
+                                font_colour: qplayer_core::SerializedColour::WHITE,
+                                fit: qplayer_core::CanvasFit::Fit,
+                            },
+                            CueType::Image => qplayer_core::Cue::Image {
+                                base,
+                                path: String::new(),
+                                fit: qplayer_core::CanvasFit::Fit,
+                            },
+                            CueType::Goto => qplayer_core::Cue::Goto {
+                                base,
+                                target_qid: Decimal::ZERO,
                             },
                         };
                         state.show_file.cues.push(cue);

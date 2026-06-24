@@ -13,8 +13,8 @@ pub mod showfile;
 pub mod timespan;
 
 pub use colour::SerializedColour;
-pub use cue::{AudioRouting, Crosspoint, Cue, CueBase, DummyCue, GroupCue, SoundCue, StopCue, TimeCodeCue, VolumeCue};
-pub use cue::{FadeType, LoopMode, StopMode, TriggerMode};
+pub use cue::{AudioRouting, Crosspoint, Cue, CueBase, DummyCue, GotoCue, GroupCue, ImageCue, OscCue, SoundCue, StopCue, TextCue, TimeCodeCue, VideoCue, VolumeCue};
+pub use cue::{ClockMode, CueTriggers, FadeType, HotkeyTrigger, LoopMode, MidiTrigger, MidiTriggerKind, RepeatMode, StopMode, TimecodeTrigger, TriggerMode, WallClockTrigger};
 pub use eq::{EQBand, EQBandShape, EQFilter, EQFilterOrder, EQSettings};
 pub use peakfile::{PeakFile, PeakFileError, PeakFileReader, PeakFileWriter};
 pub use projection::{CanvasFit, EdgeBlend, EdgeBlendEdge, ProjectionConfig, ProjectorOutput};

@@ -2,6 +2,7 @@
 
 use crate::app::SharedStateHandle;
 use egui::RichText;
+use rust_decimal::Decimal;
 
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.heading("Inspector");
@@ -68,6 +69,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     let base = cue.base_mut();
     let mut changed = false;
+    let mut pending_commands: Vec<crate::app::AppCommand> = Vec::new();
 
     ui.label(RichText::new(format!("Q{}", base.qid)).strong().size(18.0));
     ui.add_space(8.0);
@@ -194,7 +196,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.separator();
 
     match cue {
-        qplayer_core::Cue::Sound { path, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
+        qplayer_core::Cue::Sound { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing } => {
             ui.label(RichText::new("Sound Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -255,8 +257,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             eq_editor(ui, eq, &mut changed);
             routing_editor(ui, routing, &mut changed);
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Video { path, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
+        qplayer_core::Cue::Video { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing } => {
             ui.label(RichText::new("Video Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -317,11 +320,13 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             eq_editor(ui, eq, &mut changed);
             routing_editor(ui, routing, &mut changed);
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Group { .. } => {
+        qplayer_core::Cue::Group { base } => {
             ui.label(RichText::new("Group Cue").monospace().size(12.0));
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, .. } => {
+        qplayer_core::Cue::Stop { base, stop_qid, stop_mode, fade_out_time, fade_type } => {
             ui.label(RichText::new("Stop Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Stops Q#:");
@@ -365,8 +370,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         }
                     });
             });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Volume { sound_qid, volume, fade_time, fade_type, .. } => {
+        qplayer_core::Cue::Volume { base, sound_qid, volume, fade_time, fade_type } => {
             ui.label(RichText::new("Volume Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Target Q#:");
@@ -407,11 +413,13 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         }
                     });
             });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Dummy { .. } => {
+        qplayer_core::Cue::Dummy { base } => {
             ui.label(RichText::new("Dummy Cue").monospace().size(12.0));
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::TimeCode { start_time, duration, .. } => {
+        qplayer_core::Cue::TimeCode { base, start_time, duration } => {
             ui.label(RichText::new("TimeCode Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Start (s):");
@@ -431,8 +439,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     changed = true;
                 }
             });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        qplayer_core::Cue::Osc { command, .. } => {
+        qplayer_core::Cue::Osc { base, command } => {
             ui.label(RichText::new("OSC Cue").monospace().size(12.0));
             ui.label("Command format: /address,arg1,arg2,…");
             ui.horizontal(|ui| {
@@ -440,6 +449,96 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 let response = ui.text_edit_singleline(command);
                 changed |= response.changed();
             });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
+        }
+        qplayer_core::Cue::Text { base, text, font_size, font_colour, fit } => {
+            ui.label(RichText::new("Text Cue").monospace().size(12.0));
+            ui.horizontal(|ui| {
+                ui.label("Text:");
+                let response = ui.text_edit_multiline(text);
+                changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Font Size:");
+                let response = ui.add(egui::DragValue::new(font_size).speed(1.0).range(1.0..=512.0));
+                changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Colour:");
+                let mut col = egui::Color32::from_rgba_premultiplied(
+                    (font_colour.r * 255.0) as u8,
+                    (font_colour.g * 255.0) as u8,
+                    (font_colour.b * 255.0) as u8,
+                    (font_colour.a * 255.0) as u8,
+                );
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    font_colour.r = col.r() as f32 / 255.0;
+                    font_colour.g = col.g() as f32 / 255.0;
+                    font_colour.b = col.b() as f32 / 255.0;
+                    font_colour.a = col.a() as f32 / 255.0;
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fit:");
+                egui::ComboBox::from_id_salt("text_fit")
+                    .selected_text(format!("{:?}", fit))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::CanvasFit::Stretch, qplayer_core::CanvasFit::Fit, qplayer_core::CanvasFit::Fill] {
+                            if ui.selectable_value(fit, variant, format!("{:?}", variant)).clicked() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
+        }
+        qplayer_core::Cue::Image { base, path, fit } => {
+            ui.label(RichText::new("Image Cue").monospace().size(12.0));
+            ui.horizontal(|ui| {
+                ui.label("File:");
+                let response = ui.text_edit_singleline(path);
+                changed |= response.changed();
+                if ui.button("Browse…").clicked() {
+                    if let Some(new_path) = rfd::FileDialog::new()
+                        .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "tiff", "gif"])
+                        .pick_file()
+                    {
+                        *path = new_path.to_string_lossy().to_string();
+                        changed = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fit:");
+                egui::ComboBox::from_id_salt("image_fit")
+                    .selected_text(format!("{:?}", fit))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::CanvasFit::Stretch, qplayer_core::CanvasFit::Fit, qplayer_core::CanvasFit::Fill] {
+                            if ui.selectable_value(fit, variant, format!("{:?}", variant)).clicked() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
+        }
+        qplayer_core::Cue::Goto { base, target_qid } => {
+            ui.label(RichText::new("Goto Cue").monospace().size(12.0));
+            ui.horizontal(|ui| {
+                ui.label("Target Q#:");
+                let mut qid_str = target_qid.to_string();
+                let response = ui.text_edit_singleline(&mut qid_str);
+                if response.lost_focus() {
+                    if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
+                        if new_qid != *target_qid {
+                            *target_qid = new_qid;
+                            changed = true;
+                        }
+                    }
+                }
+            });
+            triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
     }
 
@@ -451,6 +550,181 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // Write back waveform zoom/scroll (separate borrow to avoid conflict with cue editing)
     state.waveform_zoom = waveform_zoom;
     state.waveform_scroll = waveform_scroll;
+
+    state.command_queue.extend(pending_commands);
+}
+
+/// Trigger editor — hotkey, MIDI, wall-clock and timecode firing methods.
+fn triggers_editor(
+    ui: &mut egui::Ui,
+    triggers: &mut qplayer_core::CueTriggers,
+    qid: Decimal,
+    changed: &mut bool,
+    pending: &mut Vec<crate::app::AppCommand>,
+) {
+    ui.separator();
+    ui.label(RichText::new("Triggers").strong().size(12.0));
+
+    // Hotkey
+    {
+        let mut enabled = triggers.hotkey.is_some();
+        if ui.checkbox(&mut enabled, "Hotkey").changed() {
+            *changed = true;
+            triggers.hotkey = if enabled {
+                Some(qplayer_core::HotkeyTrigger { key: String::new() })
+            } else {
+                None
+            };
+        }
+        if let Some(ref mut hotkey) = triggers.hotkey {
+            ui.horizontal(|ui| {
+                ui.label("Key:");
+                let response = ui.text_edit_singleline(&mut hotkey.key);
+                *changed |= response.changed();
+            });
+        }
+    }
+
+    // MIDI
+    {
+        let mut enabled = triggers.midi.is_some();
+        if ui.checkbox(&mut enabled, "MIDI").changed() {
+            *changed = true;
+            triggers.midi = if enabled {
+                Some(qplayer_core::MidiTrigger {
+                    channel: 1,
+                    kind: qplayer_core::MidiTriggerKind::NoteOn,
+                    note_or_cc: 60,
+                    velocity_min: 1,
+                })
+            } else {
+                None
+            };
+        }
+        if let Some(ref mut midi) = triggers.midi {
+            ui.horizontal(|ui| {
+                ui.label("Kind:");
+                egui::ComboBox::from_id_salt("midi_kind")
+                    .selected_text(format!("{:?}", midi.kind))
+                    .show_ui(ui, |ui| {
+                        for variant in [
+                            qplayer_core::MidiTriggerKind::NoteOn,
+                            qplayer_core::MidiTriggerKind::NoteOff,
+                            qplayer_core::MidiTriggerKind::CC,
+                        ] {
+                            if ui.selectable_value(&mut midi.kind, variant, format!("{:?}", variant)).clicked() {
+                                *changed = true;
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Ch:");
+                let mut ch = midi.channel as i32;
+                let response = ui.add(egui::DragValue::new(&mut ch).range(1..=16));
+                if response.changed() {
+                    midi.channel = ch.clamp(1, 16) as u8;
+                    *changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Note/CC:");
+                let mut v = midi.note_or_cc as i32;
+                let response = ui.add(egui::DragValue::new(&mut v).range(0..=127));
+                if response.changed() {
+                    midi.note_or_cc = v.clamp(0, 127) as u8;
+                    *changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Vel ≥:");
+                let mut v = midi.velocity_min as i32;
+                let response = ui.add(egui::DragValue::new(&mut v).range(0..=127));
+                if response.changed() {
+                    midi.velocity_min = v.clamp(0, 127) as u8;
+                    *changed = true;
+                }
+            });
+            if ui.button("Capture next MIDI").clicked() {
+                pending.push(crate::app::AppCommand::LearnMidiTrigger { qid });
+            }
+        }
+    }
+
+    // Wall Clock
+    {
+        let mut enabled = triggers.wall_clock.is_some();
+        if ui.checkbox(&mut enabled, "Wall Clock").changed() {
+            *changed = true;
+            triggers.wall_clock = if enabled {
+                Some(qplayer_core::WallClockTrigger {
+                    time: "00:00:00".into(),
+                    mode: qplayer_core::ClockMode::TwentyFourHour,
+                    repeat: qplayer_core::RepeatMode::Daily,
+                })
+            } else {
+                None
+            };
+        }
+        if let Some(ref mut clock) = triggers.wall_clock {
+            ui.horizontal(|ui| {
+                ui.label("Time:");
+                let response = ui.text_edit_singleline(&mut clock.time);
+                *changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                egui::ComboBox::from_id_salt("clock_mode")
+                    .selected_text(format!("{:?}", clock.mode))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::ClockMode::TwelveHour, qplayer_core::ClockMode::TwentyFourHour] {
+                            if ui.selectable_value(&mut clock.mode, variant, format!("{:?}", variant)).clicked() {
+                                *changed = true;
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Repeat:");
+                egui::ComboBox::from_id_salt("clock_repeat")
+                    .selected_text(format!("{:?}", clock.repeat))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::RepeatMode::Once, qplayer_core::RepeatMode::Daily] {
+                            if ui.selectable_value(&mut clock.repeat, variant, format!("{:?}", variant)).clicked() {
+                                *changed = true;
+                            }
+                        }
+                    });
+            });
+        }
+    }
+
+    // Timecode
+    {
+        let mut enabled = triggers.timecode.is_some();
+        if ui.checkbox(&mut enabled, "Timecode").changed() {
+            *changed = true;
+            triggers.timecode = if enabled {
+                Some(qplayer_core::TimecodeTrigger { time: qplayer_core::Timespan::ZERO })
+            } else {
+                None
+            };
+        }
+        if let Some(ref mut tc) = triggers.timecode {
+            ui.horizontal(|ui| {
+                ui.label("Time (s):");
+                let mut secs = tc.time.as_secs_f64();
+                let response = ui.add(egui::DragValue::new(&mut secs).speed(0.1));
+                if response.changed() {
+                    tc.time = qplayer_core::Timespan::from_secs_f64(secs);
+                    *changed = true;
+                }
+            });
+            if ui.button("Capture now").clicked() {
+                pending.push(crate::app::AppCommand::CaptureTimecodeTrigger { qid });
+            }
+        }
+    }
 }
 
 /// Lightweight per-cue output routing: destination pair + send fader.

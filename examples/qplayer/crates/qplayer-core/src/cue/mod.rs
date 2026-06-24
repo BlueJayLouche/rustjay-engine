@@ -3,7 +3,7 @@
 //! All cue types derive from a common base (via `CueBase` fields). JSON serialization
 //! uses an internal tag (`$type`) to match C# `PolymorphicTypeResolver` output exactly.
 
-use crate::{SerializedColour, Timespan};
+use crate::{CanvasFit, SerializedColour, Timespan};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,8 @@ pub struct CueBase {
     pub loop_count: i32,
     #[serde(default)]
     pub remote_node: String,
+    #[serde(default)]
+    pub triggers: CueTriggers,
 }
 
 impl Default for CueBase {
@@ -50,8 +52,89 @@ impl Default for CueBase {
             loop_mode: LoopMode::OneShot,
             loop_count: 1,
             remote_node: String::new(),
+            triggers: CueTriggers::default(),
         }
     }
+}
+
+/// Optional alternate firing methods for a cue (Triggers tab).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CueTriggers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<HotkeyTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi: Option<MidiTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<WallClockTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<TimecodeTrigger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HotkeyTrigger {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MidiTriggerKind {
+    NoteOn,
+    NoteOff,
+    CC,
+}
+
+impl Default for MidiTriggerKind {
+    fn default() -> Self {
+        MidiTriggerKind::NoteOn
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MidiTrigger {
+    pub channel: u8,
+    #[serde(default)]
+    pub kind: MidiTriggerKind,
+    pub note_or_cc: u8,
+    #[serde(default)]
+    pub velocity_min: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClockMode {
+    TwelveHour,
+    #[serde(rename = "TwentyFourHour")]
+    TwentyFourHour,
+}
+
+impl Default for ClockMode {
+    fn default() -> Self {
+        ClockMode::TwentyFourHour
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepeatMode {
+    Daily,
+    Once,
+}
+
+impl Default for RepeatMode {
+    fn default() -> Self {
+        RepeatMode::Daily
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WallClockTrigger {
+    pub time: String,
+    #[serde(default)]
+    pub mode: ClockMode,
+    #[serde(default)]
+    pub repeat: RepeatMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TimecodeTrigger {
+    pub time: Timespan,
 }
 
 /// Polymorphic cue enum with `$type` discriminator.
@@ -218,6 +301,38 @@ pub enum Cue {
         #[serde(default)]
         command: String,
     },
+
+    #[serde(rename = "TextCue")]
+    Text {
+        #[serde(flatten)]
+        base: CueBase,
+        #[serde(default)]
+        text: String,
+        #[serde(default = "default_font_size")]
+        font_size: f32,
+        #[serde(default)]
+        font_colour: SerializedColour,
+        #[serde(default)]
+        fit: CanvasFit,
+    },
+
+    #[serde(rename = "ImageCue")]
+    Image {
+        #[serde(flatten)]
+        base: CueBase,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        fit: CanvasFit,
+    },
+
+    #[serde(rename = "GotoCue")]
+    Goto {
+        #[serde(flatten)]
+        base: CueBase,
+        #[serde(default)]
+        target_qid: Decimal,
+    },
 }
 
 // Convenience type aliases for pattern matching ergonomics.
@@ -229,6 +344,9 @@ pub type StopCue = Cue;
 pub type VolumeCue = Cue;
 pub type VideoCue = Cue;
 pub type OscCue = Cue;
+pub type TextCue = Cue;
+pub type ImageCue = Cue;
+pub type GotoCue = Cue;
 
 impl Cue {
     /// Access the shared base fields of any cue variant.
@@ -242,6 +360,9 @@ impl Cue {
             Cue::Volume { base, .. } => base,
             Cue::Video { base, .. } => base,
             Cue::Osc { base, .. } => base,
+            Cue::Text { base, .. } => base,
+            Cue::Image { base, .. } => base,
+            Cue::Goto { base, .. } => base,
         }
     }
 
@@ -256,6 +377,9 @@ impl Cue {
             Cue::Volume { base, .. } => base,
             Cue::Video { base, .. } => base,
             Cue::Osc { base, .. } => base,
+            Cue::Text { base, .. } => base,
+            Cue::Image { base, .. } => base,
+            Cue::Goto { base, .. } => base,
         }
     }
 
@@ -317,6 +441,10 @@ fn default_true() -> bool {
 
 fn default_one() -> i32 {
     1
+}
+
+fn default_font_size() -> f32 {
+    48.0
 }
 
 #[cfg(test)]
@@ -454,5 +582,102 @@ mod tests {
         // Verify the tag
         let val = serde_json::to_value(&cue).unwrap();
         assert_eq!(val["$type"], "VideoCue");
+    }
+
+    #[test]
+    fn test_text_cue_serde() {
+        let cue = Cue::Text {
+            base: CueBase {
+                qid: Decimal::from(10),
+                name: "Title".into(),
+                ..Default::default()
+            },
+            text: "Hello QPlayer".into(),
+            font_size: 64.0,
+            font_colour: SerializedColour::WHITE,
+            fit: CanvasFit::Fit,
+        };
+        let json = serde_json::to_string(&cue).unwrap();
+        let de: Cue = serde_json::from_str(&json).unwrap();
+        assert_eq!(cue, de);
+        let val = serde_json::to_value(&cue).unwrap();
+        assert_eq!(val["$type"], "TextCue");
+    }
+
+    #[test]
+    fn test_image_cue_serde() {
+        let cue = Cue::Image {
+            base: CueBase {
+                qid: Decimal::from(11),
+                name: "Logo".into(),
+                ..Default::default()
+            },
+            path: "logo.png".into(),
+            fit: CanvasFit::Fill,
+        };
+        let json = serde_json::to_string(&cue).unwrap();
+        let de: Cue = serde_json::from_str(&json).unwrap();
+        assert_eq!(cue, de);
+        let val = serde_json::to_value(&cue).unwrap();
+        assert_eq!(val["$type"], "ImageCue");
+    }
+
+    #[test]
+    fn test_goto_cue_serde() {
+        let cue = Cue::Goto {
+            base: CueBase {
+                qid: Decimal::from(12),
+                name: "Jump".into(),
+                ..Default::default()
+            },
+            target_qid: Decimal::from(5),
+        };
+        let json = serde_json::to_string(&cue).unwrap();
+        let de: Cue = serde_json::from_str(&json).unwrap();
+        assert_eq!(cue, de);
+        let val = serde_json::to_value(&cue).unwrap();
+        assert_eq!(val["$type"], "GotoCue");
+    }
+
+    #[test]
+    fn test_triggers_default_empty() {
+        let cue = Cue::Dummy {
+            base: CueBase::default(),
+        };
+        let json = serde_json::to_string(&cue).unwrap();
+        let de: Cue = serde_json::from_str(&json).unwrap();
+        assert_eq!(cue.base().triggers, de.base().triggers);
+        assert!(de.base().triggers.hotkey.is_none());
+    }
+
+    #[test]
+    fn test_triggers_roundtrip() {
+        let triggers = CueTriggers {
+            hotkey: Some(HotkeyTrigger { key: "Space".into() }),
+            midi: Some(MidiTrigger {
+                channel: 1,
+                kind: MidiTriggerKind::NoteOn,
+                note_or_cc: 60,
+                velocity_min: 1,
+            }),
+            wall_clock: Some(WallClockTrigger {
+                time: "14:30:00".into(),
+                mode: ClockMode::TwentyFourHour,
+                repeat: RepeatMode::Daily,
+            }),
+            timecode: Some(TimecodeTrigger {
+                time: Timespan::from_secs_f64(10.0),
+            }),
+        };
+        let cue = Cue::Dummy {
+            base: CueBase {
+                qid: Decimal::ONE,
+                triggers,
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&cue).unwrap();
+        let de: Cue = serde_json::from_str(&json).unwrap();
+        assert_eq!(cue, de);
     }
 }

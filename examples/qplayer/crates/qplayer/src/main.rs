@@ -7,8 +7,10 @@
 //!   frame to main thread via winit user event.
 
 use qplayer_audio::{AudioEngine, FileDecoder, SampleProvider};
+use qplayer_core::{MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
 use qplayer_gui::{AppCommand, QPlayerApp, SharedStateHandle};
 use qplayer_gui::app::CueState;
+use qplayer_protocols::midi::{MidiEvent, MidiManager};
 use qplayer_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use qplayer_protocols::osc::{OscEvent, OscManager};
 use qplayer_video::{VideoFrame, VideoSource};
@@ -117,6 +119,7 @@ struct App {
     delayed_cues: Vec<DelayedCue>,
     paused: bool,
     show_start_time: Option<Instant>,
+    show_start_clock: Option<std::time::Duration>,
     triggered_timecodes: Vec<rust_decimal::Decimal>,
     /// TimeCode cues with a duration currently occupying time.
     active_timecodes: Vec<(rust_decimal::Decimal, std::time::Instant)>,
@@ -137,7 +140,12 @@ struct App {
     #[allow(dead_code)]
     msc_manager: Option<MscManager>,
     msc_rx: Option<std::sync::mpsc::Receiver<MscEvent>>,
+    midi_manager: Option<MidiManager>,
     last_discovery: Instant,
+
+    // ── trigger state ──
+    wall_clock_fired: std::collections::HashMap<rust_decimal::Decimal, Instant>,
+    timecode_fired: std::collections::HashSet<rust_decimal::Decimal>,
 
     // ── polish ──
     last_window_title: String,
@@ -237,6 +245,17 @@ impl App {
             }
         };
 
+        let midi_manager = match MidiManager::new() {
+            Ok(m) => {
+                log::info!("MIDI input manager started");
+                Some(m)
+            }
+            Err(e) => {
+                log::warn!("MIDI input unavailable: {e}");
+                None
+            }
+        };
+
         let autosave_running = Arc::new(AtomicBool::new(true));
         spawn_autosave_thread(Arc::clone(&qplayer.state()), Arc::clone(&autosave_running));
 
@@ -276,6 +295,7 @@ impl App {
             osc_rx,
             msc_manager,
             msc_rx,
+            midi_manager,
             last_discovery: Instant::now(),
             last_window_title: String::new(),
             autosave_running,
@@ -285,9 +305,12 @@ impl App {
             delayed_cues: Vec::new(),
             paused: false,
             show_start_time: None,
+            show_start_clock: None,
             triggered_timecodes: Vec::new(),
             active_timecodes: Vec::new(),
             modifiers: winit::keyboard::ModifiersState::empty(),
+            wall_clock_fired: std::collections::HashMap::new(),
+            timecode_fired: std::collections::HashSet::new(),
         }
     }
 
@@ -475,8 +498,10 @@ impl App {
         // Start the show clock on first Go
         if self.show_start_time.is_none() {
             self.show_start_time = Some(Instant::now());
+            self.show_start_clock = Some(self.audio_engine.playback_time());
             self.triggered_timecodes.clear();
             self.active_timecodes.clear();
+            self.timecode_fired.clear();
         }
 
         let (start_qid, start_idx) = {
@@ -555,6 +580,19 @@ impl App {
             if let Ok(mut state) = self.qplayer.state().lock() {
                 state.selected_cue_id = Some(next_qid);
             }
+        }
+    }
+
+    /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
+    fn play_cue_by_qid(&mut self, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
+        let cue = {
+            let state = self.qplayer.state().lock().unwrap();
+            state.show_file.cues.iter().find(|c| c.base().qid == qid).cloned()
+        };
+        if let Some(cue) = cue {
+            self.play_cue(&cue, event_loop);
+        } else {
+            log::warn!("Trigger referenced unknown cue Q{}", qid);
         }
     }
 
@@ -682,10 +720,159 @@ impl App {
                     self.play_after_last_chain(qid, event_loop);
                 }
             }
+            qplayer_core::Cue::Text { text, font_size, font_colour, fit: _, .. } => {
+                log::info!("Go TextCue Q{}: '{}'", qid, text);
+                self.ensure_outputs_and_canvas(event_loop);
+                if let Some(canvas) = self.canvas_texture.as_ref() {
+                    let rgba = self.rasterize_text_to_canvas(text, *font_size, *font_colour, canvas.width, canvas.height);
+                    canvas.upload_rgba(&self.queue, &rgba);
+                }
+                self.current_video_qid = Some(qid);
+            }
+            qplayer_core::Cue::Image { path, fit, .. } => {
+                log::info!("Go ImageCue Q{}: {}", qid, path);
+                self.ensure_outputs_and_canvas(event_loop);
+                if let Some(canvas) = self.canvas_texture.as_ref() {
+                    let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
+                    if let Err(e) = canvas.upload_image(&self.queue, &resolved, *fit) {
+                        log::error!("Image cue Q{} failed: {e}", qid);
+                    }
+                }
+                self.current_video_qid = Some(qid);
+            }
+            qplayer_core::Cue::Goto { target_qid, .. } => {
+                log::info!("Go GotoCue Q{} -> Q{}", qid, target_qid);
+                if *target_qid == qid {
+                    log::warn!("Goto cue Q{} targets itself; ignoring", qid);
+                    return;
+                }
+                // Set selection and fire the target cue immediately.
+                if let Ok(mut state) = self.qplayer.state().lock() {
+                    state.selected_cue_id = Some(*target_qid);
+                }
+                self.play_cue_by_qid(*target_qid, event_loop);
+                // Advance standby past the goto cue.
+                if let Some(next_qid) = {
+                    let state = self.qplayer.state().lock().unwrap();
+                    let idx = state.show_file.cues.iter().position(|c| c.base().qid == qid);
+                    idx.and_then(|i| next_standby_qid(&state.show_file.cues, i))
+                } {
+                    if let Ok(mut state) = self.qplayer.state().lock() {
+                        state.selected_cue_id = Some(next_qid);
+                    }
+                }
+            }
             other => {
                 log::info!("Go on unsupported cue type: {:?}", std::mem::discriminant(other));
             }
         }
+    }
+
+    /// Create output windows and a canvas texture if none exist (for Text/Image cues).
+    fn ensure_outputs_and_canvas(&mut self, event_loop: &ActiveEventLoop) {
+        if self.output_windows.is_empty() {
+            self.create_output_windows(event_loop);
+        }
+        let projection = {
+            let state = self.qplayer.state().lock().unwrap();
+            state.show_file.projection.clone()
+        };
+        if let Some(canvas) = self.canvas_texture.as_mut() {
+            if canvas.width != projection.canvas_width || canvas.height != projection.canvas_height {
+                canvas.resize(&self.device, projection.canvas_width, projection.canvas_height);
+            }
+        } else {
+            self.canvas_texture = Some(qplayer_video::CanvasTexture::new(
+                &self.device,
+                projection.canvas_width,
+                projection.canvas_height,
+            ));
+        }
+    }
+
+    /// Rasterise a text string into a canvas-sized RGBA8 buffer using egui's font atlas.
+    ///
+    /// ponytail: reuses the existing egui context's font atlas instead of pulling in a
+    /// separate text crate. ASCII/Latin-only quality matches the default egui font.
+    fn rasterize_text_to_canvas(
+        &self,
+        text: &str,
+        font_size: f32,
+        colour: SerializedColour,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let (r, g, b, a) = (
+            (colour.r * 255.0) as u8,
+            (colour.g * 255.0) as u8,
+            (colour.b * 255.0) as u8,
+            (colour.a * 255.0) as u8,
+        );
+
+        let (galley, font_image) = self.egui_ctx.fonts_mut(|fonts| {
+            let galley = fonts.layout(
+                text.into(),
+                egui::FontId::new(font_size, egui::FontFamily::Proportional),
+                egui::Color32::WHITE,
+                f32::INFINITY,
+            );
+            (galley, fonts.image())
+        });
+
+        let text_size = galley.rect.size();
+        let offset_x = ((width as f32 - text_size.x) * 0.5).max(0.0);
+        let offset_y = ((height as f32 - text_size.y) * 0.5).max(0.0);
+
+        let font_width = font_image.size[0];
+
+        for row in &galley.rows {
+            for glyph in &row.glyphs {
+                let rect = &glyph.uv_rect;
+                let gw = rect.size.x.round().max(1.0) as u32;
+                let gh = rect.size.y.round().max(1.0) as u32;
+                let dx0 = (offset_x + glyph.pos.x + rect.offset.x).round() as i32;
+                let dy0 = (offset_y + glyph.pos.y + rect.offset.y).round() as i32;
+
+                let src_min_x = rect.min[0] as u32;
+                let src_min_y = rect.min[1] as u32;
+
+                for gy in 0..gh {
+                    let dy = dy0 + gy as i32;
+                    if dy < 0 || dy >= height as i32 {
+                        continue;
+                    }
+                    let src_y = src_min_y + gy;
+                    if src_y as usize >= font_image.size[1] {
+                        continue;
+                    }
+                    for gx in 0..gw {
+                        let dx = dx0 + gx as i32;
+                        if dx < 0 || dx >= width as i32 {
+                            continue;
+                        }
+                        let src_x = src_min_x + gx;
+                        if src_x as usize >= font_image.size[0] {
+                            continue;
+                        }
+                        let alpha = font_image.pixels
+                            [(src_y as usize * font_width + src_x as usize)
+                                .min(font_image.pixels.len().saturating_sub(1))]
+                            .a() as f32
+                            / 255.0;
+                        if alpha > 0.0 {
+                            let di = ((dy as u32 * width + dx as u32) * 4) as usize;
+                            rgba[di] = r;
+                            rgba[di + 1] = g;
+                            rgba[di + 2] = b;
+                            rgba[di + 3] = (a as f32 * alpha) as u8;
+                        }
+                    }
+                }
+            }
+        }
+
+        rgba
     }
 
     /// Resolve a file path: try absolute, then relative to project, then search project tree.
@@ -1142,6 +1329,7 @@ impl App {
         self.active_cues.clear();
         self.delayed_cues.clear();
         self.active_timecodes.clear();
+        self.timecode_fired.clear();
         self.paused = false;
     }
 
@@ -1322,7 +1510,211 @@ impl App {
                         pm.on_save();
                     }
                 }
+                AppCommand::LearnMidiTrigger { qid } => {
+                    if let Ok(mut state) = self.qplayer.state().lock() {
+                        state.pending_midi_learn = Some(qid);
+                        log::info!("Listening for MIDI trigger on Q{} — play a note/CC", qid);
+                    }
+                }
+                AppCommand::CaptureTimecodeTrigger { qid } => {
+                    if let Ok(mut state) = self.qplayer.state().lock() {
+                        state.pending_timecode_capture = Some(qid);
+                        log::info!("Capturing timecode trigger on Q{} at next tick", qid);
+                    }
+                }
                 _ => {}
+            }
+        }
+    }
+
+    /// Drain MIDI input events and fire any cues whose MIDI trigger matches.
+    fn process_midi_events(&mut self) {
+        let Some(manager) = &self.midi_manager else { return };
+        while let Some(ev) = manager.try_recv() {
+            log::debug!("MIDI event: {ev:?}");
+
+            // If MIDI learn is pending, store the first event as the cue's trigger.
+            let learn_qid = {
+                let Ok(state) = self.qplayer.state().lock() else { continue };
+                state.pending_midi_learn
+            };
+            if let Some(qid) = learn_qid {
+                let learned: Option<MidiTrigger> = match self.qplayer.state().lock() {
+                    Ok(mut state) => {
+                        let trigger = match ev {
+                        MidiEvent::NoteOn { channel, note, velocity } => MidiTrigger {
+                            channel,
+                            kind: MidiTriggerKind::NoteOn,
+                            note_or_cc: note,
+                            velocity_min: velocity,
+                        },
+                        MidiEvent::NoteOff { channel, note, velocity } => MidiTrigger {
+                            channel,
+                            kind: MidiTriggerKind::NoteOff,
+                            note_or_cc: note,
+                            velocity_min: velocity,
+                        },
+                        MidiEvent::CC { channel, cc, value } => MidiTrigger {
+                            channel,
+                            kind: MidiTriggerKind::CC,
+                            note_or_cc: cc,
+                            velocity_min: value,
+                        },
+                    };
+                        if let Some(cue) = state.show_file.cues.iter_mut().find(|c| c.base().qid == qid) {
+                            cue.base_mut().triggers.midi = Some(trigger);
+                            Some(trigger)
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                };
+                if let Ok(mut state) = self.qplayer.state().lock() {
+                    if learned.is_some() {
+                        state.dirty = true;
+                    }
+                    state.pending_midi_learn = None;
+                }
+                if let Some(trigger) = learned {
+                    log::info!("Learned MIDI trigger for Q{}: {:?}", qid, trigger);
+                }
+                continue;
+            }
+
+            let cues: Vec<_> = {
+                let Ok(state) = self.qplayer.state().lock() else { continue };
+                state.show_file.cues.iter().filter(|c| c.enabled()).cloned().collect()
+            };
+            for cue in cues {
+                let trigger = cue.base().triggers.midi.as_ref();
+                let Some(trigger) = trigger else { continue };
+                let matches = match (ev, trigger.kind) {
+                    (MidiEvent::NoteOn { channel, note, velocity }, MidiTriggerKind::NoteOn)
+                    | (MidiEvent::NoteOff { channel, note, velocity }, MidiTriggerKind::NoteOff) => {
+                        channel == trigger.channel && note == trigger.note_or_cc && velocity >= trigger.velocity_min
+                    }
+                    (MidiEvent::CC { channel, cc, value }, MidiTriggerKind::CC) => {
+                        channel == trigger.channel && cc == trigger.note_or_cc && value >= trigger.velocity_min
+                    }
+                    _ => false,
+                };
+                if matches {
+                    let qid = cue.base().qid;
+                    log::info!("MIDI trigger matched Q{}", qid);
+                    if let Ok(mut state) = self.qplayer.state().lock() {
+                        state.selected_cue_id = Some(qid);
+                        state.command_queue.push(AppCommand::Go);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fire the first enabled cue whose hotkey trigger matches `key_name`.
+    fn fire_hotkey_trigger(&self, key_name: &str) {
+        let cues: Vec<_> = {
+            let Ok(state) = self.qplayer.state().lock() else { return };
+            state.show_file.cues.iter().filter(|c| c.enabled()).cloned().collect()
+        };
+        for cue in cues {
+            if cue
+                .base()
+                .triggers
+                .hotkey
+                .as_ref()
+                .map(|t| t.key.eq_ignore_ascii_case(key_name))
+                .unwrap_or(false)
+            {
+                let qid = cue.base().qid;
+                log::info!("Hotkey trigger fired Q{} via '{}'", qid, key_name);
+                if let Ok(mut state) = self.qplayer.state().lock() {
+                    state.selected_cue_id = Some(qid);
+                    state.command_queue.push(AppCommand::Go);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Poll wall-clock triggers and fire any cue whose scheduled time has arrived.
+    fn poll_wall_clock_triggers(&mut self) {
+        let now = chrono::Local::now();
+        let current = now.time();
+        let cues: Vec<_> = {
+            let Ok(state) = self.qplayer.state().lock() else { return };
+            state.show_file.cues.iter().filter(|c| c.enabled()).cloned().collect()
+        };
+
+        for cue in cues {
+            let Some(trigger) = cue.base().triggers.wall_clock.as_ref() else { continue };
+            let parsed = chrono::NaiveTime::parse_from_str(&trigger.time, "%H:%M:%S")
+                .or_else(|_| chrono::NaiveTime::parse_from_str(&trigger.time, "%I:%M:%S %p"));
+            let Ok(target) = parsed else { continue };
+
+            let diff = current.signed_duration_since(target).num_seconds().abs();
+            if diff <= 1 {
+                let qid = cue.base().qid;
+                let should_fire = self
+                    .wall_clock_fired
+                    .get(&qid)
+                    .map(|t| t.elapsed() > Duration::from_secs(2))
+                    .unwrap_or(true);
+                if should_fire {
+                    log::info!("Wall-clock trigger fired Q{} at {}", qid, trigger.time);
+                    if let Ok(mut state) = self.qplayer.state().lock() {
+                        state.selected_cue_id = Some(qid);
+                        state.command_queue.push(AppCommand::Go);
+                    }
+                    self.wall_clock_fired.insert(qid, Instant::now());
+                }
+            }
+        }
+    }
+
+    /// Poll timecode triggers against the show clock.
+    fn poll_timecode_triggers(&mut self) {
+        let Some(show_start) = self.show_start_clock else { return };
+        let playback = self.audio_engine.playback_time();
+        if playback < show_start {
+            return;
+        }
+        let elapsed = playback - show_start;
+
+        // Capture current show time into a cue's timecode trigger if requested.
+        let capture_qid = {
+            let Ok(state) = self.qplayer.state().lock() else { return };
+            state.pending_timecode_capture
+        };
+        if let Some(qid) = capture_qid {
+            if let Ok(mut state) = self.qplayer.state().lock() {
+                if let Some(cue) = state.show_file.cues.iter_mut().find(|c| c.base().qid == qid) {
+                    cue.base_mut().triggers.timecode = Some(qplayer_core::TimecodeTrigger {
+                        time: Timespan::from_secs_f64(elapsed.as_secs_f64()),
+                    });
+                    state.dirty = true;
+                    log::info!("Captured timecode trigger for Q{} at {:.2}s", qid, elapsed.as_secs_f64());
+                }
+                state.pending_timecode_capture = None;
+            }
+        }
+
+        let cues: Vec<_> = {
+            let Ok(state) = self.qplayer.state().lock() else { return };
+            state.show_file.cues.iter().filter(|c| c.enabled()).cloned().collect()
+        };
+
+        for cue in cues {
+            let Some(trigger) = cue.base().triggers.timecode.as_ref() else { continue };
+            let qid = cue.base().qid;
+            let target = Duration::from_secs_f64(trigger.time.as_secs_f64());
+            if elapsed >= target && !self.timecode_fired.contains(&qid) {
+                log::info!("Timecode trigger fired Q{} at {:.2}s", qid, target.as_secs_f64());
+                if let Ok(mut state) = self.qplayer.state().lock() {
+                    state.selected_cue_id = Some(qid);
+                    state.command_queue.push(AppCommand::Go);
+                }
+                self.timecode_fired.insert(qid);
             }
         }
     }
@@ -1997,6 +2389,16 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.create_output_windows(event_loop);
                             }
                             self.toggle_output_fullscreen();
+                        } else {
+                            // Check cue hotkey triggers (only bare keys, not Ctrl/Cmd combos).
+                            let key_name = match &key_event.logical_key {
+                                Key::Character(s) => s.to_string(),
+                                Key::Named(n) => format!("{:?}", n),
+                                _ => String::new(),
+                            };
+                            if !key_name.is_empty() && !has_ctrl {
+                                self.fire_hotkey_trigger(&key_name);
+                            }
                         }
                     }
                 }
@@ -2083,7 +2485,10 @@ impl ApplicationHandler<AppEvent> for App {
             self.hard_exit();
         }
 
+        self.process_midi_events();
         self.process_protocol_events();
+        self.poll_wall_clock_triggers();
+        self.poll_timecode_triggers();
 
         // Plugin slow update every 250 ms
         if self.last_slow_update.elapsed() >= Duration::from_millis(250) {

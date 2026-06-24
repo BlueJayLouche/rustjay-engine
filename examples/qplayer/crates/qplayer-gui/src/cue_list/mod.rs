@@ -45,6 +45,15 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             if ui.button("+ OSC").clicked() {
                 queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Osc });
             }
+            if ui.button("+ Text").clicked() {
+                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Text });
+            }
+            if ui.button("+ Image").clicked() {
+                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Image });
+            }
+            if ui.button("+ Goto").clicked() {
+                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Goto });
+            }
         });
         ui.separator();
     }
@@ -313,6 +322,18 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Volume });
                         ui.close();
                     }
+                    if ui.button("Add Text Cue").clicked() {
+                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Text });
+                        ui.close();
+                    }
+                    if ui.button("Add Image Cue").clicked() {
+                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Image });
+                        ui.close();
+                    }
+                    if ui.button("Add Goto Cue").clicked() {
+                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Goto });
+                        ui.close();
+                    }
                 });
             }
 
@@ -387,6 +408,9 @@ fn cue_type_label(cue: &Cue) -> &'static str {
         Cue::Dummy { .. } => "DUM",
         Cue::TimeCode { .. } => "TC",
         Cue::Osc { .. } => "OSC",
+        Cue::Text { .. } => "TXT",
+        Cue::Image { .. } => "IMG",
+        Cue::Goto { .. } => "GTO",
     }
 }
 

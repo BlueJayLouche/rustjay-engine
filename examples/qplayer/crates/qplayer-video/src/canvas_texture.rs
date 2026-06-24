@@ -53,7 +53,24 @@ impl CanvasTexture {
     /// with a GPU scale-blit render pass.
     pub fn upload_frame(&self, queue: &Queue, frame: &VideoFrame, fit: CanvasFit) {
         let canvas = compose_canvas(frame, self.width, self.height, fit);
+        self.upload_rgba(queue, &canvas);
+    }
 
+    /// Load an image file and place it on the canvas using the same fit modes as video.
+    pub fn upload_image(&self, queue: &Queue, path: &str, fit: CanvasFit) -> anyhow::Result<()> {
+        let img = image::open(path)
+            .map_err(|e| anyhow::anyhow!("failed to open image {path}: {e}"))?
+            .to_rgba8();
+        let frame = VideoFrame::new(img.width(), img.height(), img.into_raw(), 0.0);
+        self.upload_frame(queue, &frame, fit);
+        Ok(())
+    }
+
+    /// Upload a full RGBA8 buffer that exactly matches the canvas size.
+    ///
+    /// ponytail: callers (e.g. the text cue path) build the buffer on the CPU.
+    pub fn upload_rgba(&self, queue: &Queue, data: &[u8]) {
+        debug_assert_eq!(data.len(), (self.width * self.height * 4) as usize);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
@@ -61,7 +78,7 @@ impl CanvasTexture {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &canvas,
+            data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 4),

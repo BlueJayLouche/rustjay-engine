@@ -52,6 +52,7 @@ chrono = { version = "0.4", features = ["serde", "std", "clock"] }
 dirs = "6.0"
 rfd = "0.15"
 brotli = "7.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Internal crates (path deps managed by cargo workspace)
 qplayer-core = { path = "crates/qplayer-core" }
