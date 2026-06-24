@@ -5,7 +5,7 @@ edition = "2024"
 description = "ShaderGlass-style shader overlay — a source (Syphon/NDI/webcam/…) filtered through an ISF shader, with an egui control window"
 
 [features]
-default = ["egui", "ndi", "webcam"]
+default = ["egui", "webcam"]
 egui    = ["rustjay-engine/egui"]
 ndi     = ["rustjay-engine/ndi"]
 webcam  = ["rustjay-engine/webcam"]
