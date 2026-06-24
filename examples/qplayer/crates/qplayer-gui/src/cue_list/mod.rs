@@ -74,6 +74,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
+        // Group membership is the `parent` field: a member points at its Group
+        // cue and is drawn indented. Drag a cue onto a group (or a member) to join
+        // it; drag to the strip below the list to free it.
         for (idx, cue) in cues.iter().enumerate() {
             let base = cue.base();
             let qid = base.qid;
@@ -82,15 +85,26 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             let cue_type = cue_type_label(cue);
             let colour = colour_to_egui(base.colour);
 
+            let is_group = matches!(cue, Cue::Group { .. });
+            // Groups are always top-level, so they never render indented.
+            let in_group = base.parent.is_some() && !is_group;
+            // The group a cue dropped onto this row should join.
+            let row_group = if is_group { Some(qid) } else { base.parent };
+
             let bg = if is_selected {
                 ui.visuals().selection.bg_fill
+            } else if is_group {
+                ui.visuals().widgets.active.weak_bg_fill
             } else {
                 ui.visuals().panel_fill
             };
 
-            let frame = egui::Frame::new()
-                .fill(bg)
-                .inner_margin(egui::Margin::same(4));
+            let frame = egui::Frame::new().fill(bg).inner_margin(egui::Margin {
+                left: if in_group { 26 } else { 4 },
+                right: 4,
+                top: 4,
+                bottom: 4,
+            });
 
             let (drop_response, dropped_payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
                 ui.horizontal(|ui| {
@@ -255,9 +269,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 });
             });
 
-            // Context menu on the entire row (right-click anywhere in the frame)
+            // Context menu on the row. `dnd_drop_zone`'s response is hover-only,
+            // so right-clicks never reach it. Upgrade that same response to sense
+            // clicks (reuses its id, so the row's widgets stay on top and keep
+            // their own clicks); select the cue so the menu acts on it.
             if show_mode == crate::app::ShowMode::Edit {
-                drop_response.response.context_menu(|ui| {
+                let row_resp = drop_response.response.interact(egui::Sense::click());
+                if row_resp.secondary_clicked() {
+                    queue_select(state, qid);
+                }
+                row_resp.context_menu(|ui| {
                     if ui.button("Move Up").clicked() {
                         queue_cmd(state, AppCommand::MoveSelectedCueUp);
                         ui.close();
@@ -295,14 +316,43 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 });
             }
 
-            // Handle dropped payload for reordering
+            // Handle dropped payload for reordering. Dropping onto a row joins
+            // that row's group; dropping onto a group header makes it the first
+            // member (inserted just after the header).
             if show_mode == crate::app::ShowMode::Edit {
                 if let Some(source_idx) = dropped_payload {
                     let source = *source_idx;
                     if source != idx {
-                        queue_cmd(state, AppCommand::MoveCue { from_idx: source, to_idx: idx });
+                        let to_idx = if is_group { idx + 1 } else { idx };
+                        queue_cmd(
+                            state,
+                            AppCommand::MoveCue { from_idx: source, to_idx, parent: row_group },
+                        );
                     }
                 }
+            }
+        }
+
+        // Trailing drop strip: drop a cue here to move it to the end and free it
+        // from any group. Lets you place cues after a group (which can't be done
+        // by reordering alone, since membership is the parent field).
+        if show_mode == crate::app::ShowMode::Edit {
+            let frame = egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::same(8));
+            let (_resp, payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.weak("⤓  drop here to ungroup / move to end");
+            });
+            if let Some(source_idx) = payload {
+                queue_cmd(
+                    state,
+                    AppCommand::MoveCue {
+                        from_idx: *source_idx,
+                        to_idx: cues.len(),
+                        parent: None,
+                    },
+                );
             }
         }
     });

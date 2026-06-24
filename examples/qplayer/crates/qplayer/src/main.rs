@@ -544,6 +544,18 @@ impl App {
         for qid in after_last {
             log::info!("AfterLast cue Q{} scheduled", qid);
         }
+
+        // Advance the playhead so the next Go fires the following cue (QLab-style
+        // stepping). Skip the cues that auto-fired alongside this one.
+        let next_qid = {
+            let state = self.qplayer.state().lock().unwrap();
+            next_standby_qid(&state.show_file.cues, start_idx)
+        };
+        if let Some(next_qid) = next_qid {
+            if let Ok(mut state) = self.qplayer.state().lock() {
+                state.selected_cue_id = Some(next_qid);
+            }
+        }
     }
 
     fn play_cue(&mut self, cue: &qplayer_core::Cue, event_loop: &ActiveEventLoop) {
@@ -637,19 +649,20 @@ impl App {
                 }
             }
             qplayer_core::Cue::Group { .. } => {
-                // A group "owns" the consecutive cues after it, up to the next group.
-                // Going the group fires that whole block (each via the normal play
-                // path, so per-cue delay and the enabled flag still apply).
+                // A group owns the cues whose `parent` points at it. Going the
+                // group fires that whole block (each via the normal play path, so
+                // per-cue delay and the enabled flag still apply).
                 let members: Vec<qplayer_core::Cue> = {
                     let state = self.qplayer.state().lock().unwrap();
-                    match state.show_file.cues.iter().position(|c| c.base().qid == qid) {
-                        Some(idx) => state.show_file.cues[idx + 1..]
-                            .iter()
-                            .take_while(|c| !matches!(c, qplayer_core::Cue::Group { .. }))
-                            .cloned()
-                            .collect(),
-                        None => Vec::new(),
-                    }
+                    state
+                        .show_file
+                        .cues
+                        .iter()
+                        // Exclude self: a group can never be its own member (guards
+                        // against stray self-referential data causing recursion).
+                        .filter(|c| c.base().parent == Some(qid) && c.base().qid != qid)
+                        .cloned()
+                        .collect()
                 };
                 log::info!("Go GroupCue Q{} — firing {} member(s)", qid, members.len());
                 for member in members {
@@ -1130,6 +1143,21 @@ impl App {
         self.delayed_cues.clear();
         self.active_timecodes.clear();
         self.paused = false;
+    }
+
+    /// Persist settings and hard-exit the process. A graceful `event_loop.exit()`
+    /// returns through `run_app` and runs Rust drops (wgpu device/surfaces, threads)
+    /// which can wedge the main thread on macOS (beachball); the OS reclaims
+    /// everything on `process::exit`, just like the Ctrl-C handler and Dock-quit.
+    fn hard_exit(&self) -> ! {
+        let recent_files = self
+            .qplayer
+            .state()
+            .lock()
+            .map(|s| s.recent_files.clone())
+            .unwrap_or_default();
+        save_settings(&AppSettings { recent_files });
+        std::process::exit(0);
     }
 
     fn pause_all(&mut self) {
@@ -1919,30 +1947,16 @@ impl ApplicationHandler<AppEvent> for App {
 
             match event {
                 WindowEvent::CloseRequested => {
-                    let has_running = !self.active_cues.is_empty();
-                    if has_running {
-                        let choice = rfd::MessageDialog::new()
-                            .set_title("Running Cues")
-                            .set_description("There are cues currently playing. Stop them and exit?")
-                            .set_buttons(rfd::MessageButtons::OkCancel)
-                            .show();
-                        if !matches!(choice, rfd::MessageDialogResult::Ok) {
-                            return;
-                        }
-                        self.stop_all();
-                    }
+                    // Unsaved changes / running cues -> show the in-app quit-confirm
+                    // modal (a native dialog deadlocks the loop). Otherwise quit now.
                     let dirty = self.qplayer.state().lock().map(|s| s.dirty).unwrap_or(false);
-                    if dirty {
-                        let choice = rfd::MessageDialog::new()
-                            .set_title("Unsaved Changes")
-                            .set_description("You have unsaved changes. Discard them?")
-                            .set_buttons(rfd::MessageButtons::OkCancel)
-                            .show();
-                        if !matches!(choice, rfd::MessageDialogResult::Ok) {
-                            return;
+                    if !self.active_cues.is_empty() || dirty {
+                        if let Ok(mut state) = self.qplayer.state().lock() {
+                            state.pending_close_confirm = true;
                         }
+                    } else {
+                        self.hard_exit();
                     }
-                    event_loop.exit();
                 }
                 WindowEvent::Resized(size) => {
                     if size.width > 0 && size.height > 0 {
@@ -2064,6 +2078,11 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Quit confirmed by the in-app modal — hard-exit (see hard_exit for why).
+        if self.qplayer.state().lock().map(|s| s.quit).unwrap_or(false) {
+            self.hard_exit();
+        }
+
         self.process_protocol_events();
 
         // Plugin slow update every 250 ms
@@ -2092,6 +2111,35 @@ impl ApplicationHandler<AppEvent> for App {
             out.window.request_redraw();
         }
     }
+}
+
+/// After firing the cue at `start_idx`, return the next cue to put on standby:
+/// skip the cues that auto-fired alongside it — a Group's members (everything up
+/// to the next Group), or a `WithLast`/`AfterLast` continuation chain — and land
+/// on the next manually-triggered cue. `None` at the end of the list.
+fn next_standby_qid(
+    cues: &[qplayer_core::Cue],
+    start_idx: usize,
+) -> Option<rust_decimal::Decimal> {
+    let mut i = start_idx + 1;
+    if matches!(cues.get(start_idx), Some(qplayer_core::Cue::Group { .. })) {
+        // A group fired all its members (cues whose parent is this group) — skip
+        // past them to the next standby.
+        let gid = cues[start_idx].base().qid;
+        while i < cues.len() && cues[i].base().parent == Some(gid) {
+            i += 1;
+        }
+    } else {
+        while i < cues.len()
+            && matches!(
+                cues[i].base().trigger,
+                qplayer_core::TriggerMode::WithLast | qplayer_core::TriggerMode::AfterLast
+            )
+        {
+            i += 1;
+        }
+    }
+    cues.get(i).map(|c| c.base().qid)
 }
 
 /// Video decode thread: sleeps until each frame's PTS, then sends it to the main loop.
@@ -2434,5 +2482,62 @@ mod tests {
     fn test_parse_osc_command_empty() {
         let err = parse_osc_command("");
         assert!(err.is_err());
+    }
+
+    fn dummy(qid: i64, trigger: qplayer_core::TriggerMode) -> qplayer_core::Cue {
+        qplayer_core::Cue::Dummy {
+            base: qplayer_core::CueBase {
+                qid: rust_decimal::Decimal::from(qid),
+                trigger,
+                ..Default::default()
+            },
+        }
+    }
+    fn group(qid: i64) -> qplayer_core::Cue {
+        qplayer_core::Cue::Group {
+            base: qplayer_core::CueBase {
+                qid: rust_decimal::Decimal::from(qid),
+                ..Default::default()
+            },
+        }
+    }
+    fn member(qid: i64, group: i64) -> qplayer_core::Cue {
+        qplayer_core::Cue::Dummy {
+            base: qplayer_core::CueBase {
+                qid: rust_decimal::Decimal::from(qid),
+                parent: Some(rust_decimal::Decimal::from(group)),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn step_skips_withlast_and_afterlast_chain() {
+        use qplayer_core::TriggerMode::*;
+        let cues = vec![dummy(1, Go), dummy(2, WithLast), dummy(3, AfterLast), dummy(4, Go)];
+        // Going Q1 also auto-fires Q2/Q3 -> next standby is Q4.
+        assert_eq!(next_standby_qid(&cues, 0), Some(rust_decimal::Decimal::from(4)));
+    }
+
+    #[test]
+    fn step_plain_go_advances_by_one() {
+        use qplayer_core::TriggerMode::Go;
+        let cues = vec![dummy(1, Go), dummy(2, Go), dummy(3, Go)];
+        assert_eq!(next_standby_qid(&cues, 0), Some(rust_decimal::Decimal::from(2)));
+    }
+
+    #[test]
+    fn step_over_group_skips_members() {
+        use qplayer_core::TriggerMode::Go;
+        // Group Q10 owns Q11/Q12; Q30 is a free cue after the group.
+        let cues = vec![group(10), member(11, 10), member(12, 10), dummy(30, Go)];
+        // Going group Q10 fires its members -> next standby is the free cue Q30.
+        assert_eq!(next_standby_qid(&cues, 0), Some(rust_decimal::Decimal::from(30)));
+    }
+
+    #[test]
+    fn step_at_end_returns_none() {
+        let cues = vec![dummy(1, qplayer_core::TriggerMode::Go)];
+        assert_eq!(next_standby_qid(&cues, 0), None);
     }
 }

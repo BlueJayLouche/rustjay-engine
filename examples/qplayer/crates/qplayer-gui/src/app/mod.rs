@@ -201,6 +201,11 @@ pub struct SharedState {
     pub show_video_window: bool,
     /// Whether the Projection Mapping window is open.
     pub show_projection_window: bool,
+    /// Set on window-close with unsaved changes / running cues — shows the in-app
+    /// quit-confirm modal (a native modal deadlocks the loop).
+    pub pending_close_confirm: bool,
+    /// Set by the quit-confirm modal; main.rs hard-exits on the next tick.
+    pub quit: bool,
     /// List of loaded plugins (name, path) for the plugin manager window.
     pub plugin_list: Vec<(String, String)>,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
@@ -242,6 +247,8 @@ impl Default for SharedState {
             waveform_window_scroll: 0.0,
             show_video_window: false,
             show_projection_window: false,
+            pending_close_confirm: false,
+            quit: false,
             plugin_list: Vec::new(),
             progress_overlay: None,
         }
@@ -300,7 +307,7 @@ pub enum AppCommand {
     DuplicateSelectedCue,
     MoveSelectedCueUp,
     MoveSelectedCueDown,
-    MoveCue { from_idx: usize, to_idx: usize },
+    MoveCue { from_idx: usize, to_idx: usize, parent: Option<Decimal> },
     SetLimiterThreshold(f32),
     SetAudioDevice(String),
     ToggleVideoWindow,
@@ -366,7 +373,9 @@ impl QPlayerApp {
 
 impl QPlayerApp {
     pub fn update(&mut self, ctx: &egui::Context) {
-        // Keyboard shortcuts
+        // Keyboard shortcuts. Skip the bare Delete/Backspace cue-delete while a
+        // text field is focused so editing isn't hijacked.
+        let editing_text = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
             let modifiers = i.modifiers;
 
@@ -400,8 +409,10 @@ impl QPlayerApp {
                 }
             }
 
-            // Delete selected cue
-            if i.key_pressed(egui::Key::Delete) {
+            // Delete selected cue (Delete, or Backspace which is the Mac "delete").
+            if !editing_text
+                && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            {
                 if let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::DeleteSelectedCue);
                 }
@@ -781,6 +792,31 @@ impl QPlayerApp {
         }
         if let Ok(mut state) = self.state.lock() {
             state.show_projection_window = show_projection;
+        }
+
+        // Quit-confirm modal (in-app; a native dialog deadlocks the winit loop).
+        let pending_close = self.state.lock().map(|s| s.pending_close_confirm).unwrap_or(false);
+        if pending_close {
+            egui::Modal::new(egui::Id::new("quit_confirm")).show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.heading("Quit QPlayer?");
+                ui.add_space(4.0);
+                ui.label("You have unsaved changes or running cues. Discard and quit?");
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Discard & Quit").clicked() {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.pending_close_confirm = false;
+                            s.quit = true;
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        if let Ok(mut s) = self.state.lock() {
+                            s.pending_close_confirm = false;
+                        }
+                    }
+                });
+            });
         }
 
         // About window
@@ -1318,15 +1354,28 @@ impl QPlayerApp {
                         }
                     }
                 }
-                AppCommand::MoveCue { from_idx, to_idx } => {
+                AppCommand::MoveCue { from_idx, to_idx, parent } => {
                     if let Ok(mut state) = self.state.lock() {
                         let len = state.show_file.cues.len();
-                        if from_idx < len && to_idx < len && from_idx != to_idx {
+                        if from_idx < len && from_idx != to_idx {
                             let snapshot = Snapshot::from_state(&state)
                                 .with_merge_key("move_cue");
                             state.undo_redo.push(snapshot);
-                            let cue = state.show_file.cues.remove(from_idx);
-                            let insert_idx = if to_idx > from_idx { to_idx } else { to_idx };
+                            let mut cue = state.show_file.cues.remove(from_idx);
+                            // Drag sets group membership: parent = the group the cue
+                            // was dropped into, or None to free it. Groups are always
+                            // top-level (no nesting / self-membership).
+                            let parent = if matches!(cue, qplayer_core::Cue::Group { .. })
+                                || parent == Some(cue.base().qid)
+                            {
+                                None
+                            } else {
+                                parent
+                            };
+                            cue.base_mut().parent = parent;
+                            // Removing shifts everything after from_idx left by one.
+                            let insert_idx = if to_idx > from_idx { to_idx - 1 } else { to_idx };
+                            let insert_idx = insert_idx.min(state.show_file.cues.len());
                             state.show_file.cues.insert(insert_idx, cue);
                             state.dirty = true;
                         }
