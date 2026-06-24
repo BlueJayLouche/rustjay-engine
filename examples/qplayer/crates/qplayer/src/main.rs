@@ -571,10 +571,17 @@ impl App {
         }
 
         // Advance the playhead so the next Go fires the following cue (QLab-style
-        // stepping). Skip the cues that auto-fired alongside this one.
+        // stepping). Skip the cues that auto-fired alongside this one. A goto cue
+        // sets its own standby (the target), so don't override it here.
         let next_qid = {
             let state = self.qplayer.state().lock().unwrap();
-            next_standby_qid(&state.show_file.cues, start_idx)
+            let fired_goto =
+                matches!(state.show_file.cues.get(start_idx), Some(qplayer_core::Cue::Goto { .. }));
+            if fired_goto {
+                None
+            } else {
+                next_standby_qid(&state.show_file.cues, start_idx)
+            }
         };
         if let Some(next_qid) = next_qid {
             if let Ok(mut state) = self.qplayer.state().lock() {
@@ -741,9 +748,9 @@ impl App {
                 self.current_video_qid = Some(qid);
             }
             qplayer_core::Cue::Goto { target_qid, .. } => {
-                log::info!("Go GotoCue Q{} -> Q{}", qid, target_qid);
+                log::info!("Go GotoCue Q{} -> arm Q{}", qid, target_qid);
                 // Resolve the goto chain to a non-goto cue, guarding against cycles
-                // (A->B->A) so we don't recurse into play_cue forever (stack overflow).
+                // (A->B->A) so we never recurse forever.
                 let final_target = {
                     let state = self.qplayer.state().lock().unwrap();
                     resolve_goto_target(&state.show_file.cues, qid, *target_qid)
@@ -752,20 +759,12 @@ impl App {
                     log::warn!("Goto cue Q{}: cyclic or unknown target; ignoring", qid);
                     return;
                 };
-                // Set selection and fire the resolved target cue immediately.
+                // A goto just moves the playhead: arm the target as the next
+                // standby cue (the following GO fires it). It does not fire it.
+                // handle_go skips its post-fire advance for goto cues so this
+                // arming stands.
                 if let Ok(mut state) = self.qplayer.state().lock() {
                     state.selected_cue_id = Some(target);
-                }
-                self.play_cue_by_qid(target, event_loop);
-                // Advance standby past the goto cue.
-                if let Some(next_qid) = {
-                    let state = self.qplayer.state().lock().unwrap();
-                    let idx = state.show_file.cues.iter().position(|c| c.base().qid == qid);
-                    idx.and_then(|i| next_standby_qid(&state.show_file.cues, i))
-                } {
-                    if let Ok(mut state) = self.qplayer.state().lock() {
-                        state.selected_cue_id = Some(next_qid);
-                    }
                 }
             }
             other => {
