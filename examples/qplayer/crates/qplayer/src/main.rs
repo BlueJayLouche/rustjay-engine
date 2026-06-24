@@ -742,15 +742,21 @@ impl App {
             }
             qplayer_core::Cue::Goto { target_qid, .. } => {
                 log::info!("Go GotoCue Q{} -> Q{}", qid, target_qid);
-                if *target_qid == qid {
-                    log::warn!("Goto cue Q{} targets itself; ignoring", qid);
+                // Resolve the goto chain to a non-goto cue, guarding against cycles
+                // (A->B->A) so we don't recurse into play_cue forever (stack overflow).
+                let final_target = {
+                    let state = self.qplayer.state().lock().unwrap();
+                    resolve_goto_target(&state.show_file.cues, qid, *target_qid)
+                };
+                let Some(target) = final_target else {
+                    log::warn!("Goto cue Q{}: cyclic or unknown target; ignoring", qid);
                     return;
-                }
-                // Set selection and fire the target cue immediately.
+                };
+                // Set selection and fire the resolved target cue immediately.
                 if let Ok(mut state) = self.qplayer.state().lock() {
-                    state.selected_cue_id = Some(*target_qid);
+                    state.selected_cue_id = Some(target);
                 }
-                self.play_cue_by_qid(*target_qid, event_loop);
+                self.play_cue_by_qid(target, event_loop);
                 // Advance standby past the goto cue.
                 if let Some(next_qid) = {
                     let state = self.qplayer.state().lock().unwrap();
@@ -1528,9 +1534,14 @@ impl App {
     }
 
     /// Drain MIDI input events and fire any cues whose MIDI trigger matches.
-    fn process_midi_events(&mut self) {
-        let Some(manager) = &self.midi_manager else { return };
-        while let Some(ev) = manager.try_recv() {
+    fn process_midi_events(&mut self, event_loop: &ActiveEventLoop) {
+        // Drain all pending events first, so firing cues (which needs `&mut self`)
+        // doesn't conflict with the borrow of `self.midi_manager`.
+        let events: Vec<MidiEvent> = {
+            let Some(manager) = &self.midi_manager else { return };
+            std::iter::from_fn(|| manager.try_recv()).collect()
+        };
+        for ev in events {
             log::debug!("MIDI event: {ev:?}");
 
             // If MIDI learn is pending, store the first event as the cue's trigger.
@@ -1602,17 +1613,14 @@ impl App {
                 if matches {
                     let qid = cue.base().qid;
                     log::info!("MIDI trigger matched Q{}", qid);
-                    if let Ok(mut state) = self.qplayer.state().lock() {
-                        state.selected_cue_id = Some(qid);
-                        state.command_queue.push(AppCommand::Go);
-                    }
+                    self.play_cue_by_qid(qid, event_loop);
                 }
             }
         }
     }
 
     /// Fire the first enabled cue whose hotkey trigger matches `key_name`.
-    fn fire_hotkey_trigger(&self, key_name: &str) {
+    fn fire_hotkey_trigger(&mut self, key_name: &str, event_loop: &ActiveEventLoop) {
         let cues: Vec<_> = {
             let Ok(state) = self.qplayer.state().lock() else { return };
             state.show_file.cues.iter().filter(|c| c.enabled()).cloned().collect()
@@ -1628,17 +1636,14 @@ impl App {
             {
                 let qid = cue.base().qid;
                 log::info!("Hotkey trigger fired Q{} via '{}'", qid, key_name);
-                if let Ok(mut state) = self.qplayer.state().lock() {
-                    state.selected_cue_id = Some(qid);
-                    state.command_queue.push(AppCommand::Go);
-                }
+                self.play_cue_by_qid(qid, event_loop);
                 break;
             }
         }
     }
 
     /// Poll wall-clock triggers and fire any cue whose scheduled time has arrived.
-    fn poll_wall_clock_triggers(&mut self) {
+    fn poll_wall_clock_triggers(&mut self, event_loop: &ActiveEventLoop) {
         let now = chrono::Local::now();
         let current = now.time();
         let cues: Vec<_> = {
@@ -1662,18 +1667,15 @@ impl App {
                     .unwrap_or(true);
                 if should_fire {
                     log::info!("Wall-clock trigger fired Q{} at {}", qid, trigger.time);
-                    if let Ok(mut state) = self.qplayer.state().lock() {
-                        state.selected_cue_id = Some(qid);
-                        state.command_queue.push(AppCommand::Go);
-                    }
                     self.wall_clock_fired.insert(qid, Instant::now());
+                    self.play_cue_by_qid(qid, event_loop);
                 }
             }
         }
     }
 
     /// Poll timecode triggers against the show clock.
-    fn poll_timecode_triggers(&mut self) {
+    fn poll_timecode_triggers(&mut self, event_loop: &ActiveEventLoop) {
         let Some(show_start) = self.show_start_clock else { return };
         let playback = self.audio_engine.playback_time();
         if playback < show_start {
@@ -1710,11 +1712,8 @@ impl App {
             let target = Duration::from_secs_f64(trigger.time.as_secs_f64());
             if elapsed >= target && !self.timecode_fired.contains(&qid) {
                 log::info!("Timecode trigger fired Q{} at {:.2}s", qid, target.as_secs_f64());
-                if let Ok(mut state) = self.qplayer.state().lock() {
-                    state.selected_cue_id = Some(qid);
-                    state.command_queue.push(AppCommand::Go);
-                }
                 self.timecode_fired.insert(qid);
+                self.play_cue_by_qid(qid, event_loop);
             }
         }
     }
@@ -2397,7 +2396,7 @@ impl ApplicationHandler<AppEvent> for App {
                                 _ => String::new(),
                             };
                             if !key_name.is_empty() && !has_ctrl {
-                                self.fire_hotkey_trigger(&key_name);
+                                self.fire_hotkey_trigger(&key_name, event_loop);
                             }
                         }
                     }
@@ -2479,16 +2478,16 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Quit confirmed by the in-app modal — hard-exit (see hard_exit for why).
         if self.qplayer.state().lock().map(|s| s.quit).unwrap_or(false) {
             self.hard_exit();
         }
 
-        self.process_midi_events();
+        self.process_midi_events(event_loop);
         self.process_protocol_events();
-        self.poll_wall_clock_triggers();
-        self.poll_timecode_triggers();
+        self.poll_wall_clock_triggers(event_loop);
+        self.poll_timecode_triggers(event_loop);
 
         // Plugin slow update every 250 ms
         if self.last_slow_update.elapsed() >= Duration::from_millis(250) {
@@ -2545,6 +2544,28 @@ fn next_standby_qid(
         }
     }
     cues.get(i).map(|c| c.base().qid)
+}
+
+/// Follow a goto chain from `first_target` to the first non-goto cue. Returns
+/// `None` on a cycle (including a self-target) or a dead end, so the caller never
+/// recurses into `play_cue` indefinitely. `goto_qid` is the originating goto cue.
+fn resolve_goto_target(
+    cues: &[qplayer_core::Cue],
+    goto_qid: rust_decimal::Decimal,
+    first_target: rust_decimal::Decimal,
+) -> Option<rust_decimal::Decimal> {
+    let mut current = first_target;
+    let mut visited = std::collections::HashSet::from([goto_qid]);
+    loop {
+        if !visited.insert(current) {
+            return None; // cycle
+        }
+        match cues.iter().find(|c| c.base().qid == current) {
+            Some(qplayer_core::Cue::Goto { target_qid, .. }) => current = *target_qid,
+            Some(_) => return Some(current),
+            None => return None, // dead end
+        }
+    }
 }
 
 /// Video decode thread: sleeps until each frame's PTS, then sends it to the main loop.
@@ -2944,5 +2965,50 @@ mod tests {
     fn step_at_end_returns_none() {
         let cues = vec![dummy(1, qplayer_core::TriggerMode::Go)];
         assert_eq!(next_standby_qid(&cues, 0), None);
+    }
+
+    fn goto(qid: i64, target: i64) -> qplayer_core::Cue {
+        qplayer_core::Cue::Goto {
+            base: qplayer_core::CueBase {
+                qid: rust_decimal::Decimal::from(qid),
+                ..Default::default()
+            },
+            target_qid: rust_decimal::Decimal::from(target),
+        }
+    }
+    fn dec(n: i64) -> rust_decimal::Decimal {
+        rust_decimal::Decimal::from(n)
+    }
+
+    #[test]
+    fn goto_resolves_direct_target() {
+        let cues = vec![goto(1, 2), dummy(2, qplayer_core::TriggerMode::Go)];
+        assert_eq!(resolve_goto_target(&cues, dec(1), dec(2)), Some(dec(2)));
+    }
+
+    #[test]
+    fn goto_resolves_through_chain() {
+        // Q1 -> Q2(goto) -> Q3(real)
+        let cues = vec![goto(1, 2), goto(2, 3), dummy(3, qplayer_core::TriggerMode::Go)];
+        assert_eq!(resolve_goto_target(&cues, dec(1), dec(2)), Some(dec(3)));
+    }
+
+    #[test]
+    fn goto_self_target_is_none() {
+        let cues = vec![goto(1, 1)];
+        assert_eq!(resolve_goto_target(&cues, dec(1), dec(1)), None);
+    }
+
+    #[test]
+    fn goto_cycle_is_none() {
+        // Q1 -> Q2 -> Q1 : the bug that crashed (stack overflow); must be None.
+        let cues = vec![goto(1, 2), goto(2, 1)];
+        assert_eq!(resolve_goto_target(&cues, dec(1), dec(2)), None);
+    }
+
+    #[test]
+    fn goto_dead_end_is_none() {
+        let cues = vec![goto(1, 99)];
+        assert_eq!(resolve_goto_target(&cues, dec(1), dec(99)), None);
     }
 }

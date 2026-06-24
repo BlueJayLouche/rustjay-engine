@@ -278,16 +278,32 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 });
             });
 
-            // Context menu on the row. `dnd_drop_zone`'s response is hover-only,
-            // so right-clicks never reach it. Upgrade that same response to sense
-            // clicks (reuses its id, so the row's widgets stay on top and keep
-            // their own clicks); select the cue so the menu acts on it.
+            // Select on a click anywhere over the row, and open a context menu on
+            // right-click — both read the pointer state directly rather than adding
+            // a click-sensing widget over the row. A click-sensing row widget ties
+            // with the inline cells in egui's hit-test (ties go to the last-added
+            // widget = the row), which stole the cells' clicks (no selection) and
+            // wedged the pointer state (text highlighting on hover).
             if show_mode == crate::app::ShowMode::Edit {
-                let row_resp = drop_response.response.interact(egui::Sense::click());
-                if row_resp.secondary_clicked() {
+                let over_row = drop_response.response.contains_pointer();
+                let (primary, secondary) = ui.input(|i| {
+                    (i.pointer.primary_clicked(), i.pointer.secondary_clicked())
+                });
+                if over_row && (primary || secondary) {
                     queue_select(state, qid);
                 }
-                row_resp.context_menu(|ui| {
+                let menu_open = if over_row && secondary {
+                    Some(egui::SetOpenCommand::Bool(true))
+                } else if primary {
+                    Some(egui::SetOpenCommand::Bool(false))
+                } else {
+                    None
+                };
+                egui::Popup::menu(&drop_response.response)
+                    .id(ui.make_persistent_id(("row_menu", qid)))
+                    .at_pointer_fixed()
+                    .open_memory(menu_open)
+                    .show(|ui| {
                     if ui.button("Move Up").clicked() {
                         queue_cmd(state, AppCommand::MoveSelectedCueUp);
                         ui.close();
