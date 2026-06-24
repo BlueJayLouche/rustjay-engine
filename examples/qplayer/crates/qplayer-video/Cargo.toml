@@ -1,0 +1,29 @@
+[package]
+name = "qplayer-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Internal
+qplayer-core = { workspace = true }
+qplayer-audio = { workspace = true }
+
+# GPU / Window
+wgpu = { workspace = true }
+winit = { workspace = true }
+pollster = { workspace = true }
+
+# Video decoding
+ffmpeg-next = { workspace = true }
+
+# Utils
+log = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+bytemuck = { version = "1.21", features = ["derive"] }
+image = { workspace = true }
+
+[dev-dependencies]

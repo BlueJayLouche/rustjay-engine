@@ -1,0 +1,44 @@
+[package]
+name = "qplayer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "QPlayer binary — event loop, state orchestration, main application"
+
+[[bin]]
+name = "qplayer"
+path = "src/main.rs"
+
+[dependencies]
+qplayer-core = { workspace = true }
+qplayer-audio = { workspace = true }
+qplayer-gui = { workspace = true }
+qplayer-video = { workspace = true }
+qplayer-protocols = { workspace = true }
+qplayer-plugin-api = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+rfd = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+rust_decimal = { workspace = true }
+rosc = { workspace = true }
+cpal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+env_logger = "0.11"
+winit = { workspace = true }
+wgpu = { workspace = true }
+egui = { workspace = true }
+egui-winit = { workspace = true }
+egui-wgpu = { workspace = true }
+pollster = { workspace = true }
+human-panic = "2"
+ctrlc = "3"
+single-instance = "0.3"
+
+[dev-dependencies]
+env_logger = "0.11"
