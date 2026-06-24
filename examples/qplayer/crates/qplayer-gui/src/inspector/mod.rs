@@ -57,6 +57,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     };
     let (mut waveform_zoom, mut waveform_scroll) = (state.waveform_zoom, state.waveform_scroll);
 
+    // ponytail: one whole-state clone per inspector frame so every edit is undoable.
+    // For very large show files this could be replaced with per-field snapshots.
+    let pre_edit_snapshot = crate::app::Snapshot::from_state(&state).with_merge_key("inspector");
+
     let Some(cue) = state.selected_cue_mut() else {
         ui.label("Select a cue to edit its properties.");
         return;
@@ -158,6 +162,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.horizontal(|ui| {
         ui.label("Remote Node:");
         let response = ui.text_edit_singleline(&mut base.remote_node);
+        changed |= response.changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label("Description:");
+        let response = ui.text_edit_multiline(&mut base.description);
         changed |= response.changed();
     });
     ui.horizontal(|ui| {
@@ -312,7 +321,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         qplayer_core::Cue::Group { .. } => {
             ui.label(RichText::new("Group Cue").monospace().size(12.0));
         }
-        qplayer_core::Cue::Stop { stop_qid, .. } => {
+        qplayer_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, .. } => {
             ui.label(RichText::new("Stop Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Stops Q#:");
@@ -327,8 +336,37 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     }
                 }
             });
+            ui.horizontal(|ui| {
+                ui.label("Stop Mode:");
+                egui::ComboBox::from_id_salt("stop_mode")
+                    .selected_text(format!("{:?}", stop_mode))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::StopMode::Immediate, qplayer_core::StopMode::LoopEnd] {
+                            if ui.selectable_value(stop_mode, variant, format!("{:?}", variant)).clicked() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fade Out (s):");
+                let response = ui.add(egui::DragValue::new(fade_out_time).speed(0.1));
+                changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fade Type:");
+                egui::ComboBox::from_id_salt("stop_fade_type")
+                    .selected_text(format!("{:?}", fade_type))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::FadeType::Linear, qplayer_core::FadeType::SCurve, qplayer_core::FadeType::Square, qplayer_core::FadeType::InverseSquare] {
+                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                                changed = true;
+                            }
+                        }
+                    });
+            });
         }
-        qplayer_core::Cue::Volume { sound_qid, volume, .. } => {
+        qplayer_core::Cue::Volume { sound_qid, volume, fade_time, fade_type, .. } => {
             ui.label(RichText::new("Volume Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Target Q#:");
@@ -351,6 +389,23 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     *volume = 10.0f32.powf(db / 20.0);
                     changed = true;
                 }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fade Time (s):");
+                let response = ui.add(egui::DragValue::new(fade_time).speed(0.1));
+                changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fade Type:");
+                egui::ComboBox::from_id_salt("volume_fade_type")
+                    .selected_text(format!("{:?}", fade_type))
+                    .show_ui(ui, |ui| {
+                        for variant in [qplayer_core::FadeType::Linear, qplayer_core::FadeType::SCurve, qplayer_core::FadeType::Square, qplayer_core::FadeType::InverseSquare] {
+                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                                changed = true;
+                            }
+                        }
+                    });
             });
         }
         qplayer_core::Cue::Dummy { .. } => {
@@ -390,6 +445,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     if changed {
         state.dirty = true;
+        state.undo_redo.push(pre_edit_snapshot);
     }
 
     // Write back waveform zoom/scroll (separate borrow to avoid conflict with cue editing)

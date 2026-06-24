@@ -58,12 +58,22 @@ struct ActiveCue {
     fade_out: f32,
     fade_type: qplayer_core::FadeType,
     fade_out_started: bool,
+    /// Stop action scheduled by a StopCue targeting this cue.
+    pending_stop: Option<PendingStop>,
 }
 
 /// A cue that is waiting for its delay timer to expire before playing.
 struct DelayedCue {
     cue: qplayer_core::Cue,
     start_at: std::time::Instant,
+}
+
+/// Pending stop action scheduled by a StopCue with mode != Immediate.
+#[derive(Clone, Copy)]
+struct PendingStop {
+    mode: qplayer_core::StopMode,
+    fade_out_time: f32,
+    fade_type: qplayer_core::FadeType,
 }
 
 struct App {
@@ -99,6 +109,8 @@ struct App {
     paused: bool,
     show_start_time: Option<Instant>,
     triggered_timecodes: Vec<rust_decimal::Decimal>,
+    /// TimeCode cues with a duration currently occupying time.
+    active_timecodes: Vec<(rust_decimal::Decimal, std::time::Instant)>,
 
     // ── video playback ──
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
@@ -270,6 +282,7 @@ impl App {
             paused: false,
             show_start_time: None,
             triggered_timecodes: Vec::new(),
+            active_timecodes: Vec::new(),
             modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
@@ -387,6 +400,7 @@ impl App {
         if self.show_start_time.is_none() {
             self.show_start_time = Some(Instant::now());
             self.triggered_timecodes.clear();
+            self.active_timecodes.clear();
         }
 
         let (start_qid, start_idx) = {
@@ -452,7 +466,7 @@ impl App {
             after_last_qids
         };
         for qid in after_last {
-            log::info!("AfterLast cue Q{} scheduled (TODO: auto-trigger when previous finishes)", qid);
+            log::info!("AfterLast cue Q{} scheduled", qid);
         }
     }
 
@@ -524,9 +538,9 @@ impl App {
                 self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
                 self.play_video(path, qid, event_loop);
             }
-            qplayer_core::Cue::Stop { stop_qid, fade_out_time, fade_type, .. } => {
+            qplayer_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, .. } => {
                 log::info!("Go StopCue -> stop Q{}", stop_qid);
-                self.handle_stop_cue(*stop_qid, *fade_out_time, *fade_type);
+                self.handle_stop_cue(*stop_qid, *stop_mode, *fade_out_time, *fade_type);
             }
             qplayer_core::Cue::Volume { sound_qid, volume, fade_time, fade_type, .. } => {
                 log::info!("Go VolumeCue -> adjust Q{} to {:.1} dB", sound_qid, 20.0 * volume.log10());
@@ -564,6 +578,19 @@ impl App {
                 log::info!("Go GroupCue Q{} — firing {} member(s)", qid, members.len());
                 for member in members {
                     self.play_cue(&member, event_loop);
+                }
+            }
+            qplayer_core::Cue::TimeCode { start_time, duration, .. } => {
+                log::info!("Go TimeCode cue Q{} at {:.2}s", qid, start_time.as_secs_f64());
+                let duration_secs = duration.as_secs_f64();
+                if duration_secs > 0.0 {
+                    if let Some(show_start) = self.show_start_time {
+                        let deadline = show_start + std::time::Duration::from_secs_f64(start_time.as_secs_f64() + duration_secs);
+                        self.active_timecodes.push((qid, deadline));
+                    }
+                } else {
+                    // Zero-duration TimeCode marker: trigger AfterLast chain immediately.
+                    self.play_after_last_chain(qid, event_loop);
                 }
             }
             other => {
@@ -720,6 +747,7 @@ impl App {
                     fade_out,
                     fade_type,
                     fade_out_started: false,
+                    pending_stop: None,
                 });
             }
             Err(e) => {
@@ -732,9 +760,19 @@ impl App {
         }
     }
 
-    fn handle_stop_cue(&mut self, stop_qid: rust_decimal::Decimal, fade_out_time: f32, fade_type: qplayer_core::FadeType) {
+    fn handle_stop_cue(&mut self, stop_qid: rust_decimal::Decimal, stop_mode: qplayer_core::StopMode, fade_out_time: f32, fade_type: qplayer_core::FadeType) {
         let idx = self.active_cues.iter().position(|ac| ac.qid == stop_qid);
         if let Some(idx) = idx {
+            if stop_mode == qplayer_core::StopMode::LoopEnd {
+                self.active_cues[idx].pending_stop = Some(PendingStop {
+                    mode: stop_mode,
+                    fade_out_time,
+                    fade_type,
+                });
+                log::info!("LoopEnd stop scheduled for Q{}", stop_qid);
+                return;
+            }
+
             let input = &self.active_cues[idx].input;
             if fade_out_time > 0.0 {
                 let sample_rate = self.audio_engine.sample_rate();
@@ -850,11 +888,12 @@ impl App {
 
     /// Check for cues that have finished playing naturally and trigger AfterLast chains.
     fn check_finished_cues(&mut self, event_loop: &ActiveEventLoop) {
-        // Mark finished cues as Done and collect their QIDs
+        // Mark finished cues as Done and collect their QIDs.
+        // Cues explicitly set to Done (e.g. immediate StopCue) are also removed here.
         let finished_qids: Vec<rust_decimal::Decimal> = {
             let mut qids = Vec::new();
             for ac in &mut self.active_cues {
-                if ac.input.is_finished() {
+                if ac.input.is_finished() || ac.state == CueState::Done {
                     ac.state = CueState::Done;
                     qids.push(ac.qid);
                 }
@@ -863,36 +902,69 @@ impl App {
         };
 
         for qid in finished_qids {
-            // Remove finished cue from active list
             self.active_cues.retain(|ac| ac.qid != qid);
-            log::info!("Cue Q{} finished naturally — checking AfterLast chain", qid);
+            log::info!("Cue Q{} finished — checking AfterLast chain", qid);
+            self.play_after_last_chain(qid, event_loop);
+        }
+    }
 
-            // Find the cue's position in the show file
-            let state = self.qplayer.state().lock().unwrap();
-            let Some(idx) = state.show_file.cues.iter().position(|c| c.base().qid == qid) else {
-                continue;
-            };
+    /// Fire the consecutive AfterLast cues that follow `finished_qid` in the cue list.
+    fn play_after_last_chain(&mut self, finished_qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
+        let state = self.qplayer.state().lock().unwrap();
+        let Some(idx) = state.show_file.cues.iter().position(|c| c.base().qid == finished_qid) else {
+            return;
+        };
 
-            // Collect consecutive AfterLast cues after this one
-            let mut after_last_cues = Vec::new();
-            for i in (idx + 1)..state.show_file.cues.len() {
-                let cue = &state.show_file.cues[i];
-                if cue.base().trigger == qplayer_core::TriggerMode::AfterLast {
-                    after_last_cues.push(cue.clone());
-                } else {
-                    break;
-                }
+        let mut after_last_cues = Vec::new();
+        for i in (idx + 1)..state.show_file.cues.len() {
+            let cue = &state.show_file.cues[i];
+            if cue.base().trigger == qplayer_core::TriggerMode::AfterLast {
+                after_last_cues.push(cue.clone());
+            } else {
+                break;
             }
-            drop(state);
+        }
+        drop(state);
 
-            // Play AfterLast chain: non-audio cues fire immediately in a burst,
-            // then the first audio cue starts and will trigger its own chain when it finishes.
-            for cue in after_last_cues {
-                let is_audio = matches!(cue, qplayer_core::Cue::Sound { .. } | qplayer_core::Cue::Video { .. });
-                self.play_cue(&cue, event_loop);
-                if is_audio {
-                    break; // wait for this audio cue to finish before continuing the chain
+        // Non-audio cues fire immediately in a burst; the first audio cue starts
+        // and will trigger its own chain when it finishes.
+        for cue in after_last_cues {
+            let is_audio = matches!(cue, qplayer_core::Cue::Sound { .. } | qplayer_core::Cue::Video { .. });
+            self.play_cue(&cue, event_loop);
+            if is_audio {
+                break;
+            }
+        }
+    }
+
+    /// Execute scheduled LoopEnd stops when their target reaches the loop boundary.
+    fn check_pending_stops(&mut self) {
+        let sr = self.audio_engine.sample_rate();
+        for ac in &mut self.active_cues {
+            let Some(ref pending) = ac.pending_stop else { continue };
+            if pending.mode != qplayer_core::StopMode::LoopEnd {
+                continue;
+            }
+            // End position in interleaved (stereo) samples.
+            let end_samples = if ac.loop_end_frame > 0 {
+                ac.loop_end_frame as usize * 2
+            } else if let Some(len) = ac.input.length() {
+                len
+            } else {
+                continue; // unknown length — can't schedule a loop-end stop
+            };
+            let fade_frames = (pending.fade_out_time * sr as f32) as u32;
+            let trigger = end_samples.saturating_sub(fade_frames as usize * 2);
+            if ac.input.position() >= trigger {
+                if pending.fade_out_time > 0.0 {
+                    ac.input.start_fade(0.0, fade_frames.max(1), pending.fade_type);
+                    log::info!("LoopEnd fade-out Q{} over {} frames", ac.qid, fade_frames);
+                } else {
+                    ac.input.set_active(false);
+                    ac.input.set_volume(0.0);
+                    ac.state = CueState::Done;
                 }
+                ac.pending_stop = None;
             }
         }
     }
@@ -970,6 +1042,7 @@ impl App {
         self.audio_engine.stop_all();
         self.active_cues.clear();
         self.delayed_cues.clear();
+        self.active_timecodes.clear();
         self.paused = false;
     }
 
@@ -1350,6 +1423,7 @@ impl App {
 
     fn render_control(&mut self, event_loop: &ActiveEventLoop) {
         self.check_fade_outs();
+        self.check_pending_stops();
         self.check_finished_cues(event_loop);
 
         // Check for video cues that have looped and restart their video threads.
@@ -1421,6 +1495,24 @@ impl App {
                 log::info!("TimeCode cue Q{} triggered at {:.2}s", qid, elapsed);
                 self.triggered_timecodes.push(qid);
                 self.play_cue(&cue, event_loop);
+            }
+        }
+
+        // Check for TimeCode cues whose duration has elapsed and fire their AfterLast chains.
+        {
+            let now = Instant::now();
+            let mut expired = Vec::new();
+            self.active_timecodes.retain(|(qid, deadline)| {
+                if now >= *deadline {
+                    expired.push(*qid);
+                    false
+                } else {
+                    true
+                }
+            });
+            for qid in expired {
+                log::info!("TimeCode cue Q{} duration elapsed", qid);
+                self.play_after_last_chain(qid, event_loop);
             }
         }
 
