@@ -83,7 +83,7 @@ struct OutputWindow {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: qplayer_video::ProjectionRenderer,
-    output_index: usize,
+    output_config: qplayer_core::ProjectorOutput,
 }
 
 struct App {
@@ -372,9 +372,17 @@ impl App {
             ids.video.clear();
         }
 
+        // If nothing is configured yet, fall back to a single 1920x1080 output so
+        // video playback still produces a window.
+        let outputs: Vec<_> = if projection.outputs.is_empty() {
+            vec![qplayer_core::ProjectorOutput::default_single()]
+        } else {
+            projection.outputs.clone()
+        };
+
         let monitors: Vec<_> = event_loop.available_monitors().collect();
 
-        for (index, output) in projection.outputs.iter().enumerate() {
+        for (_index, output) in outputs.iter().enumerate() {
             let mut attrs = winit::window::WindowAttributes::default()
                 .with_title(format!("QPlayer Output {}", output.name))
                 .with_inner_size(winit::dpi::LogicalSize::new(
@@ -421,7 +429,7 @@ impl App {
                 surface,
                 config,
                 renderer,
-                output_index: index,
+                output_config: output.clone(),
             });
 
             if let Some(ids) = self.window_ids.as_mut() {
@@ -1026,7 +1034,10 @@ impl App {
     }
 
     fn play_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        self.create_output_windows(event_loop);
+        // Only open output windows on the first video; looping should not respawn them.
+        if self.output_windows.is_empty() {
+            self.create_output_windows(event_loop);
+        }
         self.video_stop_flag.store(false, Ordering::Relaxed);
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
@@ -1677,7 +1688,7 @@ impl App {
         self.audio_engine.refresh();
     }
 
-    /// Render the video output window.
+    /// Render the video output windows.
     fn render_video(&mut self) {
         let projection = {
             let state = self.qplayer.state().lock().unwrap();
@@ -1705,14 +1716,25 @@ impl App {
                 out.surface.configure(&self.device, &out.config);
             }
 
-            let output = match out.surface.get_current_texture() {
+            let surface_texture = match out.surface.get_current_texture() {
                 Ok(o) => o,
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    log::debug!("Output surface lost/outdated, reconfiguring");
+                    out.surface.configure(&self.device, &out.config);
+                    match out.surface.get_current_texture() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            log::warn!("Output surface acquire failed after reconfigure: {e}");
+                            continue;
+                        }
+                    }
+                }
                 Err(e) => {
                     log::warn!("Output surface acquire failed: {e}");
                     continue;
                 }
             };
-            let view = output
+            let view = surface_texture
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1721,17 +1743,14 @@ impl App {
             });
 
             if has_video {
-                if let (Some(canvas_view), Some(output_cfg)) = (
-                    canvas_view.as_ref(),
-                    projection.outputs.get(out.output_index),
-                ) {
+                if let Some(canvas_view) = canvas_view.as_ref() {
                     out.renderer.render(
                         &self.device,
                         &self.queue,
                         &mut encoder,
                         canvas_view,
                         &view,
-                        output_cfg,
+                        &out.output_config,
                         [projection.canvas_width, projection.canvas_height],
                     );
                 } else {
@@ -1768,7 +1787,7 @@ impl App {
             }
 
             self.queue.submit(std::iter::once(encoder.finish()));
-            output.present();
+            surface_texture.present();
         }
     }
 }
