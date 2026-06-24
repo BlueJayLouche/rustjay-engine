@@ -8,6 +8,7 @@ pub mod cue_list;
 pub mod inspector;
 pub mod log_window;
 pub mod logging;
+pub mod projection_panel;
 pub mod transport;
 pub mod waveform;
 

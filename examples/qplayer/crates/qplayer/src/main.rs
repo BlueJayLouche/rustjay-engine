@@ -11,7 +11,7 @@ use qplayer_gui::{AppCommand, QPlayerApp, SharedStateHandle};
 use qplayer_gui::app::CueState;
 use qplayer_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use qplayer_protocols::osc::{OscEvent, OscManager};
-use qplayer_video::{Renderer, Texture, VideoFrame, VideoSource};
+use qplayer_video::{VideoFrame, VideoSource};
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,7 +38,7 @@ enum AppEvent {
 /// Per-window identifiers so we can route events.
 struct WindowIds {
     control: WindowId,
-    video: Option<WindowId>,
+    video: Vec<WindowId>,
 }
 
 #[derive(Clone)]
@@ -76,6 +76,16 @@ struct PendingStop {
     fade_type: qplayer_core::FadeType,
 }
 
+/// One projector output window: winit window + wgpu surface + slice renderer.
+struct OutputWindow {
+    id: WindowId,
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    renderer: qplayer_video::ProjectionRenderer,
+    output_index: usize,
+}
+
 struct App {
     // ── wgpu core ──
     instance: wgpu::Instance,
@@ -88,10 +98,9 @@ struct App {
     control_surface: Option<wgpu::Surface<'static>>,
     control_config: Option<wgpu::SurfaceConfiguration>,
 
-    // ── video window (wgpu blit) ──
-    video_window: Option<Arc<Window>>,
-    video_surface: Option<wgpu::Surface<'static>>,
-    video_config: Option<wgpu::SurfaceConfiguration>,
+    // ── projection output windows ──
+    canvas_texture: Option<qplayer_video::CanvasTexture>,
+    output_windows: Vec<OutputWindow>,
 
     // ── egui ──
     egui_ctx: egui::Context,
@@ -114,8 +123,6 @@ struct App {
 
     // ── video playback ──
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
-    video_texture: Option<Texture>,
-    video_renderer: Option<Renderer>,
     latest_video_frame: Option<VideoFrame>,
     video_frame_dirty: bool,
     video_start_clock: Option<Duration>,
@@ -250,9 +257,6 @@ impl App {
             control_window: None,
             control_surface: None,
             control_config: None,
-            video_window: None,
-            video_surface: None,
-            video_config: None,
             egui_ctx: egui::Context::default(),
             egui_state: None,
             egui_renderer: None,
@@ -260,8 +264,8 @@ impl App {
             window_ids: None,
             audio_engine,
             event_loop_proxy: proxy,
-            video_texture: None,
-            video_renderer: None,
+            canvas_texture: None,
+            output_windows: Vec::new(),
             latest_video_frame: None,
             video_frame_dirty: false,
             video_start_clock: None,
@@ -334,60 +338,95 @@ impl App {
         self.egui_state = Some(egui_state);
         self.egui_renderer = Some(egui_renderer);
 
-        let video_id = self.video_window.as_ref().map(|w| w.id());
         self.window_ids = Some(WindowIds {
             control: control_id,
-            video: video_id,
+            video: Vec::new(),
         });
     }
 
-    /// Toggle fullscreen on the video window and update cursor visibility.
-    fn toggle_video_fullscreen(&self) {
-        if let Some(window) = self.video_window.as_ref() {
-            let currently_fullscreen = window.fullscreen().is_some();
+    /// Toggle fullscreen on all output windows and update cursor visibility.
+    fn toggle_output_fullscreen(&self) {
+        for out in &self.output_windows {
+            let currently_fullscreen = out.window.fullscreen().is_some();
             if currently_fullscreen {
-                window.set_fullscreen(None);
-                window.set_cursor_visible(true);
+                out.window.set_fullscreen(None);
+                out.window.set_cursor_visible(true);
             } else {
-                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-                window.set_cursor_visible(false);
+                out.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                out.window.set_cursor_visible(false);
             }
         }
     }
 
     /// Create (or recreate) the video output window (starts windowed).
-    fn create_video_window(&mut self, event_loop: &ActiveEventLoop) {
-        if self.video_window.is_some() {
-            return;
-        }
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    winit::window::WindowAttributes::default()
-                        .with_title("QPlayer Video Output")
-                        .with_visible(true),
-                )
-                .expect("create video window"),
-        );
+    /// Create (or recreate) one output window per configured projector output.
+    fn create_output_windows(&mut self, event_loop: &ActiveEventLoop) {
+        let projection = {
+            let state = self.qplayer.state().lock().unwrap();
+            state.show_file.projection.clone()
+        };
 
-        let surface = self
-            .instance
-            .create_surface(Arc::clone(&window))
-            .expect("create video surface");
-
-        let size = window.inner_size();
-        let config = surface
-            .get_default_config(&self.adapter, size.width, size.height)
-            .expect("video surface config");
-        surface.configure(&self.device, &config);
-
-        let video_id = window.id();
-        self.video_window = Some(window);
-        self.video_surface = Some(surface);
-        self.video_config = Some(config);
-
+        // Close existing output windows so we can honour new output counts/sizes.
+        self.output_windows.clear();
         if let Some(ids) = self.window_ids.as_mut() {
-            ids.video = Some(video_id);
+            ids.video.clear();
+        }
+
+        let monitors: Vec<_> = event_loop.available_monitors().collect();
+
+        for (index, output) in projection.outputs.iter().enumerate() {
+            let mut attrs = winit::window::WindowAttributes::default()
+                .with_title(format!("QPlayer Output {}", output.name))
+                .with_inner_size(winit::dpi::LogicalSize::new(
+                    output.output_width.max(1) as f64,
+                    output.output_height.max(1) as f64,
+                ))
+                .with_visible(true);
+
+            if let Some(idx) = output.fullscreen_monitor {
+                if let Some(monitor) = monitors.get(idx) {
+                    attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                        monitor.clone(),
+                    ))));
+                }
+            }
+
+            let window = Arc::new(
+                event_loop.create_window(attrs).expect("create output window"),
+            );
+
+            let surface = self
+                .instance
+                .create_surface(Arc::clone(&window))
+                .expect("create output surface");
+
+            let size = window.inner_size();
+            let config = surface
+                .get_default_config(&self.adapter, size.width, size.height)
+                .expect("output surface config");
+            surface.configure(&self.device, &config);
+
+            let pixel_perfect =
+                output.output_width == output.source_width && output.output_height == output.source_height;
+            let renderer = qplayer_video::ProjectionRenderer::new(
+                &self.device,
+                config.format,
+                pixel_perfect,
+            );
+
+            let video_id = window.id();
+            self.output_windows.push(OutputWindow {
+                id: video_id,
+                window,
+                surface,
+                config,
+                renderer,
+                output_index: index,
+            });
+
+            if let Some(ids) = self.window_ids.as_mut() {
+                ids.video.push(video_id);
+            }
         }
     }
 
@@ -987,7 +1026,7 @@ impl App {
     }
 
     fn play_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        self.create_video_window(event_loop);
+        self.create_output_windows(event_loop);
         self.video_stop_flag.store(false, Ordering::Relaxed);
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
@@ -996,12 +1035,19 @@ impl App {
         self.latest_video_frame = None;
         self.video_frame_dirty = false;
 
-        // Create video texture/renderer if not yet created
-        if self.video_texture.is_none() {
-            let texture = Texture::new(&self.device, 1920, 1080);
-            let renderer = Renderer::new(&self.device, texture.bind_group_layout());
-            self.video_texture = Some(texture);
-            self.video_renderer = Some(renderer);
+        // Create/resize the shared projection canvas.
+        let projection = {
+            let state = self.qplayer.state().lock().unwrap();
+            state.show_file.projection.clone()
+        };
+        if let Some(canvas) = self.canvas_texture.as_mut() {
+            canvas.resize(&self.device, projection.canvas_width, projection.canvas_height);
+        } else {
+            self.canvas_texture = Some(qplayer_video::CanvasTexture::new(
+                &self.device,
+                projection.canvas_width,
+                projection.canvas_height,
+            ));
         }
 
         // Spawn decode thread
@@ -1187,21 +1233,21 @@ impl App {
                     self.handle_preload(event_loop);
                 }
                 AppCommand::ToggleVideoWindow => {
-                    if self.video_window.is_some() {
-                        // Hide/destroy
-                        self.video_window = None;
-                        self.video_surface = None;
-                        self.video_config = None;
+                    if !self.output_windows.is_empty() {
+                        self.output_windows.clear();
                         if let Some(ids) = self.window_ids.as_mut() {
-                            ids.video = None;
+                            ids.video.clear();
                         }
                     } else {
-                        // Show/create (even if no video is playing, show a black window)
-                        self.create_video_window(event_loop);
+                        // Show/create (even if no video is playing, show black windows)
+                        self.create_output_windows(event_loop);
                     }
                 }
                 AppCommand::ToggleVideoFullscreen => {
-                    self.toggle_video_fullscreen();
+                    self.toggle_output_fullscreen();
+                }
+                AppCommand::OpenProjectionOutputs => {
+                    self.create_output_windows(event_loop);
                 }
                 AppCommand::SaveProject | AppCommand::SaveProjectAs { .. } => {
                     if let Some(pm) = self.plugin_manager.as_mut() {
@@ -1633,52 +1679,97 @@ impl App {
 
     /// Render the video output window.
     fn render_video(&mut self) {
-        let Some(surface) = self.video_surface.as_ref() else { return };
-        let Some(texture) = self.video_texture.as_mut() else { return };
-        let Some(renderer) = self.video_renderer.as_ref() else { return };
+        let projection = {
+            let state = self.qplayer.state().lock().unwrap();
+            state.show_file.projection.clone()
+        };
 
         if self.video_frame_dirty {
-            if let Some(frame) = self.latest_video_frame.as_ref() {
-                texture.upload(&self.queue, frame);
+            if let Some((canvas, frame)) = self.canvas_texture.as_ref().zip(self.latest_video_frame.as_ref()) {
+                canvas.upload_frame(&self.queue, frame, projection.fit);
             }
             self.video_frame_dirty = false;
         }
 
-        let output = match surface.get_current_texture() {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("Video surface acquire failed: {e}");
-                return;
-            }
-        };
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("video-encoder"),
-        });
-
-        // If no video is active, just clear to black instead of drawing the last frame.
+        let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
         let has_video = self.current_video_qid.is_some() || self.latest_video_frame.is_some();
-        if has_video {
-            renderer.render(&mut encoder, &view, texture.current_bind_group());
-        } else {
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("video-clear-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
+
+        for out in &mut self.output_windows {
+            let size = out.window.inner_size();
+            if size.width == 0 || size.height == 0 {
+                continue;
+            }
+            if size.width != out.config.width || size.height != out.config.height {
+                out.config.width = size.width;
+                out.config.height = size.height;
+                out.surface.configure(&self.device, &out.config);
+            }
+
+            let output = match out.surface.get_current_texture() {
+                Ok(o) => o,
+                Err(e) => {
+                    log::warn!("Output surface acquire failed: {e}");
+                    continue;
+                }
+            };
+            let view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("output-encoder"),
             });
+
+            if has_video {
+                if let (Some(canvas_view), Some(output_cfg)) = (
+                    canvas_view.as_ref(),
+                    projection.outputs.get(out.output_index),
+                ) {
+                    out.renderer.render(
+                        &self.device,
+                        &self.queue,
+                        &mut encoder,
+                        canvas_view,
+                        &view,
+                        output_cfg,
+                        [projection.canvas_width, projection.canvas_height],
+                    );
+                } else {
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("output-clear-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                    });
+                }
+            } else {
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("output-clear-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+            }
+
+            self.queue.submit(std::iter::once(encoder.finish()));
+            output.present();
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
     }
 }
 
@@ -1694,8 +1785,8 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::VideoFrame(frame) => {
                 self.latest_video_frame = Some(frame);
                 self.video_frame_dirty = true;
-                if let Some(window) = self.video_window.as_ref() {
-                    window.request_redraw();
+                for out in &self.output_windows {
+                    out.window.request_redraw();
                 }
             }
             AppEvent::VideoEof => {
@@ -1735,8 +1826,8 @@ impl ApplicationHandler<AppEvent> for App {
                             self.current_video_qid = None;
                             self.latest_video_frame = None;
                             self.video_frame_dirty = true;
-                            if let Some(window) = self.video_window.as_ref() {
-                                window.request_redraw();
+                            for out in &self.output_windows {
+                                out.window.request_redraw();
                             }
                         }
                     }
@@ -1759,7 +1850,7 @@ impl ApplicationHandler<AppEvent> for App {
         let is_video = self
             .window_ids
             .as_ref()
-            .map(|ids| ids.video == Some(window_id))
+            .map(|ids| ids.video.contains(&window_id))
             .unwrap_or(false);
 
         if is_control {
@@ -1833,8 +1924,10 @@ impl ApplicationHandler<AppEvent> for App {
                         let is_f = key_event.logical_key == Key::Character("f".into());
                         let has_ctrl = self.modifiers.control_key() || self.modifiers.super_key();
                         if is_f11 || (is_f && has_ctrl) {
-                            self.create_video_window(event_loop);
-                            self.toggle_video_fullscreen();
+                            if self.output_windows.is_empty() {
+                                self.create_output_windows(event_loop);
+                            }
+                            self.toggle_output_fullscreen();
                         }
                     }
                 }
@@ -1843,14 +1936,14 @@ impl ApplicationHandler<AppEvent> for App {
         } else if is_video {
             match event {
                 WindowEvent::CloseRequested => {
-                    self.video_window = None;
-                    self.video_surface = None;
-                    self.video_config = None;
+                    self.output_windows.retain(|out| out.id != window_id);
                     if let Some(ids) = self.window_ids.as_mut() {
-                        ids.video = None;
+                        ids.video.retain(|id| *id != window_id);
                     }
-                    if let Ok(mut state) = self.qplayer.state().lock() {
-                        state.show_video_window = false;
+                    if self.output_windows.is_empty() {
+                        if let Ok(mut state) = self.qplayer.state().lock() {
+                            state.show_video_window = false;
+                        }
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
@@ -1861,20 +1954,34 @@ impl ApplicationHandler<AppEvent> for App {
                         let is_f = event.logical_key == Key::Character("f".into());
                         let has_ctrl = self.modifiers.control_key() || self.modifiers.super_key();
 
-                        // Esc always exits fullscreen
-                        if is_esc {
-                            if let Some(window) = self.video_window.as_ref() {
-                                window.set_fullscreen(None);
-                                window.set_cursor_visible(true);
+                        if let Some(out) = self.output_windows.iter().find(|out| out.id == window_id) {
+                            // Esc always exits fullscreen
+                            if is_esc {
+                                out.window.set_fullscreen(None);
+                                out.window.set_cursor_visible(true);
                             }
-                        }
-                        // F11 toggles fullscreen
-                        else if is_f11 {
-                            self.toggle_video_fullscreen();
-                        }
-                        // Ctrl+F or Cmd+F toggles fullscreen
-                        else if is_f && has_ctrl {
-                            self.toggle_video_fullscreen();
+                            // F11 toggles fullscreen
+                            else if is_f11 {
+                                let currently = out.window.fullscreen().is_some();
+                                if currently {
+                                    out.window.set_fullscreen(None);
+                                    out.window.set_cursor_visible(true);
+                                } else {
+                                    out.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                                    out.window.set_cursor_visible(false);
+                                }
+                            }
+                            // Ctrl+F or Cmd+F toggles fullscreen
+                            else if is_f && has_ctrl {
+                                let currently = out.window.fullscreen().is_some();
+                                if currently {
+                                    out.window.set_fullscreen(None);
+                                    out.window.set_cursor_visible(true);
+                                } else {
+                                    out.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                                    out.window.set_cursor_visible(false);
+                                }
+                            }
                         }
                     }
                 }
@@ -1883,21 +1990,17 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 WindowEvent::Resized(size) => {
                     if size.width > 0 && size.height > 0 {
-                        if let Some(config) = self.video_config.as_mut() {
-                            config.width = size.width;
-                            config.height = size.height;
-                        }
-                        if let Some(surface) = self.video_surface.as_ref() {
-                            if let Some(config) = self.video_config.as_ref() {
-                                surface.configure(&self.device, config);
-                            }
+                        if let Some(out) = self.output_windows.iter_mut().find(|out| out.id == window_id) {
+                            out.config.width = size.width;
+                            out.config.height = size.height;
+                            out.surface.configure(&self.device, &out.config);
                         }
                     }
                 }
                 WindowEvent::RedrawRequested => {
                     self.render_video();
-                    if let Some(window) = self.video_window.as_ref() {
-                        window.request_redraw();
+                    if let Some(out) = self.output_windows.iter().find(|out| out.id == window_id) {
+                        out.window.request_redraw();
                     }
                 }
                 _ => {}
@@ -1926,12 +2029,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
 
-        // Continuously redraw both windows when active.
+        // Continuously redraw all open windows when active.
         if let Some(window) = self.control_window.as_ref() {
             window.request_redraw();
         }
-        if let Some(window) = self.video_window.as_ref() {
-            window.request_redraw();
+        for out in &self.output_windows {
+            out.window.request_redraw();
         }
     }
 }

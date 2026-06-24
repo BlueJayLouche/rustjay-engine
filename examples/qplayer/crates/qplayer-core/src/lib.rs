@@ -7,6 +7,7 @@ pub mod colour;
 pub mod cue;
 pub mod eq;
 pub mod peakfile;
+pub mod projection;
 pub mod protocol;
 pub mod showfile;
 pub mod timespan;
@@ -16,5 +17,6 @@ pub use cue::{AudioRouting, Crosspoint, Cue, CueBase, DummyCue, GroupCue, SoundC
 pub use cue::{FadeType, LoopMode, StopMode, TriggerMode};
 pub use eq::{EQBand, EQBandShape, EQFilter, EQFilterOrder, EQSettings};
 pub use peakfile::{PeakFile, PeakFileError, PeakFileReader, PeakFileWriter};
+pub use projection::{CanvasFit, EdgeBlend, EdgeBlendEdge, ProjectionConfig, ProjectorOutput};
 pub use showfile::{AudioLimiterSettings, AudioOutputDriver, RemoteNode, ShowFile, ShowSettings};
 pub use timespan::Timespan;

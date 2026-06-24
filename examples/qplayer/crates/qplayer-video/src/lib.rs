@@ -9,11 +9,15 @@
 //! The main application (in `qplayer`) wires these together inside its own
 //! winit event loop, syncing video presentation to the audio master clock.
 
+mod canvas_texture;
+mod projection_renderer;
 mod renderer;
 mod texture;
 mod video_source;
 mod window;
 
+pub use canvas_texture::CanvasTexture;
+pub use projection_renderer::ProjectionRenderer;
 pub use renderer::Renderer;
 pub use texture::{Texture, VideoFrame};
 pub use video_source::VideoSource;

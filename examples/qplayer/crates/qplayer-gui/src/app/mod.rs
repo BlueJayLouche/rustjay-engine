@@ -199,6 +199,8 @@ pub struct SharedState {
     pub waveform_window_scroll: f32,
     /// Whether the Video Output window is open.
     pub show_video_window: bool,
+    /// Whether the Projection Mapping window is open.
+    pub show_projection_window: bool,
     /// List of loaded plugins (name, path) for the plugin manager window.
     pub plugin_list: Vec<(String, String)>,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
@@ -239,6 +241,7 @@ impl Default for SharedState {
             waveform_window_zoom: 1.0,
             waveform_window_scroll: 0.0,
             show_video_window: false,
+            show_projection_window: false,
             plugin_list: Vec::new(),
             progress_overlay: None,
         }
@@ -302,6 +305,8 @@ pub enum AppCommand {
     SetAudioDevice(String),
     ToggleVideoWindow,
     ToggleVideoFullscreen,
+    ToggleProjectionWindow,
+    OpenProjectionOutputs,
     Preload,
     UpdateCueQid { qid: Decimal, new_qid: Decimal },
     UpdateCueName { qid: Decimal, name: String },
@@ -758,6 +763,26 @@ impl QPlayerApp {
             state.show_waveform_window = show_waveform;
         }
 
+        // Projection mapping window
+        let mut show_projection = if let Ok(state) = self.state.lock() {
+            state.show_projection_window
+        } else {
+            false
+        };
+        if show_projection {
+            egui::Window::new("Projection Mapping")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([520.0, 640.0])
+                .open(&mut show_projection)
+                .show(ctx, |ui| {
+                    crate::projection_panel::show(ui, &self.state);
+                });
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.show_projection_window = show_projection;
+        }
+
         // About window
         let mut show_about = if let Ok(state) = self.state.lock() {
             state.show_about_window
@@ -945,6 +970,16 @@ impl QPlayerApp {
                     if let Ok(mut state) = self.state.lock() {
                         state.show_video_window = show_video;
                         state.command_queue.push(AppCommand::ToggleVideoWindow);
+                    }
+                    ui.close();
+                }
+                let mut show_projection = {
+                    let Ok(state) = self.state.lock() else { return; };
+                    state.show_projection_window
+                };
+                if ui.checkbox(&mut show_projection, "Projection Mapping").clicked() {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.show_projection_window = show_projection;
                     }
                     ui.close();
                 }

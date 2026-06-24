@@ -20,6 +20,8 @@ pub struct ShowFile {
     pub column_widths: Vec<f32>,
     #[serde(default)]
     pub cues: Vec<crate::Cue>,
+    #[serde(default)]
+    pub projection: crate::ProjectionConfig,
 }
 
 impl Default for ShowFile {
@@ -29,6 +31,7 @@ impl Default for ShowFile {
             show_settings: ShowSettings::default(),
             column_widths: Vec::new(),
             cues: Vec::new(),
+            projection: crate::ProjectionConfig::default(),
         }
     }
 }
