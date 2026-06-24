@@ -330,16 +330,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.label(RichText::new("Stop Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Stops Q#:");
-                let mut qid_str = stop_qid.to_string();
-                let response = ui.text_edit_singleline(&mut qid_str);
-                if response.lost_focus() {
-                    if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
-                        if new_qid != *stop_qid {
-                            *stop_qid = new_qid;
-                            changed = true;
-                        }
-                    }
-                }
+                changed |= qid_edit(ui, "stop_qid", stop_qid);
             });
             ui.horizontal(|ui| {
                 ui.label("Stop Mode:");
@@ -376,16 +367,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.label(RichText::new("Volume Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Target Q#:");
-                let mut qid_str = sound_qid.to_string();
-                let response = ui.text_edit_singleline(&mut qid_str);
-                if response.lost_focus() {
-                    if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
-                        if new_qid != *sound_qid {
-                            *sound_qid = new_qid;
-                            changed = true;
-                        }
-                    }
-                }
+                changed |= qid_edit(ui, "volume_qid", sound_qid);
             });
             ui.horizontal(|ui| {
                 ui.label("Target dB:");
@@ -527,16 +509,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.label(RichText::new("Goto Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Target Q#:");
-                let mut qid_str = target_qid.to_string();
-                let response = ui.text_edit_singleline(&mut qid_str);
-                if response.lost_focus() {
-                    if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
-                        if new_qid != *target_qid {
-                            *target_qid = new_qid;
-                            changed = true;
-                        }
-                    }
-                }
+                changed |= qid_edit(ui, "goto_target", target_qid);
             });
             triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
@@ -552,6 +525,35 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     state.waveform_scroll = waveform_scroll;
 
     state.command_queue.extend(pending_commands);
+}
+
+/// Text field for editing a Decimal QID (target/stop references).
+///
+/// egui rewrites an externally-rebuilt buffer every frame, which wipes
+/// in-progress keystrokes before the field loses focus — so the value appears
+/// stuck. Stash the live text in egui temp storage and only commit on blur.
+/// Returns `true` if the value changed.
+fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
+    let id = ui.make_persistent_id(salt);
+    let mut text = ui
+        .ctx()
+        .data(|d| d.get_temp::<String>(id))
+        .unwrap_or_else(|| value.to_string());
+    let response = ui.add(egui::TextEdit::singleline(&mut text).id(id));
+    if response.has_focus() {
+        ui.ctx().data_mut(|d| d.insert_temp(id, text.clone()));
+    } else {
+        ui.ctx().data_mut(|d| d.remove_temp::<String>(id));
+    }
+    if response.lost_focus() {
+        if let Ok(new) = text.parse::<Decimal>() {
+            if new != *value {
+                *value = new;
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Trigger editor — hotkey, MIDI, wall-clock and timecode firing methods.
