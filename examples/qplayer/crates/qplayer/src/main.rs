@@ -326,9 +326,10 @@ impl App {
         let egui_renderer = egui_wgpu::Renderer::new(
             &self.device,
             config.format,
-            None,
-            1,
-            false,
+            egui_wgpu::RendererOptions {
+                dithering: false,
+                ..Default::default()
+            },
         );
 
         let control_id = window.id();
@@ -382,13 +383,32 @@ impl App {
 
         let monitors: Vec<_> = event_loop.available_monitors().collect();
 
-        for (_index, output) in outputs.iter().enumerate() {
+        // Windowed (non-fullscreen) outputs are tiled side-by-side at a preview
+        // size that fits across the screen, so a multi-projector layout is
+        // visible on a single display. Fullscreen-assigned outputs ignore this.
+        let windowed_count = outputs
+            .iter()
+            .filter(|o| o.fullscreen_monitor.is_none())
+            .count()
+            .max(1);
+        let (screen_w, screen_h) = event_loop
+            .primary_monitor()
+            .or_else(|| monitors.first().cloned())
+            .map(|m| {
+                let sf = m.scale_factor();
+                let s = m.size();
+                (s.width as f64 / sf, s.height as f64 / sf)
+            })
+            .unwrap_or((1440.0, 900.0));
+        let gap = 12.0;
+        let tile_w = (((screen_w * 0.96) - gap * (windowed_count as f64 + 1.0))
+            / windowed_count as f64)
+            .max(160.0);
+        let mut windowed_idx = 0usize;
+
+        for output in outputs.iter() {
             let mut attrs = winit::window::WindowAttributes::default()
                 .with_title(format!("QPlayer Output {}", output.name))
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    output.output_width.max(1) as f64,
-                    output.output_height.max(1) as f64,
-                ))
                 .with_visible(true);
 
             if let Some(idx) = output.fullscreen_monitor {
@@ -397,6 +417,15 @@ impl App {
                         monitor.clone(),
                     ))));
                 }
+            } else {
+                let aspect =
+                    output.output_height.max(1) as f64 / output.output_width.max(1) as f64;
+                let h = (tile_w * aspect).min(screen_h * 0.7);
+                let x = gap + windowed_idx as f64 * (tile_w + gap);
+                attrs = attrs
+                    .with_inner_size(winit::dpi::LogicalSize::new(tile_w, h))
+                    .with_position(winit::dpi::LogicalPosition::new(x, 80.0));
+                windowed_idx += 1;
             }
 
             let window = Arc::new(
@@ -1581,9 +1610,9 @@ impl App {
         let Some(egui_renderer) = self.egui_renderer.as_mut() else { return };
 
         let output = match surface.get_current_texture() {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("Control surface acquire failed: {e}");
+            wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
+            err => {
+                log::warn!("Control surface acquire failed: {err:?}");
                 return;
             }
         };
@@ -1664,6 +1693,7 @@ impl App {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -1672,6 +1702,7 @@ impl App {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             egui_renderer.render(&mut render_pass.forget_lifetime(), &paint_jobs, &screen_descriptor);
         }
@@ -1716,21 +1747,22 @@ impl App {
                 out.surface.configure(&self.device, &out.config);
             }
 
+            use wgpu::CurrentSurfaceTexture::{Lost, Outdated, Suboptimal, Success};
             let surface_texture = match out.surface.get_current_texture() {
-                Ok(o) => o,
-                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                Success(o) | Suboptimal(o) => o,
+                Lost | Outdated => {
                     log::debug!("Output surface lost/outdated, reconfiguring");
                     out.surface.configure(&self.device, &out.config);
                     match out.surface.get_current_texture() {
-                        Ok(o) => o,
-                        Err(e) => {
-                            log::warn!("Output surface acquire failed after reconfigure: {e}");
+                        Success(o) | Suboptimal(o) => o,
+                        err => {
+                            log::warn!("Output surface acquire failed after reconfigure: {err:?}");
                             continue;
                         }
                     }
                 }
-                Err(e) => {
-                    log::warn!("Output surface acquire failed: {e}");
+                err => {
+                    log::warn!("Output surface acquire failed: {err:?}");
                     continue;
                 }
             };
@@ -1759,6 +1791,7 @@ impl App {
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
                             resolve_target: None,
+                            depth_slice: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                                 store: wgpu::StoreOp::Store,
@@ -1767,6 +1800,7 @@ impl App {
                         depth_stencil_attachment: None,
                         occlusion_query_set: None,
                         timestamp_writes: None,
+                        multiview_mask: None,
                     });
                 }
             } else {
@@ -1775,6 +1809,7 @@ impl App {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
@@ -1783,6 +1818,7 @@ impl App {
                     depth_stencil_attachment: None,
                     occlusion_query_set: None,
                     timestamp_writes: None,
+                    multiview_mask: None,
                 });
             }
 
@@ -2067,7 +2103,7 @@ fn video_decode_thread(
     pause_flag: Arc<AtomicBool>,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
 ) {
-    let mut source = match VideoSource::open(path, 1920, 1080) {
+    let mut source = match VideoSource::open(path) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Failed to open video source {}: {e}", path);
@@ -2297,9 +2333,9 @@ fn main() -> anyhow::Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     // Create a headless adapter first (we'll create surfaces after windows exist)
@@ -2327,6 +2363,17 @@ fn main() -> anyhow::Result<()> {
     if let Ok(mut state) = app.qplayer.state().lock() {
         state.recent_files = settings.recent_files;
         state.audio_device_name = device_name;
+    }
+
+    // Optional CLI: `qplayer path/to/show.qproj` opens a project on startup.
+    if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
+        if path.extension().and_then(|e| e.to_str()) == Some("qproj") && path.exists() {
+            if let Ok(mut state) = app.qplayer.state().lock() {
+                state.command_queue.push(qplayer_gui::AppCommand::OpenProject { path });
+            }
+        } else {
+            log::warn!("Ignoring CLI argument (expected an existing .qproj file): {:?}", path);
+        }
     }
 
     // Ctrl-C / SIGTERM handler for graceful emergency save

@@ -1,24 +1,20 @@
 //! Video output crate — wgpu helpers for video playback.
 //!
 //! This crate provides:
-//! - `Renderer`: simple textured quad blit pipeline
-//! - `Texture`: double-buffered RGBA texture upload
+//! - `VideoFrame`: a decoded RGBA8 frame
 //! - `VideoSource`: FFmpeg video decoder + `sws_scale` converter
-//! - `OutputWindow`: winit window + wgpu surface helper
+//! - `CanvasTexture`: the projection canvas frame buffer
+//! - `ProjectionRenderer`: slice + edge-blend renderer for one projector output
 //!
 //! The main application (in `qplayer`) wires these together inside its own
 //! winit event loop, syncing video presentation to the audio master clock.
 
 mod canvas_texture;
+mod frame;
 mod projection_renderer;
-mod renderer;
-mod texture;
 mod video_source;
-mod window;
 
 pub use canvas_texture::CanvasTexture;
+pub use frame::VideoFrame;
 pub use projection_renderer::ProjectionRenderer;
-pub use renderer::Renderer;
-pub use texture::{Texture, VideoFrame};
 pub use video_source::VideoSource;
-pub use window::OutputWindow;

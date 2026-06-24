@@ -1,5 +1,5 @@
 use ffmpeg_next::{codec, format, frame, media::Type, software::scaling};
-use crate::texture::VideoFrame;
+use crate::frame::VideoFrame;
 
 /// Wraps an FFmpeg video stream decoder and produces `VideoFrame`s.
 pub struct VideoSource {
@@ -19,7 +19,11 @@ pub struct VideoSource {
 
 impl VideoSource {
     /// Open a video file and initialise the decoder + scaler.
-    pub fn open(path: &str, dst_width: u32, dst_height: u32) -> anyhow::Result<Self> {
+    ///
+    /// Frames are produced at the source's **native resolution** (only the pixel
+    /// format is converted to RGBA); aspect-ratio fitting is the canvas's job, so
+    /// forcing a fixed size here would pre-stretch non-matching sources.
+    pub fn open(path: &str) -> anyhow::Result<Self> {
         ffmpeg_next::init()?;
 
         let ictx = format::input(path)?;
@@ -36,6 +40,7 @@ impl VideoSource {
 
         let width = decoder.width();
         let height = decoder.height();
+        let (dst_width, dst_height) = (width, height);
 
         let scaler = scaling::Context::get(
             decoder.format(),

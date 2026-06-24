@@ -18,23 +18,24 @@ struct Vertex {
     texcoord: [f32; 2],
 }
 
+// Layout must match the WGSL `Uniforms` block. In WGSL `vec2<f32>` aligns to 8
+// bytes and `vec3<f32>` to 16, so the two `vec2`s pack together (offsets 0/8/16)
+// and each `vec3` edge starts on a 16-byte boundary.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    source_uv_min: [f32; 2],
-    _pad0: [f32; 2],
-    source_uv_max: [f32; 2],
-    _pad1: [f32; 2],
-    output_size: [f32; 2],
-    _pad2: [f32; 2],
-    edge_left: [f32; 3],
+    source_uv_min: [f32; 2], // offset 0
+    source_uv_max: [f32; 2], // offset 8
+    output_size: [f32; 2],   // offset 16
+    _pad0: [f32; 2],         // pad to 32 so edge_left is 16-byte aligned
+    edge_left: [f32; 3],     // offset 32
+    _pad1: f32,
+    edge_right: [f32; 3],    // offset 48
+    _pad2: f32,
+    edge_top: [f32; 3],      // offset 64
     _pad3: f32,
-    edge_right: [f32; 3],
+    edge_bottom: [f32; 3],   // offset 80
     _pad4: f32,
-    edge_top: [f32; 3],
-    _pad5: f32,
-    edge_bottom: [f32; 3],
-    _pad6: f32,
 }
 
 impl Uniforms {
@@ -59,19 +60,17 @@ impl Uniforms {
 
         Self {
             source_uv_min: [u_min, v_min],
-            _pad0: [0.0; 2],
             source_uv_max: [u_max, v_max],
-            _pad1: [0.0; 2],
             output_size: [output_size[0] as f32, output_size[1] as f32],
-            _pad2: [0.0; 2],
+            _pad0: [0.0; 2],
             edge_left: edge_uniform(&edge_blend.left),
-            _pad3: 0.0,
+            _pad1: 0.0,
             edge_right: edge_uniform(&edge_blend.right),
-            _pad4: 0.0,
+            _pad2: 0.0,
             edge_top: edge_uniform(&edge_blend.top),
-            _pad5: 0.0,
+            _pad3: 0.0,
             edge_bottom: edge_uniform(&edge_blend.bottom),
-            _pad6: 0.0,
+            _pad4: 0.0,
         }
     }
 }
@@ -130,8 +129,8 @@ impl ProjectionRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("projection-pipeline-layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            ..Default::default()
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -186,7 +185,7 @@ impl ProjectionRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -279,6 +278,7 @@ impl ProjectionRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: output_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
@@ -287,6 +287,7 @@ impl ProjectionRenderer {
             depth_stencil_attachment: None,
             occlusion_query_set: None,
             timestamp_writes: None,
+            multiview_mask: None,
         });
 
         render_pass.set_pipeline(&self.pipeline);
@@ -304,7 +305,7 @@ mod tests {
 
     fn device_queue() -> (Device, Queue) {
         pollster::block_on(async {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions::default())
                 .await
@@ -410,12 +411,97 @@ mod tests {
 
         let slice = readback.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait()).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
         let data = slice.get_mapped_range();
         assert!(
             data.iter().any(|&b| b != 0),
             "projection renderer produced an all-black output"
         );
+    }
+
+    /// Mirrors the real runtime path: 1920x1080 canvas, `Fit`, the default
+    /// single output, full-res render target — and checks the *center* pixel,
+    /// catching black output that the tiny stretch test above can miss.
+    #[test]
+    fn test_projection_default_single_fit_center_nonblack() {
+        let (device, queue) = device_queue();
+
+        let (cw, ch) = (1920u32, 1080u32);
+        let canvas = CanvasTexture::new(&device, cw, ch);
+        // Red frame, but with a BLACK top-left quadrant. A uniform-color frame
+        // would hide a uniform-buffer layout bug that collapses every output
+        // pixel onto the canvas's top-left texel; this asymmetry catches it.
+        let mut data = vec![255u8, 0, 0, 255].repeat((cw * ch) as usize);
+        for y in 0..ch / 2 {
+            for x in 0..cw / 2 {
+                let i = ((y * cw + x) * 4) as usize;
+                data[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+        let frame = VideoFrame::new(cw, ch, data, 0.0);
+        canvas.upload_frame(&queue, &frame, CanvasFit::Fit);
+
+        let output_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test-output-fullres"),
+            size: wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let output_view = output_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let renderer = ProjectionRenderer::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb, true);
+        let output = ProjectorOutput::default_single();
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test-encoder-fullres"),
+        });
+        renderer.render(&device, &queue, &mut encoder, &canvas.view(), &output_view, &output, [cw, ch]);
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let bytes_per_row = cw * 4; // 7680, already 256-aligned
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test-readback-fullres"),
+            size: (bytes_per_row * ch) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test-copy-encoder-fullres"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &output_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(ch),
+                },
+            },
+            wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        let data = slice.get_mapped_range();
+        // Center pixel (BGRA): red frame -> B low, R high.
+        let cx = cw / 2;
+        let cy = ch / 2;
+        let idx = (cy * bytes_per_row + cx * 4) as usize;
+        let (b, g, r, a) = (data[idx], data[idx + 1], data[idx + 2], data[idx + 3]);
+        assert!(r > 100, "center pixel not red: bgra=({b},{g},{r},{a})");
     }
 }

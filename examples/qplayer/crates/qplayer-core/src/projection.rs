@@ -13,6 +13,9 @@ pub enum CanvasFit {
     /// Scale to fit while preserving aspect ratio, letterboxing/pillarboxing.
     #[default]
     Fit,
+    /// Scale to cover the entire canvas preserving aspect ratio, center-cropping
+    /// the overflow. Content spans the whole canvas (all projectors) with no bars.
+    Fill,
 }
 
 /// Top-level projection state stored in a show file.

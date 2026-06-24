@@ -25,12 +25,12 @@ symphonia = { version = "0.5", features = ["all"] }
 ffmpeg-next = "8.1"
 
 # GPU / UI
-wgpu = "25.0"
+wgpu = "29.0"
 winit = "0.30"
-egui = "0.32"
-egui-wgpu = "0.32"
-egui-winit = "0.32"
-eframe = "0.32"
+egui = "0.34"
+egui-wgpu = "0.34"
+egui-winit = "0.34"
+eframe = "0.34"
 pollster = "0.3"
 
 # Networking / Protocols

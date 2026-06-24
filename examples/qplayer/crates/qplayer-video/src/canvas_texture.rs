@@ -52,55 +52,7 @@ impl CanvasTexture {
     /// This is simple and correct; for very large canvases it can be replaced
     /// with a GPU scale-blit render pass.
     pub fn upload_frame(&self, queue: &Queue, frame: &VideoFrame, fit: CanvasFit) {
-        let canvas_pixels = (self.width * self.height) as usize;
-        let mut canvas = vec![0u8; canvas_pixels * 4];
-
-        let (offset_x, offset_y, scaled_w, scaled_h) = match fit {
-            CanvasFit::Stretch => (0u32, 0u32, self.width, self.height),
-            CanvasFit::Fit => {
-                let scale = (self.width as f32 / frame.width as f32)
-                    .min(self.height as f32 / frame.height as f32);
-                let w = (frame.width as f32 * scale) as u32;
-                let h = (frame.height as f32 * scale) as u32;
-                let x = (self.width.saturating_sub(w)) / 2;
-                let y = (self.height.saturating_sub(h)) / 2;
-                (x, y, w, h)
-            }
-        };
-
-        if scaled_w > 0 && scaled_h > 0 {
-            match fit {
-                CanvasFit::Stretch => {
-                    scale_rgba_into(
-                        &frame.data,
-                        frame.width,
-                        frame.height,
-                        &mut canvas,
-                        self.width,
-                        self.height,
-                    );
-                }
-                CanvasFit::Fit => {
-                    scale_rgba_into(
-                        &frame.data,
-                        frame.width,
-                        frame.height,
-                        &mut canvas,
-                        scaled_w,
-                        scaled_h,
-                    );
-                    // Shift the scaled image to the centered offset by rewriting in-place.
-                    // Copy rows from bottom to top so we don't overwrite un-moved data.
-                    for src_row in (0..scaled_h).rev() {
-                        let dst_row = offset_y + src_row;
-                        let src_start = (src_row * scaled_w) as usize * 4;
-                        let dst_start = ((dst_row * self.width) + offset_x) as usize * 4;
-                        let len = scaled_w as usize * 4;
-                        canvas.copy_within(src_start..src_start + len, dst_start);
-                    }
-                }
-            }
-        }
+        let canvas = compose_canvas(frame, self.width, self.height, fit);
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -124,28 +76,79 @@ impl CanvasTexture {
     }
 }
 
-/// Simple nearest-neighbor RGBA scale. Good enough for the MVP; bilinear can be
-/// swapped in later without changing the public API.
-fn scale_rgba_into(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-) {
-    let src_w = src_w as usize;
-    let src_h = src_h as usize;
-    let dst_w = dst_w as usize;
-    let dst_h = dst_h as usize;
+/// A rectangle in pixels (sub-pixel positions allowed for source crops).
+#[derive(Copy, Clone)]
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
 
-    for y in 0..dst_h {
-        let sy = (y * src_h) / dst_h;
-        for x in 0..dst_w {
-            let sx = (x * src_w) / dst_w;
-            let src_idx = (sy * src_w + sx) * 4;
-            let dst_idx = (y * dst_w + x) * 4;
-            dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+/// Build the `cw`x`ch` RGBA canvas buffer for one frame under `fit`.
+///
+/// Each mode maps a source sub-rect onto a dest sub-rect of the canvas:
+///   Stretch -> whole source onto whole canvas (distorts aspect)
+///   Fit     -> whole source onto a centered, letterboxed rect (black bars)
+///   Fill    -> a centered source crop onto the whole canvas (cover, no bars)
+fn compose_canvas(frame: &VideoFrame, cw: u32, ch: u32, fit: CanvasFit) -> Vec<u8> {
+    let mut canvas = vec![0u8; (cw * ch * 4) as usize];
+    let (cwf, chf) = (cw as f32, ch as f32);
+    let (fw, fh) = (frame.width as f32, frame.height as f32);
+    if fw == 0.0 || fh == 0.0 {
+        return canvas;
+    }
+
+    let (src, dst) = match fit {
+        CanvasFit::Stretch => (
+            Rect { x: 0.0, y: 0.0, w: fw, h: fh },
+            Rect { x: 0.0, y: 0.0, w: cwf, h: chf },
+        ),
+        CanvasFit::Fit => {
+            let s = (cwf / fw).min(chf / fh);
+            let (w, h) = (fw * s, fh * s);
+            (
+                Rect { x: 0.0, y: 0.0, w: fw, h: fh },
+                Rect { x: (cwf - w) / 2.0, y: (chf - h) / 2.0, w, h },
+            )
+        }
+        CanvasFit::Fill => {
+            let s = (cwf / fw).max(chf / fh);
+            let (vw, vh) = ((cwf / s).min(fw), (chf / s).min(fh));
+            (
+                Rect { x: (fw - vw) / 2.0, y: (fh - vh) / 2.0, w: vw, h: vh },
+                Rect { x: 0.0, y: 0.0, w: cwf, h: chf },
+            )
+        }
+    };
+    blit_resampled(frame, src, &mut canvas, cw, dst);
+    canvas
+}
+
+/// Nearest-neighbor blit of `frame`'s `src` rect into the `dst_rect` region of
+/// `dst` (a `dst_stride`-pixels-wide RGBA canvas). ponytail: nearest is fine for
+/// the MVP; bilinear can be swapped in here without touching callers.
+fn blit_resampled(frame: &VideoFrame, src: Rect, dst: &mut [u8], dst_stride: u32, dst_rect: Rect) {
+    let dw = dst_rect.w.round() as u32;
+    let dh = dst_rect.h.round() as u32;
+    if dw == 0 || dh == 0 || frame.width == 0 || frame.height == 0 {
+        return;
+    }
+    let dx0 = dst_rect.x.round() as u32;
+    let dy0 = dst_rect.y.round() as u32;
+    let max_x = frame.width - 1;
+    let max_y = frame.height - 1;
+
+    for j in 0..dh {
+        let sy = (src.y + (j as f32 + 0.5) * src.h / dh as f32) as u32;
+        let sy = sy.min(max_y);
+        let dst_row = dy0 + j;
+        for i in 0..dw {
+            let sx = (src.x + (i as f32 + 0.5) * src.w / dw as f32) as u32;
+            let sx = sx.min(max_x);
+            let si = ((sy * frame.width + sx) * 4) as usize;
+            let di = ((dst_row * dst_stride + dx0 + i) * 4) as usize;
+            dst[di..di + 4].copy_from_slice(&frame.data[si..si + 4]);
         }
     }
 }
@@ -156,7 +159,7 @@ mod tests {
 
     fn fake_device_queue() -> (Device, Queue) {
         pollster::block_on(async {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions::default())
                 .await
@@ -204,5 +207,36 @@ mod tests {
         canvas.upload_frame(&queue, &frame, CanvasFit::Fit);
         assert_eq!(canvas.width, 8);
         assert_eq!(canvas.height, 4);
+    }
+
+    // A non-black frame whose aspect (2:1) differs from the canvas (1:1) so the
+    // three fit modes produce visibly different coverage.
+    fn solid_frame() -> VideoFrame {
+        VideoFrame::new(4, 2, vec![200u8; 4 * 2 * 4], 0.0)
+    }
+
+    fn has_black_pixel(buf: &[u8]) -> bool {
+        buf.chunks_exact(4).any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
+    }
+
+    #[test]
+    fn test_fit_letterboxes() {
+        // 2:1 source into an 8x8 (1:1) canvas -> top/bottom black bars remain.
+        let buf = compose_canvas(&solid_frame(), 8, 8, CanvasFit::Fit);
+        assert!(has_black_pixel(&buf), "Fit should leave letterbox bars");
+        assert!(buf.iter().any(|&b| b != 0), "Fit should draw the video");
+    }
+
+    #[test]
+    fn test_fill_covers_canvas() {
+        // Cover must fill every pixel — no black bars anywhere.
+        let buf = compose_canvas(&solid_frame(), 8, 8, CanvasFit::Fill);
+        assert!(!has_black_pixel(&buf), "Fill must cover the whole canvas (no bars)");
+    }
+
+    #[test]
+    fn test_stretch_covers_canvas() {
+        let buf = compose_canvas(&solid_frame(), 8, 8, CanvasFit::Stretch);
+        assert!(!has_black_pixel(&buf), "Stretch fills the whole canvas");
     }
 }

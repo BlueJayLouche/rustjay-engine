@@ -36,7 +36,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         egui::ComboBox::from_id_salt("projection_fit")
             .selected_text(format!("{:?}", projection.fit))
             .show_ui(ui, |ui| {
-                for variant in [qplayer_core::CanvasFit::Fit, qplayer_core::CanvasFit::Stretch] {
+                for variant in [
+                    qplayer_core::CanvasFit::Fit,
+                    qplayer_core::CanvasFit::Fill,
+                    qplayer_core::CanvasFit::Stretch,
+                ] {
                     if ui.selectable_value(&mut projection.fit, variant, format!("{:?}", variant)).clicked() {
                         changed = true;
                     }
