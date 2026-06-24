@@ -2453,6 +2453,21 @@ impl ApplicationHandler<AppEvent> for App {
                                 }
                             }
                         }
+
+                        // Cue hotkey triggers also fire while an output window has
+                        // focus (e.g. fullscreen on a projector), matching the
+                        // control window. Skip Esc/F11 and Ctrl/Cmd combos so they
+                        // keep their fullscreen behaviour.
+                        if !is_esc && !is_f11 && !has_ctrl {
+                            let key_name = match &event.logical_key {
+                                Key::Character(s) => s.to_string(),
+                                Key::Named(n) => format!("{:?}", n),
+                                _ => String::new(),
+                            };
+                            if !key_name.is_empty() {
+                                self.fire_hotkey_trigger(&key_name, event_loop);
+                            }
+                        }
                     }
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
