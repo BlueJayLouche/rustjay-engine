@@ -48,4 +48,7 @@ jobs:
         run: choco install cmake ninja --installargs 'ADD_CMAKE_TO_PATH=System' -y
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
-      - run: cargo check --workspace
+      # videowall's apriltag-sys is POSIX-only C (pthreads in workerpool.c) and
+      # cannot build under MSVC. Spout — the reason for the Windows job — lives
+      # in rustjay-io, so skip just the videowall example here.
+      - run: cargo check --workspace --exclude videowall
