@@ -180,8 +180,8 @@ impl EffectPlugin for IsfEffect {
         queue: &wgpu::Queue,
     ) {
         // Check for a new path requested via the "Load Shader" button.
-        if let Ok(mut guard) = self.pending_path.lock() {
-            if let Some(new_path) = guard.take() {
+        if let Ok(mut guard) = self.pending_path.lock()
+            && let Some(new_path) = guard.take() {
                 self.shader_path = new_path;
                 // Derive and broadcast the new display name immediately.
                 let name = self
@@ -196,7 +196,6 @@ impl EffectPlugin for IsfEffect {
                 }
                 self.last_mtime = None; // force reload below
             }
-        }
 
         let Ok(meta) = std::fs::metadata(&self.shader_path) else {
             return;

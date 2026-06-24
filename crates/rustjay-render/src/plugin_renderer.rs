@@ -735,8 +735,8 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             view.copy_from_slice(bytemuck::bytes_of(&uniforms));
         }
 
-        if self.cached_texture_gen != frame.input_generation {
-            if let (Some(input_view), Some(input_sampler)) = (frame.input_view, frame.input_sampler)
+        if self.cached_texture_gen != frame.input_generation
+            && let (Some(input_view), Some(input_sampler)) = (frame.input_view, frame.input_sampler)
             {
                 self.cached_texture_bind_group =
                     Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -767,7 +767,6 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                     }));
                 self.cached_texture_gen = frame.input_generation;
             }
-        }
 
         let Some(ref texture_bind_group) = self.cached_texture_bind_group else {
             return;
@@ -879,14 +878,13 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             self.cached_pass_texture_gens.clear();
 
             // Validate: PassInput::PreviousPass on pass 0 is a mistake.
-            if let Some(first) = graph.passes.first() {
-                if first.input == PassInput::PreviousPass {
+            if let Some(first) = graph.passes.first()
+                && first.input == PassInput::PreviousPass {
                     log::warn!(
                         "[RenderGraph] pass[0] declares PreviousPass input — \
                          no previous pass exists; will use dummy black texture"
                     );
                 }
-            }
 
             for pass in &graph.passes {
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

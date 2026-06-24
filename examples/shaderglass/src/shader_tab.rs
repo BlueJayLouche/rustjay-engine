@@ -35,7 +35,7 @@ impl ShaderTab {
                     .map(|n| (n.to_string(), p.clone()))
             })
             .collect();
-        out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        out.sort_by_key(|a| a.0.to_lowercase());
         out
     }
 
@@ -51,13 +51,12 @@ impl ShaderTab {
             ps.iter()
                 .all(|(id, _)| engine.param_descriptors.iter().any(|d| &d.id == id))
         });
-        if ready {
-            if let Some(ps) = self.pending_params.take() {
+        if ready
+            && let Some(ps) = self.pending_params.take() {
                 for (id, val) in ps {
                     engine.set_param_base(&id, val);
                 }
             }
-        }
     }
 }
 
@@ -134,8 +133,8 @@ impl AnyEguiTab for ShaderTab {
 
         // --- Profiles ----------------------------------------------------
         ui.horizontal(|ui| {
-            if ui.button("Save Profile…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
+            if ui.button("Save Profile…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("ShaderGlass Profile", &["json"])
                     .set_file_name("profile.json")
                     .save_file()
@@ -146,9 +145,8 @@ impl AnyEguiTab for ShaderTab {
                         log::error!("Save profile failed: {e}");
                     }
                 }
-            }
-            if ui.button("Load Profile…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
+            if ui.button("Load Profile…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("ShaderGlass Profile", &["json"])
                     .pick_file()
                 {
@@ -157,7 +155,6 @@ impl AnyEguiTab for ShaderTab {
                         Err(e) => log::error!("Load profile failed: {e}"),
                     }
                 }
-            }
         });
 
         ui.separator();

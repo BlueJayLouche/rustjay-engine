@@ -107,8 +107,7 @@ impl ImGuiRenderer {
             window_id,
             event: WindowEvent::MouseWheel { delta, phase, .. },
         } = event
-        {
-            if window_id == &self.window.id() && *phase == TouchPhase::Moved {
+            && window_id == &self.window.id() && *phase == TouchPhase::Moved {
                 let (h, v) = match delta {
                     MouseScrollDelta::LineDelta(h, v) => (*h, *v),
                     MouseScrollDelta::PixelDelta(pos) => {
@@ -119,7 +118,6 @@ impl ImGuiRenderer {
                 self.context.io_mut().add_mouse_wheel_event([h, v]);
                 return;
             }
-        }
         self.platform
             .handle_event(self.context.io_mut(), &self.window, event);
     }

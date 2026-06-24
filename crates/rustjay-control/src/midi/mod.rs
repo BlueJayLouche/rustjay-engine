@@ -458,11 +458,10 @@ impl MidiManager {
                         _ => None,
                     };
 
-                    if let Some((kind, ch, sel, val)) = msg {
-                        if let Ok(mut state) = state.lock() {
+                    if let Some((kind, ch, sel, val)) = msg
+                        && let Ok(mut state) = state.lock() {
                             state.handle_message(kind, ch, sel, val);
                         }
-                    }
                 },
                 (),
             )
@@ -485,12 +484,11 @@ impl MidiManager {
             let _ = conn.close();
             log::info!("MIDI disconnected");
         }
-        if self.input.is_none() {
-            if let Ok(mut input) = MidiInput::new("RustJay MIDI") {
+        if self.input.is_none()
+            && let Ok(mut input) = MidiInput::new("RustJay MIDI") {
                 input.ignore(Ignore::None);
                 self.input = Some(input);
             }
-        }
         if let Ok(mut state) = self.state.lock() {
             state.selected_device = None;
             state.enabled = false;

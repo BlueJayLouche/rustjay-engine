@@ -31,11 +31,10 @@ impl EguiControlGui {
                 if !self.audio_devices.is_empty() {
                     let device_names: Vec<&str> =
                         self.audio_devices.iter().map(|s| s.as_str()).collect();
-                    if let Some(ref current) = selected_device {
-                        if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
+                    if let Some(ref current) = selected_device
+                        && let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
                             self.selected_audio_device = idx;
                         }
-                    }
                     egui::ComboBox::from_id_salt("audio_dev")
                         .width(240.0)
                         .selected_text(
@@ -139,14 +138,13 @@ impl EguiControlGui {
                                     }
                                 }
                             });
-                        if let Some(&new_size) = FFT_SIZES.get(selected_idx) {
-                            if new_size != current_fft_size {
+                        if let Some(&new_size) = FFT_SIZES.get(selected_idx)
+                            && new_size != current_fft_size {
                                 let mut state =
                                     self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio.fft_size = new_size;
                                 state.audio_command = AudioCommand::SetFftSize(new_size);
                             }
-                        }
                     }
 
                     if ui.checkbox(&mut normalize, "Normalize Bands").changed() {

@@ -58,8 +58,8 @@ impl AnyGuiTab for TransitionTab {
             ui.combo_simple_string("Easing", &mut easing_idx, &easing_names);
             self.auto_easing = easing_idx as i32;
 
-            if ui.button("Start Auto Crossfade") {
-                if let Some(ref m) = mixer {
+            if ui.button("Start Auto Crossfade")
+                && let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
                     let easing = match self.auto_easing {
                         1 => Easing::EaseIn,
@@ -75,13 +75,11 @@ impl AnyGuiTab for TransitionTab {
                         easing,
                     ));
                 }
-            }
             ui.same_line();
-            if ui.button("Stop") {
-                if let Some(ref m) = mixer {
+            if ui.button("Stop")
+                && let Some(ref m) = mixer {
                     m.lock().unwrap().auto = None;
                 }
-            }
 
             ui.unindent_by(8.0);
         }
@@ -97,19 +95,17 @@ impl AnyGuiTab for TransitionTab {
             ui.slider_config("Beats", 0.5f32, 16.0f32)
                 .build(&mut self.beat_beats);
 
-            if ui.button("Start Beat Sync") {
-                if let Some(ref m) = mixer {
+            if ui.button("Start Beat Sync")
+                && let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
                     mixer.beat_sync =
                         Some(BeatSyncCrossfade::new(self.beat_target, self.beat_beats));
                 }
-            }
             ui.same_line();
-            if ui.button("Stop##beat") {
-                if let Some(ref m) = mixer {
+            if ui.button("Stop##beat")
+                && let Some(ref m) = mixer {
                     m.lock().unwrap().beat_sync = None;
                 }
-            }
 
             ui.unindent_by(8.0);
         }
@@ -125,24 +121,22 @@ impl AnyGuiTab for TransitionTab {
             ui.slider_config("Step Beats", 0.5f32, 8.0f32)
                 .build(&mut self.seq_beats);
 
-            if ui.button("Add Crossfade Step") {
-                if let Some(ref m) = mixer {
+            if ui.button("Add Crossfade Step")
+                && let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
                     mixer
                         .sequencer
                         .steps
                         .push(TransitionStep::crossfade(self.seq_target, self.seq_beats));
                 }
-            }
-            if ui.button("Add Hold Step") {
-                if let Some(ref m) = mixer {
+            if ui.button("Add Hold Step")
+                && let Some(ref m) = mixer {
                     let mut mixer = m.lock().unwrap();
                     mixer
                         .sequencer
                         .steps
                         .push(TransitionStep::hold(self.seq_beats));
                 }
-            }
 
             ui.checkbox("Loop", &mut self.seq_looping);
 
@@ -153,23 +147,20 @@ impl AnyGuiTab for TransitionTab {
                 ui.text(format!("Index: {}", mixer.sequencer.index));
             }
 
-            if ui.button("Play") {
-                if let Some(ref m) = mixer {
+            if ui.button("Play")
+                && let Some(ref m) = mixer {
                     m.lock().unwrap().sequencer.play();
                 }
-            }
             ui.same_line();
-            if ui.button("Stop##seq") {
-                if let Some(ref m) = mixer {
+            if ui.button("Stop##seq")
+                && let Some(ref m) = mixer {
                     m.lock().unwrap().sequencer.stop();
                 }
-            }
             ui.same_line();
-            if ui.button("Clear Steps") {
-                if let Some(ref m) = mixer {
+            if ui.button("Clear Steps")
+                && let Some(ref m) = mixer {
                     m.lock().unwrap().sequencer.steps.clear();
                 }
-            }
 
             ui.unindent_by(8.0);
         }

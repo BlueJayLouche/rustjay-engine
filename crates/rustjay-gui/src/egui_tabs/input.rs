@@ -199,8 +199,8 @@ impl EguiControlGui {
                         }
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("▶ Start Input 1").clicked() {
-                        if let Some(info) = self.syphon_servers.get(self.selected_syphon).cloned() {
+                    if ui.button("▶ Start Input 1").clicked()
+                        && let Some(info) = self.syphon_servers.get(self.selected_syphon).cloned() {
                             let mut state =
                                 self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.input_command = InputCommand::StartSyphon {
@@ -208,9 +208,8 @@ impl EguiControlGui {
                                 server_uuid: info.uuid.clone(),
                             };
                         }
-                    }
-                    if ui.button("▶ Start Input 2").clicked() {
-                        if let Some(info) = self.syphon_servers.get(self.selected_syphon).cloned() {
+                    if ui.button("▶ Start Input 2").clicked()
+                        && let Some(info) = self.syphon_servers.get(self.selected_syphon).cloned() {
                             let mut state =
                                 self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.second_input_command = InputCommand::StartSyphon {
@@ -218,7 +217,6 @@ impl EguiControlGui {
                                 server_uuid: info.uuid.clone(),
                             };
                         }
-                    }
                 });
             } else {
                 ui.label(egui::RichText::new("No Syphon servers found").color(TEXT_SECONDARY));

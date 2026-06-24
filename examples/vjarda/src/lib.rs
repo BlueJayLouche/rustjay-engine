@@ -873,19 +873,16 @@ impl VardaRootPlugin {
         let fx_path = shaders_dir.join("ConcentricRings.fs");
         if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&fx_path) {
             let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
-            if let Some(ch) = mixer.channels.first_mut() {
-                if let Some(compositor) = ch.effect.as_any_mut() {
-                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                        if let Some(deck) = compositor.decks.first_mut() {
+            if let Some(ch) = mixer.channels.first_mut()
+                && let Some(compositor) = ch.effect.as_any_mut()
+                    && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>()
+                        && let Some(deck) = compositor.decks.first_mut() {
                             deck.add_effect(Box::new(node));
                             if let Some(slot) = deck.chain.last_mut() {
                                 slot.source_path = Some(fx_path.clone());
                             }
                             log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
                         }
-                    }
-                }
-            }
         }
 
         // Phase 12 demo: pre-populate sequencer with a beat-synced sequence
@@ -1108,11 +1105,10 @@ impl EffectPlugin for VardaRootPlugin {
 
                 // Queue the workspace's saved param base values; the renderer
                 // applies them after the rebuilt graph's params (re)register.
-                if let Some(params) = self.pending_params.take() {
-                    if let Ok(mut restore) = engine.param_restore.lock() {
+                if let Some(params) = self.pending_params.take()
+                    && let Ok(mut restore) = engine.param_restore.lock() {
                         restore.extend(params);
                     }
-                }
             }
 
             // Capture projection subsystem handle for runtime headless management.
@@ -1273,11 +1269,10 @@ impl EffectPlugin for VardaRootPlugin {
                 // Queue the saved param base values; the renderer applies them
                 // after the rebuilt graph's params (re)register (set_param_base
                 // needs &mut engine, which we don't have here).
-                if !scene.params.is_empty() {
-                    if let Ok(mut restore) = engine.param_restore.lock() {
+                if !scene.params.is_empty()
+                    && let Ok(mut restore) = engine.param_restore.lock() {
                         restore.extend(scene.params.clone());
                     }
-                }
             }
 
             if let Some(ref watcher) = state.shader_watcher {
@@ -1287,8 +1282,8 @@ impl EffectPlugin for VardaRootPlugin {
                         log::info!("[ShaderWatcher] changed: {}", path.display());
                         if let Ok(mut mixer) = state.mixer.lock() {
                             for ch in mixer.channels.iter_mut() {
-                                if let Some(compositor) = ch.effect.as_any_mut() {
-                                    if let Some(compositor) =
+                                if let Some(compositor) = ch.effect.as_any_mut()
+                                    && let Some(compositor) =
                                         compositor.downcast_mut::<DeckCompositor>()
                                     {
                                         for deck in compositor.decks.iter_mut() {
@@ -1324,7 +1319,6 @@ impl EffectPlugin for VardaRootPlugin {
                                             }
                                         }
                                     }
-                                }
                             }
                         }
                     }
@@ -1436,9 +1430,9 @@ impl EffectPlugin for VardaRootPlugin {
                 let Some(channel) = channel else {
                     continue;
                 };
-                if let Some(compositor) = channel.effect.as_any_mut() {
-                    if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                        if let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
+                if let Some(compositor) = channel.effect.as_any_mut()
+                    && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>()
+                        && let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
                             self.params_dirty = true;
                             // Purge orphaned modulation assignments for the deck's
                             // source params AND every FX it carried (one prefix
@@ -1452,8 +1446,6 @@ impl EffectPlugin for VardaRootPlugin {
                                 std::time::Duration::from_secs(3),
                             );
                         }
-                    }
-                }
             }
 
             let pending: Vec<PendingDeck> = std::mem::take(&mut state.pending_decks);
@@ -2154,13 +2146,12 @@ impl EffectPlugin for VardaRootPlugin {
             if let Ok(mut mixer) = self.mixer.lock() {
                 for ch in mixer.channels.iter_mut() {
                     router.register_channel(&ch.uuid, &ch.name);
-                    if let Some(compositor) = ch.effect.as_any_mut() {
-                        if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
+                    if let Some(compositor) = ch.effect.as_any_mut()
+                        && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
                             for deck in &compositor.decks {
                                 router.register_deck(&ch.uuid, &deck.uuid, &deck.name);
                             }
                         }
-                    }
                 }
                 // `crossfader` and other bare ids resolve via pass-through — no
                 // explicit registration needed.

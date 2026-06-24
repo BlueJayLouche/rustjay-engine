@@ -32,11 +32,10 @@ impl AnyGuiTab for IsfTab {
         engine: &mut EngineState,
     ) {
         // Keep the tab label in sync with the current shader name.
-        if let Ok(name) = self.shader_name.lock() {
-            if *name != self.cached_name {
+        if let Ok(name) = self.shader_name.lock()
+            && *name != self.cached_name {
                 self.cached_name = name.clone();
             }
-        }
 
         if ui.button("Load Shader...") {
             let dir = self.shaders_dir.clone();
@@ -45,11 +44,9 @@ impl AnyGuiTab for IsfTab {
                 .set_title("Pick an ISF shader (.fs)")
                 .set_directory(&dir)
                 .pick_file()
-            {
-                if let Ok(mut guard) = self.pending_path.lock() {
+                && let Ok(mut guard) = self.pending_path.lock() {
                     *guard = Some(path);
                 }
-            }
         }
 
         ui.separator();

@@ -251,7 +251,7 @@ impl ProjectorOutput {
         let has_output = self
             .record_manager
             .as_ref()
-            .map_or(false, |m| m.has_active_output());
+            .is_some_and(|m| m.has_active_output());
         if has_output
             && self
                 .surface_config
@@ -340,18 +340,17 @@ impl ProjectorOutput {
 
     /// Stop recording this projector's output (leaves other sinks running).
     pub fn stop_recording(&mut self) {
-        if let Some(manager) = self.record_manager.as_mut() {
-            if manager.is_recording() {
+        if let Some(manager) = self.record_manager.as_mut()
+            && manager.is_recording() {
                 manager.stop_recording();
                 log::info!("Stopped projector recording");
             }
-        }
     }
 
     pub fn is_recording(&self) -> bool {
         self.record_manager
             .as_ref()
-            .map_or(false, |m| m.is_recording())
+            .is_some_and(|m| m.is_recording())
     }
 
     pub fn start_ndi(&mut self, name: &str) -> anyhow::Result<()> {
@@ -373,7 +372,7 @@ impl ProjectorOutput {
     pub fn is_ndi(&self) -> bool {
         self.record_manager
             .as_ref()
-            .map_or(false, |m| m.is_ndi_active())
+            .is_some_and(|m| m.is_ndi_active())
     }
 
     #[cfg(target_os = "macos")]
@@ -401,7 +400,7 @@ impl ProjectorOutput {
     pub fn is_syphon(&self) -> bool {
         self.record_manager
             .as_ref()
-            .map_or(false, |m| m.is_syphon_active())
+            .is_some_and(|m| m.is_syphon_active())
     }
 
     /// Start publishing this projector's output via Spout (Windows).
@@ -425,7 +424,7 @@ impl ProjectorOutput {
     pub fn is_spout(&self) -> bool {
         self.record_manager
             .as_ref()
-            .map_or(false, |m| m.is_spout_active())
+            .is_some_and(|m| m.is_spout_active())
     }
 
     #[cfg(target_os = "linux")]
@@ -449,7 +448,7 @@ impl ProjectorOutput {
     pub fn is_v4l2(&self) -> bool {
         self.record_manager
             .as_ref()
-            .map_or(false, |m| m.is_v4l2_active())
+            .is_some_and(|m| m.is_v4l2_active())
     }
 
     pub fn toggle_fullscreen(&mut self) {
@@ -670,13 +669,11 @@ impl ProjectionSubsystem {
                             *shift_pressed =
                                 event.state == winit::event::ElementState::Pressed;
                         }
-                        if event.state == winit::event::ElementState::Pressed {
-                            if let winit::keyboard::Key::Character(ch) = &event.logical_key {
-                                if *shift_pressed && ch.to_lowercase() == "f" {
+                        if event.state == winit::event::ElementState::Pressed
+                            && let winit::keyboard::Key::Character(ch) = &event.logical_key
+                                && *shift_pressed && ch.to_lowercase() == "f" {
                                     proj.toggle_fullscreen();
                                 }
-                            }
-                        }
                     }
                     _ => {}
                 }
@@ -715,11 +712,10 @@ impl ProjectionSubsystem {
     pub fn remove_headless_output(&mut self, index: usize) {
         if index < self.headless_outputs.len() {
             self.headless_outputs.remove(index);
-            if index < self.headless_managers.len() {
-                if let Some(mut mgr) = self.headless_managers.remove(index) {
+            if index < self.headless_managers.len()
+                && let Some(mut mgr) = self.headless_managers.remove(index) {
                     mgr.shutdown();
                 }
-            }
         }
     }
 
@@ -800,11 +796,10 @@ impl ProjectionSubsystem {
     ) {
         const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_666); // ~60 Hz
         let now = std::time::Instant::now();
-        if let Some(last) = self.last_render {
-            if now.duration_since(last) < MIN_INTERVAL {
+        if let Some(last) = self.last_render
+            && now.duration_since(last) < MIN_INTERVAL {
                 return;
             }
-        }
         self.last_render = Some(now);
         for proj in &mut self.projectors {
             proj.render(device, queue, source_view, source_texture, source_size);
@@ -818,7 +813,7 @@ impl ProjectionSubsystem {
                 .headless_managers
                 .get(i)
                 .and_then(|m| m.as_ref())
-                .map_or(false, |m| m.has_active_output());
+                .is_some_and(|m| m.has_active_output());
             if active {
                 let tex = self.headless_outputs[i].output_texture();
                 if let Some(Some(mgr)) = self.headless_managers.get_mut(i) {
@@ -853,7 +848,7 @@ impl ProjectionSubsystem {
     }
 
     pub fn is_projector_recording(&self, index: usize) -> bool {
-        self.projectors.get(index).map_or(false, |p| p.is_recording())
+        self.projectors.get(index).is_some_and(|p| p.is_recording())
     }
 
     // ── Projector output senders (NDI / Syphon / Spout / V4L2) ──────────────
@@ -875,7 +870,7 @@ impl ProjectionSubsystem {
     }
 
     pub fn is_projector_ndi(&self, index: usize) -> bool {
-        self.projectors.get(index).map_or(false, |p| p.is_ndi())
+        self.projectors.get(index).is_some_and(|p| p.is_ndi())
     }
 
     #[cfg(target_os = "macos")]
@@ -903,7 +898,7 @@ impl ProjectionSubsystem {
     }
 
     pub fn is_projector_syphon(&self, index: usize) -> bool {
-        self.projectors.get(index).map_or(false, |p| p.is_syphon())
+        self.projectors.get(index).is_some_and(|p| p.is_syphon())
     }
 
     #[cfg(target_os = "windows")]
@@ -923,7 +918,7 @@ impl ProjectionSubsystem {
     }
 
     pub fn is_projector_spout(&self, index: usize) -> bool {
-        self.projectors.get(index).map_or(false, |p| p.is_spout())
+        self.projectors.get(index).is_some_and(|p| p.is_spout())
     }
 
     #[cfg(target_os = "linux")]
@@ -943,7 +938,7 @@ impl ProjectionSubsystem {
     }
 
     pub fn is_projector_v4l2(&self, index: usize) -> bool {
-        self.projectors.get(index).map_or(false, |p| p.is_v4l2())
+        self.projectors.get(index).is_some_and(|p| p.is_v4l2())
     }
 
     pub fn start_headless_recording(
@@ -986,7 +981,7 @@ impl ProjectionSubsystem {
         self.headless_managers
             .get(index)
             .and_then(|m| m.as_ref())
-            .map_or(false, |m| m.is_recording())
+            .is_some_and(|m| m.is_recording())
     }
 
     // ── Headless output senders (NDI / Syphon / Spout / V4L2) ───────────────
@@ -1016,7 +1011,7 @@ impl ProjectionSubsystem {
         self.headless_managers
             .get(index)
             .and_then(|m| m.as_ref())
-            .map_or(false, |m| m.is_ndi_active())
+            .is_some_and(|m| m.is_ndi_active())
     }
 
     #[cfg(target_os = "macos")]
@@ -1049,7 +1044,7 @@ impl ProjectionSubsystem {
         self.headless_managers
             .get(index)
             .and_then(|m| m.as_ref())
-            .map_or(false, |m| m.is_syphon_active())
+            .is_some_and(|m| m.is_syphon_active())
     }
 
     #[cfg(target_os = "windows")]
@@ -1074,7 +1069,7 @@ impl ProjectionSubsystem {
         self.headless_managers
             .get(index)
             .and_then(|m| m.as_ref())
-            .map_or(false, |m| m.is_spout_active())
+            .is_some_and(|m| m.is_spout_active())
     }
 
     #[cfg(target_os = "linux")]
@@ -1104,7 +1099,7 @@ impl ProjectionSubsystem {
         self.headless_managers
             .get(index)
             .and_then(|m| m.as_ref())
-            .map_or(false, |m| m.is_v4l2_active())
+            .is_some_and(|m| m.is_v4l2_active())
     }
 
     /// Remove a projector output by its window ID, dropping the surface and window.

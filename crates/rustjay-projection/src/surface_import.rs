@@ -534,11 +534,10 @@ fn flatten_svg_path(path: &tiny_skia_path::Path) -> Vec<[f32; 2]> {
                 last = [pt.x, pt.y];
             }
             tiny_skia_path::PathSegment::Close => {
-                if let Some(&first) = points.first() {
-                    if (last[0] - first[0]).abs() > 1e-4 || (last[1] - first[1]).abs() > 1e-4 {
+                if let Some(&first) = points.first()
+                    && ((last[0] - first[0]).abs() > 1e-4 || (last[1] - first[1]).abs() > 1e-4) {
                         points.push(first);
                     }
-                }
             }
         }
     }

@@ -126,14 +126,13 @@ impl SyphonInputReceiver {
     pub fn try_receive_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
         #[cfg(target_os = "macos")]
         {
-            if let Some(ref mut inner) = self.inner {
-                if inner.receive_texture(device, queue) {
+            if let Some(ref mut inner) = self.inner
+                && inner.receive_texture(device, queue) {
                     if let Some(tex) = inner.output_texture() {
                         self.resolution = (tex.width(), tex.height());
                     }
                     return true;
                 }
-            }
         }
         let _ = (device, queue);
         false

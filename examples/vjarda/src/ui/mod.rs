@@ -36,6 +36,7 @@ enum AddSourceTab {
     #[cfg(feature = "ndi")]
     Ndi,
     Syphon,
+    #[allow(dead_code)] // constructed only on Windows (Spout)
     Spout,
 }
 
@@ -49,6 +50,7 @@ pub struct DeckTab {
     #[cfg(feature = "ndi")]
     selected_ndi_index: usize,
     selected_syphon_index: usize,
+    #[allow(dead_code)] // read only on Windows (Spout)
     selected_spout_index: usize,
     /// Async result from the native file picker (source files).
     pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
@@ -501,11 +503,10 @@ mod egui_impl {
                 .expect("MixerTab expects VardaAppState");
 
             // Poll async file picker result.
-            if let Ok(mut guard) = self.pending_effect.lock() {
-                if let Some(req) = guard.take() {
+            if let Ok(mut guard) = self.pending_effect.lock()
+                && let Some(req) = guard.take() {
                     state.pending_effects.push(req);
                 }
-            }
 
             // Cmd+S manual save
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
@@ -561,11 +562,10 @@ mod egui_impl {
                 .expect("DeckTab expects VardaAppState");
 
             // Poll async file picker result.
-            if let Ok(mut guard) = self.pending_effect.lock() {
-                if let Some(req) = guard.take() {
+            if let Ok(mut guard) = self.pending_effect.lock()
+                && let Some(req) = guard.take() {
                     state.pending_effects.push(req);
                 }
-            }
 
             ui.heading("Decks");
             ui.separator();
@@ -693,11 +693,10 @@ mod egui_impl {
                 let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
                 mixer.channels.iter().map(|c| (c.uuid.clone(), c.name.clone())).collect()
             };
-            if self.selected_channel_uuid.is_empty() {
-                if let Some((uuid, _)) = channel_names.first() {
+            if self.selected_channel_uuid.is_empty()
+                && let Some((uuid, _)) = channel_names.first() {
                     self.selected_channel_uuid = uuid.clone();
                 }
-            }
             ui.horizontal(|ui| {
                 ui.label("Channel:");
                 egui::ComboBox::from_id_salt("deck_add_channel")
@@ -745,11 +744,10 @@ mod egui_impl {
 
             match self.add_tab {
                 AddSourceTab::File => {
-                    if let Ok(mut guard) = self.pending_file.lock() {
-                        if let Some(path) = guard.take() {
+                    if let Ok(mut guard) = self.pending_file.lock()
+                        && let Some(path) = guard.take() {
                             self.file_path = path.to_string_lossy().to_string();
                         }
-                    }
                     ui.horizontal(|ui| {
                         ui.label("Path:");
                         ui.text_edit_singleline(&mut self.file_path);
@@ -830,14 +828,13 @@ mod egui_impl {
                                     ui.selectable_value(&mut self.selected_camera_index, i, name);
                                 }
                             });
-                        if ui.button("Add Camera").clicked() {
-                            if let Some(entry) = cameras.get(self.selected_camera_index) {
+                        if ui.button("Add Camera").clicked()
+                            && let Some(entry) = cameras.get(self.selected_camera_index) {
                                 state.pending_decks.push(crate::PendingDeck {
                                     channel_uuid: target_uuid.clone(),
                                     source: (*entry).clone(),
                                 });
                             }
-                        }
                     }
                 }
                 #[cfg(feature = "ndi")]
@@ -892,14 +889,13 @@ mod egui_impl {
                                     ui.selectable_value(&mut self.selected_syphon_index, i, name);
                                 }
                             });
-                        if ui.button("Add Syphon").clicked() {
-                            if let Some(entry) = servers.get(self.selected_syphon_index) {
+                        if ui.button("Add Syphon").clicked()
+                            && let Some(entry) = servers.get(self.selected_syphon_index) {
                                 state.pending_decks.push(crate::PendingDeck {
                                     channel_uuid: target_uuid.clone(),
                                     source: (*entry).clone(),
                                 });
                             }
-                        }
                     }
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -964,11 +960,10 @@ mod egui_impl {
                 .expect("EffectsTab expects VardaAppState");
 
             // Poll async file picker result.
-            if let Ok(mut guard) = self.pending_effect.lock() {
-                if let Some(req) = guard.take() {
+            if let Ok(mut guard) = self.pending_effect.lock()
+                && let Some(req) = guard.take() {
                     state.pending_effects.push(req);
                 }
-            }
 
             ui.heading("Effects / Library");
             ui.separator();
@@ -982,11 +977,10 @@ mod egui_impl {
                     .map(|c| (c.uuid.clone(), c.name.clone()))
                     .collect()
             };
-            if self.selected_channel_uuid.is_empty() {
-                if let Some((uuid, _)) = channel_names.first() {
+            if self.selected_channel_uuid.is_empty()
+                && let Some((uuid, _)) = channel_names.first() {
                     self.selected_channel_uuid = uuid.clone();
                 }
-            }
 
             ui.horizontal(|ui| {
                 ui.label("Add to:");
@@ -3458,11 +3452,10 @@ mod egui_impl {
             ui.separator();
             ui.label(egui::RichText::new("Recording").strong());
 
-            if let Ok(mut guard) = self.pending_save_path.lock() {
-                if let Some(path) = guard.take() {
+            if let Ok(mut guard) = self.pending_save_path.lock()
+                && let Some(path) = guard.take() {
                     self.recording_path = path.to_string_lossy().to_string();
                 }
-            }
 
             ui.horizontal(|ui| {
                 ui.label("Codec:");

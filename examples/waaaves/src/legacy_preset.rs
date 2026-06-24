@@ -20,15 +20,14 @@ impl<'de> Deserialize<'de> for GlamVec3 {
         D: serde::Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(arr) = value.as_array() {
-            if arr.len() >= 3 {
+        if let Some(arr) = value.as_array()
+            && arr.len() >= 3 {
                 return Ok(GlamVec3 {
                     x: arr[0].as_f64().unwrap_or(0.0) as f32,
                     y: arr[1].as_f64().unwrap_or(0.0) as f32,
                     z: arr[2].as_f64().unwrap_or(0.0) as f32,
                 });
             }
-        }
         #[derive(Deserialize)]
         struct Fields {
             x: f32,
@@ -65,8 +64,8 @@ impl<'de> Deserialize<'de> for GlamVec4 {
         D: serde::Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(arr) = value.as_array() {
-            if arr.len() >= 4 {
+        if let Some(arr) = value.as_array()
+            && arr.len() >= 4 {
                 return Ok(GlamVec4 {
                     x: arr[0].as_f64().unwrap_or(0.0) as f32,
                     y: arr[1].as_f64().unwrap_or(0.0) as f32,
@@ -74,7 +73,6 @@ impl<'de> Deserialize<'de> for GlamVec4 {
                     w: arr[3].as_f64().unwrap_or(0.0) as f32,
                 });
             }
-        }
         #[derive(Deserialize)]
         struct Fields {
             x: f32,

@@ -499,11 +499,10 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             MidiCommand::ClearMappings => {
-                if let Some(ref mut manager) = self.midi_manager {
-                    if let Ok(mut state) = manager.state().lock() {
+                if let Some(ref mut manager) = self.midi_manager
+                    && let Ok(mut state) = manager.state().lock() {
                         state.mappings.clear();
                     }
-                }
             }
             MidiCommand::Disconnect => {
                 if let Some(ref mut manager) = self.midi_manager {
@@ -514,8 +513,8 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             MidiCommand::RestoreMappings(snapshots) => {
-                if let Some(ref mut manager) = self.midi_manager {
-                    if let Ok(mut midi_state) = manager.state().lock() {
+                if let Some(ref mut manager) = self.midi_manager
+                    && let Ok(mut midi_state) = manager.state().lock() {
                         midi_state.mappings.clear();
                         for s in snapshots {
                             midi_state.mappings.push(MidiMapping::new(
@@ -533,7 +532,6 @@ impl<P: EffectPlugin> App<P> {
                             midi_state.mappings.len()
                         );
                     }
-                }
             }
             _ => {}
         }
@@ -625,11 +623,10 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             OscCommand::RefreshAddresses => {
-                if let Some(ref mut server) = self.osc_server {
-                    if let Ok(mut state) = server.state().lock() {
+                if let Some(ref mut server) = self.osc_server
+                    && let Ok(mut state) = server.state().lock() {
                         state.register_default_parameters();
                     }
-                }
             }
             _ => {}
         }
@@ -671,11 +668,10 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             PresetCommand::Delete(index) => {
-                if let Some(ref mut bank) = self.preset_bank {
-                    if let Err(e) = bank.delete_preset(index) {
+                if let Some(ref mut bank) = self.preset_bank
+                    && let Err(e) = bank.delete_preset(index) {
                         log::error!("Failed to delete preset: {}", e);
                     }
-                }
                 self.sync_preset_names_to_state();
             }
             PresetCommand::ApplySlot(slot) => {
@@ -698,19 +694,17 @@ impl<P: EffectPlugin> App<P> {
                 }
             }
             PresetCommand::AssignSlot { preset_index, slot } => {
-                if let Some(ref mut bank) = self.preset_bank {
-                    if let Err(e) = bank.assign_to_slot(preset_index, slot) {
+                if let Some(ref mut bank) = self.preset_bank
+                    && let Err(e) = bank.assign_to_slot(preset_index, slot) {
                         log::error!("Failed to assign slot: {}", e);
                     }
-                }
                 self.sync_preset_names_to_state();
             }
             PresetCommand::Refresh => {
-                if let Some(ref mut bank) = self.preset_bank {
-                    if let Err(e) = bank.refresh() {
+                if let Some(ref mut bank) = self.preset_bank
+                    && let Err(e) = bank.refresh() {
                         log::error!("Failed to refresh presets: {}", e);
                     }
-                }
                 self.sync_preset_names_to_state();
             }
             _ => {}
@@ -937,13 +931,12 @@ impl<P: EffectPlugin> App<P> {
                             }
                         }
                         rustjay_control::ControlWebCommand::MidiUnlearn { cc, channel } => {
-                            if let Some(ref m) = self.midi_manager {
-                                if let Ok(mut midi_st) = m.state().lock() {
+                            if let Some(ref m) = self.midi_manager
+                                && let Ok(mut midi_st) = m.state().lock() {
                                     midi_st.mappings.retain(|mapping| {
                                         !(mapping.selector == cc && mapping.channel == channel)
                                     });
                                 }
-                            }
                         }
                         rustjay_control::ControlWebCommand::MidiRefreshDevices => {
                             if let Ok(mut state) = self.shared_state.lock() {
@@ -1007,11 +1000,10 @@ impl<P: EffectPlugin> App<P> {
                             };
                             let uuid = format!("lfo_{slot}");
                             let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(entry) = mod_eng.sources.iter_mut().find(|s| s.uuid == uuid) {
-                                if let rustjay_core::modulation::ModulationSource::LFO { enabled: ref mut e, .. } = entry.source {
+                            if let Some(entry) = mod_eng.sources.iter_mut().find(|s| s.uuid == uuid)
+                                && let rustjay_core::modulation::ModulationSource::LFO { enabled: ref mut e, .. } = entry.source {
                                     *e = enabled;
                                 }
-                            }
                         }
                         rustjay_control::ModulationWebCommand::AudioRoute {
                             param_id,
@@ -1032,13 +1024,11 @@ impl<P: EffectPlugin> App<P> {
                                     state.audio_routing.matrix.remove_route(id);
                                 }
                                 if let Some(id) = state.audio_routing.matrix.add_route(band, target)
-                                {
-                                    if let Some(route) =
+                                    && let Some(route) =
                                         state.audio_routing.matrix.get_route_mut(id)
                                     {
                                         route.amount = depth;
                                     }
-                                }
                             }
                         }
                         rustjay_control::ModulationWebCommand::AudioUnroute { param_id } => {
@@ -1257,8 +1247,8 @@ impl<P: EffectPlugin> App<P> {
                 }
 
                 // MIDI mapping change detection (WR-3.3 / WR-6)
-                if let Some(ref m) = self.midi_manager {
-                    if let Ok(midi_st) = m.state().lock() {
+                if let Some(ref m) = self.midi_manager
+                    && let Ok(midi_st) = m.state().lock() {
                         let current: Vec<rustjay_core::MidiMappingSnapshot> = midi_st
                             .mappings
                             .iter()
@@ -1277,7 +1267,6 @@ impl<P: EffectPlugin> App<P> {
                             server.control_dirty = true;
                         }
                     }
-                }
             }
         }
     }

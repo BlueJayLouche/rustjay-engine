@@ -64,14 +64,14 @@ where
         }
     };
     // Bind the result so the MutexGuard drops before `engine_arc`.
-    let result = match engine_arc.lock() {
+    
+    match engine_arc.lock() {
         Ok(e) => Ok(f(&e)),
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "Engine state lock poisoned",
         )),
-    };
-    result
+    }
 }
 
 /// Resolve a hierarchical path to a canonical flat id using the engine's

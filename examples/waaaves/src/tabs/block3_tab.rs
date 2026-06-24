@@ -580,12 +580,11 @@ impl AnyGuiTab for Block3Tab {
 
         // ── Presets & Import ────────────────────────────────────────────────
         if ui.collapsing_header("Presets & Import", imgui::TreeNodeFlags::empty()) {
-            if ui.button("Import Legacy Preset…") {
-                if let Some(path) = rfd::FileDialog::new()
+            if ui.button("Import Legacy Preset…")
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
                     .pick_file()
-                {
-                    if let Ok(json) = std::fs::read_to_string(&path) {
+                    && let Ok(json) = std::fs::read_to_string(&path) {
                         match crate::legacy_preset::import_legacy_preset(&json) {
                             Ok(imported) => {
                                 let max_delay = state.max_delay_frames;
@@ -598,8 +597,6 @@ impl AnyGuiTab for Block3Tab {
                             }
                         }
                     }
-                }
-            }
 
             ui.separator();
             let w = engine.resolution.internal_width;
