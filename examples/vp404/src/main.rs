@@ -34,10 +34,6 @@ use rustjay_engine::prelude::*;
 use rustjay_mixer::{Channel, Mixer};
 use sequencer_tab::SequencerTab;
 
-/// Default test clip (override with argv[1] or VP404_CLIP).
-const DEFAULT_CLIP: &str =
-    "/Users/ac/developer/rust/rustjay-404/samples/Screen Recording 2026-05-07 at 20.42.17_converted.hap.mov";
-
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Vp404State {
     /// Polyphonic pad sequencer state (patterns + current pattern).
@@ -591,7 +587,11 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .or_else(|| std::env::var("VP404_CLIP").ok())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CLIP));
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no clip given — pass a HAP .mov path as the first argument or set VP404_CLIP"
+            )
+        })?;
 
     // VP404_PROBE=1: print clip metadata (format/frames/fps) and exit — no GUI.
     if std::env::var("VP404_PROBE").is_ok() {
