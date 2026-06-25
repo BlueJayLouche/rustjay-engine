@@ -598,7 +598,7 @@ fn main() -> anyhow::Result<()> {
         let mut r = QtHapReader::open(&clip_path)?;
         let (w, h) = r.resolution();
         let fmt = r.texture_format();
-        let f0 = r.read_frame(0).map(|f| f.texture_format);
+        let f0 = r.read_frame(0).map(|f| f.format);
         println!(
             "{}: {w}x{h}, {} frames @ {} fps, track-format {fmt:?}, frame0-format {f0:?}",
             clip_path.display(),

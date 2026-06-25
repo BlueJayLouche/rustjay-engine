@@ -104,8 +104,8 @@ impl Sample {
                         queue,
                         self.padded.0,
                         self.padded.1,
-                        hf.texture_format,
-                        &hf.texture_data,
+                        hf.format,
+                        &hf.data,
                         frame,
                     ));
                     self.last_frame = Some(frame);
