@@ -1,3 +1,4 @@
+#[allow(unused_imports)] // Arc is used only by the macOS/recording cfg paths below
 use std::sync::Arc;
 
 pub mod recorder;
@@ -528,10 +529,10 @@ impl OutputManager {
                 }
 
                 #[cfg(target_os = "linux")]
-                if let Some(ref mut v4l2) = self.v4l2_output {
-                    if let Err(e) = v4l2.send_frame(&_data, _width, _height) {
-                        log::error!("V4L2 output error: {}", e);
-                    }
+                if let Some(ref mut v4l2) = self.v4l2_output
+                    && let Err(e) = v4l2.send_frame(&_data, _width, _height)
+                {
+                    log::error!("V4L2 output error: {}", e);
                 }
 
                 #[cfg(feature = "led")]

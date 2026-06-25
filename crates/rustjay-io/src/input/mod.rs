@@ -203,6 +203,7 @@ impl InputManager {
     }
 
     /// Initialize with wgpu device/queue (required for Syphon on macOS)
+    #[allow(unused_variables)] // device/queue are consumed only by the macOS Syphon path
     pub fn initialize(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(target_os = "macos")]
         {
