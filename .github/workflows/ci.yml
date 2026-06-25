@@ -15,9 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       # NDI is intentionally opt-in (it needs a proprietary SDK), so CI builds the
       # default feature set (webcam, no ndi). These deps cover alsa (cpal) and the
-      # v4l/udev webcam path (nokhwa).
+      # v4l/udev webcam path (nokhwa). mesa-vulkan-drivers gives wgpu a software
+      # (lavapipe) adapter so rustjay-projection's GPU tests run on the headless runner.
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang ninja-build
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang ninja-build mesa-vulkan-drivers libvulkan1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
