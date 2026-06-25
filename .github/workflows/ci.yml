@@ -42,16 +42,30 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cmake and ninja
-        run: choco install cmake ninja --installargs 'ADD_CMAKE_TO_PATH=System' -y
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
-      # Skip two examples that need proprietary SDKs unavailable on CI:
-      #  - videowall: apriltag-sys is POSIX-only C (pthreads in workerpool.c),
-      #    can't build under MSVC.
-      #  - decklink-input: its build.rs panics without the Blackmagic DeckLink SDK.
-      # Spout — the reason for the Windows job — lives in rustjay-io, unaffected.
-      - run: cargo check --workspace --exclude videowall --exclude decklink-input
+      # apriltag's workerpool.c is pthread-only; MSVC has no pthread.h. vcpkg's
+      # pthreads (pthreads4w) provides the header + pthreadVC3.lib. The
+      # static-md triplet links it INTO the binary (no runtime DLL) while
+      # keeping the dynamic CRT that Rust-MSVC uses. apriltag-sys 0.3's build.rs
+      # picks it up via the two env vars below.
+      - name: Cache vcpkg pthreads
+        id: vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          # Literal path: C:\vcpkg is the GitHub-hosted runner's vcpkg root
+          # (== VCPKG_INSTALLATION_ROOT), which the ${{ env }} context doesn't expose.
+          path: C:\vcpkg\installed
+          key: vcpkg-pthreads-x64-windows-static-md-v1
+      - name: Install pthreads shim for apriltag
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: vcpkg install pthreads:x64-windows-static-md
+      - name: Point apriltag-sys at the pthread shim
+        shell: pwsh
+        run: |
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+          "APRILTAG_SYS_WINDOWS_PTHREAD_INCLUDE_DIR=$vcpkg\include"           >> $env:GITHUB_ENV
+          "APRILTAG_SYS_WINDOWS_PTHREAD_STATIC_LIB=$vcpkg\lib\pthreadVC3.lib" >> $env:GITHUB_ENV
+      # decklink-input's build.rs panics without the proprietary Blackmagic SDK.
+      - run: cargo check --workspace --exclude decklink-input
