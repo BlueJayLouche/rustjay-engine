@@ -57,6 +57,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             #[cfg(target_os = "linux")]
             let instance = {
                 use raw_window_handle::HasDisplayHandle as _;
+                #[allow(unused_imports)] // Api trait is unused on the non-GL paths
                 use wgpu::hal::{api::Gles, Api as _, Instance as HalInstance};
 
                 let display_handle = event_loop.display_handle().ok();

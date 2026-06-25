@@ -1,5 +1,6 @@
 use super::App;
 use rustjay_core::EffectPlugin;
+#[allow(unused_imports)] // used only by the macOS/Windows input paths
 use rustjay_core::InputType;
 use std::sync::Arc;
 
@@ -129,15 +130,15 @@ impl<P: EffectPlugin> App<P> {
                 }
             } else if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if upload_texture {
-                    if let Some(ref mut engine) = self.output_engine {
-                        if is_second {
-                            engine
-                                .second_input_texture
-                                .update(&frame_data, width, height);
-                        } else {
-                            engine.input_texture.update(&frame_data, width, height);
-                        }
+                if upload_texture
+                    && let Some(ref mut engine) = self.output_engine
+                {
+                    if is_second {
+                        engine
+                            .second_input_texture
+                            .update(&frame_data, width, height);
+                    } else {
+                        engine.input_texture.update(&frame_data, width, height);
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -155,15 +156,15 @@ impl<P: EffectPlugin> App<P> {
         {
             if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if upload_texture {
-                    if let Some(ref mut engine) = self.output_engine {
-                        if is_second {
-                            engine
-                                .second_input_texture
-                                .update(&frame_data, width, height);
-                        } else {
-                            engine.input_texture.update(&frame_data, width, height);
-                        }
+                if upload_texture
+                    && let Some(ref mut engine) = self.output_engine
+                {
+                    if is_second {
+                        engine
+                            .second_input_texture
+                            .update(&frame_data, width, height);
+                    } else {
+                        engine.input_texture.update(&frame_data, width, height);
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());

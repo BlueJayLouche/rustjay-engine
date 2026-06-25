@@ -23,6 +23,7 @@ use winit::window::Window;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum WindowAction {
+    #[allow(dead_code)] // constructed only by the macOS/Windows window paths
     RecreateWindows,
 }
 
