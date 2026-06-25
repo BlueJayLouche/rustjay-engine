@@ -6034,7 +6034,13 @@ mod tests {
         if !has_naga {
             eprintln!("naga CLI not available, skipping WGSL validation");
         }
-        let dir = std::path::Path::new("/Users/ac/developer/rust/varda/shaders");
+        // Opt-in dev check: point VARDA_SHADERS_DIR at a local varda `shaders/`
+        // checkout to run it. Skipped (not failed) when unset, e.g. on CI.
+        let Ok(dir) = std::env::var("VARDA_SHADERS_DIR") else {
+            eprintln!("VARDA_SHADERS_DIR not set; skipping varda shader transpile check");
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
         let mut ok = 0;
         let mut fail = 0;
         for entry in std::fs::read_dir(dir).unwrap() {
