@@ -25,6 +25,7 @@ pub struct ControlGui {
     pub(crate) audio_devices: Vec<String>,
 
     // Selection state
+    #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam: usize,
     #[cfg(feature = "ndi")]
     pub(crate) selected_ndi: usize,

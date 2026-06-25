@@ -141,10 +141,9 @@ impl ControlGui {
                     "Loopback Device",
                     &mut self.selected_v4l2_output,
                     &label_refs,
-                ) {
-                    if let Some(d) = self.v4l2_output_devices.get(self.selected_v4l2_output) {
-                        self.v4l2_device_path = d.path.clone();
-                    }
+                ) && let Some(d) = self.v4l2_output_devices.get(self.selected_v4l2_output)
+                {
+                    self.v4l2_device_path = d.path.clone();
                 }
             } else {
                 ui.text_disabled("No v4l2loopback devices found — see README for setup");
@@ -167,7 +166,7 @@ impl ControlGui {
                 ui.same_line();
                 ui.text_colored(
                     [0.0, 1.0, 0.0, 1.0],
-                    &format!("V4L2 Active: {}", self.v4l2_device_path),
+                    format!("V4L2 Active: {}", self.v4l2_device_path),
                 );
             }
         }
