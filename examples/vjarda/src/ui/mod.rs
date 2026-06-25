@@ -35,6 +35,7 @@ enum AddSourceTab {
     Camera,
     #[cfg(feature = "ndi")]
     Ndi,
+    #[allow(dead_code)] // constructed only on macOS (Syphon)
     Syphon,
     #[allow(dead_code)] // constructed only on Windows (Spout)
     Spout,
@@ -49,6 +50,7 @@ pub struct DeckTab {
     selected_camera_index: usize,
     #[cfg(feature = "ndi")]
     selected_ndi_index: usize,
+    #[allow(dead_code)] // read only on macOS (Syphon)
     selected_syphon_index: usize,
     #[allow(dead_code)] // read only on Windows (Spout)
     selected_spout_index: usize,
