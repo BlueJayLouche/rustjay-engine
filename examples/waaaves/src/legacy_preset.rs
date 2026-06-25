@@ -1180,7 +1180,7 @@ mod tests {
 
     #[test]
     fn import_jfish() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/jfish.json");
+        let json = include_str!("test_presets/jfish.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block1.ch1_hsb_attenuate_h - 1.72).abs() < 0.01);
@@ -1198,7 +1198,7 @@ mod tests {
 
     #[test]
     fn import_total_recall() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/totalRecall.json");
+        let json = include_str!("test_presets/totalRecall.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block3.matrix_mix_r_to_r - 0.116).abs() < 0.01);
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn import_scanline() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/scanline.json");
+        let json = include_str!("test_presets/scanline.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block1.ch1_rotate - 0.0).abs() < 0.001);
