@@ -215,7 +215,7 @@ mod tests {
         let mut cal = SequentialCalibrator::new(2, "GRB", 1, 1, 255, 32);
 
         let mut f0 = vec![0u8; w * h];
-        f0[1 * w + 1] = 255; f0[1 * w + 2] = 255;
+        f0[w + 1] = 255; f0[w + 2] = 255;
         cal.record(&f0, w, h);
 
         let mut f1 = vec![0u8; w * h];

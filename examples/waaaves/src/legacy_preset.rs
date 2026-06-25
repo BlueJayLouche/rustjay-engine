@@ -20,15 +20,14 @@ impl<'de> Deserialize<'de> for GlamVec3 {
         D: serde::Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(arr) = value.as_array() {
-            if arr.len() >= 3 {
+        if let Some(arr) = value.as_array()
+            && arr.len() >= 3 {
                 return Ok(GlamVec3 {
                     x: arr[0].as_f64().unwrap_or(0.0) as f32,
                     y: arr[1].as_f64().unwrap_or(0.0) as f32,
                     z: arr[2].as_f64().unwrap_or(0.0) as f32,
                 });
             }
-        }
         #[derive(Deserialize)]
         struct Fields {
             x: f32,
@@ -65,8 +64,8 @@ impl<'de> Deserialize<'de> for GlamVec4 {
         D: serde::Deserializer<'de>,
     {
         let value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(arr) = value.as_array() {
-            if arr.len() >= 4 {
+        if let Some(arr) = value.as_array()
+            && arr.len() >= 4 {
                 return Ok(GlamVec4 {
                     x: arr[0].as_f64().unwrap_or(0.0) as f32,
                     y: arr[1].as_f64().unwrap_or(0.0) as f32,
@@ -74,7 +73,6 @@ impl<'de> Deserialize<'de> for GlamVec4 {
                     w: arr[3].as_f64().unwrap_or(0.0) as f32,
                 });
             }
-        }
         #[derive(Deserialize)]
         struct Fields {
             x: f32,
@@ -1182,7 +1180,7 @@ mod tests {
 
     #[test]
     fn import_jfish() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/jfish.json");
+        let json = include_str!("test_presets/jfish.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block1.ch1_hsb_attenuate_h - 1.72).abs() < 0.01);
@@ -1200,7 +1198,7 @@ mod tests {
 
     #[test]
     fn import_total_recall() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/totalRecall.json");
+        let json = include_str!("test_presets/totalRecall.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block3.matrix_mix_r_to_r - 0.116).abs() < 0.01);
@@ -1217,7 +1215,7 @@ mod tests {
 
     #[test]
     fn import_scanline() {
-        let json = include_str!("../../../../rustjay-waaaves/presets/Default/scanline.json");
+        let json = include_str!("test_presets/scanline.json");
         let state = import_legacy_preset(json).unwrap();
         // Spot-check 10 fields
         assert!((state.block1.ch1_rotate - 0.0).abs() < 0.001);

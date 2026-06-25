@@ -718,8 +718,8 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.fps_frame_count = 0;
             self.fps_last_time = std::time::Instant::now();
 
-            if let Ok(state) = self.shared_state.lock() {
-                if let Ok(mut perf) = state.performance.lock() {
+            if let Ok(state) = self.shared_state.lock()
+                && let Ok(mut perf) = state.performance.lock() {
                     perf.fps = self.fps_current;
                     perf.frame_time_ms = if self.fps_current > 0.0 {
                         1000.0 / self.fps_current
@@ -735,7 +735,6 @@ impl<P: EffectPlugin> WgpuEngine<P> {
                         .as_secs_f32()
                         * 1000.0;
                 }
-            }
         }
 
         self.frame_count += 1;

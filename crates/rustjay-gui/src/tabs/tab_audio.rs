@@ -29,11 +29,10 @@ impl ControlGui {
                 let device_names: Vec<&str> =
                     self.audio_devices.iter().map(|s| s.as_str()).collect();
 
-                if let Some(ref current) = selected_device {
-                    if let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
+                if let Some(ref current) = selected_device
+                    && let Some(idx) = self.audio_devices.iter().position(|d| d == current) {
                         self.selected_audio_device = idx;
                     }
-                }
 
                 if ui.combo_simple_string(
                     "Select Audio Device",
@@ -100,16 +99,14 @@ impl ControlGui {
                     .unwrap_or(2);
                 let labels: Vec<&str> = FFT_SIZE_LABELS.to_vec();
                 ui.text("FFT Size");
-                if ui.combo_simple_string("FFT Size##combo", &mut selected_idx, &labels) {
-                    if let Some(&new_size) = FFT_SIZES.get(selected_idx) {
-                        if new_size != current_fft_size {
+                if ui.combo_simple_string("FFT Size##combo", &mut selected_idx, &labels)
+                    && let Some(&new_size) = FFT_SIZES.get(selected_idx)
+                        && new_size != current_fft_size {
                             let mut state =
                                 self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             state.audio.fft_size = new_size;
                             state.audio_command = AudioCommand::SetFftSize(new_size);
                         }
-                    }
-                }
             }
 
             if ui.checkbox("Normalize Bands", &mut normalize) {
@@ -510,15 +507,13 @@ impl ControlGui {
                 let can_add =
                     can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
-                    if ui.button("Add Route") {
-                        if let Some(band) = FftBand::from_index(band_idx) {
-                            if let Some(target) = target_list.get(target_idx) {
+                    if ui.button("Add Route")
+                        && let Some(band) = FftBand::from_index(band_idx)
+                            && let Some(target) = target_list.get(target_idx) {
                                 let mut state =
                                     self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio_routing.matrix.add_route(band, target.clone());
                             }
-                        }
-                    }
                 } else {
                     ui.text_disabled("Max routes reached");
                 }

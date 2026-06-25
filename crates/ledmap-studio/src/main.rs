@@ -280,6 +280,7 @@ impl eframe::App for App {
             self.finish();
         }
 
+        #[allow(deprecated)] // egui SidePanel/Panel migration tracked separately
         egui::SidePanel::left("controls")
             .default_width(240.0)
             .show_inside(ui, |ui| self.controls(ui));

@@ -203,6 +203,7 @@ impl InputManager {
     }
 
     /// Initialize with wgpu device/queue (required for Syphon on macOS)
+    #[allow(unused_variables)] // device/queue are consumed only by the macOS Syphon path
     pub fn initialize(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(target_os = "macos")]
         {
@@ -604,12 +605,11 @@ impl InputManager {
             self.syphon_receiver.as_mut(),
             self.syphon_device.as_ref(),
             self.syphon_queue.as_ref(),
-        ) {
-            if syphon.try_receive_texture(device, queue) {
+        )
+            && syphon.try_receive_texture(device, queue) {
                 self.resolution = syphon.resolution();
                 self.has_new_frame = true;
             }
-        }
 
         // Handle Spout frames (CPU path on Windows)
         // Note: pixel data stays in SpoutInputReceiver's buffer and is

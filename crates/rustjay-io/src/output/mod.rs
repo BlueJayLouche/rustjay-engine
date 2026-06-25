@@ -1,3 +1,4 @@
+#[allow(unused_imports)] // Arc is used only by the macOS/recording cfg paths below
 use std::sync::Arc;
 
 pub mod recorder;
@@ -267,11 +268,10 @@ impl OutputManager {
 
     /// Stop disk recording and flush the file.
     pub fn stop_recording(&mut self) {
-        if let Some(rec) = self.recorder.take() {
-            if let Err(e) = rec.finish() {
+        if let Some(rec) = self.recorder.take()
+            && let Err(e) = rec.finish() {
                 log::warn!("[OutputManager] recorder finish failed: {}", e);
             }
-        }
     }
 
     /// Whether disk recording is active.
@@ -529,10 +529,10 @@ impl OutputManager {
                 }
 
                 #[cfg(target_os = "linux")]
-                if let Some(ref mut v4l2) = self.v4l2_output {
-                    if let Err(e) = v4l2.send_frame(&_data, _width, _height) {
-                        log::error!("V4L2 output error: {}", e);
-                    }
+                if let Some(ref mut v4l2) = self.v4l2_output
+                    && let Err(e) = v4l2.send_frame(&_data, _width, _height)
+                {
+                    log::error!("V4L2 output error: {}", e);
                 }
 
                 #[cfg(feature = "led")]
@@ -540,12 +540,11 @@ impl OutputManager {
                     led.submit(&_data, _width, _height);
                 }
 
-                if let Some(ref mut rec) = self.recorder {
-                    if !rec.encode_frame(&_data) {
+                if let Some(ref mut rec) = self.recorder
+                    && !rec.encode_frame(&_data) {
                         log::warn!("[OutputManager] recorder encode failed — stopping");
                         self.stop_recording();
                     }
-                }
             }
 
             // Submit a non-blocking copy for *this* frame.
@@ -554,11 +553,10 @@ impl OutputManager {
 
         // Syphon output (zero-copy on macOS)
         #[cfg(target_os = "macos")]
-        if let Some(ref mut syphon) = self.syphon_output {
-            if let Err(e) = syphon.submit_frame(texture, device, queue) {
+        if let Some(ref mut syphon) = self.syphon_output
+            && let Err(e) = syphon.submit_frame(texture, device, queue) {
                 log::error!("Syphon output error: {}", e);
             }
-        }
 
         // Note: Spout is now fed from the readback pool above (CPU path),
         // not directly from the GPU texture.

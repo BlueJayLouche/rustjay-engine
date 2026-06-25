@@ -235,11 +235,10 @@ impl OscState {
     /// Get parameter value and clear dirty flag (for reading OSC updates).
     /// `address` must be the full OSC address (e.g. `"/rustjay/color/hue_shift"`).
     pub fn get_value_if_dirty(&mut self, address: &str) -> Option<f32> {
-        if let Some(param) = self.parameters.get_mut(address) {
-            if param.is_dirty() {
+        if let Some(param) = self.parameters.get_mut(address)
+            && param.is_dirty() {
                 return Some(param.get_value());
             }
-        }
         None
     }
 
@@ -414,12 +413,11 @@ impl OscServer {
             _ => None,
         });
 
-        if let Some(v) = value {
-            if let Ok(mut state) = state.lock() {
+        if let Some(v) = value
+            && let Ok(mut state) = state.lock() {
                 state.update_parameter(&msg.addr, v);
                 log::debug!("OSC: {} = {}", msg.addr, v);
             }
-        }
     }
 
     /// Check if server is running

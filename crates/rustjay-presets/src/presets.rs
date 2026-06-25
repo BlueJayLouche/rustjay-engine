@@ -322,11 +322,10 @@ impl PresetBank {
         for slot in &mut self.quick_slots {
             if *slot == Some(index) {
                 *slot = None;
-            } else if let Some(idx) = *slot {
-                if idx > index {
+            } else if let Some(idx) = *slot
+                && idx > index {
                     *slot = Some(idx - 1);
                 }
-            }
         }
 
         if let Some(current) = self.current_index {

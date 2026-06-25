@@ -34,6 +34,7 @@ pub struct EguiControlGui {
     pub(crate) audio_devices: Vec<String>,
 
     // Selection state
+    #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam: usize,
     #[cfg(feature = "ndi")]
     pub(crate) selected_ndi: usize,
@@ -888,11 +889,10 @@ impl EguiControlGui {
                 // A custom tab opened via its own sidebar button (it does not
                 // replace a builtin) takes precedence over the builtin dispatch.
                 if let Some(idx) = self.custom_tab_active {
-                    if let Some(ct) = self.custom_tabs.get_mut(idx) {
-                        if let Ok(mut state) = self.shared_state.lock() {
+                    if let Some(ct) = self.custom_tabs.get_mut(idx)
+                        && let Ok(mut state) = self.shared_state.lock() {
                             ct.draw(ui, app_state, &mut state);
                         }
-                    }
                     return;
                 }
 
@@ -904,11 +904,10 @@ impl EguiControlGui {
                     .find(|(_, t)| t.replaces() == Some(self.active_tab));
 
                 if let Some((idx, _t)) = custom_replacement {
-                    if let Some(ct) = self.custom_tabs.get_mut(idx) {
-                        if let Ok(mut state) = self.shared_state.lock() {
+                    if let Some(ct) = self.custom_tabs.get_mut(idx)
+                        && let Ok(mut state) = self.shared_state.lock() {
                             ct.draw(ui, app_state, &mut state);
                         }
-                    }
                 } else {
                     match self.active_tab {
                         GuiTab::Input => self.build_input_tab(ui),
@@ -1157,15 +1156,13 @@ impl EguiControlGui {
                 let can_add =
                     can_add && band_idx < FftBand::all().len() && target_idx < target_list.len();
                 if can_add {
-                    if ui.button("Add Route").clicked() {
-                        if let Some(band) = FftBand::from_index(band_idx) {
-                            if let Some(target) = target_list.get(target_idx) {
+                    if ui.button("Add Route").clicked()
+                        && let Some(band) = FftBand::from_index(band_idx)
+                            && let Some(target) = target_list.get(target_idx) {
                                 let mut state =
                                     self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 state.audio_routing.matrix.add_route(band, target.clone());
                             }
-                        }
-                    }
                 } else {
                     ui.label(
                         egui::RichText::new("Max routes reached")
@@ -1408,7 +1405,7 @@ impl EguiControlGui {
                     });
                     apply_param_map_overlay(
                         ui,
-                        &mut **state,
+                        state,
                         scope.response.rect,
                         &desc.id,
                         &desc.name,
@@ -1448,7 +1445,7 @@ impl EguiControlGui {
                     });
                     apply_param_map_overlay(
                         ui,
-                        &mut **state,
+                        state,
                         scope.response.rect,
                         &desc.id,
                         &desc.name,
@@ -1530,6 +1527,7 @@ pub fn map_mode_active(engine: &EngineState) -> bool {
 /// engine param id (also the modulation-assignment key). No-op when neither
 /// mode is active.
 #[allow(deprecated)] // egui::Popup builder migration is project-wide; tracked separately
+#[allow(clippy::too_many_arguments)] // overlay needs full param context; bundling adds no clarity
 pub fn apply_param_map_overlay(
     ui: &mut egui::Ui,
     engine: &mut EngineState,

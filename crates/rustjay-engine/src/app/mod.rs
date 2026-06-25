@@ -23,6 +23,7 @@ use winit::window::Window;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum WindowAction {
+    #[allow(dead_code)] // constructed only by the macOS/Windows window paths
     RecreateWindows,
 }
 
@@ -361,8 +362,8 @@ impl<P: EffectPlugin> App<P> {
                     state.midi_mappings.clone(),
                 )
             };
-            if !saved_mappings.is_empty() {
-                if let Ok(mut ms) = manager.state().lock() {
+            if !saved_mappings.is_empty()
+                && let Ok(mut ms) = manager.state().lock() {
                     ms.mappings = saved_mappings
                         .iter()
                         .map(|s| {
@@ -379,7 +380,6 @@ impl<P: EffectPlugin> App<P> {
                         .collect();
                     log::info!("Restored {} saved MIDI mappings", ms.mappings.len());
                 }
-            }
             let connected = match saved_device {
                 Some(ref dev) => match manager.connect(dev) {
                     Ok(()) => true,
@@ -440,11 +440,10 @@ impl<P: EffectPlugin> App<P> {
                         s.preset_quick_slot_names.clone()
                     };
                     for (i, maybe_name) in saved.iter().enumerate() {
-                        if let Some(name) = maybe_name {
-                            if let Some(idx) = bank.presets.iter().position(|p| &p.name == name) {
+                        if let Some(name) = maybe_name
+                            && let Some(idx) = bank.presets.iter().position(|p| &p.name == name) {
                                 let _ = bank.assign_to_slot(idx, i + 1);
                             }
-                        }
                     }
                     let names: Vec<String> = bank.presets.iter().map(|p| p.name.clone()).collect();
                     let slot_names: [Option<String>; 8] =

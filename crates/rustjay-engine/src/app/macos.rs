@@ -47,11 +47,10 @@ pub fn setup_macos_app_delegate() {
     ) -> BOOL {
         // Only show windows when none are currently visible; clicking the
         // Dock icon when windows are already on screen is a no-op.
-        if has_visible_windows == NO {
-            if let Some(proxy) = PROXY.get() {
+        if has_visible_windows == NO
+            && let Some(proxy) = PROXY.get() {
                 let _ = proxy.send_event(WindowAction::RecreateWindows);
             }
-        }
         YES
     }
 

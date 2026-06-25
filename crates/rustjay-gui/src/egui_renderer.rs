@@ -101,11 +101,10 @@ impl EguiRenderer {
 
     /// Handle window event
     pub fn handle_event(&mut self, event: &winit::event::Event<()>) {
-        if let winit::event::Event::WindowEvent { window_id, event } = event {
-            if *window_id == self.window.id() {
+        if let winit::event::Event::WindowEvent { window_id, event } = event
+            && *window_id == self.window.id() {
                 let _ = self.state.on_window_event(&self.window, event);
             }
-        }
     }
 
     /// Set display size (in logical points)

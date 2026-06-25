@@ -41,8 +41,8 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
     let checkouts = cargo_home.join("git/checkouts");
     let entries = std::fs::read_dir(&checkouts).ok()?;
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with("syphon-rs") {
-            if let Ok(revs) = std::fs::read_dir(entry.path()) {
+        if entry.file_name().to_string_lossy().starts_with("syphon-rs")
+            && let Ok(revs) = std::fs::read_dir(entry.path()) {
                 for rev in revs.flatten() {
                     let candidate = rev.path().join("syphon-lib");
                     if candidate.join("Syphon.framework").exists() {
@@ -50,7 +50,6 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
                     }
                 }
             }
-        }
     }
     None
 }

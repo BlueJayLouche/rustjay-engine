@@ -79,8 +79,8 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name.starts_with("syphon-rs") {
-                    if let Ok(revs) = std::fs::read_dir(entry.path()) {
+                if name.starts_with("syphon-rs")
+                    && let Ok(revs) = std::fs::read_dir(entry.path()) {
                         for rev in revs.flatten() {
                             let candidate = rev.path().join("syphon-lib");
                             if candidate.join("Syphon.framework").exists() {
@@ -88,7 +88,6 @@ fn find_syphon_framework() -> Option<std::path::PathBuf> {
                             }
                         }
                     }
-                }
             }
         }
     }

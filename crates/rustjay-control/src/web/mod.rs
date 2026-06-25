@@ -600,23 +600,21 @@ impl WebServer {
         }
 
         // Fast path: if we already sent this value, do nothing.
-        if let Some(&last) = self.last_sent.get(id) {
-            if (value - last).abs() < THRESHOLD {
+        if let Some(&last) = self.last_sent.get(id)
+            && (value - last).abs() < THRESHOLD {
                 return;
             }
-        }
 
         let mut should_broadcast = false;
 
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(param) = state.parameters.get_mut(id) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(param) = state.parameters.get_mut(id) {
                 // Only update if changed
                 if (param.value - value).abs() > 0.0001 {
                     param.value = value;
                     should_broadcast = true;
                 }
             }
-        }
 
         if should_broadcast {
             self.last_sent.insert(id.to_string(), value);
@@ -896,8 +894,8 @@ fn parse_v4l2_list_devices(output: &str) -> Vec<rustjay_core::InputDeviceInfo> {
         if line.starts_with('\t') || line.starts_with("    ") {
             // Device path line
             let path = line.trim();
-            if path.starts_with("/dev/video") {
-                if let Some(ref name) = current_name {
+            if path.starts_with("/dev/video")
+                && let Some(ref name) = current_name {
                     // Extract index from /dev/videoN
                     let index = path
                         .strip_prefix("/dev/video")
@@ -909,7 +907,6 @@ fn parse_v4l2_list_devices(output: &str) -> Vec<rustjay_core::InputDeviceInfo> {
                         index,
                     });
                 }
-            }
         } else if line.ends_with(':') {
             // Device header line
             current_name = Some(line.trim_end_matches(':').trim().to_string());
@@ -1138,11 +1135,10 @@ async fn handle_socket(
 
     // Send initial params list
     let init_msg = WebMessage::Params { params };
-    if let Ok(json) = serde_json::to_string(&init_msg) {
-        if socket.send(Message::Text(json.into())).await.is_err() {
+    if let Ok(json) = serde_json::to_string(&init_msg)
+        && socket.send(Message::Text(json.into())).await.is_err() {
             return;
         }
-    }
 
     // Send initial preset state so a freshly-opened Presets panel populates immediately
     // without requiring the user to click Refresh (WR-9.6).
@@ -1154,11 +1150,10 @@ async fn handle_socket(
                 .map(|(i, name)| PresetInfo { index: i, name })
                 .collect(),
         });
-        if let Ok(json) = serde_json::to_string(&preset_msg) {
-            if socket.send(Message::Text(json.into())).await.is_err() {
+        if let Ok(json) = serde_json::to_string(&preset_msg)
+            && socket.send(Message::Text(json.into())).await.is_err() {
                 return;
             }
-        }
     }
 
     // Send cached structural states so panels populate immediately on connect.
@@ -1215,11 +1210,10 @@ async fn handle_socket(
         tokio::select! {
             // Receive broadcast from server
             Ok(msg) = rx.recv() => {
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    if socket.send(Message::Text(json.into())).await.is_err() {
+                if let Ok(json) = serde_json::to_string(&msg)
+                    && socket.send(Message::Text(json.into())).await.is_err() {
                         break; // Client disconnected
                     }
-                }
             }
             // Receive message from client
             Some(Ok(msg)) = socket.recv() => {
@@ -1245,19 +1239,16 @@ async fn handle_socket(
                         if let WebCommand::Set { ref id, value } = cmd {
                             let id = id.clone();
                             let mut should_broadcast = false;
-                            if let Ok(mut state) = state.lock() {
-                                if let Some(param) = state.parameters.get_mut(&id) {
-                                    if (param.value - value).abs() > 0.0001 {
+                            if let Ok(mut state) = state.lock()
+                                && let Some(param) = state.parameters.get_mut(&id)
+                                    && (param.value - value).abs() > 0.0001 {
                                         param.value = value;
                                         should_broadcast = true;
                                     }
-                                }
-                            }
-                            if should_broadcast {
-                                if let Ok(state) = state.lock() {
+                            if should_broadcast
+                                && let Ok(state) = state.lock() {
                                     let _ = state.broadcast_tx.send(WebMessage::Update { id, value });
                                 }
-                            }
                         }
                         // Forward all commands to the engine command channel
                         if let Ok(state) = state.lock() {
@@ -1338,13 +1329,11 @@ async fn auth_middleware(
 fn get_local_ip() -> Option<String> {
     use std::net::UdpSocket;
     // Try to connect to a public DNS server to determine local IP
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = socket.local_addr() {
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0")
+        && socket.connect("8.8.8.8:80").is_ok()
+            && let Ok(addr) = socket.local_addr() {
                 return Some(addr.ip().to_string());
             }
-        }
-    }
     None
 }
 

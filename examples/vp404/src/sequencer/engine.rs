@@ -325,10 +325,10 @@ mod tests {
         seq.play();
 
         seq.tick(0.05, &handle); // crosses step 0 → trigger; gate end ≈ 0.05 + 0.125
-        assert!(seq.current_pattern().tracks[0].active_gates.len() > 0);
+        assert!(!seq.current_pattern().tracks[0].active_gates.is_empty());
 
         seq.tick(0.10, &handle); // before gate end
-        assert!(seq.current_pattern().tracks[0].active_gates.len() > 0);
+        assert!(!seq.current_pattern().tracks[0].active_gates.is_empty());
 
         seq.tick(0.40, &handle); // after gate end
         assert!(seq.current_pattern().tracks[0].active_gates.is_empty());

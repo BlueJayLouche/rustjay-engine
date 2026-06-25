@@ -208,7 +208,7 @@ impl AnyEguiTab for PadGridTab {
             if is_converting {
                 ui.spinner();
             } else if !self.load_status.is_empty() {
-                ui.label(&self.load_status.clone());
+                ui.label(self.load_status.clone());
             }
 
             #[cfg(feature = "capture")]

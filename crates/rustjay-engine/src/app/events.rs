@@ -57,6 +57,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             #[cfg(target_os = "linux")]
             let instance = {
                 use raw_window_handle::HasDisplayHandle as _;
+                #[allow(unused_imports)] // Api trait is unused on the non-GL paths
                 use wgpu::hal::{api::Gles, Api as _, Instance as HalInstance};
 
                 let display_handle = event_loop.display_handle().ok();
@@ -275,8 +276,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             }
         }
 
-        if !self.nogui && self.control_window.is_none() {
-            if let Some(ref engine) = self.output_engine {
+        if !self.nogui && self.control_window.is_none()
+            && let Some(ref engine) = self.output_engine {
                 let device = Arc::clone(&engine.device);
                 let queue = Arc::clone(&engine.queue);
 
@@ -375,7 +376,6 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     }
                 }
             }
-        }
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: WindowAction) {
@@ -409,8 +409,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        if let Some(output_window) = self.output_window.as_ref() {
-            if window_id == output_window.id() {
+        if let Some(output_window) = self.output_window.as_ref()
+            && window_id == output_window.id() {
                 match event {
                     WindowEvent::CloseRequested => {
                         let window = Arc::clone(output_window);
@@ -473,15 +473,14 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                                 winit::keyboard::NamedKey::F8 => Some(8),
                                                 _ => None,
                                             };
-                                            if let Some(s) = slot {
-                                                if let Some(ref mut bank) = self.preset_bank {
+                                            if let Some(s) = slot
+                                                && let Some(ref mut bank) = self.preset_bank {
                                                     let mut state = self
                                                         .shared_state
                                                         .lock()
                                                         .unwrap_or_else(|e| e.into_inner());
                                                     let _ = bank.apply_slot(s, &mut state);
                                                 }
-                                            }
                                         }
                                     }
                                 }
@@ -506,10 +505,9 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 }
                 return;
             }
-        }
 
-        if let Some(control_window) = self.control_window.as_ref() {
-            if window_id == control_window.id() {
+        if let Some(control_window) = self.control_window.as_ref()
+            && window_id == control_window.id() {
                 if self.use_egui {
                     #[cfg(feature = "egui")]
                     if let Some(ref mut renderer) = self.egui_renderer {
@@ -603,15 +601,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     _ => {}
                 }
             }
-        }
 
         #[cfg(feature = "projection")]
-        if let Some(sub) = self.projection_subsystem.as_ref() {
-            if let Some(ref device) = self.wgpu_device {
+        if let Some(sub) = self.projection_subsystem.as_ref()
+            && let Some(ref device) = self.wgpu_device {
                 let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
                 sub.handle_window_event(window_id, &event, device, &mut self.shift_pressed);
             }
-        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -700,22 +696,20 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.ui_needs_redraw || now.duration_since(self.last_ui_render) >= UI_RENDER_INTERVAL;
 
         let pre_render = std::time::Instant::now();
-        if !gles2_rendered {
-            if let Some(ref mut engine) = self.output_engine {
+        if !gles2_rendered
+            && let Some(ref mut engine) = self.output_engine {
                 engine.render(self.output_occluded, &mut self.app_state);
                 if ui_due {
                     self.update_preview_textures();
                 }
             }
-        }
 
         {
             let cpu_update_ms = pre_render.duration_since(frame_start).as_secs_f32() * 1000.0;
-            if let Ok(state) = self.shared_state.lock() {
-                if let Ok(mut perf) = state.performance.lock() {
+            if let Ok(state) = self.shared_state.lock()
+                && let Ok(mut perf) = state.performance.lock() {
                     perf.cpu_update_ms = cpu_update_ms;
                 }
-            }
         }
 
         #[cfg(feature = "projection")]

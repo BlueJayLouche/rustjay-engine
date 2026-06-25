@@ -127,6 +127,7 @@ impl V4l2LoopbackOutput {
     }
 
     /// Current output resolution.
+    #[allow(dead_code)] // accessor kept for parity with other outputs
     pub fn resolution(&self) -> (u32, u32) {
         (self.width, self.height)
     }

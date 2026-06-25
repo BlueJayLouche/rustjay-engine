@@ -82,13 +82,12 @@ impl CalibrationSession {
         // Reference phase: keep LEDs off, capture the ambient frame, then begin.
         if self.ref_pending {
             self.held += 1;
-            if self.held >= self.hold_frames {
-                if let Some((px, _, _)) = luma {
+            if self.held >= self.hold_frames
+                && let Some((px, _, _)) = luma {
                     self.background = Some(px.to_vec());
                     self.ref_pending = false;
                     self.held = 0;
                 }
-            }
             return Tick {
                 frame: self.cal.blackout_frame(),
                 step: 0,
@@ -106,8 +105,8 @@ impl CalibrationSession {
         }
 
         self.held += 1;
-        if self.held >= self.hold_frames {
-            if let Some((px, w, h)) = luma {
+        if self.held >= self.hold_frames
+            && let Some((px, w, h)) = luma {
                 match &self.background {
                     // Subtract the ambient reference, then detect on the diff.
                     Some(bg) if self.subtract && bg.len() == px.len() => {
@@ -120,7 +119,6 @@ impl CalibrationSession {
                 self.held = 0;
             }
             // else: no frame yet — keep holding, try again next tick.
-        }
 
         Tick {
             frame: self.cal.dmx_frame(), // drives whatever LED is now current
@@ -201,8 +199,8 @@ mod tests {
 
         // A static bright "lamp" at top-left present in every frame.
         let mut bg = vec![0u8; w * h];
-        bg[1 * w + 1] = 255;
-        bg[1 * w + 2] = 255;
+        bg[w + 1] = 255;
+        bg[w + 2] = 255;
 
         // First tick = reference capture.
         let t = session.tick(Some((&bg, w, h)));

@@ -695,13 +695,12 @@ impl ProjectionStage for WarpStage {
         output: &wgpu::TextureView,
         _output_size: [u32; 2],
     ) {
-        if self.is_identity {
-            if let (Some(blit), Some(vb)) = (self.blit.as_ref(), self.blit_vb.as_ref()) {
+        if self.is_identity
+            && let (Some(blit), Some(vb)) = (self.blit.as_ref(), self.blit_vb.as_ref()) {
                 let bg = blit.create_bind_group(ctx.device, input);
                 blit.blit(ctx.encoder, &bg, output, vb);
                 return;
             }
-        }
 
         let input_ptr = input as *const _ as usize;
         let bind_group = if self.cached_input_ptr == Some(input_ptr) {

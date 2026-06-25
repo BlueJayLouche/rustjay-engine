@@ -532,8 +532,8 @@ impl EguiControlGui {
 
             // Rebuild the matrix only when the URL changes.
             let need_rebuild = self.qr_cache.as_ref().is_none_or(|(u, _)| u != &qr_url);
-            if need_rebuild {
-                if let Ok(code) = qrcode::QrCode::new(qr_url.as_bytes()) {
+            if need_rebuild
+                && let Ok(code) = qrcode::QrCode::new(qr_url.as_bytes()) {
                     let width = code.width();
                     let matrix: Vec<Vec<bool>> = (0..width)
                         .map(|row| {
@@ -544,7 +544,6 @@ impl EguiControlGui {
                         .collect();
                     self.qr_cache = Some((qr_url.clone(), matrix));
                 }
-            }
 
             if let Some((_, matrix)) = &self.qr_cache {
                 let qr_size = 200.0_f32;
@@ -595,11 +594,10 @@ impl EguiControlGui {
                     .size(11.0)
                     .color(TEXT_SECONDARY),
             );
-            if ui.button("📋 Copy URL").clicked() {
-                if let Err(e) = crate::control_gui::copy_to_clipboard(&full_url) {
+            if ui.button("📋 Copy URL").clicked()
+                && let Err(e) = crate::control_gui::copy_to_clipboard(&full_url) {
                     log::warn!("Failed to copy URL to clipboard: {}", e);
                 }
-            }
         } else if enabled {
             ui.label(egui::RichText::new("Server starting…").color(TEXT_SECONDARY));
         } else {

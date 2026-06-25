@@ -203,14 +203,12 @@ impl Drop for CameraSource {
         if let Some(entry) = guard.get(&self.device_index) {
             // If strong_count is 2, only this CameraSource and the map hold the Arc.
             // Remove from map so the session is dropped and the webcam stops.
-            if Arc::strong_count(entry) <= 2 {
-                if let Some(session) = guard.remove(&self.device_index) {
-                    if let Ok(mut s) = session.lock() {
+            if Arc::strong_count(entry) <= 2
+                && let Some(session) = guard.remove(&self.device_index)
+                    && let Ok(mut s) = session.lock() {
                         s.manager.stop();
                         log::info!("CameraSource stopped webcam {}", self.device_index);
                     }
-                }
-            }
         }
     }
 }

@@ -5,7 +5,7 @@ edition = "2024"
 description = "Video-wall / HDMI-matrix mapper — N projector outputs, each a grid of source→cell mappings with AprilTag auto-calibration"
 
 [features]
-default = ["egui", "webcam", "ndi", "videowall"]
+default = ["egui", "webcam", "videowall"]
 egui    = ["rustjay-engine/egui", "dep:egui"]
 webcam  = ["rustjay-engine/webcam"]
 ndi     = ["rustjay-engine/ndi"]

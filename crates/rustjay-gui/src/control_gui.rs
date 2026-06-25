@@ -25,6 +25,7 @@ pub struct ControlGui {
     pub(crate) audio_devices: Vec<String>,
 
     // Selection state
+    #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam: usize,
     #[cfg(feature = "ndi")]
     pub(crate) selected_ndi: usize,
@@ -427,9 +428,9 @@ impl ControlGui {
 
         if let Some(_groups) = ui.tab_bar("##groups") {
             // ── Signal ─────────────────────────────────────────────────────
-            if group_any(SIGNAL) {
-                if let Some(_g) = ui.tab_item("Signal") {
-                    if let Some(_inner) = ui.tab_bar("##signal") {
+            if group_any(SIGNAL)
+                && let Some(_g) = ui.tab_item("Signal")
+                    && let Some(_inner) = ui.tab_bar("##signal") {
                         for &tab in SIGNAL {
                             self.render_inner_tab(
                                 ui,
@@ -442,13 +443,11 @@ impl ControlGui {
                             );
                         }
                     }
-                }
-            }
 
             // ── Parameters ─────────────────────────────────────────────────
-            if group_any(PARAMETERS) {
-                if let Some(_g) = ui.tab_item("Parameters") {
-                    if let Some(_inner) = ui.tab_bar("##params") {
+            if group_any(PARAMETERS)
+                && let Some(_g) = ui.tab_item("Parameters")
+                    && let Some(_inner) = ui.tab_bar("##params") {
                         for &tab in PARAMETERS {
                             self.render_inner_tab(
                                 ui,
@@ -461,13 +460,11 @@ impl ControlGui {
                             );
                         }
                     }
-                }
-            }
 
             // ── Control ────────────────────────────────────────────────────
-            if group_any(CONTROL) {
-                if let Some(_g) = ui.tab_item("Control") {
-                    if let Some(_inner) = ui.tab_bar("##control") {
+            if group_any(CONTROL)
+                && let Some(_g) = ui.tab_item("Control")
+                    && let Some(_inner) = ui.tab_bar("##control") {
                         for &tab in CONTROL {
                             self.render_inner_tab(
                                 ui,
@@ -480,13 +477,11 @@ impl ControlGui {
                             );
                         }
                     }
-                }
-            }
 
             // ── Manage ─────────────────────────────────────────────────────
-            if group_any(MANAGE) {
-                if let Some(_g) = ui.tab_item("Manage") {
-                    if let Some(_inner) = ui.tab_bar("##manage") {
+            if group_any(MANAGE)
+                && let Some(_g) = ui.tab_item("Manage")
+                    && let Some(_inner) = ui.tab_bar("##manage") {
                         for &tab in MANAGE {
                             self.render_inner_tab(
                                 ui,
@@ -499,8 +494,6 @@ impl ControlGui {
                             );
                         }
                     }
-                }
-            }
 
             // ── Custom non-replacing tabs appended as peer group tabs ──────
             for (idx, name, replaces) in &custom_info {
@@ -583,13 +576,11 @@ impl ControlGui {
 /// Returns the local IP address, if available.
 pub fn get_local_ip() -> Option<String> {
     use std::net::UdpSocket;
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = socket.local_addr() {
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0")
+        && socket.connect("8.8.8.8:80").is_ok()
+            && let Ok(addr) = socket.local_addr() {
                 return Some(addr.ip().to_string());
             }
-        }
-    }
     None
 }
 

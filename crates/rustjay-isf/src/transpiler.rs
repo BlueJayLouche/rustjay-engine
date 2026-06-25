@@ -111,12 +111,11 @@ pub fn generate_wgsl(isf: &Isf, glsl_src: &str) -> Result<Transpiled, String> {
 
 fn strip_isf_comment(src: &str) -> &str {
     // Find the end of the first /* ... */ block and return the rest
-    if let Some(start) = src.find("/*") {
-        if let Some(end_offset) = src[start..].find("*/") {
+    if let Some(start) = src.find("/*")
+        && let Some(end_offset) = src[start..].find("*/") {
             let after = &src[start + end_offset + 2..];
             return after.trim_start_matches('\n').trim_start_matches('\r');
         }
-    }
     src
 }
 
@@ -787,8 +786,8 @@ fn add_missing_function_returns(src: &str) -> String {
         let is_comment = trimmed.starts_with("//");
 
         // Detect function start with a return type.
-        if trimmed.starts_with("fn ") && trimmed.contains("->") && brace_depth == 0 {
-            if let Some(arrow_pos) = trimmed.find("->") {
+        if trimmed.starts_with("fn ") && trimmed.contains("->") && brace_depth == 0
+            && let Some(arrow_pos) = trimmed.find("->") {
                 let after_arrow = trimmed[arrow_pos + 2..].trim();
                 let ty_end = after_arrow.find('{').unwrap_or(after_arrow.len());
                 let ret_ty = after_arrow[..ty_end].trim().to_string();
@@ -797,7 +796,6 @@ fn add_missing_function_returns(src: &str) -> String {
                     last_depth1_was_return = false;
                 }
             }
-        }
 
         // Process brace depth changes — inject fallback before the closing `}`.
         if fn_return_type.is_some() {
@@ -808,14 +806,12 @@ fn add_missing_function_returns(src: &str) -> String {
             let new_depth = brace_depth + open_count - close_count;
             if brace_depth > 0 && new_depth == 0 {
                 // Function is closing on this line — inject fallback if needed.
-                if let Some(ref ret_ty) = fn_return_type.clone() {
-                    if !last_depth1_was_return {
-                        if let Some(ret_stmt) = default_return_for_type(ret_ty) {
+                if let Some(ref ret_ty) = fn_return_type.clone()
+                    && !last_depth1_was_return
+                        && let Some(ret_stmt) = default_return_for_type(ret_ty) {
                             let indent = &line[..line.len() - line.trim_start().len()];
                             out_lines.push(format!("{}    {}", indent, ret_stmt));
                         }
-                    }
-                }
                 fn_return_type = None;
                 last_depth1_was_return = false;
             }
@@ -971,12 +967,11 @@ fn move_fragment_fn_to_end(src: &str) -> String {
         if lines[i].trim() == "@fragment" {
             // Check if the next non-empty line is `fn fs_main`
             let next = lines[i + 1..].iter().find(|l| !l.trim().is_empty());
-            if let Some(nxt) = next {
-                if nxt.trim().starts_with("fn fs_main") {
+            if let Some(nxt) = next
+                && nxt.trim().starts_with("fn fs_main") {
                     frag_start = Some(i);
                     break;
                 }
-            }
         }
     }
     let frag_start = match frag_start {
@@ -1537,8 +1532,8 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                     .is_some_and(|p| !trimmed[..p].contains('='))
             });
 
-            if is_func_decl {
-                if let Some(open) = trimmed.find('(') {
+            if is_func_decl
+                && let Some(open) = trimmed.find('(') {
                     let after = &trimmed[open + 1..];
                     if let Some(close) = find_matching_close(after, ')') {
                         let params_str = &after[..close];
@@ -1559,7 +1554,6 @@ fn rename_params_conflicting_with_isf_inputs(src: &str, isf_input_names: &[&str]
                         }
                     }
                 }
-            }
         }
 
         // In function body: detect local variable declarations that shadow ISF inputs.
@@ -3549,11 +3543,10 @@ fn resolve_function_overloads(src: &str) -> String {
         loop {
             let mut earliest: Option<(usize, &str)> = None;
             for name in &overloaded_vec {
-                if let Some(pos) = find_fn_name_call_or_def(rest_line, name) {
-                    if earliest.is_none_or(|(ep, _)| pos < ep) {
+                if let Some(pos) = find_fn_name_call_or_def(rest_line, name)
+                    && earliest.is_none_or(|(ep, _)| pos < ep) {
                         earliest = Some((pos, name.as_str()));
                     }
-                }
             }
             let Some((pos, found_name)) = earliest else {
                 out_line.push_str(rest_line);
@@ -4079,12 +4072,11 @@ fn is_scalar_expr_with_types(
         return false;
     }
     // Pure identifier → look up in var_types.
-    if s.chars().all(|c| c.is_alphanumeric() || c == '_') && !s.is_empty() {
-        if let Some(ty) = var_types.get(s) {
+    if s.chars().all(|c| c.is_alphanumeric() || c == '_') && !s.is_empty()
+        && let Some(ty) = var_types.get(s) {
             return !ty.starts_with("vec");
         }
         // Unknown identifier — fall through to structural checks.
-    }
     // Multi-component swizzle → vector.
     let bytes = s.as_bytes();
     let n = bytes.len();
@@ -4124,11 +4116,10 @@ fn is_scalar_expr_with_types(
             let (args_inner, _) = extract_balanced(after_paren, ')');
             let args = split_top_level_commas(args_inner);
             // If the first argument is a vector, assume the call returns a vector.
-            if let Some(first_arg) = args.first() {
-                if !is_scalar_expr_with_types(first_arg.trim(), var_types) {
+            if let Some(first_arg) = args.first()
+                && !is_scalar_expr_with_types(first_arg.trim(), var_types) {
                     return false;
                 }
-            }
         }
     }
     true
@@ -4261,9 +4252,9 @@ fn fix_builtin_call(
         if vec_ty.is_none() {
             for arg in &args {
                 let a = arg.trim();
-                if !is_scalar_literal(a) {
-                    if let Some(ty) = infer_call_arg_type(a, var_types) {
-                        if ty.starts_with("vec") {
+                if !is_scalar_literal(a)
+                    && let Some(ty) = infer_call_arg_type(a, var_types)
+                        && ty.starts_with("vec") {
                             vec_ty = Some(match ty.as_str() {
                                 "vec4<f32>" => "vec4<f32>",
                                 "vec3<f32>" => "vec3<f32>",
@@ -4274,8 +4265,6 @@ fn fix_builtin_call(
                             });
                             break;
                         }
-                    }
-                }
             }
         }
 
@@ -6045,10 +6034,16 @@ mod tests {
         if !has_naga {
             eprintln!("naga CLI not available, skipping WGSL validation");
         }
-        let dir = std::path::Path::new("/Users/ac/developer/rust/varda/shaders");
+        // Opt-in dev check: point VARDA_SHADERS_DIR at a local varda `shaders/`
+        // checkout to run it. Skipped (not failed) when unset, e.g. on CI.
+        let Ok(dir) = std::env::var("VARDA_SHADERS_DIR") else {
+            eprintln!("VARDA_SHADERS_DIR not set; skipping varda shader transpile check");
+            return;
+        };
+        let dir = std::path::Path::new(&dir);
         let mut ok = 0;
         let mut fail = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
+        for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("fs") {

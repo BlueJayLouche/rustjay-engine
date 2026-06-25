@@ -661,11 +661,10 @@ pub struct LightingOutput {
 impl LightingOutput {
     /// Migrate the pre-M3 single `segment` field into `segments` if needed.
     pub fn migrate_legacy_segment(&mut self) {
-        if self.segments.is_empty() {
-            if let Some(seg) = self.legacy_segment.take() {
+        if self.segments.is_empty()
+            && let Some(seg) = self.legacy_segment.take() {
                 self.segments.push(seg);
             }
-        }
         if self.segments.is_empty() {
             self.segments.push(LightingSegment::default());
         }

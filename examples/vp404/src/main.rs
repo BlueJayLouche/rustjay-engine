@@ -150,8 +150,8 @@ impl EffectPlugin for Vp404 {
         let mut params: Vec<ParameterDescriptor> = (0..PAD_COUNT)
             .map(|i| {
                 ParameterDescriptor::float(
-                    &format!("pad{i}_trig"),
-                    &format!("Pad {} Trigger", i + 1),
+                    format!("pad{i}_trig"),
+                    format!("Pad {} Trigger", i + 1),
                     ParamCategory::Custom("Pads".into()),
                     0.0,
                     1.0,
@@ -579,30 +579,6 @@ fn trig_edge(val: f32, prev: f32) -> Option<bool> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::trig_edge;
-
-    #[test]
-    fn edge_rising_above_threshold() {
-        assert_eq!(trig_edge(1.0, 0.0), Some(true));
-        assert_eq!(trig_edge(0.51, 0.49), Some(true));
-    }
-
-    #[test]
-    fn edge_falling_below_threshold() {
-        assert_eq!(trig_edge(0.0, 1.0), Some(false));
-        assert_eq!(trig_edge(0.49, 0.51), Some(false));
-    }
-
-    #[test]
-    fn no_edge_when_stable() {
-        assert_eq!(trig_edge(1.0, 1.0), None);
-        assert_eq!(trig_edge(0.0, 0.0), None);
-        assert_eq!(trig_edge(0.5, 0.5), None); // exactly at threshold = no edge
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_default_env()
         .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
@@ -640,4 +616,28 @@ fn main() -> anyhow::Result<()> {
         Vp404::new(clip_path, handle),
         vec![Box::new(grid_tab), Box::new(seq_tab), Box::new(output_tab)],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trig_edge;
+
+    #[test]
+    fn edge_rising_above_threshold() {
+        assert_eq!(trig_edge(1.0, 0.0), Some(true));
+        assert_eq!(trig_edge(0.51, 0.49), Some(true));
+    }
+
+    #[test]
+    fn edge_falling_below_threshold() {
+        assert_eq!(trig_edge(0.0, 1.0), Some(false));
+        assert_eq!(trig_edge(0.49, 0.51), Some(false));
+    }
+
+    #[test]
+    fn no_edge_when_stable() {
+        assert_eq!(trig_edge(1.0, 1.0), None);
+        assert_eq!(trig_edge(0.0, 0.0), None);
+        assert_eq!(trig_edge(0.5, 0.5), None); // exactly at threshold = no edge
+    }
 }

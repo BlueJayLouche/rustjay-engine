@@ -2565,40 +2565,41 @@ dependencies = [
 
 [[package]]
 name = "hap-parser"
-version = "0.2.0"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1423b8ada98acdaced416e3d5cec5c515a9a05b2cd67c3d278328cb2f994e8"
+checksum = "0593c82d6cae3979b3e65bd9d8b314baf8b28e8ed442ad81d813221098885b3b"
 dependencies = [
+ "byteorder",
  "snap",
- "thiserror 2.0.18",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "hap-qt"
-version = "0.2.0"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f662326133a4dd358979b5eade91252c4c04e417bd2b33cd776a2e8cf51fffea"
+checksum = "58e9410bd90e66361fb5856f8c357bf5f7d7b4f0dc59d7ee04ea4bb6450a2d13"
 dependencies = [
  "byteorder",
  "hap-parser",
  "memmap2",
  "snap",
  "texpresso",
- "thiserror 2.0.18",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "hap-wgpu"
-version = "0.2.0"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2bb440f0fe8053723f413a62df5d81ef77d4ee1d52b079706658946c76215ad"
+checksum = "19d807a47b0878e280ab155dd62a8e34d8d35fa6d2b536b143742fe211cc1087"
 dependencies = [
  "bytemuck",
  "hap-parser",
  "hap-qt",
  "image",
  "parking_lot",
- "thiserror 2.0.18",
+ "thiserror 1.0.69",
  "wgpu",
 ]
 

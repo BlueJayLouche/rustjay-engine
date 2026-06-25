@@ -258,14 +258,12 @@ impl ProjectionStage for RotationStage {
         }
 
         let input_ptr = input as *const _ as usize;
-        let bind_group = if self.cached_input_ptr == Some(input_ptr) && self.cached_bind_group.is_some() {
-            self.cached_bind_group.as_ref().unwrap()
-        } else {
+        if self.cached_input_ptr != Some(input_ptr) || self.cached_bind_group.is_none() {
             let bg = self.pipeline.create_bind_group(ctx.device, input);
             self.cached_bind_group = Some(bg);
             self.cached_input_ptr = Some(input_ptr);
-            self.cached_bind_group.as_ref().unwrap()
-        };
+        }
+        let bind_group = self.cached_bind_group.as_ref().unwrap();
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Rotation Pass"),

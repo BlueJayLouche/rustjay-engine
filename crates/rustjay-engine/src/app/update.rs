@@ -1,5 +1,6 @@
 use super::App;
 use rustjay_core::EffectPlugin;
+#[allow(unused_imports)] // used only by the macOS/Windows input paths
 use rustjay_core::InputType;
 use std::sync::Arc;
 
@@ -57,17 +58,15 @@ impl<P: EffectPlugin> App<P> {
                     .syphon_output_texture()
                     .map(|t| (t.width(), t.height()));
                 if let Some((width, height)) = dims {
-                    if upload_texture {
-                        if let Some(texture) = manager.syphon_output_texture() {
-                            if let Some(ref mut engine) = self.output_engine {
+                    if upload_texture
+                        && let Some(texture) = manager.syphon_output_texture()
+                            && let Some(ref mut engine) = self.output_engine {
                                 if is_second {
                                     engine.second_input_texture.set_external_texture(texture);
                                 } else {
                                     engine.input_texture.set_external_texture(texture);
                                 }
                             }
-                        }
-                    }
                     manager.clear_syphon_frame();
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     let input = if is_second {
@@ -82,8 +81,8 @@ impl<P: EffectPlugin> App<P> {
         } else {
             if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if upload_texture {
-                    if let Some(ref mut engine) = self.output_engine {
+                if upload_texture
+                    && let Some(ref mut engine) = self.output_engine {
                         if is_second {
                             engine
                                 .second_input_texture
@@ -92,7 +91,6 @@ impl<P: EffectPlugin> App<P> {
                             engine.input_texture.update(&frame_data, width, height);
                         }
                     }
-                }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let input = if is_second {
                     &mut state.second_input
@@ -132,15 +130,15 @@ impl<P: EffectPlugin> App<P> {
                 }
             } else if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if upload_texture {
-                    if let Some(ref mut engine) = self.output_engine {
-                        if is_second {
-                            engine
-                                .second_input_texture
-                                .update(&frame_data, width, height);
-                        } else {
-                            engine.input_texture.update(&frame_data, width, height);
-                        }
+                if upload_texture
+                    && let Some(ref mut engine) = self.output_engine
+                {
+                    if is_second {
+                        engine
+                            .second_input_texture
+                            .update(&frame_data, width, height);
+                    } else {
+                        engine.input_texture.update(&frame_data, width, height);
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -158,15 +156,15 @@ impl<P: EffectPlugin> App<P> {
         {
             if let Some(frame_data) = manager.take_frame() {
                 let (width, height) = manager.resolution();
-                if upload_texture {
-                    if let Some(ref mut engine) = self.output_engine {
-                        if is_second {
-                            engine
-                                .second_input_texture
-                                .update(&frame_data, width, height);
-                        } else {
-                            engine.input_texture.update(&frame_data, width, height);
-                        }
+                if upload_texture
+                    && let Some(ref mut engine) = self.output_engine
+                {
+                    if is_second {
+                        engine
+                            .second_input_texture
+                            .update(&frame_data, width, height);
+                    } else {
+                        engine.input_texture.update(&frame_data, width, height);
                     }
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,11 +180,11 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_audio(&mut self) {
-        if let Some(ref analyzer) = self.audio_analyzer {
-            if analyzer.take_stream_error() {
+        if let Some(ref analyzer) = self.audio_analyzer
+            && analyzer.take_stream_error() {
                 let may_reconnect = self
                     .last_audio_reconnect_attempt
-                    .map_or(true, |t| t.elapsed() >= AUDIO_RECONNECT_INTERVAL);
+                    .is_none_or(|t| t.elapsed() >= AUDIO_RECONNECT_INTERVAL);
                 if may_reconnect {
                     self.last_audio_reconnect_attempt = Some(std::time::Instant::now());
                     let device = {
@@ -209,7 +207,6 @@ impl<P: EffectPlugin> App<P> {
                     }
                 }
             }
-        }
 
         if let Some(ref analyzer) = self.audio_analyzer {
             // Push last-frame's cached params to the analyzer — avoids a lock acquisition
@@ -367,8 +364,8 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_midi(&mut self) {
-        if let Some(ref mut manager) = self.midi_manager {
-            if let Some(false) = manager.check_device_available_if_needed() {
+        if let Some(ref mut manager) = self.midi_manager
+            && let Some(false) = manager.check_device_available_if_needed() {
                 let name = manager
                     .state()
                     .lock()
@@ -384,7 +381,6 @@ impl<P: EffectPlugin> App<P> {
                     state.midi_enabled = false;
                 }
             }
-        }
 
         if let Some(ref manager) = self.midi_manager {
             // Collect dirty MIDI values and snapshot learn/mapping state in one lock.
@@ -468,9 +464,9 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_osc(&mut self) {
-        if let Some(ref server) = self.osc_server {
-            if let Ok(mut shared) = self.shared_state.lock() {
-                if let Ok(mut osc_state) = server.state().lock() {
+        if let Some(ref server) = self.osc_server
+            && let Ok(mut shared) = self.shared_state.lock()
+                && let Ok(mut osc_state) = server.state().lock() {
                     if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/hue_shift") {
                         shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
                     }
@@ -499,11 +495,10 @@ impl<P: EffectPlugin> App<P> {
                             if let Some(v) = osc_state.get_value_if_dirty(addr) {
                                 log::debug!("OSC apply: {} ({}) = {}", desc.id, addr, v);
                                 shared.set_param_base(&desc.id, v.clamp(desc.min, desc.max));
-                            } else if !osc_state.message_log.is_empty() {
-                                if osc_state.parameters.contains_key(addr) {
+                            } else if !osc_state.message_log.is_empty()
+                                && osc_state.parameters.contains_key(addr) {
                                     log::trace!("OSC param not dirty: {}", addr);
                                 }
-                            }
                         } else {
                             log::warn!("OSC param_osc_addresses missing index {}", i);
                         }
@@ -511,8 +506,6 @@ impl<P: EffectPlugin> App<P> {
 
                     shared.osc_message_log = osc_state.message_log.clone();
                 }
-            }
-        }
     }
 
     pub(super) fn update_web(&mut self) {
@@ -747,23 +740,20 @@ impl<P: EffectPlugin> App<P> {
                 }
 
                 {
-                    if let Some(ref engine) = self.output_engine {
-                        if let Some(preview_id) = gui.output_preview_texture_id {
-                            if let Some(preview_tex) = renderer.get_preview_texture(preview_id) {
+                    if let Some(ref engine) = self.output_engine
+                        && let Some(preview_id) = gui.output_preview_texture_id
+                            && let Some(preview_tex) = renderer.get_preview_texture(preview_id) {
                                 let preview_view = preview_tex
                                     .create_view(&wgpu::TextureViewDescriptor::default());
                                 engine.blit_output_to(&mut encoder, &preview_view);
                                 any_work = true;
                             }
-                        }
-                    }
                 }
 
-                if any_work {
-                    if let Some(ref mut engine) = self.output_engine {
+                if any_work
+                    && let Some(ref mut engine) = self.output_engine {
                         engine.enqueue_command(encoder.finish());
                     }
-                }
             }
         } else if let (Some(ref mut renderer), Some(gui)) =
             (self.imgui_renderer.as_mut(), self.control_gui.as_ref())
@@ -801,21 +791,18 @@ impl<P: EffectPlugin> App<P> {
             }
 
             {
-                if let Some(ref engine) = self.output_engine {
-                    if let Some(preview_id) = gui.output_preview_texture_id {
-                        if let Some(preview_view) = renderer.get_preview_view(preview_id) {
+                if let Some(ref engine) = self.output_engine
+                    && let Some(preview_id) = gui.output_preview_texture_id
+                        && let Some(preview_view) = renderer.get_preview_view(preview_id) {
                             engine.blit_output_to(&mut encoder, preview_view);
                             any_work = true;
                         }
-                    }
-                }
             }
 
-            if any_work {
-                if let Some(ref mut engine) = self.output_engine {
+            if any_work
+                && let Some(ref mut engine) = self.output_engine {
                     engine.enqueue_command(encoder.finish());
                 }
-            }
         }
     }
 }

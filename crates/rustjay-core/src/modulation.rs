@@ -995,17 +995,15 @@ impl ModulationEngine {
 
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
         for (key, mods) in &self.assignments {
-            if let Some(target_uuid) = Self::parse_mod_target(key) {
-                if let Some(target_idx) = self.source_idx(target_uuid) {
+            if let Some(target_uuid) = Self::parse_mod_target(key)
+                && let Some(target_idx) = self.source_idx(target_uuid) {
                     for m in mods {
-                        if let Some(src_idx) = self.source_idx(&m.source_id) {
-                            if src_idx != target_idx {
+                        if let Some(src_idx) = self.source_idx(&m.source_id)
+                            && src_idx != target_idx {
                                 deps[target_idx].push(src_idx);
                             }
-                        }
                     }
                 }
-            }
         }
 
         let mut order = Vec::with_capacity(n);
@@ -2533,11 +2531,10 @@ mod tests {
         assert!(active_val.abs() > 0.01, "Enabled LFO should produce non-zero modulation");
 
         // Disable the source (simulating web LfoEnable { slot: 0, enabled: false })
-        if let Some(entry) = engine.sources.iter_mut().find(|s| s.uuid == uuid) {
-            if let ModulationSource::LFO { ref mut enabled, .. } = entry.source {
+        if let Some(entry) = engine.sources.iter_mut().find(|s| s.uuid == uuid)
+            && let ModulationSource::LFO { ref mut enabled, .. } = entry.source {
                 *enabled = false;
             }
-        }
         engine.update(0.1, 120.0, 0.0, &audio);
         let disabled_val = engine.get_modulation("test_param");
         assert_eq!(disabled_val, 0.0, "Disabled LFO should produce zero modulation");
