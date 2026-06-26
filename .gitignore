@@ -37,6 +37,12 @@ sputnik_*.txt
 *.mkv
 *.webm
 
+# Local test assets / show files (large media — keep out of VCS)
+testFiles/
+
+# ledmap-studio local output (root run artifacts)
+/ledmap*.json
+
 
 # Proprietary Blackmagic DeckLink SDK header — user-supplied, not redistributable
 examples/decklink/src/DeckLinkAPI.h
