@@ -52,6 +52,16 @@ impl CanvasTexture {
     /// This is simple and correct; for very large canvases it can be replaced
     /// with a GPU scale-blit render pass.
     pub fn upload_frame(&self, queue: &Queue, frame: &VideoFrame, fit: CanvasFit) {
+        // Fast path: frame already matches the canvas exactly (every fit mode is a
+        // 1:1 copy here), so skip the full CPU compose + blit and upload directly.
+        // Guarded on byte length so a stride-padded frame still falls back safely.
+        if frame.width == self.width
+            && frame.height == self.height
+            && frame.data.len() == (self.width * self.height * 4) as usize
+        {
+            self.upload_rgba(queue, &frame.data);
+            return;
+        }
         let canvas = compose_canvas(frame, self.width, self.height, fit);
         self.upload_rgba(queue, &canvas);
     }

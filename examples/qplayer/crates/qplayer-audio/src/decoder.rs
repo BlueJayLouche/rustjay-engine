@@ -65,37 +65,79 @@ impl FileDecoder {
             &FormatOptions { enable_gapless: true, ..Default::default() },
             &MetadataOptions::default(),
         )?;
-        let format = probed.format;
+        let mut format = probed.format;
 
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .ok_or(DecodeError::NoAudioTrack)?;
-        let track_id = track.id;
+        let (track_id, mut sample_rate, mut channels, n_frames, codec_params) = {
+            let track = format
+                .tracks()
+                .iter()
+                .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+                .ok_or(DecodeError::NoAudioTrack)?;
+            (
+                track.id,
+                track.codec_params.sample_rate,
+                track.codec_params.channels.map(|c| c.count() as u16),
+                track.codec_params.n_frames,
+                track.codec_params.clone(),
+            )
+        };
 
-        let sample_rate = track.codec_params.sample_rate.ok_or(DecodeError::NoAudioTrack)?;
-        let channels = track
-            .codec_params
-            .channels
-            .map(|c| c.count() as u16)
-            .ok_or(DecodeError::NoAudioTrack)?;
-        let total_samples = track
-            .codec_params
-            .n_frames
-            .map(|f| f as usize * channels as usize);
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&codec_params, &DecoderOptions::default())?;
 
-        let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())?;
+        // AAC in MP4 frequently omits the channel count (and occasionally the
+        // sample rate) from the container — it's only known once the first packet
+        // is decoded. Prime the decoder to learn the real spec instead of failing
+        // with NoAudioTrack. Primed samples seed `residual` so none are lost.
+        let mut residual: Vec<f32> = Vec::new();
+        let mut eof = false;
+        if sample_rate.is_none() || channels.is_none() {
+            loop {
+                match format.next_packet() {
+                    Ok(packet) => {
+                        if packet.track_id() != track_id {
+                            continue;
+                        }
+                        match decoder.decode(&packet) {
+                            Ok(decoded) => {
+                                let spec = *decoded.spec();
+                                sample_rate.get_or_insert(spec.rate);
+                                channels.get_or_insert(spec.channels.count() as u16);
+                                if decoded.frames() > 0 {
+                                    let mut sbuf =
+                                        SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+                                    sbuf.copy_interleaved_ref(decoded);
+                                    residual.extend_from_slice(sbuf.samples());
+                                }
+                                break;
+                            }
+                            Err(SymError::DecodeError(_)) => continue,
+                            Err(_) => {
+                                eof = true;
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        eof = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let sample_rate = sample_rate.ok_or(DecodeError::NoAudioTrack)?;
+        let channels = channels.ok_or(DecodeError::NoAudioTrack)?;
+        let total_samples = n_frames.map(|f| f as usize * channels as usize);
 
         Ok(Self {
             inner: UnsafeCell::new(Inner {
                 format,
                 decoder,
                 track_id,
-                residual: Vec::new(),
+                residual,
                 residual_pos: 0,
-                eof: false,
+                eof,
             }),
             sample_rate,
             channels,
