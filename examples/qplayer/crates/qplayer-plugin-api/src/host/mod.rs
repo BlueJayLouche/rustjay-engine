@@ -59,13 +59,8 @@ impl PluginHost {
 
         let mut store = Store::new(&self.engine, PluginState);
         let instance = linker.instantiate(&mut store, &module)?;
-        let memory = instance.get_memory(&mut store, "memory");
 
-        Ok(PluginInstance {
-            store,
-            instance,
-            memory,
-        })
+        Ok(PluginInstance { store, instance })
     }
 }
 
@@ -73,8 +68,6 @@ impl PluginHost {
 pub struct PluginInstance {
     store: Store<PluginState>,
     instance: Instance,
-    #[allow(dead_code)]
-    memory: Option<wasmtime::Memory>,
 }
 
 impl PluginInstance {

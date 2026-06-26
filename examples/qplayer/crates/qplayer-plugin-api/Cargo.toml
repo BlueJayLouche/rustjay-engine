@@ -9,7 +9,5 @@ description = "WASM plugin API definitions and host bindings"
 
 [dependencies]
 wasmtime = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
