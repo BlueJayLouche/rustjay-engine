@@ -40,9 +40,6 @@ tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "net", "time"
 # MIDI
 midir = "0.10"
 
-# Plugins (WASM)
-wasmtime = "29.0"
-
 # Threading / Sync
 crossbeam = "0.8"
 
@@ -60,7 +57,6 @@ qplayer-audio = { path = "crates/qplayer-audio" }
 qplayer-gui = { path = "crates/qplayer-gui" }
 qplayer-video = { path = "crates/qplayer-video" }
 qplayer-protocols = { path = "crates/qplayer-protocols" }
-qplayer-plugin-api = { path = "crates/qplayer-plugin-api" }
 
 [profile.release]
 opt-level = 3

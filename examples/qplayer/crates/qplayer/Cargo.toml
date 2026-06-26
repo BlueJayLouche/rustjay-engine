@@ -17,7 +17,6 @@ qplayer-audio = { workspace = true }
 qplayer-gui = { workspace = true }
 qplayer-video = { workspace = true }
 qplayer-protocols = { workspace = true }
-qplayer-plugin-api = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 rfd = { workspace = true }

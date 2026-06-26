@@ -189,8 +189,6 @@ pub struct SharedState {
     pub show_log_window: bool,
     /// Whether the About window is open.
     pub show_about_window: bool,
-    /// Whether the Plugin Manager window is open.
-    pub show_plugin_manager: bool,
     /// Whether the Waveform pop-out window is open.
     pub show_waveform_window: bool,
     /// Waveform window zoom level (independent from inspector).
@@ -206,8 +204,6 @@ pub struct SharedState {
     pub pending_close_confirm: bool,
     /// Set by the quit-confirm modal; main.rs hard-exits on the next tick.
     pub quit: bool,
-    /// List of loaded plugins (name, path) for the plugin manager window.
-    pub plugin_list: Vec<(String, String)>,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
     pub progress_overlay: Option<ProgressOverlay>,
     /// If Some, the next received MIDI event should be stored as this cue's MIDI trigger.
@@ -245,7 +241,6 @@ impl Default for SharedState {
             audio_devices: Vec::new(),
             show_log_window: false,
             show_about_window: false,
-            show_plugin_manager: false,
             show_waveform_window: false,
             waveform_window_zoom: 1.0,
             waveform_window_scroll: 0.0,
@@ -253,7 +248,6 @@ impl Default for SharedState {
             show_projection_window: false,
             pending_close_confirm: false,
             quit: false,
-            plugin_list: Vec::new(),
             progress_overlay: None,
             pending_midi_learn: None,
             pending_timecode_capture: None,
@@ -702,47 +696,6 @@ impl QPlayerApp {
             state.show_log_window = show_log;
         }
 
-        // Plugin Manager window
-        let mut show_plugins = if let Ok(state) = self.state.lock() {
-            state.show_plugin_manager
-        } else {
-            false
-        };
-        if show_plugins {
-            egui::Window::new("Plugin Manager")
-                .collapsible(false)
-                .resizable(true)
-                .default_size([400.0, 250.0])
-                .open(&mut show_plugins)
-                .show(ctx, |ui| {
-                    let plugins = {
-                        let Ok(state) = self.state.lock() else { return; };
-                        state.plugin_list.clone()
-                    };
-                    if plugins.is_empty() {
-                        ui.label("No plugins loaded.");
-                    } else {
-                        egui::Grid::new("plugin_grid")
-                            .num_columns(2)
-                            .spacing([40.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Name").strong());
-                                ui.label(egui::RichText::new("Path").strong());
-                                ui.end_row();
-                                for (name, path) in &plugins {
-                                    ui.label(name);
-                                    ui.label(egui::RichText::new(path).monospace().size(10.0));
-                                    ui.end_row();
-                                }
-                            });
-                    }
-                });
-        }
-        if let Ok(mut state) = self.state.lock() {
-            state.show_plugin_manager = show_plugins;
-        }
-
         // Waveform pop-out window
         let mut show_waveform = if let Ok(state) = self.state.lock() {
             state.show_waveform_window
@@ -986,16 +939,6 @@ impl QPlayerApp {
                 if ui.checkbox(&mut show_log, "Log").clicked() {
                     if let Ok(mut state) = self.state.lock() {
                         state.show_log_window = show_log;
-                    }
-                    ui.close();
-                }
-                let mut show_plugins = {
-                    let Ok(state) = self.state.lock() else { return; };
-                    state.show_plugin_manager
-                };
-                if ui.checkbox(&mut show_plugins, "Plugin Manager").clicked() {
-                    if let Ok(mut state) = self.state.lock() {
-                        state.show_plugin_manager = show_plugins;
                     }
                     ui.close();
                 }
