@@ -209,7 +209,6 @@ impl Default for EqInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::biquad::Biquad;
     use qplayer_core::{EQBand, EQBandShape};
 
     fn dc_source(val: f32) -> Box<dyn SampleProvider> {

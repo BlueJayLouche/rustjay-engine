@@ -220,25 +220,6 @@ mod tests {
     use super::*;
     use crate::FnSource;
 
-    fn sine_source() -> Box<dyn SampleProvider> {
-        Box::new(FnSource::new(
-            |buf| {
-                static mut PHASE: f32 = 0.0;
-                const FREQ: f32 = 1000.0;
-                const SR: f32 = 48000.0;
-                for i in 0..buf.len() / 2 {
-                    let s = unsafe { PHASE }.sin();
-                    buf[i * 2] = s;
-                    buf[i * 2 + 1] = s;
-                    unsafe { PHASE += 2.0 * std::f32::consts::PI * FREQ / SR }
-                }
-                buf.len()
-            },
-            48000,
-            2,
-        ))
-    }
-
     #[test]
     fn test_fade_linear() {
         let source = Box::new(FnSource::new(
