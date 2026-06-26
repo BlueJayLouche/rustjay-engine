@@ -37,7 +37,6 @@ pub use videowall::{
     AprilTagDetection, AprilTagDetector, AprilTagFamily, AutoDetectConfig, CalibSync,
     DetectedScreen, TagGridStage,
 };
-
 pub mod slicer;
 pub use slicer::{
     compute_dome_meshes, compute_projector_mesh, DomeGeometry, DomePreset, DomeSetup,
