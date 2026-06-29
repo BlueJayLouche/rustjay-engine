@@ -146,7 +146,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     }
 
     if ui.button("+ Add Output").clicked() {
-        projection.outputs.push(qplayer_core::ProjectorOutput::default_single());
+        let mut output = qplayer_core::ProjectorOutput::default_single();
+        output.name = format!("Output {}", projection.outputs.len() + 1);
+        projection.outputs.push(output);
         changed = true;
     }
 

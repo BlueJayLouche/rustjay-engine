@@ -141,6 +141,12 @@ struct App {
     last_project_generation: u64,
     /// When the control window was last asked to repaint (throttles its ~60 Hz redraw).
     last_control_redraw: std::time::Instant,
+    /// Frame-pacing diagnostics, printed once/sec when QPLAYER_FPS_DEBUG is set.
+    fps_debug: bool,
+    dbg_decoded: u32,
+    dbg_presented: u32,
+    dbg_present_time: std::time::Duration,
+    dbg_last_log: std::time::Instant,
 
     // ── protocols ──
     osc_manager: Option<OscManager>,
@@ -289,6 +295,11 @@ impl App {
             current_video_qid: None,
             last_project_generation: 0,
             last_control_redraw: std::time::Instant::now(),
+            fps_debug: std::env::var("QPLAYER_FPS_DEBUG").is_ok(),
+            dbg_decoded: 0,
+            dbg_presented: 0,
+            dbg_present_time: std::time::Duration::ZERO,
+            dbg_last_log: std::time::Instant::now(),
             osc_manager,
             osc_rx,
             msc_manager,
@@ -470,20 +481,46 @@ impl App {
             let mut config = surface
                 .get_default_config(&self.adapter, size.width, size.height)
                 .expect("output surface config");
+            let caps = surface.get_capabilities(&self.adapter);
             // The edge-blend brightness ramp is a linear-light multiply; it's only
             // correct if the GPU re-encodes to sRGB on write. Windows backends
             // default to a non-sRGB surface, so the blend band crushes to black.
             // Force an sRGB surface format when the surface offers one.
-            if let Some(srgb) = surface
-                .get_capabilities(&self.adapter)
-                .formats
-                .iter()
-                .copied()
-                .find(|f| f.is_srgb())
-            {
+            if let Some(srgb) = caps.formats.iter().copied().find(|f| f.is_srgb()) {
                 config.format = srgb;
             }
+            // Present mode: Fifo (vsync, no tearing) by default. Override with
+            // QPLAYER_PRESENT_MODE=fifo|fifo_relaxed|mailbox|immediate to test on
+            // hardware where vsync still tears (Windows multi-monitor mixed-refresh).
+            // Falls back to Fifo if the surface lacks the requested mode.
+            let want = match std::env::var("QPLAYER_PRESENT_MODE").as_deref() {
+                Ok("mailbox") => wgpu::PresentMode::Mailbox,
+                Ok("immediate") => wgpu::PresentMode::Immediate,
+                Ok("fifo_relaxed") => wgpu::PresentMode::FifoRelaxed,
+                _ => wgpu::PresentMode::Fifo,
+            };
+            config.present_mode = if caps.present_modes.contains(&want) {
+                want
+            } else {
+                wgpu::PresentMode::Fifo
+            };
             surface.configure(&self.device, &config);
+
+            if std::env::var("QPLAYER_FPS_DEBUG").is_ok() {
+                let refresh = window
+                    .current_monitor()
+                    .and_then(|m| m.refresh_rate_millihertz())
+                    .map(|mhz| format!("{:.2} Hz", mhz as f64 / 1000.0))
+                    .unwrap_or_else(|| "?".into());
+                eprintln!(
+                    "OUTPUT '{}': present_mode={:?} format={:?} refresh={} fullscreen={}",
+                    output.name,
+                    config.present_mode,
+                    config.format,
+                    refresh,
+                    window.fullscreen().is_some(),
+                );
+            }
 
             let pixel_perfect =
                 output.output_width == output.source_width && output.output_height == output.source_height;
@@ -2225,6 +2262,7 @@ impl App {
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
         let has_video = self.current_video_qid.is_some() || self.canvas_has_frame;
 
+        let present_start = std::time::Instant::now();
         for out in &mut self.output_windows {
             let size = out.window.inner_size();
             if size.width == 0 || size.height == 0 {
@@ -2318,6 +2356,11 @@ impl App {
             surface_texture.present();
         }
 
+        if self.fps_debug && !self.output_windows.is_empty() {
+            self.dbg_presented += 1;
+            self.dbg_present_time += present_start.elapsed();
+        }
+
         // Frames still queued (a burst of events landed between presents) — schedule
         // another present so the queue drains at the display refresh rather than
         // stalling until the next decoded frame arrives.
@@ -2345,6 +2388,9 @@ impl ApplicationHandler<AppEvent> for App {
                 // window would never go black. current_video_qid is set before the
                 // thread spawns, so genuine frames always have it set.
                 if self.current_video_qid.is_some() {
+                    if self.fps_debug {
+                        self.dbg_decoded += 1;
+                    }
                     // Bounded: if the consumer fell behind, drop the oldest frame
                     // rather than let the queue grow without limit.
                     const MAX_QUEUED: usize = 6;
@@ -2605,6 +2651,27 @@ impl ApplicationHandler<AppEvent> for App {
         self.process_protocol_events();
         self.poll_wall_clock_triggers(event_loop);
         self.poll_timecode_triggers(event_loop);
+
+        if self.fps_debug && self.dbg_last_log.elapsed() >= std::time::Duration::from_secs(1) {
+            let secs = self.dbg_last_log.elapsed().as_secs_f64();
+            let avg_cycle_ms = if self.dbg_presented > 0 {
+                self.dbg_present_time.as_secs_f64() * 1000.0 / self.dbg_presented as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "VIDEO DIAG: {} window(s) | decoded {:.0}/s | presented {:.0}/s | queue {} | avg present-cycle {:.1} ms",
+                self.output_windows.len(),
+                self.dbg_decoded as f64 / secs,
+                self.dbg_presented as f64 / secs,
+                self.frame_queue.len(),
+                avg_cycle_ms,
+            );
+            self.dbg_decoded = 0;
+            self.dbg_presented = 0;
+            self.dbg_present_time = std::time::Duration::ZERO;
+            self.dbg_last_log = std::time::Instant::now();
+        }
 
         // Output windows are redrawn on demand (new frame / stop / still cue), not
         // here — see request_output_redraw. The control window redraws on a ~60 Hz
