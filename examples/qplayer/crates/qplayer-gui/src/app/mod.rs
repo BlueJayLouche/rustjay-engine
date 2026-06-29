@@ -210,6 +210,10 @@ pub struct SharedState {
     pub pending_midi_learn: Option<Decimal>,
     /// If Some, the current show time should be stored as this cue's timecode trigger.
     pub pending_timecode_capture: Option<Decimal>,
+    /// Bumped each time a project is loaded. The control binary watches this and
+    /// rebuilds its output/projection windows from the new projection settings —
+    /// without it, the windows keep the previous project's mapping on a switch.
+    pub project_generation: u64,
 }
 
 /// State for the progress overlay modal.
@@ -251,6 +255,7 @@ impl Default for SharedState {
             progress_overlay: None,
             pending_midi_learn: None,
             pending_timecode_capture: None,
+            project_generation: 0,
         }
     }
 }
@@ -273,6 +278,8 @@ impl SharedState {
         self.show_file = show;
         self.project_path = Some(path.to_path_buf());
         self.dirty = false;
+        // Signal the control binary to rebuild output windows for the new projection.
+        self.project_generation = self.project_generation.wrapping_add(1);
         Ok(())
     }
 

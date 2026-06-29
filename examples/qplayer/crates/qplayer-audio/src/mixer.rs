@@ -12,7 +12,7 @@
 //!   a pre-cached snapshot updated only when the vec changes).
 
 use crate::SampleProvider;
-use qplayer_core::FadeType;
+use qplayer_core::{FadeType, LockExt};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -219,20 +219,20 @@ impl Mixer {
 
     /// Add an input. Call from the main thread.
     pub fn add_input(&self, input: Arc<MixerInput>) {
-        self.inputs.lock().unwrap().push(input);
+        self.inputs.lock_unpoisoned().push(input);
         self.dirty.store(true, Ordering::Release);
     }
 
     /// Remove an input. Call from the main thread.
     pub fn remove_input(&self, input: &Arc<MixerInput>) {
-        let mut inputs = self.inputs.lock().unwrap();
+        let mut inputs = self.inputs.lock_unpoisoned();
         inputs.retain(|i| !Arc::ptr_eq(i, input));
         self.dirty.store(true, Ordering::Release);
     }
 
     /// Stop and remove all inputs. Call from the main thread.
     pub fn stop_all(&self) {
-        let mut inputs = self.inputs.lock().unwrap();
+        let mut inputs = self.inputs.lock_unpoisoned();
         inputs.clear();
         self.dirty.store(true, Ordering::Release);
     }
@@ -240,8 +240,8 @@ impl Mixer {
     /// Refresh the snapshot if dirty. Call from the main thread between callbacks.
     pub fn refresh_snapshot(&self) {
         if self.dirty.swap(false, Ordering::Acquire) {
-            let inputs = self.inputs.lock().unwrap();
-            let mut snapshot = self.snapshot.lock().unwrap();
+            let inputs = self.inputs.lock_unpoisoned();
+            let mut snapshot = self.snapshot.lock_unpoisoned();
             snapshot.clear();
             snapshot.extend(inputs.iter().cloned());
         }
@@ -257,7 +257,7 @@ impl Mixer {
         let frames = buffer.len() / self.channels.max(1) as usize;
 
         // Read snapshot without locking (main thread guarantees atomic update)
-        let snapshot = self.snapshot.lock().unwrap();
+        let snapshot = self.snapshot.lock_unpoisoned();
 
         for input in snapshot.iter() {
             if !input.is_active() {
