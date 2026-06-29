@@ -1100,6 +1100,8 @@ impl QPlayerApp {
                         state.project_path = None;
                         state.selected_cue_id = None;
                         state.dirty = false;
+                        // Signal the control binary to stop cues + close output windows.
+                        state.project_generation = state.project_generation.wrapping_add(1);
                     }
                 }
                 AppCommand::OpenProject { path } => {
