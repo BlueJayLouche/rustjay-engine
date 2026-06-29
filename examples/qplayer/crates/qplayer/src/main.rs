@@ -27,12 +27,14 @@ use winit::window::{Window, WindowId};
 use human_panic::Metadata;
 
 
+/// Decode-channel depth (frames). A small buffer absorbs decode jitter; the
+/// backpressure it provides paces decode to the display refresh.
+const VIDEO_QUEUE_CAP: usize = 3;
+
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
 enum AppEvent {
-    /// A decoded video frame ready for display.
-    VideoFrame(VideoFrame),
-    /// Video stream reached EOF.
+    /// Video stream reached EOF. (Frames travel on a bounded channel, not here.)
     VideoEof,
 }
 
@@ -125,11 +127,11 @@ struct App {
 
     // ── video playback ──
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
-    /// Decoded frames awaiting display, drained one per present so every frame is
-    /// shown once. A single overwriting slot dropped frames because winit delivers
-    /// VideoFrame events in bursts — several land between presents and only the last
-    /// survived (the "overwrite-dropped" the diagnostics showed).
-    frame_queue: std::collections::VecDeque<VideoFrame>,
+    /// Receiver for decoded frames. The decode thread is a bounded producer (its
+    /// send blocks when the channel is full); the vsync-paced render loop pulls one
+    /// frame per present. Backpressure locks decode to the display refresh — no
+    /// free-running wall clock to drift against vsync (which caused judder).
+    video_frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
     /// Whether a frame has been uploaded to the canvas (drives `has_video`).
     canvas_has_frame: bool,
     video_stop_flag: Arc<AtomicBool>,
@@ -143,7 +145,7 @@ struct App {
     last_control_redraw: std::time::Instant,
     /// Frame-pacing diagnostics, printed once/sec when QPLAYER_FPS_DEBUG is set.
     fps_debug: bool,
-    dbg_decoded: u32,
+    dbg_starved: u32,
     dbg_presented: u32,
     dbg_present_time: std::time::Duration,
     dbg_last_log: std::time::Instant,
@@ -288,7 +290,7 @@ impl App {
             event_loop_proxy: proxy,
             canvas_texture: None,
             output_windows: Vec::new(),
-            frame_queue: std::collections::VecDeque::new(),
+            video_frame_rx: None,
             canvas_has_frame: false,
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
@@ -296,7 +298,7 @@ impl App {
             last_project_generation: 0,
             last_control_redraw: std::time::Instant::now(),
             fps_debug: std::env::var("QPLAYER_FPS_DEBUG").is_ok(),
-            dbg_decoded: 0,
+            dbg_starved: 0,
             dbg_presented: 0,
             dbg_present_time: std::time::Duration::ZERO,
             dbg_last_log: std::time::Instant::now(),
@@ -1355,7 +1357,6 @@ impl App {
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
         self.current_video_qid = Some(qid);
-        self.frame_queue.clear();
         self.canvas_has_frame = false;
 
         // Create/resize the shared projection canvas.
@@ -1377,16 +1378,13 @@ impl App {
         // (same as play_audio) so a packed project's "Media/<file>" relative path
         // opens instead of failing — audio resolved but video didn't.
         let path = self.resolve_path(path).unwrap_or_else(|| path.to_string());
-        // Pace video off a monotonic wall clock captured here, NOT the audio master
-        // clock. The audio clock freezes if the output device sleeps or is swapped
-        // (display sleep takes HDMI audio with it), stalling video on a held frame —
-        // fatal for an unattended loop. A wall clock can't freeze. Trade-off: A/V sync
-        // is best-effort rather than sample-locked to the audio device.
-        let clock = {
-            let origin = std::time::Instant::now();
-            Arc::new(move || origin.elapsed()) as Arc<dyn Fn() -> Duration + Send + Sync>
-        };
-        let start = Duration::ZERO;
+        // Bounded channel = backpressure: the decode thread can't outrun the consumer
+        // (the vsync-paced render loop), so decode runs at the display refresh rate
+        // — no free-running wall clock to drift against vsync. The small buffer absorbs
+        // decode jitter. Pacing is the display, not the audio clock, so it can't freeze
+        // if the audio device sleeps.
+        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<VideoFrame>(VIDEO_QUEUE_CAP);
+        self.video_frame_rx = Some(frame_rx);
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
         let proxy = self.event_loop_proxy.clone();
@@ -1394,7 +1392,7 @@ impl App {
         std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
-                video_decode_thread(&path, clock, start, stop_flag, pause_flag, proxy);
+                video_decode_thread(&path, stop_flag, pause_flag, frame_tx, proxy);
             })
             .expect("spawn video decode thread");
     }
@@ -1433,7 +1431,9 @@ impl App {
     fn stop_all(&mut self) {
         self.video_stop_flag.store(true, Ordering::Relaxed);
         self.video_pause_flag.store(false, Ordering::Relaxed);
-        self.frame_queue.clear();
+        // Drop the receiver: the decode thread's send will fail with
+        // Disconnected and exit, and we stop presenting new frames.
+        self.video_frame_rx = None;
         self.canvas_has_frame = false;
         self.current_video_qid = None;
         self.audio_engine.stop_all();
@@ -2250,13 +2250,19 @@ impl App {
             state.show_file.projection.clone()
         };
 
-        // Take one frame off the queue per present (vsync-paced) so frames are shown
-        // in order, one per refresh — no overwrite drops.
-        if let Some(frame) = self.frame_queue.pop_front() {
-            if let Some(canvas) = self.canvas_texture.as_ref() {
-                canvas.upload_frame(&self.queue, &frame, projection.fit);
+        // Pull one decoded frame per present (vsync-paced) so frames are shown
+        // in order, one per refresh. If decode hasn't produced a new frame yet,
+        // we simply re-present the last one — the bounded channel's backpressure
+        // keeps decode locked to the display refresh.
+        if let Some(rx) = self.video_frame_rx.as_ref() {
+            if let Ok(frame) = rx.try_recv() {
+                if let Some(canvas) = self.canvas_texture.as_ref() {
+                    canvas.upload_frame(&self.queue, &frame, projection.fit);
+                }
+                self.canvas_has_frame = true;
+            } else if self.fps_debug {
+                self.dbg_starved += 1;
             }
-            self.canvas_has_frame = true;
         }
 
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
@@ -2361,14 +2367,9 @@ impl App {
             self.dbg_present_time += present_start.elapsed();
         }
 
-        // Frames still queued (a burst of events landed between presents) — schedule
-        // another present so the queue drains at the display refresh rather than
-        // stalling until the next decoded frame arrives.
-        if !self.frame_queue.is_empty() {
-            for out in &self.output_windows {
-                out.window.request_redraw();
-            }
-        }
+        // Vsync pacing: the Fifo present itself is the throttle. We rely on the
+        // swapchain backpressure plus a continuous redraw request in about_to_wait
+        // to keep the loop running at exactly the display refresh.
     }
 }
 
@@ -2381,28 +2382,6 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::VideoFrame(frame) => {
-                // Drop stragglers from a decode thread we already stopped (Stop, or
-                // switching projects): an in-flight frame queued on the event proxy
-                // before stop_all() would otherwise re-populate the output and the
-                // window would never go black. current_video_qid is set before the
-                // thread spawns, so genuine frames always have it set.
-                if self.current_video_qid.is_some() {
-                    if self.fps_debug {
-                        self.dbg_decoded += 1;
-                    }
-                    // Bounded: if the consumer fell behind, drop the oldest frame
-                    // rather than let the queue grow without limit.
-                    const MAX_QUEUED: usize = 6;
-                    if self.frame_queue.len() >= MAX_QUEUED {
-                        self.frame_queue.pop_front();
-                    }
-                    self.frame_queue.push_back(frame);
-                    for out in &self.output_windows {
-                        out.window.request_redraw();
-                    }
-                }
-            }
             AppEvent::VideoEof => {
                 log::info!("Video EOF");
                 // What the output window shows after a clip ends:
@@ -2438,7 +2417,7 @@ impl ApplicationHandler<AppEvent> for App {
                         _ => {
                             // OneShot (or cue gone): blank the output to black.
                             self.current_video_qid = None;
-                            self.frame_queue.clear();
+                            self.video_frame_rx = None;
                             self.canvas_has_frame = false;
                             for out in &self.output_windows {
                                 out.window.request_redraw();
@@ -2623,9 +2602,9 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    // Output windows present on demand (new decoded frame, stop, or a
-                    // still cue) — not continuously — so each frame gets exactly one
-                    // vsync present instead of being coalesced and dropped.
+                    // Output windows render continuously while a video is playing.
+                    // The bounded channel and Fifo swapchain backpressure keep this
+                    // loop locked to the display refresh, one frame per vsync.
                     self.render_video();
                 }
                 _ => {}
@@ -2660,22 +2639,32 @@ impl ApplicationHandler<AppEvent> for App {
                 0.0
             };
             eprintln!(
-                "VIDEO DIAG: {} window(s) | decoded {:.0}/s | presented {:.0}/s | queue {} | avg present-cycle {:.1} ms",
+                "VIDEO DIAG: {} window(s) | starved {:.0}/s | presented {:.0}/s | avg present-cycle {:.1} ms",
                 self.output_windows.len(),
-                self.dbg_decoded as f64 / secs,
+                self.dbg_starved as f64 / secs,
                 self.dbg_presented as f64 / secs,
-                self.frame_queue.len(),
                 avg_cycle_ms,
             );
-            self.dbg_decoded = 0;
+            self.dbg_starved = 0;
             self.dbg_presented = 0;
             self.dbg_present_time = std::time::Duration::ZERO;
             self.dbg_last_log = std::time::Instant::now();
         }
 
-        // Output windows are redrawn on demand (new frame / stop / still cue), not
-        // here — see request_output_redraw. The control window redraws on a ~60 Hz
-        // throttle so its (non-vsync) UI stays live without busy-spinning the GPU.
+        // Video output: continuous redraw so the Fifo swapchain backpressure paces
+        // us to the display refresh. When paused we stop requesting, so the last
+        // held frame stays on screen and decode blocks on the full channel.
+        if self.current_video_qid.is_some()
+            && !self.paused
+            && !self.output_windows.is_empty()
+        {
+            for out in &self.output_windows {
+                out.window.request_redraw();
+            }
+        }
+
+        // The control window redraws on a ~60 Hz throttle so its (non-vsync) UI
+        // stays live without busy-spinning the GPU.
         if self.last_control_redraw.elapsed() >= std::time::Duration::from_millis(16) {
             self.last_control_redraw = std::time::Instant::now();
             if let Some(window) = self.control_window.as_ref() {
@@ -2739,12 +2728,12 @@ fn resolve_goto_target(
 /// Video decode thread: sleeps until each frame's PTS, then sends it to the main loop.
 fn video_decode_thread(
     path: &str,
-    clock: Arc<dyn Fn() -> Duration + Send + Sync>,
-    start_clock: Duration,
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
+    frame_tx: std::sync::mpsc::SyncSender<VideoFrame>,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
 ) {
+    use std::sync::mpsc::TrySendError;
     let mut source = match VideoSource::open(path) {
         Ok(s) => s,
         Err(e) => {
@@ -2753,44 +2742,36 @@ fn video_decode_thread(
         }
     };
 
-    let mut paused_at: Option<Duration> = None;
-    let mut total_pause = Duration::ZERO;
-
     while !stop_flag.load(Ordering::Relaxed) {
-        // When paused, sleep without decoding so we don't read ahead.
+        // Paused: stop decoding (the consumer also stops pulling, so the channel
+        // stays full and we'd block anyway).
         if pause_flag.load(Ordering::Relaxed) {
-            if paused_at.is_none() {
-                paused_at = Some(clock());
-            }
             std::thread::sleep(Duration::from_millis(10));
             continue;
         }
 
-        // Just resumed — accumulate the pause duration so we don't fast-forward.
-        if let Some(start) = paused_at.take() {
-            total_pause += clock().saturating_sub(start);
-        }
-
         match source.read_frame() {
             Some(frame) => {
-                let elapsed = clock().saturating_sub(start_clock).saturating_sub(total_pause);
-                let frame_due = Duration::from_secs_f64(frame.pts.max(0.0));
-
-                if frame_due > elapsed {
-                    let sleep_for = frame_due - elapsed;
-                    // Cap sleep to avoid missing stop signals for too long
-                    std::thread::sleep(sleep_for.min(Duration::from_millis(50)));
-                }
-
-                if stop_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-                if pause_flag.load(Ordering::Relaxed) {
-                    continue;
-                }
-
-                if proxy.send_event(AppEvent::VideoFrame(frame)).is_err() {
-                    break;
+                // Backpressure: wait until the vsync-paced consumer takes a frame.
+                // This is what paces decode to the display refresh. We poll with a
+                // short sleep so we stay responsive to stop/pause signals; the channel
+                // still caps the decode rate to exactly what the display consumes.
+                let mut frame = frame;
+                loop {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if pause_flag.load(Ordering::Relaxed) {
+                        break; // drop this frame; the outer loop handles the pause
+                    }
+                    match frame_tx.try_send(frame) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(f)) => {
+                            frame = f;
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(TrySendError::Disconnected(_)) => return,
+                    }
                 }
             }
             None => {
