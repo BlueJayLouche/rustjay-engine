@@ -447,9 +447,22 @@ impl App {
                 .expect("create output surface");
 
             let size = window.inner_size();
-            let config = surface
+            let mut config = surface
                 .get_default_config(&self.adapter, size.width, size.height)
                 .expect("output surface config");
+            // The edge-blend brightness ramp is a linear-light multiply; it's only
+            // correct if the GPU re-encodes to sRGB on write. Windows backends
+            // default to a non-sRGB surface, so the blend band crushes to black.
+            // Force an sRGB surface format when the surface offers one.
+            if let Some(srgb) = surface
+                .get_capabilities(&self.adapter)
+                .formats
+                .iter()
+                .copied()
+                .find(|f| f.is_srgb())
+            {
+                config.format = srgb;
+            }
             surface.configure(&self.device, &config);
 
             let pixel_perfect =

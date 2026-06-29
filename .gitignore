@@ -46,3 +46,6 @@ testFiles/
 
 # Proprietary Blackmagic DeckLink SDK header — user-supplied, not redistributable
 examples/decklink/src/DeckLinkAPI.h
+
+# Build/package output
+dist/
