@@ -3,6 +3,7 @@
 //! Replaces C# `OSCDriver` and `OSCAddressRouter`.
 //! Uses `rosc` for encoding/decoding and `std::net::UdpSocket` for transport.
 
+use crate::LockExt;
 use rosc::{OscMessage, OscPacket, OscType};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -242,7 +243,7 @@ impl OscManager {
 
         // Build router with QPlayer address patterns
         {
-            let mut r = router.lock().unwrap();
+            let mut r = router.lock_unpoisoned();
             let tx = event_tx.clone();
             r.subscribe("/qplayer/go", move |msg| {
                 let qid = msg.args.first().and_then(arg_to_string);
@@ -355,9 +356,7 @@ impl OscManager {
 
         let router_clone = Arc::clone(&router);
         driver.start(move |msg, _src| {
-            if let Ok(r) = router_clone.lock() {
-                r.route(&msg);
-            }
+            router_clone.lock_unpoisoned().route(&msg);
         });
 
         Ok(Self {

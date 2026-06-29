@@ -123,6 +123,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             base.enabled = enabled;
             changed = true;
         }
+        let mut rt = base.retriggerable;
+        let rt_resp = ui
+            .checkbox(&mut rt, "Re-triggerable")
+            .on_hover_text("If off, firing this cue again while it is still playing is ignored");
+        if rt_resp.changed() {
+            base.retriggerable = rt;
+            changed = true;
+        }
     });
     ui.horizontal(|ui| {
         ui.label("Colour:");

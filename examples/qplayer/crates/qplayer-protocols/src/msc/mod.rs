@@ -5,6 +5,7 @@
 //! `b"GMA\0MSC\0"` followed by a little-endian length and a MIDI SysEx
 //! MSC message.
 
+use crate::LockExt;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -344,11 +345,10 @@ impl MscManager {
         let subs = Arc::clone(&subscribers);
         driver.start(move |pkt, _src| {
             let flags = command_to_flags(pkt.command);
-            if let Ok(lock) = subs.lock() {
-                for (cmd_flags, handler) in lock.iter() {
-                    if flags.intersects(*cmd_flags) {
-                        handler(&pkt);
-                    }
+            let lock = subs.lock_unpoisoned();
+            for (cmd_flags, handler) in lock.iter() {
+                if flags.intersects(*cmd_flags) {
+                    handler(&pkt);
                 }
             }
         });
@@ -364,7 +364,7 @@ impl MscManager {
     where
         F: Fn(&MamscPacket) + Send + 'static,
     {
-        self.subscribers.lock().unwrap().push((commands, Box::new(handler)));
+        self.subscribers.lock_unpoisoned().push((commands, Box::new(handler)));
     }
 }
 

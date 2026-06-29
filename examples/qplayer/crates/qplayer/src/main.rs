@@ -7,7 +7,7 @@
 //!   frame to main thread via winit user event.
 
 use qplayer_audio::{AudioEngine, FileDecoder, SampleProvider};
-use qplayer_core::{MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
+use qplayer_core::{LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
 use qplayer_gui::{AppCommand, QPlayerApp, SharedStateHandle};
 use qplayer_gui::app::CueState;
 use qplayer_protocols::midi::{MidiEvent, MidiManager};
@@ -127,11 +127,13 @@ struct App {
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     latest_video_frame: Option<VideoFrame>,
     video_frame_dirty: bool,
-    video_start_clock: Option<Duration>,
     video_stop_flag: Arc<AtomicBool>,
     video_pause_flag: Arc<AtomicBool>,
     /// QID of the cue whose video is currently playing (for loop sync).
     current_video_qid: Option<rust_decimal::Decimal>,
+    /// Last `SharedState.project_generation` we acted on. A change means a project
+    /// was loaded, so the output windows must rebuild for its projection settings.
+    last_project_generation: u64,
 
     // ── protocols ──
     osc_manager: Option<OscManager>,
@@ -275,10 +277,10 @@ impl App {
             output_windows: Vec::new(),
             latest_video_frame: None,
             video_frame_dirty: false,
-            video_start_clock: None,
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
             current_video_qid: None,
+            last_project_generation: 0,
             osc_manager,
             osc_rx,
             msc_manager,
@@ -372,7 +374,7 @@ impl App {
     /// Create (or recreate) one output window per configured projector output.
     fn create_output_windows(&mut self, event_loop: &ActiveEventLoop) {
         let projection = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.show_file.projection.clone()
         };
 
@@ -504,7 +506,7 @@ impl App {
         }
 
         let (start_qid, start_idx) = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             let qid = state.selected_cue_id;
             let idx = qid.and_then(|q| state.show_file.cues.iter().position(|c| c.base().qid == q));
             (qid, idx)
@@ -522,7 +524,7 @@ impl App {
 
         // Play the selected cue and all consecutive WithLast followers
         let cues_to_play = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             let mut result = Vec::new();
             for i in start_idx..state.show_file.cues.len() {
                 let cue = &state.show_file.cues[i];
@@ -549,7 +551,7 @@ impl App {
 
         // Check for AfterLast cues and schedule them
         let after_last = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             let mut after_last_qids = Vec::new();
             for i in (start_idx + 1)..state.show_file.cues.len() {
                 let cue = &state.show_file.cues[i];
@@ -569,7 +571,7 @@ impl App {
         // stepping). Skip the cues that auto-fired alongside this one. A goto cue
         // sets its own standby (the target), so don't override it here.
         let next_qid = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             let fired_goto =
                 matches!(state.show_file.cues.get(start_idx), Some(qplayer_core::Cue::Goto { .. }));
             if fired_goto {
@@ -588,7 +590,7 @@ impl App {
     /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
     fn play_cue_by_qid(&mut self, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
         let cue = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.show_file.cues.iter().find(|c| c.base().qid == qid).cloned()
         };
         if let Some(cue) = cue {
@@ -596,6 +598,19 @@ impl App {
         } else {
             log::warn!("Trigger referenced unknown cue Q{}", qid);
         }
+    }
+
+    /// Is this cue currently producing output? True while its audio is playing
+    /// (or paused) or while its video/still is the one on screen.
+    fn cue_is_active(&self, qid: rust_decimal::Decimal) -> bool {
+        self.current_video_qid == Some(qid)
+            || self.active_cues.iter().any(|ac| {
+                ac.qid == qid
+                    && matches!(
+                        ac.state,
+                        CueState::Playing | CueState::PlayingLooped | CueState::Paused
+                    )
+            })
     }
 
     fn play_cue(&mut self, cue: &qplayer_core::Cue, event_loop: &ActiveEventLoop) {
@@ -607,6 +622,13 @@ impl App {
         let qid = cue.base().qid;
         let name = cue.base().name.clone();
         let delay = cue.base().delay;
+
+        // Re-trigger guard: a cue marked not-re-triggerable is ignored if it is
+        // already playing (stops stacked audio / flashing video from a double Go).
+        if !cue.base().retriggerable && self.cue_is_active(qid) {
+            log::info!("Ignoring re-trigger of Q{qid} (not re-triggerable, still playing)");
+            return;
+        }
 
         // Remote cue delegation: if remote_node is set and not local, send OSC instead
         let remote_node = cue.base().remote_node.clone();
@@ -693,7 +715,7 @@ impl App {
                 // group fires that whole block (each via the normal play path, so
                 // per-cue delay and the enabled flag still apply).
                 let members: Vec<qplayer_core::Cue> = {
-                    let state = self.qplayer.state().lock().unwrap();
+                    let state = self.qplayer.state().lock_unpoisoned();
                     state
                         .show_file
                         .cues
@@ -747,7 +769,7 @@ impl App {
                 // Resolve the goto chain to a non-goto cue, guarding against cycles
                 // (A->B->A) so we never recurse forever.
                 let final_target = {
-                    let state = self.qplayer.state().lock().unwrap();
+                    let state = self.qplayer.state().lock_unpoisoned();
                     resolve_goto_target(&state.show_file.cues, qid, *target_qid)
                 };
                 let Some(target) = final_target else {
@@ -774,7 +796,7 @@ impl App {
             self.create_output_windows(event_loop);
         }
         let projection = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.show_file.projection.clone()
         };
         if let Some(canvas) = self.canvas_texture.as_mut() {
@@ -1077,7 +1099,7 @@ impl App {
     /// Preload the selected cue: decode and add to mixer as inactive (Ready state).
     fn handle_preload(&mut self, _event_loop: &ActiveEventLoop) {
         let cue = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.selected_cue().cloned()
         };
 
@@ -1186,7 +1208,7 @@ impl App {
 
     /// Fire the consecutive AfterLast cues that follow `finished_qid` in the cue list.
     fn play_after_last_chain(&mut self, finished_qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        let state = self.qplayer.state().lock().unwrap();
+        let state = self.qplayer.state().lock_unpoisoned();
         let Some(idx) = state.show_file.cues.iter().position(|c| c.base().qid == finished_qid) else {
             return;
         };
@@ -1267,17 +1289,21 @@ impl App {
         if self.output_windows.is_empty() {
             self.create_output_windows(event_loop);
         }
-        self.video_stop_flag.store(false, Ordering::Relaxed);
+        // Kill any previous decode thread by signalling its own stop flag, then
+        // install a fresh one for the new thread. Per-thread flags (vs. a shared flag
+        // reset to false) guarantee the old thread exits — resetting a shared flag
+        // could revive a still-sleeping old thread and leak it across every loop.
+        self.video_stop_flag.store(true, Ordering::Relaxed);
+        self.video_stop_flag = Arc::new(AtomicBool::new(false));
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
-        self.video_start_clock = Some(self.audio_engine.playback_time());
         self.current_video_qid = Some(qid);
         self.latest_video_frame = None;
         self.video_frame_dirty = false;
 
         // Create/resize the shared projection canvas.
         let projection = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.show_file.projection.clone()
         };
         if let Some(canvas) = self.canvas_texture.as_mut() {
@@ -1290,13 +1316,18 @@ impl App {
             ));
         }
 
-        // Spawn decode thread
+        // Spawn decode thread.
         let path = path.to_string();
+        // Pace video off a monotonic wall clock captured here, NOT the audio master
+        // clock. The audio clock freezes if the output device sleeps or is swapped
+        // (display sleep takes HDMI audio with it), stalling video on a held frame —
+        // fatal for an unattended loop. A wall clock can't freeze. Trade-off: A/V sync
+        // is best-effort rather than sample-locked to the audio device.
         let clock = {
-            let mixer = Arc::clone(self.audio_engine.mixer());
-            Arc::new(move || mixer.playback_time()) as Arc<dyn Fn() -> Duration + Send + Sync>
+            let origin = std::time::Instant::now();
+            Arc::new(move || origin.elapsed()) as Arc<dyn Fn() -> Duration + Send + Sync>
         };
-        let start = self.video_start_clock.unwrap();
+        let start = Duration::ZERO;
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
         let proxy = self.event_loop_proxy.clone();
@@ -1311,11 +1342,27 @@ impl App {
 
     /// Restart the current video decode thread (used when audio loops).
     fn restart_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        self.video_stop_flag.store(true, Ordering::Relaxed);
-        // Brief yield to let the old thread exit its read loop
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // play_video already signals the old thread's stop flag and installs a fresh
+        // one, so there's no manual stop/sleep dance (and no shared-flag revival race).
         self.play_video(path, qid, event_loop);
-        log::info!("Restarted video for Q{} on loop", qid);
+        log::info!("Restarted video for Q{qid} on loop");
+    }
+
+    /// A project was loaded — its projection mapping differs, so tear down the
+    /// output windows and canvas and rebuild from the new settings. Without this
+    /// the windows persist with the previous project's geometry/edge-blend.
+    fn rebuild_outputs_for_new_project(&mut self, event_loop: &ActiveEventLoop) {
+        let had_outputs = !self.output_windows.is_empty();
+        self.stop_all();
+        self.output_windows.clear();
+        if let Some(ids) = self.window_ids.as_mut() {
+            ids.video.clear();
+        }
+        // Drop the canvas so it is recreated at the new project's canvas size.
+        self.canvas_texture = None;
+        if had_outputs {
+            self.create_output_windows(event_loop);
+        }
     }
 
     fn stop_all(&mut self) {
@@ -1323,7 +1370,6 @@ impl App {
         self.video_pause_flag.store(false, Ordering::Relaxed);
         self.latest_video_frame = None;
         self.video_frame_dirty = false;
-        self.video_start_clock = None;
         self.current_video_qid = None;
         self.audio_engine.stop_all();
         self.active_cues.clear();
@@ -2020,6 +2066,8 @@ impl App {
 
         let output = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
+            // Control window covered/minimized — skip this frame quietly (no spam).
+            wgpu::CurrentSurfaceTexture::Occluded => return,
             err => {
                 log::warn!("Control surface acquire failed: {err:?}");
                 return;
@@ -2131,7 +2179,7 @@ impl App {
     /// Render the video output windows.
     fn render_video(&mut self) {
         let projection = {
-            let state = self.qplayer.state().lock().unwrap();
+            let state = self.qplayer.state().lock_unpoisoned();
             state.show_file.projection.clone()
         };
 
@@ -2156,9 +2204,12 @@ impl App {
                 out.surface.configure(&self.device, &out.config);
             }
 
-            use wgpu::CurrentSurfaceTexture::{Lost, Outdated, Suboptimal, Success};
+            use wgpu::CurrentSurfaceTexture::{Lost, Occluded, Outdated, Suboptimal, Success};
             let surface_texture = match out.surface.get_current_texture() {
                 Success(o) | Suboptimal(o) => o,
+                // Output window covered/minimized — skip quietly (decode + audio keep
+                // running on their own threads, so playback is unaffected).
+                Occluded => continue,
                 Lost | Outdated => {
                     log::debug!("Output surface lost/outdated, reconfiguring");
                     out.surface.configure(&self.device, &out.config);
@@ -2247,10 +2298,17 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::VideoFrame(frame) => {
-                self.latest_video_frame = Some(frame);
-                self.video_frame_dirty = true;
-                for out in &self.output_windows {
-                    out.window.request_redraw();
+                // Drop stragglers from a decode thread we already stopped (Stop, or
+                // switching projects): an in-flight frame queued on the event proxy
+                // before stop_all() would otherwise re-populate the output and the
+                // window would never go black. current_video_qid is set before the
+                // thread spawns, so genuine frames always have it set.
+                if self.current_video_qid.is_some() {
+                    self.latest_video_frame = Some(frame);
+                    self.video_frame_dirty = true;
+                    for out in &self.output_windows {
+                        out.window.request_redraw();
+                    }
                 }
             }
             AppEvent::VideoEof => {
@@ -2263,7 +2321,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(qid) = self.current_video_qid {
                     let has_audio_cue = self.active_cues.iter().any(|ac| ac.qid == qid);
                     let cue_info = {
-                        let state = self.qplayer.state().lock().unwrap();
+                        let state = self.qplayer.state().lock_unpoisoned();
                         state.show_file.cues.iter()
                             .find(|c| c.base().qid == qid)
                             .and_then(|c| match c {
@@ -2487,6 +2545,18 @@ impl ApplicationHandler<AppEvent> for App {
         // Quit confirmed by the in-app modal — hard-exit (see hard_exit for why).
         if self.qplayer.state().lock().map(|s| s.quit).unwrap_or(false) {
             self.hard_exit();
+        }
+
+        // A project load bumps project_generation — rebuild outputs for its mapping.
+        let project_generation = self
+            .qplayer
+            .state()
+            .lock()
+            .map(|s| s.project_generation)
+            .unwrap_or(self.last_project_generation);
+        if project_generation != self.last_project_generation {
+            self.last_project_generation = project_generation;
+            self.rebuild_outputs_for_new_project(event_loop);
         }
 
         self.process_midi_events(event_loop);

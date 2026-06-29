@@ -36,6 +36,11 @@ pub struct CueBase {
     pub remote_node: String,
     #[serde(default)]
     pub triggers: CueTriggers,
+    /// When false, firing this cue again while it is still playing is ignored
+    /// (prevents stacked audio / flashing video from a double Go). Default true
+    /// keeps the QLab-style restart-on-refire behaviour for existing shows.
+    #[serde(default = "default_true")]
+    pub retriggerable: bool,
 }
 
 impl Default for CueBase {
@@ -53,6 +58,7 @@ impl Default for CueBase {
             loop_count: 1,
             remote_node: String::new(),
             triggers: CueTriggers::default(),
+            retriggerable: true,
         }
     }
 }
@@ -534,6 +540,8 @@ mod tests {
                 assert_eq!(base.qid, Decimal::from(1));
                 assert_eq!(base.name, "Test Sound");
                 assert_eq!(path, "test.wav");
+                // Old show files (no `retriggerable` key) must default to true.
+                assert!(base.retriggerable);
             }
             other => panic!("expected SoundCue, got {:?}", other),
         }
