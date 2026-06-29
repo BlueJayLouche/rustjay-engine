@@ -125,8 +125,13 @@ struct App {
 
     // ── video playback ──
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
-    latest_video_frame: Option<VideoFrame>,
-    video_frame_dirty: bool,
+    /// Decoded frames awaiting display, drained one per present so every frame is
+    /// shown once. A single overwriting slot dropped frames because winit delivers
+    /// VideoFrame events in bursts — several land between presents and only the last
+    /// survived (the "overwrite-dropped" the diagnostics showed).
+    frame_queue: std::collections::VecDeque<VideoFrame>,
+    /// Whether a frame has been uploaded to the canvas (drives `has_video`).
+    canvas_has_frame: bool,
     video_stop_flag: Arc<AtomicBool>,
     video_pause_flag: Arc<AtomicBool>,
     /// QID of the cue whose video is currently playing (for loop sync).
@@ -134,6 +139,8 @@ struct App {
     /// Last `SharedState.project_generation` we acted on. A change means a project
     /// was loaded, so the output windows must rebuild for its projection settings.
     last_project_generation: u64,
+    /// When the control window was last asked to repaint (throttles its ~60 Hz redraw).
+    last_control_redraw: std::time::Instant,
 
     // ── protocols ──
     osc_manager: Option<OscManager>,
@@ -275,12 +282,13 @@ impl App {
             event_loop_proxy: proxy,
             canvas_texture: None,
             output_windows: Vec::new(),
-            latest_video_frame: None,
-            video_frame_dirty: false,
+            frame_queue: std::collections::VecDeque::new(),
+            canvas_has_frame: false,
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
             current_video_qid: None,
             last_project_generation: 0,
+            last_control_redraw: std::time::Instant::now(),
             osc_manager,
             osc_rx,
             msc_manager,
@@ -320,9 +328,19 @@ impl App {
             .expect("create control surface");
 
         let size = window.inner_size();
-        let config = surface
+        let mut config = surface
             .get_default_config(&self.adapter, size.width, size.height)
             .expect("control surface config");
+        // Non-vsync present for the CONTROL window: on this single-threaded loop a
+        // vsync-blocked control present serializes with the output window's vsync
+        // present and roughly halves the output's effective frame rate. Tearing on
+        // the operator GUI is irrelevant; output windows keep Fifo for clean playback.
+        let caps = surface.get_capabilities(&self.adapter);
+        if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            config.present_mode = wgpu::PresentMode::Mailbox;
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            config.present_mode = wgpu::PresentMode::Immediate;
+        }
         surface.configure(&self.device, &config);
 
         let egui_state = egui_winit::State::new(
@@ -752,6 +770,7 @@ impl App {
                     canvas.upload_rgba(&self.queue, &rgba);
                 }
                 self.current_video_qid = Some(qid);
+                self.request_output_redraw();
             }
             qplayer_core::Cue::Image { path, fit, .. } => {
                 log::info!("Go ImageCue Q{}: {}", qid, path);
@@ -763,6 +782,7 @@ impl App {
                     }
                 }
                 self.current_video_qid = Some(qid);
+                self.request_output_redraw();
             }
             qplayer_core::Cue::Goto { target_qid, .. } => {
                 log::info!("Go GotoCue Q{} -> arm Q{}", qid, target_qid);
@@ -1298,8 +1318,8 @@ impl App {
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
         self.current_video_qid = Some(qid);
-        self.latest_video_frame = None;
-        self.video_frame_dirty = false;
+        self.frame_queue.clear();
+        self.canvas_has_frame = false;
 
         // Create/resize the shared projection canvas.
         let projection = {
@@ -1316,8 +1336,10 @@ impl App {
             ));
         }
 
-        // Spawn decode thread.
-        let path = path.to_string();
+        // Spawn decode thread. Resolve the path relative to the project dir first
+        // (same as play_audio) so a packed project's "Media/<file>" relative path
+        // opens instead of failing — audio resolved but video didn't.
+        let path = self.resolve_path(path).unwrap_or_else(|| path.to_string());
         // Pace video off a monotonic wall clock captured here, NOT the audio master
         // clock. The audio clock freezes if the output device sleeps or is swapped
         // (display sleep takes HDMI audio with it), stalling video on a held frame —
@@ -1348,11 +1370,20 @@ impl App {
         log::info!("Restarted video for Q{qid} on loop");
     }
 
-    /// A project was loaded — its projection mapping differs, so tear down the
-    /// output windows and canvas and rebuild from the new settings. Without this
-    /// the windows persist with the previous project's geometry/edge-blend.
-    fn rebuild_outputs_for_new_project(&mut self, event_loop: &ActiveEventLoop) {
-        let had_outputs = !self.output_windows.is_empty();
+    /// A project was created or loaded — stop everything from the previous project
+    /// and close its output windows (which would otherwise keep playing with the
+    /// old projection geometry). The windows reopen with the new project's geometry
+    /// when the next video/image/text cue plays, or via the projection-output menu.
+    /// Ask every output window to repaint once. Output windows are event-driven
+    /// (not redrawn every tick), so anything that changes their contents without a
+    /// following VideoFrame must call this: Stop (→ black) and Text/Image stills.
+    fn request_output_redraw(&self) {
+        for out in &self.output_windows {
+            out.window.request_redraw();
+        }
+    }
+
+    fn reset_for_project_change(&mut self) {
         self.stop_all();
         self.output_windows.clear();
         if let Some(ids) = self.window_ids.as_mut() {
@@ -1360,16 +1391,13 @@ impl App {
         }
         // Drop the canvas so it is recreated at the new project's canvas size.
         self.canvas_texture = None;
-        if had_outputs {
-            self.create_output_windows(event_loop);
-        }
     }
 
     fn stop_all(&mut self) {
         self.video_stop_flag.store(true, Ordering::Relaxed);
         self.video_pause_flag.store(false, Ordering::Relaxed);
-        self.latest_video_frame = None;
-        self.video_frame_dirty = false;
+        self.frame_queue.clear();
+        self.canvas_has_frame = false;
         self.current_video_qid = None;
         self.audio_engine.stop_all();
         self.active_cues.clear();
@@ -1377,6 +1405,8 @@ impl App {
         self.active_timecodes.clear();
         self.timecode_fired.clear();
         self.paused = false;
+        // Output is event-driven now — explicitly repaint so it clears to black.
+        self.request_output_redraw();
     }
 
     /// Persist settings and hard-exit the process. A graceful `event_loop.exit()`
@@ -2183,15 +2213,17 @@ impl App {
             state.show_file.projection.clone()
         };
 
-        if self.video_frame_dirty {
-            if let Some((canvas, frame)) = self.canvas_texture.as_ref().zip(self.latest_video_frame.as_ref()) {
-                canvas.upload_frame(&self.queue, frame, projection.fit);
+        // Take one frame off the queue per present (vsync-paced) so frames are shown
+        // in order, one per refresh — no overwrite drops.
+        if let Some(frame) = self.frame_queue.pop_front() {
+            if let Some(canvas) = self.canvas_texture.as_ref() {
+                canvas.upload_frame(&self.queue, &frame, projection.fit);
             }
-            self.video_frame_dirty = false;
+            self.canvas_has_frame = true;
         }
 
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
-        let has_video = self.current_video_qid.is_some() || self.latest_video_frame.is_some();
+        let has_video = self.current_video_qid.is_some() || self.canvas_has_frame;
 
         for out in &mut self.output_windows {
             let size = out.window.inner_size();
@@ -2285,6 +2317,15 @@ impl App {
             self.queue.submit(std::iter::once(encoder.finish()));
             surface_texture.present();
         }
+
+        // Frames still queued (a burst of events landed between presents) — schedule
+        // another present so the queue drains at the display refresh rather than
+        // stalling until the next decoded frame arrives.
+        if !self.frame_queue.is_empty() {
+            for out in &self.output_windows {
+                out.window.request_redraw();
+            }
+        }
     }
 }
 
@@ -2304,8 +2345,13 @@ impl ApplicationHandler<AppEvent> for App {
                 // window would never go black. current_video_qid is set before the
                 // thread spawns, so genuine frames always have it set.
                 if self.current_video_qid.is_some() {
-                    self.latest_video_frame = Some(frame);
-                    self.video_frame_dirty = true;
+                    // Bounded: if the consumer fell behind, drop the oldest frame
+                    // rather than let the queue grow without limit.
+                    const MAX_QUEUED: usize = 6;
+                    if self.frame_queue.len() >= MAX_QUEUED {
+                        self.frame_queue.pop_front();
+                    }
+                    self.frame_queue.push_back(frame);
                     for out in &self.output_windows {
                         out.window.request_redraw();
                     }
@@ -2346,8 +2392,8 @@ impl ApplicationHandler<AppEvent> for App {
                         _ => {
                             // OneShot (or cue gone): blank the output to black.
                             self.current_video_qid = None;
-                            self.latest_video_frame = None;
-                            self.video_frame_dirty = true;
+                            self.frame_queue.clear();
+                            self.canvas_has_frame = false;
                             for out in &self.output_windows {
                                 out.window.request_redraw();
                             }
@@ -2415,9 +2461,6 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 WindowEvent::RedrawRequested => {
                     self.render_control(event_loop);
-                    if let Some(window) = self.control_window.as_ref() {
-                        window.request_redraw();
-                    }
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
                     self.modifiers = modifiers.state();
@@ -2527,14 +2570,17 @@ impl ApplicationHandler<AppEvent> for App {
                             out.config.width = size.width;
                             out.config.height = size.height;
                             out.surface.configure(&self.device, &out.config);
+                            // Repaint after resize/fullscreen-toggle — output is
+                            // event-driven, so a held still would otherwise blank out.
+                            out.window.request_redraw();
                         }
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    // Output windows present on demand (new decoded frame, stop, or a
+                    // still cue) — not continuously — so each frame gets exactly one
+                    // vsync present instead of being coalesced and dropped.
                     self.render_video();
-                    if let Some(out) = self.output_windows.iter().find(|out| out.id == window_id) {
-                        out.window.request_redraw();
-                    }
                 }
                 _ => {}
             }
@@ -2547,16 +2593,12 @@ impl ApplicationHandler<AppEvent> for App {
             self.hard_exit();
         }
 
-        // A project load bumps project_generation — rebuild outputs for its mapping.
-        let project_generation = self
-            .qplayer
-            .state()
-            .lock()
-            .map(|s| s.project_generation)
-            .unwrap_or(self.last_project_generation);
+        // A new or loaded project bumps project_generation — stop the old project's
+        // cues and close its output windows.
+        let project_generation = self.qplayer.state().lock_unpoisoned().project_generation;
         if project_generation != self.last_project_generation {
             self.last_project_generation = project_generation;
-            self.rebuild_outputs_for_new_project(event_loop);
+            self.reset_for_project_change();
         }
 
         self.process_midi_events(event_loop);
@@ -2564,12 +2606,14 @@ impl ApplicationHandler<AppEvent> for App {
         self.poll_wall_clock_triggers(event_loop);
         self.poll_timecode_triggers(event_loop);
 
-        // Continuously redraw all open windows when active.
-        if let Some(window) = self.control_window.as_ref() {
-            window.request_redraw();
-        }
-        for out in &self.output_windows {
-            out.window.request_redraw();
+        // Output windows are redrawn on demand (new frame / stop / still cue), not
+        // here — see request_output_redraw. The control window redraws on a ~60 Hz
+        // throttle so its (non-vsync) UI stays live without busy-spinning the GPU.
+        if self.last_control_redraw.elapsed() >= std::time::Duration::from_millis(16) {
+            self.last_control_redraw = std::time::Instant::now();
+            if let Some(window) = self.control_window.as_ref() {
+                window.request_redraw();
+            }
         }
     }
 }

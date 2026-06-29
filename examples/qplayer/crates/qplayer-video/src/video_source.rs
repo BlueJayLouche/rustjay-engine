@@ -1,4 +1,4 @@
-use ffmpeg_next::{codec, format, frame, media::Type, software::scaling};
+use ffmpeg_next::{codec, format, frame, media::Type, software::scaling, threading};
 use crate::frame::VideoFrame;
 
 /// Wraps an FFmpeg video stream decoder and produces `VideoFrame`s.
@@ -34,7 +34,12 @@ impl VideoSource {
         let stream_index = input.index();
         let time_base = f64::from(input.time_base());
 
-        let context = codec::Context::from_parameters(input.parameters())?;
+        let mut context = codec::Context::from_parameters(input.parameters())?;
+        // Frame-parallel decoding (count 0 = auto / one per core). Single-threaded
+        // decode can't sustain large frames at high fps (e.g. 5400x1080@50), which
+        // shows up as dropped frames downstream. `threading::Type` is fully qualified
+        // because `media::Type` is already imported as `Type` above.
+        context.set_threading(threading::Config::kind(threading::Type::Frame));
         let mut decoder = context.decoder().video()?;
         decoder.set_parameters(input.parameters())?;
 
