@@ -58,6 +58,7 @@ impl ProjectionConfig {
                     output_width: 1920,
                     output_height: 1080,
                     fullscreen_monitor: None,
+                    monitor_id: None,
                     edge_blend: EdgeBlend {
                         right: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
                         ..Default::default()
@@ -72,6 +73,7 @@ impl ProjectionConfig {
                     output_width: 1920,
                     output_height: 1080,
                     fullscreen_monitor: None,
+                    monitor_id: None,
                     edge_blend: EdgeBlend {
                         left: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
                         right: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
@@ -87,6 +89,7 @@ impl ProjectionConfig {
                     output_width: 1920,
                     output_height: 1080,
                     fullscreen_monitor: None,
+                    monitor_id: None,
                     edge_blend: EdgeBlend {
                         left: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
                         ..Default::default()
@@ -130,9 +133,16 @@ pub struct ProjectorOutput {
     pub output_width: u32,
     #[serde(default = "default_1080")]
     pub output_height: u32,
-    /// Optional monitor index for borderless fullscreen.
+    /// Legacy monitor *index* for borderless fullscreen. Fragile across reboots —
+    /// kept only as a fallback. `monitor_id` (recall by position) takes precedence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fullscreen_monitor: Option<usize>,
+    /// Saved identity of the monitor this output goes fullscreen on. Recalled by
+    /// virtual-desktop position so a fixed multi-projector wall survives reboots and
+    /// projector warm-up reorder (identical projectors share name/resolution but sit
+    /// at fixed, distinct positions). `None` = windowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_id: Option<MonitorId>,
     #[serde(default)]
     pub edge_blend: EdgeBlend,
 }
@@ -148,8 +158,100 @@ impl ProjectorOutput {
             output_width: 1920,
             output_height: 1080,
             fullscreen_monitor: None,
+            monitor_id: None,
             edge_blend: EdgeBlend::default(),
         }
+    }
+}
+
+/// Stable-ish identity for a physical monitor, used to recall which output drives
+/// which projector across reboots. Position in the virtual desktop is the reliable
+/// key for a fixed wall: identical projectors share name/resolution but sit at
+/// fixed, distinct positions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MonitorId {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub pos_x: i32,
+    #[serde(default)]
+    pub pos_y: i32,
+}
+
+impl MonitorId {
+    /// Human-readable label for the assignment dropdown.
+    pub fn label(&self) -> String {
+        let name = if self.name.is_empty() { "Display" } else { self.name.as_str() };
+        format!("{name} — {}×{} @ ({},{})", self.width, self.height, self.pos_x, self.pos_y)
+    }
+
+    /// Squared virtual-desktop position distance to another monitor.
+    pub fn pos_distance_sq(&self, other: &MonitorId) -> i64 {
+        let dx = (self.pos_x - other.pos_x) as i64;
+        let dy = (self.pos_y - other.pos_y) as i64;
+        dx * dx + dy * dy
+    }
+}
+
+/// Greedily assign each output's saved monitor to the nearest unused *available*
+/// monitor by position, within `max_dist_sq`. Returns, per output, the index into
+/// `available` (or `None` = leave windowed). Position-keyed so identical projectors
+/// recall correctly even if the OS enumerates them in a different order, and a
+/// missing projector leaves only its output windowed rather than scrambling others.
+pub fn resolve_monitor_assignment(
+    wanted: &[Option<MonitorId>],
+    available: &[MonitorId],
+    max_dist_sq: i64,
+) -> Vec<Option<usize>> {
+    let mut used = vec![false; available.len()];
+    wanted
+        .iter()
+        .map(|want| {
+            let want = want.as_ref()?;
+            let mut best: Option<(usize, i64)> = None;
+            for (i, mon) in available.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let d = mon.pos_distance_sq(want);
+                if d <= max_dist_sq && best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((i, d));
+                }
+            }
+            let (i, _) = best?;
+            used[i] = true;
+            Some(i)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+
+    fn pj(x: i32) -> MonitorId {
+        MonitorId { name: "PJ".into(), width: 1920, height: 1080, pos_x: x, pos_y: 0 }
+    }
+
+    #[test]
+    fn identical_projectors_recall_by_position_despite_reorder() {
+        let wanted = vec![Some(pj(0)), Some(pj(1920)), Some(pj(3840))];
+        // OS enumerates them in a different order after a reboot.
+        let available = vec![pj(3840), pj(0), pj(1920)];
+        let got = resolve_monitor_assignment(&wanted, &available, 100 * 100);
+        assert_eq!(got, vec![Some(1), Some(2), Some(0)]); // each output → its position
+    }
+
+    #[test]
+    fn missing_projector_only_windows_its_own_output() {
+        let wanted = vec![Some(pj(0)), Some(pj(1920)), Some(pj(3840))];
+        let available = vec![pj(0), pj(3840)]; // centre projector not detected yet
+        let got = resolve_monitor_assignment(&wanted, &available, 100 * 100);
+        assert_eq!(got, vec![Some(0), None, Some(1)]);
     }
 }
 

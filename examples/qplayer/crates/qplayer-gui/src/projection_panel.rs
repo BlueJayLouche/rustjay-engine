@@ -9,6 +9,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // ponytail: whole-state clone per panel frame so every edit is undoable.
     let pre_edit = crate::app::Snapshot::from_state(&state).with_merge_key("projection");
     let mut changed = false;
+    // Clone the monitor list before borrowing `projection` (the control binary
+    // publishes it into shared state each frame) so the dropdown can list real
+    // monitors instead of a blind index.
+    let available_monitors = state.available_monitors.clone();
 
     let projection = &mut state.show_file.projection;
 
@@ -128,13 +132,36 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
             ui.horizontal(|ui| {
                 ui.label("Fullscreen Monitor:");
-                let mut mon = output.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
-                if ui.add(egui::DragValue::new(&mut mon).speed(1).range(-1..=15)).changed() {
-                    output.fullscreen_monitor = if mon < 0 { None } else { Some(mon as usize) };
-                    changed = true;
-                }
-                ui.label("(-1 = windowed)").on_hover_text("Monitor index for borderless fullscreen. 0 = primary.");
+                let current = output
+                    .monitor_id
+                    .as_ref()
+                    .map(|m| m.label())
+                    .unwrap_or_else(|| "Windowed".to_string());
+                egui::ComboBox::from_id_salt(("fs_monitor", idx))
+                    .selected_text(current)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(output.monitor_id.is_none(), "Windowed").clicked() {
+                            output.monitor_id = None;
+                            output.fullscreen_monitor = None;
+                            changed = true;
+                        }
+                        for mon in &available_monitors {
+                            let selected = output.monitor_id.as_ref() == Some(mon);
+                            if ui.selectable_label(selected, mon.label()).clicked() {
+                                // Descriptor (recall by position) supersedes the index.
+                                output.monitor_id = Some(mon.clone());
+                                output.fullscreen_monitor = None;
+                                changed = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Recalled by monitor position, so it survives reboots / projector reorder.");
             });
+            if available_monitors.is_empty() {
+                ui.label(RichText::new("(no monitors reported yet)").weak().size(10.0));
+            }
 
             ui.separator();
             ui.label(RichText::new("Edge Blend").strong().size(11.0));
@@ -169,9 +196,18 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     }
 
     ui.separator();
-    if ui.button("Open Projection Output Windows").clicked() {
-        state.command_queue.push(AppCommand::OpenProjectionOutputs);
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Open Projection Output Windows").clicked() {
+            state.command_queue.push(AppCommand::OpenProjectionOutputs);
+        }
+        if ui
+            .button("Identify Outputs")
+            .on_hover_text("Flash each output a distinct colour so you can see which window is on which projector.")
+            .clicked()
+        {
+            state.identify_outputs = true;
+        }
+    });
 
     if changed {
         state.dirty = true;

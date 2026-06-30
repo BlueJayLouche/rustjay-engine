@@ -31,6 +31,36 @@ use human_panic::Metadata;
 /// backpressure it provides paces decode to the display refresh.
 const VIDEO_QUEUE_CAP: usize = 3;
 
+/// Max squared position distance (px²) for recalling an output to a saved monitor.
+/// Positions are fixed for an installed wall, so this just allows minor slop while
+/// keeping projectors 1920 px apart unambiguous, and leaves an output windowed if
+/// its monitor isn't present (rather than grabbing the wrong one).
+const MONITOR_MATCH_DIST_SQ: i64 = 200 * 200;
+
+/// Distinct colours for the Identify overlay (one per output window, by order).
+const IDENTIFY_COLORS: [wgpu::Color; 6] = [
+    wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }, // red
+    wgpu::Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }, // green
+    wgpu::Color { r: 0.0, g: 0.2, b: 1.0, a: 1.0 }, // blue
+    wgpu::Color { r: 1.0, g: 1.0, b: 0.0, a: 1.0 }, // yellow
+    wgpu::Color { r: 1.0, g: 0.0, b: 1.0, a: 1.0 }, // magenta
+    wgpu::Color { r: 0.0, g: 1.0, b: 1.0, a: 1.0 }, // cyan
+];
+const IDENTIFY_COLOR_NAMES: [&str; 6] = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN"];
+
+/// Build a stable-ish descriptor from a winit monitor (name + resolution + position).
+fn monitor_descriptor(m: &winit::monitor::MonitorHandle) -> qplayer_core::MonitorId {
+    let pos = m.position();
+    let size = m.size();
+    qplayer_core::MonitorId {
+        name: m.name().unwrap_or_default(),
+        width: size.width,
+        height: size.height,
+        pos_x: pos.x,
+        pos_y: pos.y,
+    }
+}
+
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
 enum AppEvent {
@@ -128,12 +158,21 @@ struct App {
     // ── video playback ──
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     /// Receiver for decoded frames. The decode thread is a bounded producer (its
-    /// send blocks when the channel is full); the vsync-paced render loop pulls one
-    /// frame per present. Backpressure locks decode to the display refresh — no
-    /// free-running wall clock to drift against vsync (which caused judder).
+    /// send blocks when the channel is full); the render loop selects the frame
+    /// whose PTS is due against `video_clock`. Backpressure keeps decode a few
+    /// frames ahead so the due frame is ready when the clock reaches it.
     video_frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
     /// Whether a frame has been uploaded to the canvas (drives `has_video`).
     canvas_has_frame: bool,
+    /// Monotonic playback clock for the current video. A wall clock = real time,
+    /// which the audio also runs on, so PTS-matching against it keeps A/V in sync
+    /// and plays correct-speed on any display refresh. Frames late vs the clock are
+    /// dropped to catch up; when ahead, the current frame is held.
+    video_clock: Option<std::time::Instant>,
+    /// Set while paused, to freeze `video_clock` across the pause.
+    video_pause_started: Option<std::time::Instant>,
+    /// Next decoded frame, peeked from the channel but not yet due for display.
+    video_peek: Option<VideoFrame>,
     video_stop_flag: Arc<AtomicBool>,
     video_pause_flag: Arc<AtomicBool>,
     /// QID of the cue whose video is currently playing (for loop sync).
@@ -143,6 +182,14 @@ struct App {
     last_project_generation: u64,
     /// When the control window was last asked to repaint (throttles its ~60 Hz redraw).
     last_control_redraw: std::time::Instant,
+    /// Last seen set of physical monitors, to detect hotplug / projector warm-up and
+    /// re-apply the output→monitor assignment.
+    last_monitor_set: Vec<qplayer_core::MonitorId>,
+    /// Throttle for the (OS-querying) monitor enumeration.
+    last_monitor_check: std::time::Instant,
+    /// While Some and unexpired, each output window flashes a distinct colour so the
+    /// operator can see which window is on which projector.
+    identify_until: Option<std::time::Instant>,
     /// Frame-pacing diagnostics, printed once/sec when QPLAYER_FPS_DEBUG is set.
     fps_debug: bool,
     dbg_starved: u32,
@@ -292,11 +339,17 @@ impl App {
             output_windows: Vec::new(),
             video_frame_rx: None,
             canvas_has_frame: false,
+            video_clock: None,
+            video_pause_started: None,
+            video_peek: None,
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
             current_video_qid: None,
             last_project_generation: 0,
             last_control_redraw: std::time::Instant::now(),
+            last_monitor_set: Vec::new(),
+            last_monitor_check: std::time::Instant::now(),
+            identify_until: None,
             fps_debug: std::env::var("QPLAYER_FPS_DEBUG").is_ok(),
             dbg_starved: 0,
             dbg_presented: 0,
@@ -425,14 +478,33 @@ impl App {
 
         let monitors: Vec<_> = event_loop.available_monitors().collect();
 
-        // Windowed (non-fullscreen) outputs are tiled side-by-side at a preview
-        // size that fits across the screen, so a multi-projector layout is
-        // visible on a single display. Fullscreen-assigned outputs ignore this.
-        let windowed_count = outputs
-            .iter()
-            .filter(|o| o.fullscreen_monitor.is_none())
-            .count()
-            .max(1);
+        // Resolve each output to a physical monitor by saved position descriptor
+        // (survives reboots / projector warm-up reorder), falling back to the legacy
+        // index for old projects. `assigned[i]` = Some(monitor index) or None (windowed).
+        let mon_descs: Vec<qplayer_core::MonitorId> =
+            monitors.iter().map(monitor_descriptor).collect();
+        let wanted: Vec<Option<qplayer_core::MonitorId>> =
+            outputs.iter().map(|o| o.monitor_id.clone()).collect();
+        let mut assigned =
+            qplayer_core::resolve_monitor_assignment(&wanted, &mon_descs, MONITOR_MATCH_DIST_SQ);
+        let mut used = vec![false; monitors.len()];
+        for a in assigned.iter().flatten() {
+            used[*a] = true;
+        }
+        for (o, a) in outputs.iter().zip(assigned.iter_mut()) {
+            if a.is_none() {
+                if let Some(idx) = o.fullscreen_monitor {
+                    if idx < monitors.len() && !used[idx] {
+                        used[idx] = true;
+                        *a = Some(idx);
+                    }
+                }
+            }
+        }
+
+        // Windowed (un-assigned) outputs are tiled side-by-side at a preview size
+        // that fits across the screen; assigned outputs go borderless-fullscreen.
+        let windowed_count = assigned.iter().filter(|a| a.is_none()).count().max(1);
         let (screen_w, screen_h) = event_loop
             .primary_monitor()
             .or_else(|| monitors.first().cloned())
@@ -448,13 +520,13 @@ impl App {
             .max(160.0);
         let mut windowed_idx = 0usize;
 
-        for output in outputs.iter() {
+        for (out_idx, output) in outputs.iter().enumerate() {
             let mut attrs = winit::window::WindowAttributes::default()
                 .with_title(format!("QPlayer Output {}", output.name))
                 .with_visible(true);
 
-            if let Some(idx) = output.fullscreen_monitor {
-                if let Some(monitor) = monitors.get(idx) {
+            if let Some(mon_idx) = assigned[out_idx] {
+                if let Some(monitor) = monitors.get(mon_idx) {
                     attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
                         monitor.clone(),
                     ))));
@@ -808,6 +880,11 @@ impl App {
                     let rgba = self.rasterize_text_to_canvas(text, *font_size, *font_colour, canvas.width, canvas.height);
                     canvas.upload_rgba(&self.queue, &rgba);
                 }
+                // A still replaces video output: clear video playback state so the
+                // render loop doesn't try to PTS-match against stale frames.
+                self.video_clock = None;
+                self.video_frame_rx = None;
+                self.video_peek = None;
                 self.current_video_qid = Some(qid);
                 self.request_output_redraw();
             }
@@ -820,6 +897,11 @@ impl App {
                         log::error!("Image cue Q{} failed: {e}", qid);
                     }
                 }
+                // A still replaces video output: clear video playback state so the
+                // render loop doesn't try to PTS-match against stale frames.
+                self.video_clock = None;
+                self.video_frame_rx = None;
+                self.video_peek = None;
                 self.current_video_qid = Some(qid);
                 self.request_output_redraw();
             }
@@ -1358,6 +1440,12 @@ impl App {
         self.video_pause_flag.store(false, Ordering::Relaxed);
         self.current_video_qid = Some(qid);
         self.canvas_has_frame = false;
+        // Start the playback clock now; PTS are matched against it (and frames late
+        // vs the clock are skipped, so video catches up to audio even if decode
+        // open / first-frame took a while).
+        self.video_clock = Some(std::time::Instant::now());
+        self.video_pause_started = None;
+        self.video_peek = None;
 
         // Create/resize the shared projection canvas.
         let projection = {
@@ -1434,6 +1522,8 @@ impl App {
         // Drop the receiver: the decode thread's send will fail with
         // Disconnected and exit, and we stop presenting new frames.
         self.video_frame_rx = None;
+        self.video_clock = None;
+        self.video_peek = None;
         self.canvas_has_frame = false;
         self.current_video_qid = None;
         self.audio_engine.stop_all();
@@ -1470,6 +1560,7 @@ impl App {
         }
         self.video_pause_flag.store(true, Ordering::Relaxed);
         self.paused = true;
+        self.video_pause_started = Some(std::time::Instant::now());
         log::info!("Paused {} cue(s)", self.active_cues.len());
     }
 
@@ -1482,6 +1573,13 @@ impl App {
         }
         self.video_pause_flag.store(false, Ordering::Relaxed);
         self.paused = false;
+        // Advance the playback clock past the paused interval so video resumes where
+        // it left off instead of jumping forward.
+        if let Some(t) = self.video_pause_started.take() {
+            if let Some(c) = self.video_clock.as_mut() {
+                *c += t.elapsed();
+            }
+        }
         log::info!("Resumed {} cue(s)", self.active_cues.len());
     }
 
@@ -2250,26 +2348,43 @@ impl App {
             state.show_file.projection.clone()
         };
 
-        // Pull one decoded frame per present (vsync-paced) so frames are shown
-        // in order, one per refresh. If decode hasn't produced a new frame yet,
-        // we simply re-present the last one — the bounded channel's backpressure
-        // keeps decode locked to the display refresh.
-        if let Some(rx) = self.video_frame_rx.as_ref() {
-            if let Ok(frame) = rx.try_recv() {
-                if let Some(canvas) = self.canvas_texture.as_ref() {
-                    canvas.upload_frame(&self.queue, &frame, projection.fit);
+        // Show the frame whose PTS is due at the current playback time. `video_clock`
+        // is a wall clock = real time (the audio runs on the same real time), so this
+        // keeps A/V in sync and plays correct-speed on any display refresh. Frames
+        // late vs the clock are dropped to catch up; when ahead, the last frame is
+        // held and re-presented at vsync.
+        if !self.paused {
+            if let Some(target) = self.video_clock.map(|c| c.elapsed()) {
+                let mut newest_due: Option<VideoFrame> = None;
+                loop {
+                    if self.video_peek.is_none() {
+                        self.video_peek =
+                            self.video_frame_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+                    }
+                    match self.video_peek.as_ref() {
+                        Some(f) if Duration::from_secs_f64(f.pts.max(0.0)) <= target => {
+                            newest_due = self.video_peek.take();
+                        }
+                        _ => break, // next frame not due yet, or channel empty
+                    }
                 }
-                self.canvas_has_frame = true;
-            } else if self.fps_debug {
-                self.dbg_starved += 1;
+                if let Some(frame) = newest_due {
+                    if let Some(canvas) = self.canvas_texture.as_ref() {
+                        canvas.upload_frame(&self.queue, &frame, projection.fit);
+                    }
+                    self.canvas_has_frame = true;
+                } else if self.fps_debug && self.video_peek.is_none() {
+                    self.dbg_starved += 1;
+                }
             }
         }
 
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
         let has_video = self.current_video_qid.is_some() || self.canvas_has_frame;
 
+        let identify = self.identify_until.is_some_and(|t| std::time::Instant::now() < t);
         let present_start = std::time::Instant::now();
-        for out in &mut self.output_windows {
+        for (out_i, out) in self.output_windows.iter_mut().enumerate() {
             let size = out.window.inner_size();
             if size.width == 0 || size.height == 0 {
                 continue;
@@ -2310,7 +2425,25 @@ impl App {
                 label: Some("output-encoder"),
             });
 
-            if has_video {
+            if identify {
+                let color = IDENTIFY_COLORS[out_i % IDENTIFY_COLORS.len()];
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("identify-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(color),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+            } else if has_video {
                 if let Some(canvas_view) = canvas_view.as_ref() {
                     out.renderer.render(
                         &self.device,
@@ -2418,6 +2551,8 @@ impl ApplicationHandler<AppEvent> for App {
                             // OneShot (or cue gone): blank the output to black.
                             self.current_video_qid = None;
                             self.video_frame_rx = None;
+                            self.video_clock = None;
+                            self.video_peek = None;
                             self.canvas_has_frame = false;
                             for out in &self.output_windows {
                                 out.window.request_redraw();
@@ -2630,6 +2765,53 @@ impl ApplicationHandler<AppEvent> for App {
         self.process_protocol_events();
         self.poll_wall_clock_triggers(event_loop);
         self.poll_timecode_triggers(event_loop);
+
+        // Publish the current monitors (for the projection-panel dropdown) and detect
+        // hotplug / projector warm-up. Throttled — enumerating monitors hits the OS.
+        if self.last_monitor_check.elapsed() >= std::time::Duration::from_millis(1000) {
+            self.last_monitor_check = std::time::Instant::now();
+            let current: Vec<qplayer_core::MonitorId> = event_loop
+                .available_monitors()
+                .map(|m| monitor_descriptor(&m))
+                .collect();
+            if current != self.last_monitor_set {
+                self.last_monitor_set = current.clone();
+                if let Ok(mut s) = self.qplayer.state().lock() {
+                    s.available_monitors = current;
+                }
+                // Re-apply output→monitor assignment (a projector finished warming up
+                // after boot, or was power-cycled) so the wall self-heals.
+                if !self.output_windows.is_empty() {
+                    log::info!("Monitor set changed — rebuilding output windows");
+                    self.create_output_windows(event_loop);
+                }
+            }
+        }
+
+        // Identify: flash each output a distinct colour so the operator can map
+        // windows to physical projectors.
+        let identify_req = self
+            .qplayer
+            .state()
+            .lock()
+            .map(|mut s| std::mem::take(&mut s.identify_outputs))
+            .unwrap_or(false);
+        if identify_req {
+            self.identify_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
+            for (i, out) in self.output_windows.iter().enumerate() {
+                log::warn!(
+                    "Identify: '{}' = {}",
+                    out.output_config.name,
+                    IDENTIFY_COLOR_NAMES[i % IDENTIFY_COLOR_NAMES.len()]
+                );
+            }
+        }
+        if self.identify_until.is_some_and(|t| std::time::Instant::now() < t) {
+            self.request_output_redraw(); // keep flashing even with no video playing
+        } else if self.identify_until.take().is_some() {
+            self.request_output_redraw(); // just expired — repaint once to restore
+        }
 
         if self.fps_debug && self.dbg_last_log.elapsed() >= std::time::Duration::from_secs(1) {
             let secs = self.dbg_last_log.elapsed().as_secs_f64();

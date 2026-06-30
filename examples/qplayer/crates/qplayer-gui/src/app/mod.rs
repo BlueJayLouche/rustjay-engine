@@ -214,6 +214,12 @@ pub struct SharedState {
     /// rebuilds its output/projection windows from the new projection settings —
     /// without it, the windows keep the previous project's mapping on a switch.
     pub project_generation: u64,
+    /// Current physical monitors, published by the control binary so the projection
+    /// panel can offer a real monitor dropdown (not a blind index).
+    pub available_monitors: Vec<qplayer_core::MonitorId>,
+    /// When set, the control binary flashes each output a distinct colour so the
+    /// operator can see which window is on which projector. Cleared after a timeout.
+    pub identify_outputs: bool,
 }
 
 /// State for the progress overlay modal.
@@ -256,6 +262,8 @@ impl Default for SharedState {
             pending_midi_learn: None,
             pending_timecode_capture: None,
             project_generation: 0,
+            available_monitors: Vec::new(),
+            identify_outputs: false,
         }
     }
 }

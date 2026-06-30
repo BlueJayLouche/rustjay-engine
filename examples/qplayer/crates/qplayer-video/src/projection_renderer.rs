@@ -360,6 +360,7 @@ mod tests {
             output_width: 64,
             output_height: 4,
             fullscreen_monitor: None,
+            monitor_id: None,
             edge_blend: EdgeBlend::default(),
         };
 
