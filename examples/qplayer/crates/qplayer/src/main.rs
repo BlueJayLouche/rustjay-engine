@@ -2377,8 +2377,13 @@ impl App {
                 }
                 if let Some(frame) = newest_due {
                     match frame.pixels {
-                        qplayer_video::FramePixels::Yuv420 { .. } => {
-                            // GPU path: upload Y/U/V planes now; the convert pass is
+                        qplayer_video::FramePixels::Rgba(_) => {
+                            if let Some(canvas) = self.canvas_texture.as_ref() {
+                                canvas.upload_frame(&self.queue, &frame, projection.fit);
+                            }
+                        }
+                        _ => {
+                            // GPU path: upload decoded planes now; the convert pass is
                             // recorded into the first output's encoder below (no CPU
                             // swscale, no 23 MB RGBA copy, no separate submit).
                             if self.yuv_converter.is_none() {
@@ -2398,11 +2403,6 @@ impl App {
                                     projection.fit,
                                 );
                                 self.pending_yuv_convert = true;
-                            }
-                        }
-                        qplayer_video::FramePixels::Rgba(_) => {
-                            if let Some(canvas) = self.canvas_texture.as_ref() {
-                                canvas.upload_frame(&self.queue, &frame, projection.fit);
                             }
                         }
                     }
@@ -3200,7 +3200,8 @@ fn main() -> anyhow::Result<()> {
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("qplayer-device"),
-            required_features: wgpu::Features::empty(),
+            // Required for the 10-bit planar (p10le) GPU path.
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         },
