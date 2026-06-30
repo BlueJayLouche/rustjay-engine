@@ -1,5 +1,5 @@
-use ffmpeg_next::{codec, format, frame, media::Type, software::scaling, threading};
-use crate::frame::VideoFrame;
+use ffmpeg_next::{codec, color, format, frame, media::Type, software::scaling, threading};
+use crate::frame::{VideoFrame, YuvPlane};
 
 /// Wraps an FFmpeg video stream decoder and produces `VideoFrame`s.
 pub struct VideoSource {
@@ -7,7 +7,9 @@ pub struct VideoSource {
     decoder: codec::decoder::Video,
     stream_index: usize,
     time_base: f64,
-    scaler: scaling::Context,
+    /// `None` for planar-YUV sources (uploaded straight to the GPU); `Some` only
+    /// when the source pixel format needs a CPU convert to RGBA (rare fallback).
+    scaler: Option<scaling::Context>,
     width: u32,
     height: u32,
     dst_width: u32,
@@ -17,12 +19,28 @@ pub struct VideoSource {
     eof: bool,
 }
 
+/// 8-bit planar YUV 4:2:0 — the common H.264/HEVC decode output. These upload as
+/// three R8 textures and convert in the shader, so they skip swscale entirely.
+fn is_yuv420p(fmt: format::Pixel) -> bool {
+    matches!(fmt, format::Pixel::YUV420P | format::Pixel::YUVJ420P)
+}
+
+fn plane(frame: &frame::Video, i: usize) -> YuvPlane {
+    YuvPlane {
+        data: frame.data(i).to_vec(),
+        stride: frame.stride(i) as u32,
+        width: frame.plane_width(i),
+        height: frame.plane_height(i),
+    }
+}
+
 impl VideoSource {
-    /// Open a video file and initialise the decoder + scaler.
+    /// Open a video file and initialise the decoder (+ a CPU scaler only if the
+    /// pixel format is not planar YUV420).
     ///
-    /// Frames are produced at the source's **native resolution** (only the pixel
-    /// format is converted to RGBA); aspect-ratio fitting is the canvas's job, so
-    /// forcing a fixed size here would pre-stretch non-matching sources.
+    /// Frames are produced at the source's **native resolution**; aspect-ratio
+    /// fitting is the canvas's job, so forcing a fixed size here would pre-stretch
+    /// non-matching sources.
     pub fn open(path: &str) -> anyhow::Result<Self> {
         ffmpeg_next::init()?;
 
@@ -37,8 +55,7 @@ impl VideoSource {
         let mut context = codec::Context::from_parameters(input.parameters())?;
         // Frame-parallel decoding (count 0 = auto / one per core). Single-threaded
         // decode can't sustain large frames at high fps (e.g. 5400x1080@50), which
-        // shows up as dropped frames downstream. `threading::Type` is fully qualified
-        // because `media::Type` is already imported as `Type` above.
+        // shows up as dropped frames downstream.
         context.set_threading(threading::Config::kind(threading::Type::Frame));
         let mut decoder = context.decoder().video()?;
         decoder.set_parameters(input.parameters())?;
@@ -47,15 +64,20 @@ impl VideoSource {
         let height = decoder.height();
         let (dst_width, dst_height) = (width, height);
 
-        let scaler = scaling::Context::get(
-            decoder.format(),
-            width,
-            height,
-            format::Pixel::RGBA,
-            dst_width,
-            dst_height,
-            scaling::Flags::BILINEAR,
-        )?;
+        // YUV420 → GPU shader convert (no scaler). Anything else → RGBA via swscale.
+        let scaler = if is_yuv420p(decoder.format()) {
+            None
+        } else {
+            Some(scaling::Context::get(
+                decoder.format(),
+                width,
+                height,
+                format::Pixel::RGBA,
+                dst_width,
+                dst_height,
+                scaling::Flags::BILINEAR,
+            )?)
+        };
 
         let decoded_frame = frame::Video::empty();
         let mut rgb_frame = frame::Video::empty();
@@ -79,22 +101,47 @@ impl VideoSource {
         })
     }
 
-    /// Read the next frame, converting to RGBA and returning it with PTS in seconds.
-    /// Returns `None` at EOF.
+    /// Build a `VideoFrame` from the currently-decoded frame.
+    fn convert_current(&mut self) -> Option<VideoFrame> {
+        let pts = self.decoded_frame.timestamp().unwrap_or(0) as f64 * self.time_base;
+
+        if self.scaler.is_none() {
+            // Planar YUV420: hand the three planes to the GPU as-is.
+            let full_range = matches!(self.decoded_frame.color_range(), color::Range::JPEG)
+                || matches!(self.decoded_frame.format(), format::Pixel::YUVJ420P);
+            let bt709 = match self.decoded_frame.color_space() {
+                color::Space::BT709 => true,
+                color::Space::BT470BG | color::Space::SMPTE170M => false,
+                // Unspecified: HD heuristic (>576 lines ⇒ BT.709).
+                _ => self.height > 576,
+            };
+            return Some(VideoFrame::yuv420(
+                self.dst_width,
+                self.dst_height,
+                pts,
+                plane(&self.decoded_frame, 0),
+                plane(&self.decoded_frame, 1),
+                plane(&self.decoded_frame, 2),
+                full_range,
+                bt709,
+            ));
+        }
+
+        let scaler = self.scaler.as_mut().unwrap();
+        scaler.run(&self.decoded_frame, &mut self.rgb_frame).ok()?;
+        let data = self.rgb_frame.data(0).to_vec();
+        Some(VideoFrame::new(self.dst_width, self.dst_height, data, pts))
+    }
+
+    /// Read the next frame and return it with PTS in seconds. `None` at EOF.
     pub fn read_frame(&mut self) -> Option<VideoFrame> {
         if self.eof {
             return None;
         }
 
         // Try draining already-decoded frames first.
-        match self.decoder.receive_frame(&mut self.decoded_frame) {
-            Ok(()) => {
-                self.scaler.run(&self.decoded_frame, &mut self.rgb_frame).ok()?;
-                let pts = self.decoded_frame.timestamp().unwrap_or(0) as f64 * self.time_base;
-                let data = self.rgb_frame.data(0).to_vec();
-                return Some(VideoFrame::new(self.dst_width, self.dst_height, data, pts));
-            }
-            Err(_) => {}
+        if self.decoder.receive_frame(&mut self.decoded_frame).is_ok() {
+            return self.convert_current();
         }
 
         for (stream, packet) in self.ictx.packets() {
@@ -102,33 +149,20 @@ impl VideoSource {
                 if self.decoder.send_packet(&packet).is_err() {
                     continue;
                 }
-                match self.decoder.receive_frame(&mut self.decoded_frame) {
-                    Ok(()) => {
-                        self.scaler.run(&self.decoded_frame, &mut self.rgb_frame).ok()?;
-                        let pts = self.decoded_frame.timestamp().unwrap_or(0) as f64 * self.time_base;
-                        let data = self.rgb_frame.data(0).to_vec();
-                        return Some(VideoFrame::new(self.dst_width, self.dst_height, data, pts));
-                    }
-                    Err(_) => {}
+                if self.decoder.receive_frame(&mut self.decoded_frame).is_ok() {
+                    return self.convert_current();
                 }
             }
         }
 
         // Flush decoder
         let _ = self.decoder.send_eof();
-        match self.decoder.receive_frame(&mut self.decoded_frame) {
-            Ok(()) => {
-                self.scaler.run(&self.decoded_frame, &mut self.rgb_frame).ok()?;
-                let pts = self.decoded_frame.timestamp().unwrap_or(0) as f64 * self.time_base;
-                let data = self.rgb_frame.data(0).to_vec();
-                self.eof = true;
-                Some(VideoFrame::new(self.dst_width, self.dst_height, data, pts))
-            }
-            Err(_) => {
-                self.eof = true;
-                None
-            }
+        if self.decoder.receive_frame(&mut self.decoded_frame).is_ok() {
+            self.eof = true;
+            return self.convert_current();
         }
+        self.eof = true;
+        None
     }
 
     pub fn width(&self) -> u32 { self.width }
