@@ -133,6 +133,11 @@ struct App {
 
     // ── projection output windows ──
     canvas_texture: Option<qplayer_video::CanvasTexture>,
+    /// GPU YUV420→RGB converter (lazily built; planes uploaded + matrix in-shader).
+    yuv_converter: Option<qplayer_video::YuvConverter>,
+    /// A new YUV frame's planes are uploaded and awaiting the convert pass, which
+    /// is folded into the first output's encoder (no separate submit).
+    pending_yuv_convert: bool,
     output_windows: Vec<OutputWindow>,
 
     // ── egui ──
@@ -336,6 +341,8 @@ impl App {
             audio_engine,
             event_loop_proxy: proxy,
             canvas_texture: None,
+            yuv_converter: None,
+            pending_yuv_convert: false,
             output_windows: Vec::new(),
             video_frame_rx: None,
             canvas_has_frame: false,
@@ -2369,8 +2376,35 @@ impl App {
                     }
                 }
                 if let Some(frame) = newest_due {
-                    if let Some(canvas) = self.canvas_texture.as_ref() {
-                        canvas.upload_frame(&self.queue, &frame, projection.fit);
+                    match frame.pixels {
+                        qplayer_video::FramePixels::Rgba(_) => {
+                            if let Some(canvas) = self.canvas_texture.as_ref() {
+                                canvas.upload_frame(&self.queue, &frame, projection.fit);
+                            }
+                        }
+                        _ => {
+                            // GPU path: upload decoded planes now; the convert pass is
+                            // recorded into the first output's encoder below (no CPU
+                            // swscale, no 23 MB RGBA copy, no separate submit).
+                            if self.yuv_converter.is_none() {
+                                self.yuv_converter = Some(qplayer_video::YuvConverter::new(
+                                    &self.device,
+                                    wgpu::TextureFormat::Rgba8Unorm,
+                                ));
+                            }
+                            if let (Some(canvas), Some(conv)) =
+                                (self.canvas_texture.as_ref(), self.yuv_converter.as_mut())
+                            {
+                                conv.upload(
+                                    &self.device,
+                                    &self.queue,
+                                    &frame,
+                                    [canvas.width, canvas.height],
+                                    projection.fit,
+                                );
+                                self.pending_yuv_convert = true;
+                            }
+                        }
                     }
                     self.canvas_has_frame = true;
                 } else if self.fps_debug && self.video_peek.is_none() {
@@ -2380,6 +2414,7 @@ impl App {
         }
 
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
+        let canvas_render_view = self.canvas_texture.as_ref().map(|c| c.render_view());
         let has_video = self.current_video_qid.is_some() || self.canvas_has_frame;
 
         let identify = self.identify_until.is_some_and(|t| std::time::Instant::now() < t);
@@ -2445,6 +2480,17 @@ impl App {
                 });
             } else if has_video {
                 if let Some(canvas_view) = canvas_view.as_ref() {
+                    // Fold the pending YUV→RGB pass into this output's encoder so it
+                    // runs once (before the first output samples the canvas) without
+                    // its own submit. Subsequent outputs read the converted canvas.
+                    if self.pending_yuv_convert {
+                        if let (Some(rv), Some(conv)) =
+                            (canvas_render_view.as_ref(), self.yuv_converter.as_ref())
+                        {
+                            conv.encode(&mut encoder, rv);
+                        }
+                        self.pending_yuv_convert = false;
+                    }
                     out.renderer.render(
                         &self.device,
                         &self.queue,
@@ -3154,7 +3200,8 @@ fn main() -> anyhow::Result<()> {
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("qplayer-device"),
-            required_features: wgpu::Features::empty(),
+            // Required for the 10-bit planar (p10le) GPU path.
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         },

@@ -24,9 +24,14 @@ impl CanvasTexture {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            // Stored as linear Unorm so the YUV-convert pass writes its matrix
+            // output verbatim (the bytes swscale used to produce). Sampling goes
+            // through an sRGB view (`view()`), so downstream colour is unchanged.
+            format: TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[TextureFormat::Rgba8UnormSrgb],
         });
 
         Self {
@@ -41,8 +46,16 @@ impl CanvasTexture {
         *self = Self::new(device, width, height);
     }
 
-    /// The current texture view.
+    /// Sampling view — sRGB, so projection reads decode gamma exactly as before.
     pub fn view(&self) -> wgpu::TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        })
+    }
+
+    /// Render-target view — linear Unorm, for the YUV-convert pass to write into.
+    pub fn render_view(&self) -> wgpu::TextureView {
         self.texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
@@ -52,14 +65,16 @@ impl CanvasTexture {
     /// This is simple and correct; for very large canvases it can be replaced
     /// with a GPU scale-blit render pass.
     pub fn upload_frame(&self, queue: &Queue, frame: &VideoFrame, fit: CanvasFit) {
+        // Video frames are YUV and go through the GPU converter, not here.
+        let Some(rgba) = frame.rgba() else { return };
         // Fast path: frame already matches the canvas exactly (every fit mode is a
         // 1:1 copy here), so skip the full CPU compose + blit and upload directly.
         // Guarded on byte length so a stride-padded frame still falls back safely.
         if frame.width == self.width
             && frame.height == self.height
-            && frame.data.len() == (self.width * self.height * 4) as usize
+            && rgba.len() == (self.width * self.height * 4) as usize
         {
-            self.upload_rgba(queue, &frame.data);
+            self.upload_rgba(queue, rgba);
             return;
         }
         let canvas = compose_canvas(frame, self.width, self.height, fit);
@@ -156,6 +171,7 @@ fn compose_canvas(frame: &VideoFrame, cw: u32, ch: u32, fit: CanvasFit) -> Vec<u
 /// `dst` (a `dst_stride`-pixels-wide RGBA canvas). ponytail: nearest is fine for
 /// the MVP; bilinear can be swapped in here without touching callers.
 fn blit_resampled(frame: &VideoFrame, src: Rect, dst: &mut [u8], dst_stride: u32, dst_rect: Rect) {
+    let Some(data) = frame.rgba() else { return };
     let dw = dst_rect.w.round() as u32;
     let dh = dst_rect.h.round() as u32;
     if dw == 0 || dh == 0 || frame.width == 0 || frame.height == 0 {
@@ -175,7 +191,7 @@ fn blit_resampled(frame: &VideoFrame, src: Rect, dst: &mut [u8], dst_stride: u32
             let sx = sx.min(max_x);
             let si = ((sy * frame.width + sx) * 4) as usize;
             let di = ((dst_row * dst_stride + dx0 + i) * 4) as usize;
-            dst[di..di + 4].copy_from_slice(&frame.data[si..si + 4]);
+            dst[di..di + 4].copy_from_slice(&data[si..si + 4]);
         }
     }
 }
