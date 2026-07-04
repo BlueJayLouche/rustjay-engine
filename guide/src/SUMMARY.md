@@ -52,6 +52,13 @@
 - [ISF Shader Viewer](examples/isf-example.md)
 - [videowall — HDMI-Matrix Mapper](examples/videowall.md)
 - [vjarda — Full Multi-Deck VJ App](examples/vjarda.md)
+- [CuePool — Theatre Show Control](examples/cuepool/README.md)
+  - [Getting Started](examples/cuepool/getting-started.md)
+  - [Cue Reference](examples/cuepool/cues.md)
+  - [Audio](examples/cuepool/audio.md)
+  - [Video & Projection](examples/cuepool/video.md)
+  - [Lighting & Pixel Mapping](examples/cuepool/lighting.md)
+  - [Show Control](examples/cuepool/show-control.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
 # Deployment

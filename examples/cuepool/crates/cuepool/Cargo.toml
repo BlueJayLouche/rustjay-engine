@@ -1,0 +1,45 @@
+[package]
+name = "cuepool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "CuePool binary — event loop, state orchestration, main application"
+
+[[bin]]
+name = "cuepool"
+path = "src/main.rs"
+
+[dependencies]
+cuepool-core = { workspace = true }
+rustjay-lighting = { workspace = true }
+image = { workspace = true }
+cuepool-audio = { workspace = true }
+cuepool-gui = { workspace = true }
+cuepool-video = { workspace = true }
+cuepool-protocols = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+rfd = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+rust_decimal = { workspace = true }
+rosc = { workspace = true }
+cpal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+env_logger = "0.11"
+winit = { workspace = true }
+wgpu = { workspace = true }
+egui = { workspace = true }
+egui-winit = { workspace = true }
+egui-wgpu = { workspace = true }
+pollster = { workspace = true }
+human-panic = "2"
+ctrlc = "3"
+single-instance = "0.3"
+
+[dev-dependencies]
+env_logger = "0.11"
