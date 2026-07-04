@@ -7,7 +7,7 @@
 //!   frame to main thread via winit user event.
 
 use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
-use cuepool_core::{LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
+use cuepool_core::{CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
 use cuepool_gui::{AppCommand, CuePoolApp, SharedStateHandle};
 use cuepool_gui::app::CueState;
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
@@ -136,6 +136,11 @@ struct App {
 
     // ── projection output windows ──
     canvas_texture: Option<cuepool_video::CanvasTexture>,
+    /// Text layer composited over the canvas in the projection shader.
+    /// Same size as the canvas; transparent where no text.
+    text_overlay: Option<cuepool_video::CanvasTexture>,
+    /// The Text cue currently shown on the overlay.
+    current_text_qid: Option<rust_decimal::Decimal>,
     /// GPU YUV420→RGB converter (lazily built; planes uploaded + matrix in-shader).
     yuv_converter: Option<cuepool_video::YuvConverter>,
     /// A new YUV frame's planes are uploaded and awaiting the convert pass, which
@@ -147,6 +152,8 @@ struct App {
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
     egui_renderer: Option<egui_wgpu::Renderer>,
+    /// Resolved font-file paths already registered with the egui context.
+    registered_fonts: std::collections::HashSet<String>,
 
     // ── app state ──
     cuepool: CuePoolApp,
@@ -340,6 +347,16 @@ impl App {
         let autosave_running = Arc::new(AtomicBool::new(true));
         spawn_autosave_thread(Arc::clone(&cuepool.state()), Arc::clone(&autosave_running));
 
+        // Show-control UI: labels (cue names, meters, status) must not be
+        // drag-selectable — egui's global label selection also has a
+        // stuck-drag failure mode where selection follows the cursor after a
+        // click. TextEdits keep their own selection either way.
+        let egui_ctx = egui::Context::default();
+        egui_ctx.style_mut(|style| {
+            style.interaction.selectable_labels = false;
+            style.interaction.multi_widget_text_select = false;
+        });
+
         Self {
             instance,
             adapter,
@@ -348,14 +365,17 @@ impl App {
             control_window: None,
             control_surface: None,
             control_config: None,
-            egui_ctx: egui::Context::default(),
+            egui_ctx,
             egui_state: None,
+            registered_fonts: std::collections::HashSet::new(),
             egui_renderer: None,
             cuepool,
             window_ids: None,
             audio_engine,
             event_loop_proxy: proxy,
             canvas_texture: None,
+            text_overlay: None,
+            current_text_qid: None,
             yuv_converter: None,
             pending_yuv_convert: false,
             output_windows: Vec::new(),
@@ -902,19 +922,38 @@ impl App {
                     self.play_after_last_chain(qid, event_loop);
                 }
             }
-            cuepool_core::Cue::Text { text, font_size, font_colour, fit: _, .. } => {
+            cuepool_core::Cue::Text { text, font_size, font_colour, fit, font, .. } => {
                 log::info!("Go TextCue Q{}: '{}'", qid, text);
                 self.ensure_outputs_and_canvas(event_loop);
-                if let Some(canvas) = self.canvas_texture.as_ref() {
-                    let rgba = self.rasterize_text_to_canvas(text, *font_size, *font_colour, canvas.width, canvas.height);
-                    canvas.upload_rgba(&self.queue, &rgba);
+                let family = self.text_font_family(font);
+                // Text renders on the overlay layer, over whatever video/image
+                // is playing. With nothing underneath, blank the canvas so a
+                // stale last frame doesn't reappear behind the text.
+                if self.current_video_qid.is_none() && !self.canvas_has_frame {
+                    if let Some(canvas) = self.canvas_texture.as_ref() {
+                        canvas.upload_rgba(
+                            &self.queue,
+                            &vec![0u8; (canvas.width * canvas.height * 4) as usize],
+                        );
+                    }
                 }
-                // A still replaces video output: clear video playback state so the
-                // render loop doesn't try to PTS-match against stale frames.
-                self.video_clock = None;
-                self.video_frame_rx = None;
-                self.video_peek = None;
-                self.current_video_qid = Some(qid);
+                let mut shown = false;
+                if let Some(overlay) = self.text_overlay.as_ref() {
+                    match self.rasterize_text_block(
+                        text, *font_size, *font_colour, family, overlay.width, overlay.height, *fit,
+                    ) {
+                        Some(frame) => {
+                            overlay.upload_frame(&self.queue, &frame, *fit);
+                            shown = true;
+                        }
+                        // Empty text: clear the overlay.
+                        None => overlay.upload_rgba(
+                            &self.queue,
+                            &vec![0u8; (overlay.width * overlay.height * 4) as usize],
+                        ),
+                    }
+                }
+                self.current_text_qid = shown.then_some(qid);
                 self.request_output_redraw();
             }
             cuepool_core::Cue::Image { path, fit, .. } => {
@@ -1073,91 +1112,182 @@ impl App {
                 projection.canvas_height,
             ));
         }
+        self.sync_text_overlay(projection.canvas_width, projection.canvas_height);
     }
 
-    /// Rasterise a text string into a canvas-sized RGBA8 buffer using egui's font atlas.
+    /// Blank the text overlay and forget the active Text cue.
+    fn clear_text_overlay(&mut self) {
+        self.current_text_qid = None;
+        if let Some(overlay) = self.text_overlay.as_ref() {
+            overlay.upload_rgba(
+                &self.queue,
+                &vec![0u8; (overlay.width * overlay.height * 4) as usize],
+            );
+        }
+    }
+
+    /// Keep the text overlay texture matching the canvas size.
+    fn sync_text_overlay(&mut self, width: u32, height: u32) {
+        if let Some(overlay) = self.text_overlay.as_mut() {
+            if overlay.width != width || overlay.height != height {
+                overlay.resize(&self.device, width, height);
+            }
+        } else {
+            self.text_overlay = Some(cuepool_video::CanvasTexture::new(&self.device, width, height));
+        }
+    }
+
+    /// Resolve a Text cue's font path to an egui font family, registering the
+    /// file on first use. Empty/unreadable paths fall back to the built-in font.
     ///
-    /// ponytail: reuses the existing egui context's font atlas instead of pulling in a
-    /// separate text crate. ASCII/Latin-only quality matches the default egui font.
-    fn rasterize_text_to_canvas(
+    /// Registered fonts land in the atlas at the next `begin_pass`, so a font
+    /// first seen in the same tick it is rendered falls back once (see
+    /// `rasterize_text_block`); the inspector pre-registers on pick to avoid this.
+    fn text_font_family(&mut self, font_path: &str) -> egui::FontFamily {
+        if font_path.is_empty() {
+            return egui::FontFamily::Proportional;
+        }
+        let resolved = self.resolve_path(font_path).unwrap_or_else(|| font_path.to_string());
+        if !self.registered_fonts.contains(&resolved) {
+            match std::fs::read(&resolved) {
+                Ok(bytes) => {
+                    self.egui_ctx.add_font(egui::epaint::text::FontInsert::new(
+                        &resolved,
+                        egui::FontData::from_owned(bytes),
+                        vec![egui::epaint::text::InsertFontFamily {
+                            family: egui::FontFamily::Name(resolved.clone().into()),
+                            priority: egui::epaint::text::FontPriority::Highest,
+                        }],
+                    ));
+                    self.registered_fonts.insert(resolved.clone());
+                }
+                Err(e) => {
+                    log::error!("Text cue font '{resolved}': {e}; using built-in font");
+                    return egui::FontFamily::Proportional;
+                }
+            }
+        }
+        egui::FontFamily::Name(resolved.into())
+    }
+
+    /// Rasterise a text string into a tight RGBA8 block for canvas composition.
+    ///
+    /// ponytail: reuses the egui font atlas instead of pulling in a text crate.
+    /// Atlas glyph bitmaps are in texels (points × pixels_per_point) while galley
+    /// positions are in points, so everything is mapped to texel space — copying
+    /// point-sized rects out of the atlas is what clipped glyphs to their top-left
+    /// quarter on 2× displays. The layout font size is pre-scaled toward the
+    /// canvas target so the nearest-neighbour compose only does a small residual
+    /// resize and text stays crisp. Returns None for empty/whitespace text.
+    #[allow(clippy::too_many_arguments)]
+    fn rasterize_text_block(
         &self,
         text: &str,
         font_size: f32,
         colour: SerializedColour,
-        width: u32,
-        height: u32,
-    ) -> Vec<u8> {
-        let mut rgba = vec![0u8; (width * height * 4) as usize];
-        let (r, g, b, a) = (
-            (colour.r * 255.0) as u8,
-            (colour.g * 255.0) as u8,
-            (colour.b * 255.0) as u8,
-            (colour.a * 255.0) as u8,
-        );
+        family: egui::FontFamily,
+        canvas_w: u32,
+        canvas_h: u32,
+        fit: CanvasFit,
+    ) -> Option<VideoFrame> {
+        let ppp = self.egui_ctx.pixels_per_point();
+
+        let (family, natural) = self.egui_ctx.fonts_mut(|fonts| {
+            // A family registered this tick isn't in the atlas until the next
+            // begin_pass — fall back for this render rather than panicking.
+            let family = if fonts.definitions().families.contains_key(&family) {
+                family
+            } else {
+                log::warn!("font family {family:?} not active yet; using built-in for this render");
+                egui::FontFamily::Proportional
+            };
+            let galley = fonts.layout(
+                text.into(),
+                egui::FontId::new(font_size, family.clone()),
+                egui::Color32::WHITE,
+                f32::INFINITY,
+            );
+            (family, galley.rect.size())
+        });
+        let (nw, nh) = (natural.x * ppp, natural.y * ppp);
+        if nw <= 0.0 || nh <= 0.0 {
+            return None;
+        }
+
+        // Pre-scale so the block roughly matches its final canvas size. Stretch
+        // pre-scales uniformly (Fit-like); the compose stretches the long axis.
+        let scale = match fit {
+            CanvasFit::Fill => (canvas_w as f32 / nw).max(canvas_h as f32 / nh),
+            CanvasFit::Fit | CanvasFit::Stretch => {
+                (canvas_w as f32 / nw).min(canvas_h as f32 / nh)
+            }
+        };
+        let layout_size = (font_size * scale).clamp(1.0, 512.0);
 
         let (galley, font_image) = self.egui_ctx.fonts_mut(|fonts| {
             let galley = fonts.layout(
                 text.into(),
-                egui::FontId::new(font_size, egui::FontFamily::Proportional),
+                egui::FontId::new(layout_size, family),
                 egui::Color32::WHITE,
                 f32::INFINITY,
             );
             (galley, fonts.image())
         });
 
-        let text_size = galley.rect.size();
-        let offset_x = ((width as f32 - text_size.x) * 0.5).max(0.0);
-        let offset_y = ((height as f32 - text_size.y) * 0.5).max(0.0);
+        let size = galley.rect.size();
+        let bw = (size.x * ppp).ceil().max(1.0) as u32;
+        let bh = (size.y * ppp).ceil().max(1.0) as u32;
+        let mut rgba = vec![0u8; (bw as usize) * (bh as usize) * 4];
+        let (r, g, b, a) = (
+            (colour.r * 255.0) as u8,
+            (colour.g * 255.0) as u8,
+            (colour.b * 255.0) as u8,
+            (colour.a * 255.0) as u8,
+        );
+        let atlas_w = font_image.size[0];
+        let atlas_h = font_image.size[1];
 
-        let font_width = font_image.size[0];
-
-        for row in &galley.rows {
-            for glyph in &row.glyphs {
-                let rect = &glyph.uv_rect;
-                let gw = rect.size.x.round().max(1.0) as u32;
-                let gh = rect.size.y.round().max(1.0) as u32;
-                let dx0 = (offset_x + glyph.pos.x + rect.offset.x).round() as i32;
-                let dy0 = (offset_y + glyph.pos.y + rect.offset.y).round() as i32;
-
-                let src_min_x = rect.min[0] as u32;
-                let src_min_y = rect.min[1] as u32;
+        for placed in &galley.rows {
+            for glyph in &placed.glyphs {
+                let uv = &glyph.uv_rect;
+                // Glyph bitmap extent in atlas texels (max is exclusive).
+                let gw = uv.max[0].saturating_sub(uv.min[0]) as u32;
+                let gh = uv.max[1].saturating_sub(uv.min[1]) as u32;
+                let dx0 = ((placed.pos.x + glyph.pos.x + uv.offset.x) * ppp).round() as i32;
+                let dy0 = ((placed.pos.y + glyph.pos.y + uv.offset.y) * ppp).round() as i32;
 
                 for gy in 0..gh {
                     let dy = dy0 + gy as i32;
-                    if dy < 0 || dy >= height as i32 {
+                    if dy < 0 || dy >= bh as i32 {
                         continue;
                     }
-                    let src_y = src_min_y + gy;
-                    if src_y as usize >= font_image.size[1] {
+                    let sy = uv.min[1] as usize + gy as usize;
+                    if sy >= atlas_h {
                         continue;
                     }
                     for gx in 0..gw {
                         let dx = dx0 + gx as i32;
-                        if dx < 0 || dx >= width as i32 {
+                        if dx < 0 || dx >= bw as i32 {
                             continue;
                         }
-                        let src_x = src_min_x + gx;
-                        if src_x as usize >= font_image.size[0] {
+                        let sx = uv.min[0] as usize + gx as usize;
+                        if sx >= atlas_w {
                             continue;
                         }
-                        let alpha = font_image.pixels
-                            [(src_y as usize * font_width + src_x as usize)
-                                .min(font_image.pixels.len().saturating_sub(1))]
-                            .a() as f32
-                            / 255.0;
-                        if alpha > 0.0 {
-                            let di = ((dy as u32 * width + dx as u32) * 4) as usize;
+                        let coverage = font_image.pixels[sy * atlas_w + sx].a() as f32 / 255.0;
+                        if coverage > 0.0 {
+                            let di = (dy as usize * bw as usize + dx as usize) * 4;
                             rgba[di] = r;
                             rgba[di + 1] = g;
                             rgba[di + 2] = b;
-                            rgba[di + 3] = (a as f32 * alpha) as u8;
+                            rgba[di + 3] = rgba[di + 3].max((a as f32 * coverage) as u8);
                         }
                     }
                 }
             }
         }
 
-        rgba
+        Some(VideoFrame::new(bw, bh, rgba, 0.0))
     }
 
     /// Resolve a file path: try absolute, then relative to project, then search project tree.
@@ -1345,6 +1475,10 @@ impl App {
                 input.set_volume(0.0);
                 self.active_cues[idx].state = CueState::Done;
             }
+        } else if self.current_text_qid == Some(stop_qid) {
+            // Text cues live on the overlay, not in the audio-backed active list.
+            self.clear_text_overlay();
+            self.request_output_redraw();
         } else {
             log::warn!("StopCue target Q{} not found in active cues", stop_qid);
         }
@@ -1583,6 +1717,7 @@ impl App {
                 projection.canvas_height,
             ));
         }
+        self.sync_text_overlay(projection.canvas_width, projection.canvas_height);
 
         // Spawn decode thread. Resolve the path relative to the project dir first
         // (same as play_audio) so a packed project's "Media/<file>" relative path
@@ -1640,6 +1775,8 @@ impl App {
         }
         // Drop the canvas so it is recreated at the new project's canvas size.
         self.canvas_texture = None;
+        self.text_overlay = None;
+        self.current_text_qid = None;
     }
 
     fn stop_all(&mut self) {
@@ -1667,6 +1804,7 @@ impl App {
             let (w, h) = (tex.width, tex.height);
             tex.upload_rgba(&self.queue, &vec![0u8; (w * h * 4) as usize]);
         }
+        self.clear_text_overlay();
         // Output is event-driven now — explicitly repaint so it clears to black.
         self.request_output_redraw();
     }
@@ -2576,7 +2714,10 @@ impl App {
 
         let canvas_view = self.canvas_texture.as_ref().map(|c| c.view());
         let canvas_render_view = self.canvas_texture.as_ref().map(|c| c.render_view());
-        let has_video = self.current_video_qid.is_some() || self.canvas_has_frame;
+        let overlay_view = self.text_overlay.as_ref().map(|t| t.view());
+        let has_video = self.current_video_qid.is_some()
+            || self.canvas_has_frame
+            || self.current_text_qid.is_some();
 
         let identify = self.identify_until.is_some_and(|t| std::time::Instant::now() < t);
         let present_start = std::time::Instant::now();
@@ -2640,7 +2781,9 @@ impl App {
                     multiview_mask: None,
                 });
             } else if has_video {
-                if let Some(canvas_view) = canvas_view.as_ref() {
+                if let (Some(canvas_view), Some(overlay_view)) =
+                    (canvas_view.as_ref(), overlay_view.as_ref())
+                {
                     // Fold the pending YUV→RGB pass into this output's encoder so it
                     // runs once (before the first output samples the canvas) without
                     // its own submit. Subsequent outputs read the converted canvas.
@@ -2657,6 +2800,7 @@ impl App {
                         &self.queue,
                         &mut encoder,
                         canvas_view,
+                        overlay_view,
                         &view,
                         &out.output_config,
                         [projection.canvas_width, projection.canvas_height],
@@ -2761,6 +2905,15 @@ impl ApplicationHandler<AppEvent> for App {
                             self.video_clock = None;
                             self.video_peek = None;
                             self.canvas_has_frame = false;
+                            // Blank the canvas texture too: with a text overlay
+                            // active the canvas still renders, and the clip's
+                            // last frame must not linger behind the text.
+                            if let Some(canvas) = self.canvas_texture.as_ref() {
+                                canvas.upload_rgba(
+                                    &self.queue,
+                                    &vec![0u8; (canvas.width * canvas.height * 4) as usize],
+                                );
+                            }
                             for out in &self.output_windows {
                                 out.window.request_redraw();
                             }

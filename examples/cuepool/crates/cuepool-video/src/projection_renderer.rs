@@ -124,6 +124,18 @@ impl ProjectionRenderer {
                     },
                     count: None,
                 },
+                // Text overlay, sampled at the same canvas UV and alpha-blended
+                // over the canvas (transparent = no-op).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -235,12 +247,17 @@ impl ProjectionRenderer {
     }
 
     /// Render this output slice into `output_view`.
+    ///
+    /// `overlay_view` (e.g. the text layer) is sampled at the same canvas UV
+    /// and alpha-blended over the canvas; pass a transparent texture for none.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         device: &Device,
         queue: &Queue,
         encoder: &mut wgpu::CommandEncoder,
         canvas_view: &TextureView,
+        overlay_view: &TextureView,
         output_view: &TextureView,
         output: &ProjectorOutput,
         canvas_size: [u32; 2],
@@ -269,6 +286,10 @@ impl ProjectionRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(overlay_view),
                 },
             ],
         });
@@ -367,11 +388,14 @@ mod tests {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test-encoder"),
         });
+        // Transparent overlay = pass-through.
+        let overlay = CanvasTexture::new(&device, 64, 4);
         renderer.render(
             &device,
             &queue,
             &mut encoder,
             &canvas.view(),
+            &overlay.view(),
             &output_view,
             &output,
             [64, 4],
@@ -461,7 +485,8 @@ mod tests {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test-encoder-fullres"),
         });
-        renderer.render(&device, &queue, &mut encoder, &canvas.view(), &output_view, &output, [cw, ch]);
+        let overlay = CanvasTexture::new(&device, cw, ch);
+        renderer.render(&device, &queue, &mut encoder, &canvas.view(), &overlay.view(), &output_view, &output, [cw, ch]);
         queue.submit(std::iter::once(encoder.finish()));
 
         let bytes_per_row = cw * 4; // 7680, already 256-aligned

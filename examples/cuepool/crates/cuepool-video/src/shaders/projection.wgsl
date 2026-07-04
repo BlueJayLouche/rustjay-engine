@@ -38,6 +38,10 @@ var canvas_sampler: sampler;
 @group(0) @binding(2)
 var<uniform> uniforms: Uniforms;
 
+// Text layer, same size/UV space as the canvas; transparent where no text.
+@group(0) @binding(3)
+var overlay_texture: texture_2d<f32>;
+
 fn edge_alpha(enabled: f32, dist_px: f32, width_px: f32, gamma: f32) -> f32 {
     if enabled < 0.5 || width_px <= 0.0 {
         return 1.0;
@@ -52,6 +56,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Sample the canvas with pixel-center alignment baked into source_uv_min/max.
     let uv = mix(uniforms.source_uv_min, uniforms.source_uv_max, in.texcoord);
     var color = textureSample(canvas_texture, canvas_sampler, uv);
+
+    // Composite the text overlay over the canvas (edge blend below dims both).
+    let overlay = textureSample(overlay_texture, canvas_sampler, uv);
+    color = vec4<f32>(mix(color.rgb, overlay.rgb, overlay.a), color.a);
 
     // Distance from each output edge in pixels.
     let left_dist = in.texcoord.x * uniforms.output_size.x;

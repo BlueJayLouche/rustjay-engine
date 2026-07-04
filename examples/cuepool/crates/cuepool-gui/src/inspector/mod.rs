@@ -91,39 +91,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     });
     ui.horizontal(|ui| {
         ui.label("QID:");
-        // Use a persistent ID so egui can maintain focus and cursor state.
-        let id = ui.make_persistent_id("inspector_qid");
-        // Read any in-progress edit from egui's temp storage so typing isn't
-        // overwritten every frame by base.qid.to_string().
-        let mut qid_str = ui.ctx().data(|data| {
-            data.get_temp::<String>(id)
-        }).unwrap_or_else(|| base.qid.to_string());
-
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut qid_str)
-                .id(id),
-        );
-
-        if response.has_focus() {
-            // While editing, store the live text in egui temp data.
-            ui.ctx().data_mut(|data| {
-                data.insert_temp(id, qid_str.clone());
-            });
-        } else {
-            // Focus lost — clear temp data so next time we start from base.qid.
-            ui.ctx().data_mut(|data| {
-                data.remove_temp::<String>(id);
-            });
-        }
-
-        if response.lost_focus() {
-            if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
-                if new_qid != base.qid {
-                    base.qid = new_qid;
-                    changed = true;
-                }
-            }
-        }
+        changed |= qid_edit(ui, "inspector_qid", &mut base.qid);
     });
     ui.horizontal(|ui| {
         let mut enabled = base.enabled;
@@ -450,7 +418,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             triggers_editor(ui, &mut base.triggers, base.qid, &mut changed, &mut pending_commands);
         }
-        cuepool_core::Cue::Text { base, text, font_size, font_colour, fit } => {
+        cuepool_core::Cue::Text { base, text, font_size, font_colour, fit, font } => {
             ui.label(RichText::new("Text Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Text:");
@@ -461,6 +429,45 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("Font Size:");
                 let response = ui.add(egui::DragValue::new(font_size).speed(1.0).range(1.0..=512.0));
                 changed |= response.changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Font:");
+                let shown = if font.is_empty() {
+                    "(built-in)".to_string()
+                } else {
+                    std::path::Path::new(font.as_str())
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| font.clone())
+                };
+                ui.label(shown).on_hover_text(font.as_str());
+                if ui.button("Browse…").clicked() {
+                    if let Some(new_path) = rfd::FileDialog::new()
+                        .add_filter("Font", &["ttf", "otf", "ttc"])
+                        .pick_file()
+                    {
+                        *font = new_path.to_string_lossy().to_string();
+                        // Register now so the family is live before the cue fires
+                        // (egui applies added fonts at the next frame).
+                        if let Ok(bytes) = std::fs::read(&new_path) {
+                            ui.ctx().add_font(egui::epaint::text::FontInsert::new(
+                                font,
+                                egui::FontData::from_owned(bytes),
+                                vec![egui::epaint::text::InsertFontFamily {
+                                    family: egui::FontFamily::Name(font.clone().into()),
+                                    priority: egui::epaint::text::FontPriority::Highest,
+                                }],
+                            ));
+                        }
+                        changed = true;
+                    }
+                }
+                if !font.is_empty() {
+                    if ui.small_button("✕").on_hover_text("Use built-in font").clicked() {
+                        font.clear();
+                        changed = true;
+                    }
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Colour:");
@@ -687,22 +694,40 @@ fn look_editor(ui: &mut egui::Ui, id: u32, look: &mut cuepool_core::FixtureLook)
 /// Returns `true` if the value changed.
 fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
     let id = ui.make_persistent_id(salt);
-    let mut text = ui
-        .ctx()
-        .data(|d| d.get_temp::<String>(id))
+    // Pending edit: (in-progress text, model value when the edit started).
+    let pending = ui.ctx().data(|d| d.get_temp::<(String, Decimal)>(id));
+    let mut text = pending
+        .as_ref()
+        .map(|(t, _)| t.clone())
         .unwrap_or_else(|| value.to_string());
     let response = ui.add(egui::TextEdit::singleline(&mut text).id(id));
-    if response.has_focus() {
-        ui.ctx().data_mut(|d| d.insert_temp(id, text.clone()));
-    } else {
-        ui.ctx().data_mut(|d| d.remove_temp::<String>(id));
+
+    // A focused TextEdit only surrenders focus on Enter/Tab/Esc; blur it on a
+    // click anywhere else so the edit ends.
+    if response.has_focus() && response.clicked_elsewhere() {
+        ui.memory_mut(|mem| mem.surrender_focus(id));
     }
-    if response.lost_focus() {
-        if let Ok(new) = text.parse::<Decimal>() {
-            if new != *value {
-                *value = new;
-                return true;
-            }
+
+    if response.has_focus() {
+        ui.ctx().data_mut(|d| d.insert_temp(id, (text, *value)));
+        return false;
+    }
+
+    // Not focused: commit any pending edit. lost_focus() can't be used — when
+    // another text field steals focus later in the same frame, this widget
+    // never observes the transition.
+    let Some((_, started_from)) = pending else { return false };
+    ui.ctx().data_mut(|d| d.remove_temp::<(String, Decimal)>(id));
+    let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    // If the field was rebound mid-edit (selection changed), drop the edit
+    // rather than commit one cue's text into another.
+    if cancelled || started_from != *value {
+        return false;
+    }
+    if let Ok(new) = text.parse::<Decimal>() {
+        if new != *value {
+            *value = new;
+            return true;
         }
     }
     false

@@ -1306,6 +1306,7 @@ impl CuePoolApp {
                                 font_size: 48.0,
                                 font_colour: cuepool_core::SerializedColour::WHITE,
                                 fit: cuepool_core::CanvasFit::Fit,
+                                font: String::new(),
                             },
                             CueType::Image => cuepool_core::Cue::Image {
                                 base,
@@ -1530,9 +1531,17 @@ impl CuePoolApp {
             let mut file_paths: Vec<String> = Vec::new();
             for cue in &state.show_file.cues {
                 match cue {
-                    cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. } => {
+                    cuepool_core::Cue::Sound { path, .. }
+                    | cuepool_core::Cue::Video { path, .. }
+                    | cuepool_core::Cue::Image { path, .. }
+                    | cuepool_core::Cue::PixelMap { path, .. } => {
                         if !path.is_empty() && !file_paths.contains(path) {
                             file_paths.push(path.clone());
+                        }
+                    }
+                    cuepool_core::Cue::Text { font, .. } => {
+                        if !font.is_empty() && !file_paths.contains(font) {
+                            file_paths.push(font.clone());
                         }
                     }
                     _ => {}
@@ -1600,9 +1609,17 @@ impl CuePoolApp {
 
             for cue in &mut state.show_file.cues {
                 match cue {
-                    cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. } => {
+                    cuepool_core::Cue::Sound { path, .. }
+                    | cuepool_core::Cue::Video { path, .. }
+                    | cuepool_core::Cue::Image { path, .. }
+                    | cuepool_core::Cue::PixelMap { path, .. } => {
                         if let Some(new_path) = path_map.get(path) {
                             *path = new_path.clone();
+                        }
+                    }
+                    cuepool_core::Cue::Text { font, .. } => {
+                        if let Some(new_path) = path_map.get(font) {
+                            *font = new_path.clone();
                         }
                     }
                     _ => {}

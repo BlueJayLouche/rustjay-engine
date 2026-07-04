@@ -32,9 +32,16 @@ for its soundtrack.
 
 ### Image / Text
 
-Draw a still image or a text overlay (font size, colour) on the canvas. Both
-have a *Fit* mode: **Stretch**, **Fit** (letterbox), or **Fill**
+Draw a still image or a text overlay on the canvas. Text cues have a font
+size, colour, and an optional font file (`.ttf`/`.otf`; leave unset for the
+built-in font — packed with the project like other media). Both cue types
+have a *Fit* mode that scales the content (for text, the rendered text
+block) onto the canvas: **Stretch**, **Fit** (letterbox), or **Fill**
 (center-crop).
+
+Text renders on an overlay layer *above* whatever video or image is playing
+(supertitles over a running clip, for example). A new Text cue replaces the
+overlay; a Stop cue targeting the text (or Stop All) clears it.
 
 ### Group
 

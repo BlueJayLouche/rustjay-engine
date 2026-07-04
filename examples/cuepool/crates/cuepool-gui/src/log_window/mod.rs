@@ -11,6 +11,14 @@ pub fn show(ui: &mut egui::Ui, _state: &SharedStateHandle) {
         if ui.button("Clear").clicked() {
             clear_log_buffer();
         }
+        // Labels aren't drag-selectable (disabled app-wide), so copy instead.
+        if ui.button("Copy").clicked() {
+            let text: String = entries
+                .iter()
+                .map(|e| format!("{} {} {}\n", e.level, e.timestamp, e.message))
+                .collect();
+            ui.ctx().copy_text(text);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(format!("{} entries", entries.len()));
         });

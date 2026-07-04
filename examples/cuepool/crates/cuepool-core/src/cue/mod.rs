@@ -320,6 +320,9 @@ pub enum Cue {
         font_colour: SerializedColour,
         #[serde(default)]
         fit: CanvasFit,
+        /// Path to a `.ttf`/`.otf` font file; empty = built-in font.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        font: String,
     },
 
     #[serde(rename = "ImageCue")]
@@ -659,6 +662,7 @@ mod tests {
             font_size: 64.0,
             font_colour: SerializedColour::WHITE,
             fit: CanvasFit::Fit,
+            font: String::new(),
         };
         let json = serde_json::to_string(&cue).unwrap();
         let de: Cue = serde_json::from_str(&json).unwrap();

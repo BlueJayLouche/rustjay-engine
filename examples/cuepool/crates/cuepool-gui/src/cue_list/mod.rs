@@ -21,44 +21,32 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.heading(format!("Cues ({})", cues.len()));
     ui.separator();
 
-    // Toolbar
+    // Toolbar — icon-per-cue-type; glyphs limited to egui's bundled
+    // NotoEmoji / emoji-icon fonts. Wrapped so a narrow panel flows to a
+    // second row instead of clipping.
     if show_mode == crate::app::ShowMode::Edit {
-        ui.horizontal(|ui| {
-            if ui.button("+ Sound").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Sound });
-            }
-            if ui.button("+ Video").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Video });
-            }
-            if ui.button("+ Stop").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Stop });
-            }
-            if ui.button("+ Volume").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Volume });
-            }
-            if ui.button("+ Group").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Group });
-            }
-            if ui.button("+ Dummy").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Dummy });
-            }
-            if ui.button("+ OSC").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Osc });
-            }
-            if ui.button("+ Text").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Text });
-            }
-            if ui.button("+ Image").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Image });
-            }
-            if ui.button("+ Goto").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Goto });
-            }
-            if ui.button("+ Light").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Lighting });
-            }
-            if ui.button("+ PixMap").clicked() {
-                queue_cmd(state, AppCommand::AddCue { cue_type: CueType::PixelMap });
+        ui.horizontal_wrapped(|ui| {
+            for (icon, name, cue_type) in [
+                ("🎵", "Sound", CueType::Sound),
+                ("🎬", "Video", CueType::Video),
+                ("⏹", "Stop", CueType::Stop),
+                ("🔉", "Volume", CueType::Volume),
+                ("📁", "Group", CueType::Group),
+                ("▢", "Dummy", CueType::Dummy),
+                ("📡", "OSC", CueType::Osc),
+                ("🗛", "Text", CueType::Text),
+                ("🖼", "Image", CueType::Image),
+                ("↪", "Goto", CueType::Goto),
+                ("💡", "Lighting", CueType::Lighting),
+                ("⊞", "Pixel Map", CueType::PixelMap),
+            ] {
+                if ui
+                    .button(RichText::new(icon).size(16.0))
+                    .on_hover_text(format!("Add {name} cue"))
+                    .clicked()
+                {
+                    queue_cmd(state, AppCommand::AddCue { cue_type });
+                }
             }
         });
         ui.separator();
@@ -148,16 +136,27 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     // only commit (parse) once focus leaves the field.
                     if show_mode == crate::app::ShowMode::Edit {
                         let edit_id = egui::Id::new(("qid", qid));
-                        let mut qid_str = ui
-                            .data_mut(|d| d.get_temp::<String>(edit_id))
-                            .unwrap_or_else(|| qid.to_string());
+                        let pending = ui.data_mut(|d| d.get_temp::<String>(edit_id));
+                        let mut qid_str = pending.clone().unwrap_or_else(|| qid.to_string());
                         let response = ui.add_sized(
                             [COL_QID, 18.0],
                             egui::TextEdit::singleline(&mut qid_str)
                                 .id_salt(edit_id)
                                 .font(egui::TextStyle::Monospace),
                         );
-                        if response.lost_focus() {
+                        // A focused TextEdit only surrenders focus on
+                        // Enter/Tab/Esc; blur it on a click anywhere else so
+                        // the edit ends.
+                        if response.has_focus() && response.clicked_elsewhere() {
+                            ui.memory_mut(|mem| mem.surrender_focus(response.id));
+                        }
+                        if response.has_focus() {
+                            ui.data_mut(|d| d.insert_temp(edit_id, qid_str.clone()));
+                        } else if pending.is_some() {
+                            // Commit the pending edit. lost_focus() can't be
+                            // used — a text cell rendered later in the same
+                            // frame steals focus after this one was processed,
+                            // so the transition is never observed here.
                             ui.data_mut(|d| d.remove_temp::<String>(edit_id));
                             let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
                             if !cancelled {
@@ -167,8 +166,6 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                                     }
                                 }
                             }
-                        } else if response.has_focus() {
-                            ui.data_mut(|d| d.insert_temp(edit_id, qid_str.clone()));
                         }
                         if response.clicked() {
                             queue_select(state, qid);
