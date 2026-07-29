@@ -246,7 +246,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             routing_editor(ui, routing, &mut changed);
             triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
         }
-        cuepool_core::Cue::Video { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing } => {
+        cuepool_core::Cue::Video { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start } => {
             ui.label(RichText::new("Video Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -304,6 +304,25 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                             }
                         }
                     });
+            });
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(follow_mtc, "Follow MTC")
+                    .on_hover_text(
+                        "Play this video under MIDI Timecode (e.g. Pro Tools over RTP-MIDI): \
+                         silent playback, holds on frame 0 until MTC plays, seeks on locate",
+                    )
+                    .changed();
+            });
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(*follow_mtc, |ui| {
+                    ui.label("MTC start:");
+                    let mut secs = mtc_start.as_secs_f64();
+                    if timecode_edit(ui, "mtc_start", &mut secs, tc_fps) {
+                        *mtc_start = cuepool_core::Timespan::from_secs_f64(secs);
+                        changed = true;
+                    }
+                });
             });
             eq_editor(ui, eq, &mut changed);
             routing_editor(ui, routing, &mut changed);

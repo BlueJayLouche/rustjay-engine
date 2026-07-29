@@ -216,6 +216,18 @@ pub struct SharedState {
     /// Show-clock elapsed seconds (None until the first Go); frozen while paused.
     pub show_time: Option<f64>,
     pub show_paused: bool,
+    /// MTC receive status, published every tick by the control binary.
+    pub mtc_running: bool,
+    /// `true` while MTC quarter-frames are streaming (transport playing).
+    pub mtc_playing: bool,
+    /// Latest MTC position in seconds (for the transport readout).
+    pub mtc_timecode_secs: f64,
+    /// Frame rate reported by the MTC source.
+    pub mtc_fps: f64,
+    /// Name of the MIDI port sending MTC (empty until one is seen).
+    pub mtc_source: String,
+    /// Drift (target − video position) in ms — Some only while a follow cue runs.
+    pub mtc_drift_ms: Option<f64>,
     /// Next armed timecode trigger: (cue qid, trigger seconds).
     pub next_timecode: Option<(Decimal, f64)>,
     /// Latest pixel-map sample per segment: id → (cols, rows, RGBA bytes).
@@ -290,6 +302,12 @@ impl Default for SharedState {
             open_take_editor: None,
             show_time: None,
             show_paused: false,
+            mtc_running: false,
+            mtc_playing: false,
+            mtc_timecode_secs: 0.0,
+            mtc_fps: 25.0,
+            mtc_source: String::new(),
+            mtc_drift_ms: None,
             next_timecode: None,
             recorder_status: RecorderStatus::default(),
             lighting_preview: std::collections::HashMap::new(),
@@ -1438,6 +1456,8 @@ impl CuePoolApp {
                                 fade_type: cuepool_core::FadeType::Linear,
                                 eq: None,
                                 routing: cuepool_core::AudioRouting::default(),
+                                follow_mtc: false,
+                                mtc_start: cuepool_core::Timespan::from_secs_f64(3600.0),
                             },
                             CueType::Stop => cuepool_core::Cue::Stop {
                                 base,

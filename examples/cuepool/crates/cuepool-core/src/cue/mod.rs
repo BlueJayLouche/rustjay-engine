@@ -298,6 +298,14 @@ pub enum Cue {
         eq: Option<crate::EQSettings>,
         #[serde(default)]
         routing: AudioRouting,
+        /// Play this video under MIDI Timecode follow (silent — audio comes
+        /// from the MTC master, e.g. Pro Tools). Holds on frame 0 until MTC plays.
+        #[serde(default)]
+        follow_mtc: bool,
+        /// MTC position that maps to the video's start (Pro Tools convention:
+        /// program starts at 01:00:00:00).
+        #[serde(default = "default_mtc_start")]
+        mtc_start: Timespan,
     },
 
     #[serde(rename = "OSCCue")]
@@ -537,6 +545,11 @@ fn default_font_size() -> f32 {
     48.0
 }
 
+/// Default MTC start offset: Pro Tools convention is 01:00:00:00.
+fn default_mtc_start() -> Timespan {
+    Timespan::from_secs_f64(3600.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,6 +680,8 @@ mod tests {
             fade_type: FadeType::SCurve,
             eq: None,
             routing: AudioRouting::default(),
+            follow_mtc: false,
+            mtc_start: Timespan::from_secs_f64(3600.0),
         };
         let json = serde_json::to_string(&cue).unwrap();
         let de: Cue = serde_json::from_str(&json).unwrap();
@@ -674,6 +689,46 @@ mod tests {
         // Verify the tag
         let val = serde_json::to_value(&cue).unwrap();
         assert_eq!(val["$type"], "VideoCue");
+    }
+
+    #[test]
+    fn test_video_cue_mtc_fields_default() {
+        // Old show files (V8 and earlier) have no followMtc/mtcStart keys.
+        let json = json!({
+            "$type": "VideoCue",
+            "qid": 3.0,
+            "parent": null,
+            "colour": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+            "name": "Old Video",
+            "description": "",
+            "trigger": "Go",
+            "enabled": true,
+            "delay": "00:00:00",
+            "loopMode": "OneShot",
+            "loopCount": 1,
+            "remoteNode": "",
+            "path": "video/intro.mp4",
+            "startTime": "00:00:00",
+            "duration": "00:00:00",
+            "volume": 0.0,
+            "pan": 0.0,
+            "fadeIn": 0.0,
+            "fadeOut": 0.0,
+            "fadeType": "SCurve"
+        });
+
+        let cue: Cue = serde_json::from_value(json).expect("should parse old VideoCue");
+        match cue {
+            Cue::Video {
+                follow_mtc,
+                mtc_start,
+                ..
+            } => {
+                assert!(!follow_mtc);
+                assert_eq!(mtc_start, Timespan::from_secs_f64(3600.0));
+            }
+            other => panic!("expected VideoCue, got {:?}", other),
+        }
     }
 
     #[test]

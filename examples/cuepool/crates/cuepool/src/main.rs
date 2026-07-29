@@ -10,6 +10,7 @@ use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
 use cuepool_core::{CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
 use cuepool_gui::{AppCommand, CuePoolApp, SharedStateHandle};
 use cuepool_gui::app::CueState;
+use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
 use cuepool_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use cuepool_protocols::osc::{OscEvent, OscManager};
@@ -28,6 +29,8 @@ use human_panic::Metadata;
 
 mod lighting_engine;
 use lighting_engine::LightingEngine;
+mod mtc_follow;
+use mtc_follow::MtcFollowState;
 mod recorder;
 use recorder::Recorder;
 
@@ -236,6 +239,20 @@ struct App {
     midi_manager: Option<MidiManager>,
     last_discovery: Instant,
 
+    // ── MTC follow ──
+    /// Listens on all MIDI ports for timecode (independent of `midi_manager`,
+    /// which only handles voice-message triggers).
+    mtc_receiver: MtcReceiver,
+    /// The video cue currently following MTC, if any.
+    mtc_follow: Option<MtcFollowState>,
+    /// Last measured drift (target − video position) while following, for the GUI.
+    mtc_drift: Option<f64>,
+    /// Last frame rate we warned about (rate-limits the non-25fps warning).
+    mtc_warned_fps: Option<MtcFrameRate>,
+    /// Keep output redraws flowing briefly after an MTC-hold hard sync so the
+    /// freshly sought frame actually presents before throttling back down.
+    mtc_hold_redraw_until: Option<Instant>,
+
     // ── lighting ──
     lighting: LightingEngine,
     recorder: Recorder,
@@ -420,6 +437,11 @@ impl App {
             msc_rx,
             midi_manager,
             last_discovery: Instant::now(),
+            mtc_receiver: MtcReceiver::new(),
+            mtc_follow: None,
+            mtc_drift: None,
+            mtc_warned_fps: None,
+            mtc_hold_redraw_until: None,
             last_window_title: String::new(),
             autosave_running,
             active_cues: Vec::new(),
@@ -884,10 +906,28 @@ impl App {
                 log::info!("Go SoundCue: {}", path);
                 self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
             }
-            cuepool_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
+            cuepool_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start, .. } => {
                 log::info!("Go VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
-                self.play_video(path, qid, event_loop);
+                if *follow_mtc {
+                    // MTC follow: the video plays silent (audio comes from the
+                    // MTC master, e.g. Pro Tools), loads, and HOLDS on frame 0
+                    // until MTC plays. GO on the same cue re-arms a fresh hold.
+                    self.play_video(path, qid, event_loop);
+                    self.mtc_follow = Some(MtcFollowState {
+                        qid,
+                        path: path.clone(),
+                        offset_secs: mtc_start.as_secs_f64(),
+                        hold_position: Some(0.0),
+                        last_tick: Instant::now(),
+                        last_mtc_secs: 0.0,
+                        last_mtc_at: Instant::now(),
+                    });
+                } else {
+                    // A plain video cue takes over the output — drop any MTC follow.
+                    self.mtc_follow = None;
+                    self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
+                    self.play_video(path, qid, event_loop);
+                }
             }
             cuepool_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, .. } => {
                 log::info!("Go StopCue -> stop Q{}", stop_qid);
@@ -1910,6 +1950,8 @@ impl App {
         self.last_video_pts = None;
         self.canvas_has_frame = false;
         self.current_video_qid = None;
+        // StopAll releases the MTC-follow cue too.
+        self.mtc_follow = None;
         self.audio_engine.stop_all();
         self.active_cues.clear();
         self.delayed_cues.clear();
@@ -2007,12 +2049,130 @@ impl App {
     /// The frozen playback position while paused. `clock.elapsed()` keeps
     /// growing through a pause (the interval is only re-added on resume), so
     /// position math while paused must anchor on `video_pause_started`.
+    /// While an MTC-follow cue is holding (MTC stopped), the hold position
+    /// wins over the wall clock — the MTC master owns the position.
     fn video_paused_position(&self) -> Option<Duration> {
+        if let Some(h) = self.mtc_follow.as_ref().and_then(|f| f.hold_position) {
+            return Some(Duration::from_secs_f64(h.max(0.0)));
+        }
         let clock = self.video_clock?;
         Some(match self.video_pause_started {
             Some(paused_at) => paused_at.duration_since(clock),
             None => clock.elapsed(),
         })
+    }
+
+    /// Shift the video position by `delta_secs` (pure presentation-clock slew;
+    /// the decoder is untouched). Positive = further into the clip.
+    fn nudge_video_clock(&mut self, delta_secs: f64) {
+        let Some(c) = self.video_clock.as_mut() else { return };
+        if delta_secs >= 0.0 {
+            if let Some(shifted) = c.checked_sub(Duration::from_secs_f64(delta_secs)) {
+                *c = shifted;
+            }
+        } else {
+            *c += Duration::from_secs_f64(-delta_secs);
+        }
+    }
+
+    /// Re-anchor the playback clock so the current position is exactly `target`.
+    fn mtc_reanchor(&mut self, target: f64) {
+        if let Some(c) = Instant::now().checked_sub(Duration::from_secs_f64(target.max(0.0))) {
+            self.video_clock = Some(c);
+        }
+    }
+
+    /// Big jump (locate, loop-back, drift > 250 ms): re-seek the forward-only
+    /// decoder and re-anchor the clock. Needed even for forward jumps — a large
+    /// one would otherwise starve the renderer while decode catches up.
+    fn mtc_hard_sync(&mut self, target: f64) {
+        let Some(follow) = self.mtc_follow.as_ref() else { return };
+        let path = follow.path.clone();
+        log::info!("[MTC] Hard sync Q{} to {:.2}s", follow.qid, target);
+        self.spawn_video_decode(&path, Some(target));
+        self.video_peek = None;
+        self.mtc_reanchor(target);
+    }
+
+    /// Drive the MTC-follow cue from the latest MTC state. No-op without one.
+    fn drive_mtc_follow(&mut self, mtc: &MtcState) {
+        self.mtc_drift = None;
+        let Some(follow) = self.mtc_follow.as_mut() else { return };
+        let offset_secs = follow.offset_secs;
+        let dt = follow.last_tick.elapsed().as_secs_f64();
+        follow.last_tick = Instant::now();
+        let holding = follow.hold_position;
+
+        // MTC publishes a complete timecode only every 2 frames (~80 ms at
+        // 25 fps). Between updates the true position keeps advancing at
+        // realtime, so extrapolate — otherwise the drift measurement
+        // sawtooths by ±2 frames and the nudge controller biases the video
+        // late by up to the deadband. No extrapolation while stopped.
+        let mtc_secs = mtc.position.as_seconds_f64();
+        if mtc_secs != follow.last_mtc_secs {
+            follow.last_mtc_secs = mtc_secs;
+            follow.last_mtc_at = Instant::now();
+        }
+        let extrapolated = if mtc.playing {
+            mtc_secs + follow.last_mtc_at.elapsed().as_secs_f64()
+        } else {
+            mtc_secs
+        };
+
+        // Locates before the start offset clamp to frame 0 (and hold there).
+        let target = (extrapolated - offset_secs).max(0.0);
+
+        // Warn (once per rate change) if the MTC fps isn't the expected 25.
+        if mtc.running
+            && mtc.position.frame_rate != MtcFrameRate::Fps25
+            && self.mtc_warned_fps != Some(mtc.position.frame_rate)
+        {
+            self.mtc_warned_fps = Some(mtc.position.frame_rate);
+            log::warn!(
+                "[MTC] Source is {}, expected 25fps — video sync may drift",
+                mtc.position.frame_rate.name()
+            );
+        }
+
+        let current = self
+            .video_paused_position()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
+        if mtc.playing {
+            if let Some(h) = holding {
+                // Stopped→playing transition: jump if far off, else re-anchor
+                // so the position continues smoothly from the target.
+                if (target - h).abs() > mtc_follow::HARD_SYNC_SECS {
+                    self.mtc_hard_sync(target);
+                } else {
+                    self.mtc_reanchor(target);
+                }
+            } else {
+                let drift = target - current;
+                self.mtc_drift = Some(drift);
+                match mtc_follow::drift_action(drift, dt) {
+                    mtc_follow::MtcAdjust::Nudge(d) => self.nudge_video_clock(d),
+                    mtc_follow::MtcAdjust::HardSync => self.mtc_hard_sync(target),
+                    mtc_follow::MtcAdjust::None | mtc_follow::MtcAdjust::Hold => {}
+                }
+            }
+            if let Some(f) = self.mtc_follow.as_mut() {
+                f.hold_position = None;
+            }
+        } else {
+            // Running-but-not-playing (full-frame locate) or fully stopped:
+            // snap to the target if off, then freeze there.
+            if (target - current).abs() > mtc_follow::DEADBAND_SECS {
+                self.mtc_hard_sync(target);
+                // Keep redraws flowing briefly so the sought frame presents
+                // (holding throttles output redraws like a pause).
+                self.mtc_hold_redraw_until = Some(Instant::now() + Duration::from_millis(1000));
+            }
+            if let Some(f) = self.mtc_follow.as_mut() {
+                f.hold_position = Some(target);
+            }
+        }
     }
 
     /// Step one video frame forward while paused; show clock follows in
@@ -2166,6 +2326,8 @@ impl App {
                     fade_type: cuepool_core::FadeType::Linear,
                     eq: None,
                     routing: cuepool_core::AudioRouting::default(),
+                    follow_mtc: false,
+                    mtc_start: cuepool_core::Timespan::from_secs_f64(3600.0),
                 }
             } else {
                 cuepool_core::Cue::Sound {
@@ -2775,6 +2937,8 @@ impl App {
         self.check_finished_cues(event_loop);
 
         // Check for video cues that have looped and restart their video threads.
+        // MTC-follow cues never loop on their own — the MTC master owns position.
+        if self.mtc_follow.is_none() {
         if let Some(video_qid) = self.current_video_qid {
             if let Some(ac) = self.active_cues.iter_mut().find(|ac| ac.qid == video_qid) {
                 if let Some(ref counter) = ac.loop_counter {
@@ -2797,6 +2961,7 @@ impl App {
                     }
                 }
             }
+        }
         }
 
         // Check for delayed cues whose timer has expired
@@ -3258,6 +3423,12 @@ impl ApplicationHandler<AppEvent> for App {
         match event {
             AppEvent::VideoEof => {
                 log::info!("Video EOF");
+                // MTC follow: hold the last frame on the canvas past the end —
+                // looping, re-locating and blanking are all owned by the MTC
+                // master, not by the clip's EOF.
+                if self.mtc_follow.is_some() {
+                    return;
+                }
                 // What the output window shows after a clip ends:
                 //   Looped/LoopedInfinite -> restart (video-only here; audio-backed
                 //     clips restart via the audio loop_counter, so skip those),
@@ -3519,6 +3690,20 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         self.process_midi_events(event_loop);
+        // MTC receive (hot-plug refresh is internally throttled) → drive any
+        // MTC-follow video cue → publish status for the transport readout.
+        self.mtc_receiver.refresh();
+        self.mtc_receiver.tick();
+        let mtc = self.mtc_receiver.clone_state();
+        self.drive_mtc_follow(&mtc);
+        if let Ok(mut state) = self.cuepool.state().lock() {
+            state.mtc_running = mtc.running;
+            state.mtc_playing = mtc.playing;
+            state.mtc_timecode_secs = mtc.position.as_seconds_f64();
+            state.mtc_fps = mtc.position.frame_rate.fps() as f64;
+            state.mtc_source = mtc.source_device.clone();
+            state.mtc_drift_ms = self.mtc_drift.map(|d| d * 1000.0);
+        }
         self.process_protocol_events();
         self.poll_wall_clock_triggers(event_loop);
         self.poll_timecode_triggers(event_loop);
@@ -3647,8 +3832,18 @@ impl ApplicationHandler<AppEvent> for App {
         // Video output: continuous redraw so the Fifo swapchain backpressure paces
         // us to the display refresh. When paused we stop requesting, so the last
         // held frame stays on screen and decode blocks on the full channel.
+        // An MTC-follow hold throttles the same way — except right after a
+        // hard sync, when redraws must keep flowing until the sought frame presents.
+        let mtc_holding = self
+            .mtc_follow
+            .as_ref()
+            .is_some_and(|f| f.hold_position.is_some())
+            && self
+                .mtc_hold_redraw_until
+                .is_none_or(|t| Instant::now() >= t);
         if self.current_video_qid.is_some()
             && !self.paused
+            && !mtc_holding
             && !self.output_windows.is_empty()
         {
             for out in &self.output_windows {

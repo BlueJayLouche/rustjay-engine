@@ -81,6 +81,17 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 state.show_file.show_settings.timecode_fps,
             )
         };
+        let (mtc_running, mtc_playing, mtc_secs, mtc_fps, mtc_source, mtc_drift_ms) = {
+            let Ok(state) = state.lock() else { return };
+            (
+                state.mtc_running,
+                state.mtc_playing,
+                state.mtc_timecode_secs,
+                state.mtc_fps,
+                state.mtc_source.clone(),
+                state.mtc_drift_ms,
+            )
+        };
         let back_btn = Button::new(RichText::new("⏮")).min_size(Vec2::new(36.0, 32.0));
         if ui
             .add_enabled(show_paused, back_btn)
@@ -133,6 +144,40 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     .small()
                     .weak(),
             );
+        }
+
+        // MTC readout (timecode from e.g. Pro Tools over RTP-MIDI). Shown once
+        // an MTC source has been seen; green while the transport is playing.
+        if mtc_running || !mtc_source.is_empty() {
+            ui.separator();
+            let mtc_color = if mtc_playing {
+                Color32::from_rgb(120, 220, 120)
+            } else {
+                Color32::from_gray(110)
+            };
+            ui.label(
+                RichText::new(format!("MTC {}", format_timecode(mtc_secs, mtc_fps as f32)))
+                    .monospace()
+                    .size(20.0)
+                    .color(mtc_color),
+            )
+            .on_hover_text(if mtc_playing {
+                "MIDI timecode (playing)"
+            } else {
+                "MIDI timecode (stopped)"
+            });
+            if !mtc_source.is_empty() {
+                ui.label(RichText::new(&mtc_source).small().weak());
+            }
+            if let Some(drift) = mtc_drift_ms {
+                ui.label(
+                    RichText::new(format!("drift {:+.0}ms", drift))
+                        .monospace()
+                        .small()
+                        .weak(),
+                )
+                .on_hover_text("MTC target − video position (follow cue active)");
+            }
         }
 
         ui.separator();

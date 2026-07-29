@@ -1,7 +1,10 @@
 //! MIDI input driver.
 //!
 //! ponytail: opens the first available MIDI input port and forwards raw
-//! voice messages as `MidiEvent`s. SysEx / clock are ignored for now.
+//! voice messages as `MidiEvent`s. SysEx / clock are ignored for now —
+//! MTC has its own dedicated receiver in [`mtc`].
+
+pub mod mtc;
 
 use std::sync::{mpsc, Arc, Mutex};
 

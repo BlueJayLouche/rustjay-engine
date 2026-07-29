@@ -23,6 +23,9 @@ pub fn upgrade_show_file(show_file: &mut ShowFile, raw: &Value) {
     if version < 8 {
         upgrade_v7_to_v8(show_file, raw);
     }
+    if version < 9 {
+        upgrade_v8_to_v9(show_file, raw);
+    }
 
     show_file.file_format_version = crate::showfile::FILE_FORMAT_VERSION;
 }
@@ -111,6 +114,12 @@ fn upgrade_v6_to_v7(show_file: &mut ShowFile, _raw: &Value) {
 /// New fields use serde defaults, so this just logs the bump.
 fn upgrade_v7_to_v8(_show_file: &mut ShowFile, _raw: &Value) {
     log::info!("Upgrading show file from V7 to V8...");
+}
+
+/// V8 -> V9: added MTC follow fields to Video cues (`follow_mtc`, `mtc_start`).
+/// New fields use serde defaults, so this just logs the bump.
+fn upgrade_v8_to_v9(_show_file: &mut ShowFile, _raw: &Value) {
+    log::info!("Upgrading show file from V8 to V9...");
 }
 
 #[inline]

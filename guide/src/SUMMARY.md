@@ -60,6 +60,7 @@
   - [Video & Projection](examples/cuepool/video.md)
   - [Lighting & Pixel Mapping](examples/cuepool/lighting.md)
   - [Show Control](examples/cuepool/show-control.md)
+  - [MTC Follow](examples/cuepool/mtc-follow.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
 # Deployment

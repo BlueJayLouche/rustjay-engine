@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub mod migration;
 
 /// Current file format version. Bumped when serialization schema changes.
-pub const FILE_FORMAT_VERSION: i32 = 8;
+pub const FILE_FORMAT_VERSION: i32 = 9;
 
 /// Root of every CuePool project file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
