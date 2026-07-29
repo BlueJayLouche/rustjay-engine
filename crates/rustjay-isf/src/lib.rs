@@ -12,13 +12,16 @@
 //! let effect = IsfEffect::from_path(std::path::Path::new("shaders/MyShader.fs"))?;
 //! ```
 
+pub mod compile;
 pub mod effect;
 pub mod params;
-pub mod transpiler;
 
+pub use compile::{
+    generate_wgsl, FieldTy, InputField, IsfManifest, TextureBinding, Transpiled, UniformIndex,
+    MAX_ISF_UNIFORMS,
+};
 pub use effect::{IsfEffect, IsfState, IsfUniforms};
 pub use params::{isf_inputs_to_default_values, isf_inputs_to_parameters};
-pub use transpiler::{generate_wgsl, Transpiled, UniformIndex, MAX_ISF_UNIFORMS};
 
 /// Path to the tiny one-line config file that stores the last-used shader path.
 ///

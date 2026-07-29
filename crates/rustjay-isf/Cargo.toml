@@ -12,5 +12,8 @@ bytemuck   = { workspace = true }
 serde      = { workspace = true }
 anyhow     = { workspace = true }
 log        = { workspace = true }
+shaderc    = { version = "0.10", features = ["build-from-source"] }
+naga       = { version = "29", features = ["spv-in", "wgsl-out", "wgsl-in"] }
 
 [dev-dependencies]
+pollster = { workspace = true }

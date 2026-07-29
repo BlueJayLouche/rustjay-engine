@@ -63,6 +63,9 @@ pub fn isf_inputs_to_parameters(inputs: &[isf::Input]) -> Vec<ParameterDescripto
 /// Build a map of ISF input name → default scalar value (as f32).
 ///
 /// Bool is stored as 1.0 / 0.0; Long is stored as its integer value cast to f32.
+/// Color inputs seed `name_r/g/b/a` component keys from DEFAULT (then IDENTITY);
+/// a missing alpha component defaults to 1.0, missing RGB to 0.0. Point2D inputs
+/// seed `name_x/y`. These keys are additive to `IsfState.values` (preset-serialised).
 pub fn isf_inputs_to_default_values(inputs: &[isf::Input]) -> HashMap<String, f32> {
     let mut values = HashMap::new();
     for input in inputs {
@@ -78,6 +81,22 @@ pub fn isf_inputs_to_default_values(inputs: &[isf::Input]) -> HashMap<String, f3
             }
             InputType::Long(l) => {
                 values.insert(input.name.clone(), l.default.unwrap_or(0) as f32);
+            }
+            InputType::Color(c) => {
+                let arr = c.default.as_ref().or(c.identity.as_ref());
+                // ISF color DEFAULTs are RGB or RGBA arrays; alpha defaults to 1.
+                let comp = |i: usize, fallback: f32| {
+                    arr.and_then(|a| a.get(i)).copied().unwrap_or(fallback)
+                };
+                values.insert(format!("{}_r", input.name), comp(0, 0.0));
+                values.insert(format!("{}_g", input.name), comp(1, 0.0));
+                values.insert(format!("{}_b", input.name), comp(2, 0.0));
+                values.insert(format!("{}_a", input.name), comp(3, 1.0));
+            }
+            InputType::Point2d(p) => {
+                let xy = p.default.or(p.identity).unwrap_or([0.0, 0.0]);
+                values.insert(format!("{}_x", input.name), xy[0]);
+                values.insert(format!("{}_y", input.name), xy[1]);
             }
             _ => {}
         }

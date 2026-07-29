@@ -77,23 +77,13 @@ While the app is running, edit any `.fs` file in your editor and save. `IsfEffec
 
 ### Transpilation
 
-GLSL can't run on wgpu directly — the engine transpiles it to WGSL at startup inside `IsfEffect::init()`. The transpiler (`isf_transpiler.rs`) handles:
+GLSL can't run on wgpu directly — the engine compiles it to WGSL at startup inside `IsfEffect::init()`. The pipeline (`rustjay_isf::compile`):
 
-- Stripping the ISF JSON comment header to get raw GLSL
-- Both entry-point patterns: `void main()` writing to `gl_FragColor`, and the Shadertoy-compatible `void mainImage(out vec4 fragColor, in vec2 fragCoord)` form
-- Mapping ISF built-ins to WGSL equivalents:
+1. Generates a GLSL prelude that **defines** the ISF builtins: an `IsfData` uniform block (`TIME`, `TIMEDELTA`, `FRAMEINDEX`, `RENDERSIZE`, `DATE`, `PASSINDEX`), an `IsfInputs` block with one std140 field per typed input, a shared sampler, and one `texture2D` per image/audio input. `IMG_*` sampling macros are inlined as texture expressions; `gl_FragColor` and legacy `texture2D()` are adapted automatically.
+2. Compiles GLSL → SPIR-V with **shaderc** (Vulkan 1.2 target).
+3. Converts SPIR-V → WGSL with **naga** (`spv-in` → validate → `wgsl-out`), then re-parses and re-validates the WGSL so a broken shader fails at `cargo test`, not at GPU init.
 
-| GLSL / ISF built-in | WGSL equivalent |
-|---|---|
-| `TIME` | `u.TIME` (f32 seconds since launch) |
-| `RENDERSIZE` | `u.RENDERSIZE` (vec2 — output resolution) |
-| `gl_FragCoord` | `in.position` |
-| `isf_FragNormCoord` | `in.texcoord` |
-| `texture2D(tex, uv)` | `textureSample(t_input, s_input, uv)` |
-| `vec2`, `vec3`, `vec4` | `vec2<f32>`, `vec3<f32>`, `vec4<f32>` |
-
-- Rewriting GLSL type constructors (`vec2(x, y)` → `vec2<f32>(x, y)`)
-- Declaring all scalar ISF inputs as a flat `array<f32, 64>` uniform buffer
+Coordinate convention: ISF is bottom-left origin, so the vertex stage Y-flips `isf_FragNormCoord` (and `gl_FragCoord`), and texture sampling flips back — `IMG_THIS_PIXEL(inputImage)` reads the same physical pixel of the input frame.
 
 ### Auto-generated parameters
 
@@ -104,7 +94,9 @@ Each ISF input type maps to a parameter kind:
 | `float` | Slider | Uses `MIN`/`MAX`/`DEFAULT` from the header |
 | `bool` | Checkbox | |
 | `long` (int) | Integer slider | |
-| `image` | _(none)_ | Bound to the engine's live video input automatically |
+| `image` | _(none)_ | Bound to the engine's live video input automatically (1×1 black when unconnected) |
+| `color` | _(none yet)_ | `DEFAULT` reaches the shader via state (`name_r/g/b/a`); no UI widget yet |
+| `point2D` | _(none yet)_ | `DEFAULT` reaches the shader via state (`name_x/y`); no UI widget yet |
 
 Parameters declared this way become full first-class engine parameters: they can be targeted by LFOs, mapped to MIDI CC, addressed over OSC, and saved in presets — without any extra code.
 
@@ -113,17 +105,17 @@ Parameters declared this way become full first-class engine parameters: they can
 Because ISF's binding layout differs from the engine's standard layout, the viewer uses a custom render pipeline (see [Frame History & Custom Pipelines](../rendering/frame-history.md) for the general pattern):
 
 - `shader_source()` returns a minimal passthrough stub — the engine compiles it but never runs it
-- `init()` compiles the real transpiled WGSL pipeline
-- `render()` uploads uniforms, builds the bind groups, runs the pass, and returns `true`
+- `init()` compiles the real compiled WGSL pipeline (vertex stage generated to match the fragment's declared inputs)
+- `render()` std140-packs and uploads uniforms (real `TIME`, `TIMEDELTA`, `FRAMEINDEX`, `DATE`), builds the bind group, runs the pass, and returns `true`
 
 ## Known limitations
 
-The transpiler handles the most common ISF patterns but some shaders won't load:
+The compiler handles the vast majority of stock ISF shaders (~96% of the VIDVOX test corpus compiles), but some won't load:
 
-- **Function overloading** — GLSL allows multiple functions with the same name and different types; WGSL does not. Shaders that rely on this will fail to compile and show an error in the shader name tab.
-- **Multi-pass ISF** (`PASSES` array) — not supported; only single-pass shaders work.
-- **`color` and `point2D` inputs** — parsed but not yet wired to UI controls (Phase 1 scope).
-- **`audio` inputs** — not supported.
+- **Array-typed varyings** (e.g. convolution shaders declaring `varying vec2 texOffsets[5]`) — WGSL can't express array-typed stage IO; these fail at compile time.
+- **Multi-pass ISF** (`PASSES` array) and **`IMPORTED` images** — declared and bound to a placeholder texture, but not executed yet.
+- **`audio` / `audioFFT` inputs** — placeholder-bound, no live audio data yet.
+- A small number of shaders with constructs glslang/naga reject (unguarded redefinitions of GLSL builtins like `round`, and 2 files hitting a naga SPIR-V frontend bug).
 
 If a shader fails, the output window shows black and the tab name displays the error message.
 
