@@ -19,6 +19,6 @@ pub use cue::{ClockMode, CueTriggers, FadeType, HotkeyTrigger, LoopMode, MidiTri
 pub use eq::{EQBand, EQBandShape, EQFilter, EQFilterOrder, EQSettings};
 pub use lighting::{FixtureId, FixtureLook, FixtureProfile, LightingConfig, LightingProtocol, PatchedFixture};
 pub use projection::{CanvasFit, EdgeBlend, EdgeBlendEdge, MonitorId, ProjectionConfig, ProjectorOutput, resolve_monitor_assignment};
-pub use showfile::{AudioLimiterSettings, AudioOutputDriver, RemoteNode, ShowFile, ShowSettings};
+pub use showfile::{AudioLimiterSettings, AudioOutputDriver, RemoteNode, ShowFile, ShowSettings, UdpTarget};
 pub use sync::LockExt;
 pub use timespan::Timespan;

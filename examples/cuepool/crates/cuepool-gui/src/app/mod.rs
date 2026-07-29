@@ -720,6 +720,39 @@ impl CuePoolApp {
                                 ui.label("TX Port:");
                                 settings_changed |= ui.add(egui::DragValue::new(&mut settings.osc_tx_port).speed(1)).changed();
                             });
+                            ui.horizontal(|ui| {
+                                ui.label("UDP default target host (255.255.255.255 = broadcast):")
+                                    .on_hover_text("Destination for `udp:` cue commands without a target prefix — set a specific IP for unicast");
+                                settings_changed |= ui.text_edit_singleline(&mut settings.udp_tx_host).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("UDP target port:");
+                                settings_changed |= ui.add(egui::DragValue::new(&mut settings.udp_tx_port).speed(1)).changed();
+                            });
+
+                            // Named UDP targets (per-cue `udp:name:payload` addressing)
+                            ui.separator();
+                            ui.label("UDP Named Targets (udp:name:payload):");
+                            let mut target_to_remove = None;
+                            for (idx, target) in settings.udp_targets.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label("Name:");
+                                    settings_changed |= ui.text_edit_singleline(&mut target.name).changed();
+                                    ui.label("Host:");
+                                    settings_changed |= ui.text_edit_singleline(&mut target.host).changed();
+                                    if ui.button("×").clicked() {
+                                        target_to_remove = Some(idx);
+                                    }
+                                });
+                            }
+                            if let Some(idx) = target_to_remove {
+                                settings.udp_targets.remove(idx);
+                                settings_changed = true;
+                            }
+                            if ui.button("Add target").clicked() {
+                                settings.udp_targets.push(cuepool_core::UdpTarget::default());
+                                settings_changed = true;
+                            }
                             settings_changed |= ui.checkbox(&mut settings.enable_remote_control, "Enable Remote Control").changed();
                             settings_changed |= ui.checkbox(&mut settings.is_remote_host, "Is Remote Host").changed();
                             settings_changed |= ui.checkbox(&mut settings.sync_show_file_on_save, "Sync Showfile On Save").changed();

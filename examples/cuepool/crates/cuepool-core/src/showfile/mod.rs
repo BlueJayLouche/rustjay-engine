@@ -115,6 +115,18 @@ pub struct ShowSettings {
     #[serde(default = "default_osc_tx")]
     pub osc_tx_port: i32,
 
+    // Raw UDP command output (e.g. BrightSign players)
+    /// Target host for `udp:` cue commands. 255.255.255.255 = broadcast;
+    /// set a specific IP for unicast.
+    #[serde(default = "default_udp_tx_host")]
+    pub udp_tx_host: String,
+    #[serde(default = "default_udp_tx_port")]
+    pub udp_tx_port: u16,
+    /// Named per-cue UDP targets: a `udp:name:payload` command is sent to the
+    /// matching entry's host instead of the default `udp_tx_host`.
+    #[serde(default)]
+    pub udp_targets: Vec<UdpTarget>,
+
     // Remote control
     #[serde(default)]
     pub enable_remote_control: bool,
@@ -172,6 +184,9 @@ impl Default for ShowSettings {
             osc_nic: String::new(),
             osc_rx_port: default_osc_rx(),
             osc_tx_port: default_osc_tx(),
+            udp_tx_host: default_udp_tx_host(),
+            udp_tx_port: default_udp_tx_port(),
+            udp_targets: Vec::new(),
             enable_remote_control: false,
             is_remote_host: true,
             sync_show_file_on_save: true,
@@ -198,6 +213,14 @@ pub struct RemoteNode {
     pub address: String,
     #[serde(skip)]
     pub last_seen: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UdpTarget {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub host: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -238,6 +261,12 @@ fn default_osc_rx() -> i32 {
 }
 fn default_osc_tx() -> i32 {
     8000
+}
+fn default_udp_tx_host() -> String {
+    "255.255.255.255".into()
+}
+fn default_udp_tx_port() -> u16 {
+    12345
 }
 fn default_true() -> bool {
     true
