@@ -177,13 +177,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                             // so the transition is never observed here.
                             ui.data_mut(|d| d.remove_temp::<String>(edit_id));
                             let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                            if !cancelled {
-                                if let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>() {
-                                    if new_qid != qid {
+                            if !cancelled
+                                && let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>()
+                                    && new_qid != qid {
                                         queue_cmd(state, AppCommand::UpdateCueQid { qid, new_qid });
                                     }
-                                }
-                            }
                         }
                         if response.clicked() {
                             queue_select(state, qid);
@@ -298,9 +296,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         _ => "—".to_string(),
                     };
                     ui.add_sized([COL_DURATION, 18.0], |ui: &mut egui::Ui| {
-                        if let Some((pos, len, _paused)) = active_positions.get(&qid) {
-                            if let Some(len) = len {
-                                if *len > 0.0 {
+                        if let Some((pos, len, _paused)) = active_positions.get(&qid)
+                            && let Some(len) = len
+                                && *len > 0.0 {
                                     let progress = (pos / len).clamp(0.0, 1.0);
                                     let bar_width = COL_DURATION - 4.0;
                                     let bar_height = 6.0;
@@ -316,8 +314,6 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                                     ui.painter().rect_filled(fill_rect, 2.0, Color32::from_rgb(100, 180, 100));
                                     return _response;
                                 }
-                            }
-                        }
                         ui.label(RichText::new(&duration_str).monospace().size(10.0))
                     });
 
@@ -432,8 +428,8 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             // Handle dropped payload for reordering. Dropping onto a row joins
             // that row's group; dropping onto a group header makes it the first
             // member (inserted just after the header).
-            if show_mode == crate::app::ShowMode::Edit {
-                if let Some(source_idx) = dropped_payload {
+            if show_mode == crate::app::ShowMode::Edit
+                && let Some(source_idx) = dropped_payload {
                     let source = *source_idx;
                     if source != idx {
                         let to_idx = if is_group { idx + 1 } else { idx };
@@ -443,7 +439,6 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         );
                     }
                 }
-            }
         }
 
         // Trailing drop strip: drop a cue here to move it to the end and free it

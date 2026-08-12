@@ -168,11 +168,10 @@ impl TakeEditor {
             scrub_cmd = Some(AppCommand::RecorderScrub { frame: None });
         }
         self.open = open;
-        if let Some(cmd) = scrub_cmd {
-            if let Ok(mut s) = state.lock() {
+        if let Some(cmd) = scrub_cmd
+            && let Ok(mut s) = state.lock() {
                 s.command_queue.push(cmd);
             }
-        }
     }
 
     fn header_ui(&mut self, ui: &mut egui::Ui, recording: bool) {
@@ -215,12 +214,10 @@ impl TakeEditor {
                     .add_enabled(self.undo.is_some() && !recording, egui::Button::new("Undo"))
                     .on_hover_text("Undo the last edit (single level)")
                     .clicked()
-                {
-                    if let Some(prev) = self.undo.take() {
+                    && let Some(prev) = self.undo.take() {
                         self.events = prev;
                         self.edited();
                     }
-                }
             });
         });
     }
@@ -244,13 +241,11 @@ impl TakeEditor {
                 .add_enabled(has_sel, egui::Button::new("Delete channel"))
                 .on_hover_text("Remove all of this channel's events — other sources own it again")
                 .clicked()
-            {
-                if let Some((u, c)) = self.sel {
+                && let Some((u, c)) = self.sel {
                     self.snapshot_undo();
                     self.events.retain(|e| (e.universe, e.channel) != (u, c));
                     self.edited();
                 }
-            }
             ui.separator();
             ui.label("Shift (ms):");
             ui.add(egui::DragValue::new(&mut self.shift_ms).speed(10).range(-3_600_000..=3_600_000));
@@ -258,8 +253,7 @@ impl TakeEditor {
                 .add_enabled(has_sel && self.shift_ms != 0, egui::Button::new("Apply"))
                 .on_hover_text("Time-shift every event of this channel (clamped at 0)")
                 .clicked()
-            {
-                if let Some((u, c)) = self.sel {
+                && let Some((u, c)) = self.sel {
                     self.snapshot_undo();
                     for e in &mut self.events {
                         if (e.universe, e.channel) == (u, c) {
@@ -268,7 +262,6 @@ impl TakeEditor {
                     }
                     self.edited();
                 }
-            }
         });
     }
 
@@ -471,8 +464,8 @@ impl TakeEditor {
                     self.edited();
                 }
                 // Double-click empty space: insert a point.
-                if resp.double_clicked() && hover_idx.is_none() {
-                    if let Some(pos) = resp.interact_pointer_pos() {
+                if resp.double_clicked() && hover_idx.is_none()
+                    && let Some(pos) = resp.interact_pointer_pos() {
                         self.snapshot_undo();
                         self.events.push(RecEvent {
                             t_ms: to_t(pos.x) as u32,
@@ -482,18 +475,16 @@ impl TakeEditor {
                         });
                         self.edited();
                     }
-                }
                 // Right-click a point: delete it.
-                if resp.secondary_clicked() {
-                    if let Some(i) = hover_idx {
+                if resp.secondary_clicked()
+                    && let Some(i) = hover_idx {
                         self.snapshot_undo();
                         self.events.remove(i);
                         self.edited();
                     }
-                }
                 // Plain drag on empty canvas scrubs the playhead.
-                if resp.dragged() && self.drag_idx.is_none() {
-                    if let Some(pos) = resp.interact_pointer_pos() {
+                if resp.dragged() && self.drag_idx.is_none()
+                    && let Some(pos) = resp.interact_pointer_pos() {
                         let t = to_t(pos.x) as u32;
                         if t != self.scrub_ms {
                             self.scrub_ms = t;
@@ -504,7 +495,6 @@ impl TakeEditor {
                             }
                         }
                     }
-                }
             }
         } else {
             painter.text(

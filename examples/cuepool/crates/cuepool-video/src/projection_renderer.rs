@@ -464,7 +464,7 @@ mod tests {
         // Red frame, but with a BLACK top-left quadrant. A uniform-color frame
         // would hide a uniform-buffer layout bug that collapses every output
         // pixel onto the canvas's top-left texel; this asymmetry catches it.
-        let mut data = vec![255u8, 0, 0, 255].repeat((cw * ch) as usize);
+        let mut data = [255u8, 0, 0, 255].repeat((cw * ch) as usize);
         for y in 0..ch / 2 {
             for x in 0..cw / 2 {
                 let i = ((y * cw + x) * 4) as usize;

@@ -299,11 +299,10 @@ impl LightingEngine {
     pub fn tick(&mut self, cfg: &LightingConfig) {
         // ~60 Hz cap — about_to_wait runs far hotter under ControlFlow::Poll.
         let now = Instant::now();
-        if let Some(last) = self.last_tick {
-            if now.duration_since(last).as_secs_f32() < 1.0 / 60.0 {
+        if let Some(last) = self.last_tick
+            && now.duration_since(last).as_secs_f32() < 1.0 / 60.0 {
                 return;
             }
-        }
         self.last_tick = Some(now);
 
         self.reconcile_sender(cfg);
@@ -318,12 +317,11 @@ impl LightingEngine {
 
         let looks = self.evaluate(now);
         // Fade complete → collapse into live state.
-        if let Some(f) = &self.fade {
-            if now.duration_since(f.start).as_secs_f32() >= f.duration {
+        if let Some(f) = &self.fade
+            && now.duration_since(f.start).as_secs_f32() >= f.duration {
                 self.live = f.to.clone();
                 self.fade = None;
             }
-        }
 
         // Look layer, one masked frame per destination — fixtures render into
         // their node's frame and own exactly the channels they write.

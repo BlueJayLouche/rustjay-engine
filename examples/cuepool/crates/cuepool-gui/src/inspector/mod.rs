@@ -189,15 +189,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("File:");
                 let response = ui.text_edit_singleline(path);
                 changed |= response.changed();
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "aiff", "wma"])
                         .pick_file()
                     {
                         *path = new_path.to_string_lossy().to_string();
                         changed = true;
                     }
-                }
             });
             if let Some((Some(ref peaks), _)) = waveform_data {
                 let (new_zoom, new_scroll) = crate::waveform::draw(ui, peaks, waveform_zoom, waveform_scroll, 48.0);
@@ -252,15 +251,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("File:");
                 let response = ui.text_edit_singleline(path);
                 changed |= response.changed();
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Video", &["mp4", "mov", "mkv", "avi"])
                         .pick_file()
                     {
                         *path = new_path.to_string_lossy().to_string();
                         changed = true;
                     }
-                }
             });
             if let Some((Some(ref peaks), _)) = waveform_data {
                 let (new_zoom, new_scroll) = crate::waveform::draw(ui, peaks, waveform_zoom, waveform_scroll, 48.0);
@@ -470,8 +468,8 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         .unwrap_or_else(|| font.clone())
                 };
                 ui.label(shown).on_hover_text(font.as_str());
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Font", &["ttf", "otf", "ttc"])
                         .pick_file()
                     {
@@ -490,13 +488,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         }
                         changed = true;
                     }
-                }
-                if !font.is_empty() {
-                    if ui.small_button("✕").on_hover_text("Use built-in font").clicked() {
+                if !font.is_empty()
+                    && ui.small_button("✕").on_hover_text("Use built-in font").clicked() {
                         font.clear();
                         changed = true;
                     }
-                }
             });
             ui.horizontal(|ui| {
                 ui.label("Colour:");
@@ -534,15 +530,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("File:");
                 let response = ui.text_edit_singleline(path);
                 changed |= response.changed();
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "tiff", "gif"])
                         .pick_file()
                     {
                         *path = new_path.to_string_lossy().to_string();
                         changed = true;
                     }
-                }
             });
             ui.horizontal(|ui| {
                 ui.label("Fit:");
@@ -572,15 +567,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("File:");
                 let response = ui.text_edit_singleline(path);
                 changed |= response.changed();
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Media", &["mp4", "mov", "mkv", "avi", "webm", "png", "jpg", "jpeg"])
                         .pick_file()
                     {
                         *path = new_path.to_string_lossy().to_string();
                         changed = true;
                     }
-                }
             });
             ui.label(
                 egui::RichText::new(
@@ -597,15 +591,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("File:");
                 let response = ui.text_edit_singleline(path);
                 changed |= response.changed();
-                if ui.button("Browse…").clicked() {
-                    if let Some(new_path) = rfd::FileDialog::new()
+                if ui.button("Browse…").clicked()
+                    && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("DMX recording", &["dmxrec"])
                         .pick_file()
                     {
                         *path = new_path.to_string_lossy().to_string();
                         changed = true;
                     }
-                }
             });
             ui.horizontal(|ui| {
                 ui.label("Fade In (s):");
@@ -812,12 +805,11 @@ fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
     if cancelled || started_from != *value {
         return false;
     }
-    if let Ok(new) = text.parse::<Decimal>() {
-        if new != *value {
+    if let Ok(new) = text.parse::<Decimal>()
+        && new != *value {
             *value = new;
             return true;
         }
-    }
     false
 }
 
@@ -854,12 +846,11 @@ fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bo
     if cancelled || started_from != *value {
         return false;
     }
-    if let Some(new) = crate::transport::parse_timecode(&text, fps) {
-        if new != *value {
+    if let Some(new) = crate::transport::parse_timecode(&text, fps)
+        && new != *value {
             *value = new;
             return true;
         }
-    }
     false
 }
 

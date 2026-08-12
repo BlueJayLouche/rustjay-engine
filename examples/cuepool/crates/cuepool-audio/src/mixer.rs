@@ -316,9 +316,7 @@ impl Mixer {
                         temp[frame * ch + c] *= gain;
                     }
 
-                    if fade_remaining > 0 {
-                        fade_remaining -= 1;
-                    }
+                    fade_remaining = fade_remaining.saturating_sub(1);
                 }
 
                 input.fade_remaining.store(fade_remaining, Ordering::Relaxed);
@@ -379,6 +377,8 @@ fn fade_curve(t: f32, fade_type: FadeType) -> f32 {
 ///   output channel at its gain (× cue volume). This is the multichannel path.
 /// - Without one, a 2-ch source uses volume + pan + send into one output pair
 ///   (the lightweight route); any other channel count passes through 1:1.
+// ponytail: Keep routing inputs explicit; bundle them when the routing API next changes.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn route_cue(
     src: &[f32],

@@ -82,17 +82,14 @@ pub struct HotkeyTrigger {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MidiTriggerKind {
+    #[default]
     NoteOn,
     NoteOff,
     CC,
 }
 
-impl Default for MidiTriggerKind {
-    fn default() -> Self {
-        MidiTriggerKind::NoteOn
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MidiTrigger {
@@ -105,29 +102,23 @@ pub struct MidiTrigger {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ClockMode {
     TwelveHour,
     #[serde(rename = "TwentyFourHour")]
+    #[default]
     TwentyFourHour,
 }
 
-impl Default for ClockMode {
-    fn default() -> Self {
-        ClockMode::TwentyFourHour
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum RepeatMode {
+    #[default]
     Daily,
     Once,
 }
 
-impl Default for RepeatMode {
-    fn default() -> Self {
-        RepeatMode::Daily
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WallClockTrigger {

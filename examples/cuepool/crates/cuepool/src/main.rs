@@ -243,6 +243,7 @@ impl Default for OutputFrameState {
 /// lock or the frame bundle lock, and those two are never held while taking
 /// this one. The 1 s step-back `recv_timeout` happens AFTER the request is
 /// taken out and the guard dropped.
+#[derive(Default)]
 struct VideoControl {
     /// Playback identity. Every play/stop transition invalidates receiver and
     /// frame work captured under an older epoch.
@@ -292,32 +293,6 @@ struct VideoControl {
     starved: u32,
 }
 
-impl Default for VideoControl {
-    fn default() -> Self {
-        Self {
-            stream_epoch: 0,
-            frame_rx: None,
-            clock: None,
-            pause_started: None,
-            paused: false,
-            step_pending: false,
-            peek_pts: None,
-            last_pts: None,
-            step_back: None,
-            step_back_delta: None,
-            fade: None,
-            hold_position: None,
-            video_active: false,
-            text_active: false,
-            canvas_has_frame: false,
-            identify: false,
-            fit: CanvasFit::default(),
-            outputs: Vec::new(),
-            outputs_gen: 0,
-            starved: 0,
-        }
-    }
-}
 
 /// Cue-driven canvas/overlay work for the consume thread (rare; the video
 /// frames themselves flow through the decode channel). Keeps every non-egui
@@ -666,7 +641,7 @@ impl App {
         };
 
         let autosave_running = Arc::new(AtomicBool::new(true));
-        spawn_autosave_thread(Arc::clone(&cuepool.state()), Arc::clone(&autosave_running));
+        spawn_autosave_thread(Arc::clone(cuepool.state()), Arc::clone(&autosave_running));
 
         // Show-control UI: labels (cue names, meters, status) must not be
         // drag-selectable — egui's global label selection also has a
@@ -943,14 +918,12 @@ impl App {
             used[*a] = true;
         }
         for (o, a) in outputs.iter().zip(assigned.iter_mut()) {
-            if a.is_none() {
-                if let Some(idx) = o.fullscreen_monitor {
-                    if idx < monitors.len() && !used[idx] {
+            if a.is_none()
+                && let Some(idx) = o.fullscreen_monitor
+                    && idx < monitors.len() && !used[idx] {
                         used[idx] = true;
                         *a = Some(idx);
                     }
-                }
-            }
         }
 
         // Windowed (un-assigned) outputs are tiled side-by-side at a preview size
@@ -1238,11 +1211,10 @@ impl App {
                 next_standby_qid(&state.show_file.cues, start_idx)
             }
         };
-        if let Some(next_qid) = next_qid {
-            if let Ok(mut state) = self.cuepool.state().lock() {
+        if let Some(next_qid) = next_qid
+            && let Ok(mut state) = self.cuepool.state().lock() {
                 state.selected_cue_id = Some(next_qid);
             }
-        }
     }
 
     /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
@@ -1892,15 +1864,16 @@ impl App {
             let path = entry.path();
             if path.is_file() && path.file_name()? == target {
                 return Some(path);
-            } else if path.is_dir() {
-                if let Some(found) = Self::find_in_dir(&path, target) {
+            } else if path.is_dir()
+                && let Some(found) = Self::find_in_dir(&path, target) {
                     return Some(found);
                 }
-            }
         }
         None
     }
 
+    // ponytail: Preserve the cue-to-engine mapping; add a parameter object when this API changes.
+    #[allow(clippy::too_many_arguments)]
     fn play_audio(
         &mut self,
         path: &str,
@@ -3236,8 +3209,8 @@ impl App {
 
         // Capture current show time into a cue's timecode trigger if
         // requested — works while paused (that's the frame-step workflow).
-        if let Some(qid) = capture_qid {
-            if let Ok(mut state) = self.cuepool.state().lock() {
+        if let Some(qid) = capture_qid
+            && let Ok(mut state) = self.cuepool.state().lock() {
                 if let Some(cue) = state.show_file.cues.iter_mut().find(|c| c.base().qid == qid) {
                     cue.base_mut().triggers.timecode = Some(cuepool_core::TimecodeTrigger {
                         time: Timespan::from_secs_f64(elapsed),
@@ -3247,7 +3220,6 @@ impl App {
                 }
                 state.pending_timecode_capture = None;
             }
-        }
 
         // Frozen clock: never fire while paused (a just-captured or stepped-past
         // trigger would fire instantly). Anything passed by stepping fires on
@@ -3280,11 +3252,10 @@ impl App {
                 log::debug!("OSC event: {ev:?}");
                 match ev {
                     OscEvent::Go { qid } => {
-                        if let Some(qid_str) = qid {
-                            if let Ok(qid_dec) = qid_str.parse::<rust_decimal::Decimal>() {
+                        if let Some(qid_str) = qid
+                            && let Ok(qid_dec) = qid_str.parse::<rust_decimal::Decimal>() {
                                 let _ = self.cuepool.state().lock().map(|mut s| s.selected_cue_id = Some(qid_dec));
                             }
-                        }
                         if let Ok(mut state) = self.cuepool.state().lock() {
                             state.command_queue.push(AppCommand::Go);
                         }
@@ -3300,11 +3271,10 @@ impl App {
                         }
                     }
                     OscEvent::Unpause { .. } => {
-                        if self.paused {
-                            if let Ok(mut state) = self.cuepool.state().lock() {
+                        if self.paused
+                            && let Ok(mut state) = self.cuepool.state().lock() {
                                 state.command_queue.push(AppCommand::Pause);
                             }
-                        }
                     }
                     OscEvent::Select { qid } => {
                         if let Ok(qid_dec) = qid.parse::<rust_decimal::Decimal>() {
@@ -3432,11 +3402,10 @@ impl App {
                             if let Ok(qid_dec) = qid.parse::<rust_decimal::Decimal>() {
                                 let _ = self.cuepool.state().lock().map(|mut s| s.selected_cue_id = Some(qid_dec));
                             }
-                            if self.paused {
-                                if let Ok(mut state) = self.cuepool.state().lock() {
+                            if self.paused
+                                && let Ok(mut state) = self.cuepool.state().lock() {
                                     state.command_queue.push(AppCommand::Pause);
                                 }
-                            }
                         }
                     }
                     OscEvent::RemotePreload { target, qid, time: _ } => {
@@ -3497,11 +3466,10 @@ impl App {
             let Ok(mut state) = self.cuepool.state().lock() else { return; };
             let now = Instant::now();
             for node in &mut state.show_file.show_settings.remote_nodes {
-                if let Some(last) = node.last_seen {
-                    if now.duration_since(last) > Duration::from_secs(5) {
+                if let Some(last) = node.last_seen
+                    && now.duration_since(last) > Duration::from_secs(5) {
                         // Node timed out — keep it in the list but last_seen is stale
                     }
-                }
             }
         }
     }
@@ -3544,10 +3512,10 @@ impl App {
 
         // Check for video cues that have looped and restart their video threads.
         // MTC-follow cues never loop on their own — the MTC master owns position.
-        if self.mtc_follow.is_none() {
-        if let Some(video_qid) = self.current_video_qid {
-            if let Some(ac) = self.active_cues.iter_mut().find(|ac| ac.qid == video_qid) {
-                if let Some(ref counter) = ac.loop_counter {
+        if self.mtc_follow.is_none()
+        && let Some(video_qid) = self.current_video_qid
+            && let Some(ac) = self.active_cues.iter_mut().find(|ac| ac.qid == video_qid)
+                && let Some(ref counter) = ac.loop_counter {
                     let current = counter.load(Ordering::Relaxed);
                     if current > ac.video_loop_count {
                         ac.video_loop_count = current;
@@ -3566,9 +3534,6 @@ impl App {
                         }
                     }
                 }
-            }
-        }
-        }
 
         // Check for delayed cues whose timer has expired
         {
@@ -3746,9 +3711,9 @@ impl App {
                 // Synthesize a panel entry from the video clock so it still shows
                 // as active. Position comes from the video clock (frozen across
                 // pause); length from the cue's duration field when set.
-                if let Some(vqid) = self.current_video_qid {
-                    if !gui_active.iter().any(|c| c.qid == vqid) {
-                        if let Some(cue) = state.show_file.cues.iter().find(|c| c.base().qid == vqid) {
+                if let Some(vqid) = self.current_video_qid
+                    && !gui_active.iter().any(|c| c.qid == vqid)
+                        && let Some(cue) = state.show_file.cues.iter().find(|c| c.base().qid == vqid) {
                             let paused = video_paused;
                             let position_secs = video_pos_secs;
                             let dur = match cue {
@@ -3765,8 +3730,6 @@ impl App {
                                 state: if paused { CueState::Paused } else { CueState::Playing },
                             });
                         }
-                    }
-                }
                 state.active_cues = gui_active;
             }
         }
@@ -3962,15 +3925,14 @@ impl ApplicationHandler<AppEvent> for App {
                             config.width = size.width;
                             config.height = size.height;
                         }
-                        if let Some(surface) = self.control_surface.as_ref() {
-                            if let Some(config) = self.control_config.as_ref() {
+                        if let Some(surface) = self.control_surface.as_ref()
+                            && let Some(config) = self.control_config.as_ref() {
                                 let _configure_guard = self
                                     .configure_gate
                                     .write()
                                     .unwrap_or_else(|e| e.into_inner());
                                 surface.configure(&self.device, config);
                             }
-                        }
                     }
                 }
                 WindowEvent::DroppedFile(path) => {
@@ -4018,11 +3980,10 @@ impl ApplicationHandler<AppEvent> for App {
                     if let Some(ids) = self.window_ids.as_mut() {
                         ids.video.retain(|id| *id != window_id);
                     }
-                    if self.output_windows.is_empty() {
-                        if let Ok(mut state) = self.cuepool.state().lock() {
+                    if self.output_windows.is_empty()
+                        && let Ok(mut state) = self.cuepool.state().lock() {
                             state.show_video_window = false;
                         }
-                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if event.state == winit::event::ElementState::Pressed {
@@ -4038,19 +3999,8 @@ impl ApplicationHandler<AppEvent> for App {
                                 out.window.set_fullscreen(None);
                                 out.window.set_cursor_visible(true);
                             }
-                            // F11 toggles fullscreen
-                            else if is_f11 {
-                                let currently = out.window.fullscreen().is_some();
-                                if currently {
-                                    out.window.set_fullscreen(None);
-                                    out.window.set_cursor_visible(true);
-                                } else {
-                                    out.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
-                                    out.window.set_cursor_visible(false);
-                                }
-                            }
-                            // Ctrl+F or Cmd+F toggles fullscreen
-                            else if is_f && has_ctrl {
+                            // F11, Ctrl+F, or Cmd+F toggles fullscreen
+                            else if is_f11 || (is_f && has_ctrl) {
                                 let currently = out.window.fullscreen().is_some();
                                 if currently {
                                     out.window.set_fullscreen(None);
@@ -4452,6 +4402,8 @@ fn resolve_goto_target(
 /// Lock order: `control` and `frame_state` are both leaf locks, never held
 /// together across GPU calls and never held while sleeping or blocking on
 /// `recv_timeout`.
+// ponytail: Keep thread resources explicit; bundle them when this pipeline API next changes.
+#[allow(clippy::too_many_arguments)]
 fn video_consume_thread(
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -5133,11 +5085,10 @@ fn video_decode_thread(
             match source.read_frame() {
                 Some(f) if f.pts + 1e-4 < t => prev = Some(f),
                 Some(f) => {
-                    if let Some(p) = prev.take() {
-                        if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
+                    if let Some(p) = prev.take()
+                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
                             return;
                         }
-                    }
                     if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(f)) {
                         return;
                     }
@@ -5145,11 +5096,10 @@ fn video_decode_thread(
                 }
                 None => {
                     // t is past the last frame: deliver that frame and end.
-                    if let Some(p) = prev.take() {
-                        if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
+                    if let Some(p) = prev.take()
+                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
                             return;
                         }
-                    }
                     send_video_message(&frame_tx, &stop_flag, VideoMessage::Eof);
                     return;
                 }
@@ -5167,11 +5117,10 @@ fn video_decode_thread(
     while !stop_flag.load(Ordering::Relaxed) {
         match source.read_frame() {
             Some(frame) => {
-                if std::mem::take(&mut diag_path_pending) {
-                    if let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
+                if std::mem::take(&mut diag_path_pending)
+                    && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
                         v.decode_path = source.decode_path().to_string();
                     }
-                }
                 if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(frame)) {
                     return;
                 }
@@ -5262,7 +5211,7 @@ fn spawn_autosave_thread(state: SharedStateHandle, running: Arc<AtomicBool>) {
             let Some(_project_path) = path else { continue };
 
             let dir = dirs::data_dir()
-                .unwrap_or_else(|| std::env::temp_dir())
+                .unwrap_or_else(std::env::temp_dir)
                 .join("CuePool");
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 log::warn!("Autosave: failed to create dir {:?}: {}", dir, e);
@@ -5300,13 +5249,11 @@ fn settings_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_settings() -> AppSettings {
-    if let Some(path) = settings_path() {
-        if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(settings) = serde_json::from_str(&data) {
+    if let Some(path) = settings_path()
+        && let Ok(data) = std::fs::read_to_string(&path)
+            && let Ok(settings) = serde_json::from_str(&data) {
                 return settings;
             }
-        }
-    }
     AppSettings::default()
 }
 
@@ -5336,7 +5283,7 @@ fn emergency_save(state: &SharedStateHandle) {
     };
 
     let dir = dirs::data_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join("CuePool");
     let _ = std::fs::create_dir_all(&dir);
 
@@ -5704,11 +5651,11 @@ mod tests {
 
     #[test]
     fn test_parse_osc_command_with_args() {
-        let msg = parse_osc_command("/qplayer/go,5,3.14,hello").unwrap();
+        let msg = parse_osc_command("/qplayer/go,5,2.5,hello").unwrap();
         assert_eq!(msg.addr, "/qplayer/go");
         assert_eq!(msg.args.len(), 3);
         assert_eq!(msg.args[0], rosc::OscType::Int(5));
-        assert_eq!(msg.args[1], rosc::OscType::Float(3.14));
+        assert_eq!(msg.args[1], rosc::OscType::Float(2.5));
         assert_eq!(msg.args[2], rosc::OscType::String("hello".into()));
     }
 

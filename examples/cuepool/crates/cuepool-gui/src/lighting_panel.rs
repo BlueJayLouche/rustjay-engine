@@ -75,8 +75,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 .button("Export sheet…")
                 .on_hover_text("Save the patch as CSV: fixtures, per-channel detail, and segment spans, with overlap warnings")
                 .clicked()
-            {
-                if let Some(path) = rfd::FileDialog::new()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("CSV", &["csv"])
                     .set_file_name("patch-sheet.csv")
                     .save_file()
@@ -88,7 +87,6 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         log::info!("Patch sheet exported to {}", path.display());
                     }
                 }
-            }
             if ui
                 .button("+ Add Fixture")
                 .on_hover_text("Patch a new fixture at the next free address")
@@ -517,8 +515,7 @@ fn profiles_editor(ui: &mut egui::Ui, lighting: &mut cuepool_core::LightingConfi
             .button("Import GDTF…")
             .on_hover_text("Import a fixture profile from a .gdtf file (pick a DMX mode if it has several)")
             .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new().add_filter("GDTF fixture", &["gdtf"]).pick_file() {
+            && let Some(path) = rfd::FileDialog::new().add_filter("GDTF fixture", &["gdtf"]).pick_file() {
                 match cuepool_core::gdtf::parse_gdtf(&path) {
                     Ok(f) if f.modes.len() == 1 => {
                         import_gdtf_mode(lighting, &f, 0, &free_user_id);
@@ -530,7 +527,6 @@ fn profiles_editor(ui: &mut egui::Ui, lighting: &mut cuepool_core::LightingConfi
                     Err(e) => log::error!("GDTF import failed: {e}"),
                 }
             }
-        }
     });
 
     // Multi-mode GDTF: pick which DMX mode becomes the profile.
@@ -601,11 +597,10 @@ fn profiles_editor(ui: &mut egui::Ui, lighting: &mut cuepool_core::LightingConfi
                 if resp.secondary_clicked() {
                     remove_ch = Some(ci);
                 }
-                if let Some(payload) = resp.dnd_release_payload::<(String, usize)>() {
-                    if payload.0 == profile.id && payload.1 != ci {
+                if let Some(payload) = resp.dnd_release_payload::<(String, usize)>()
+                    && payload.0 == profile.id && payload.1 != ci {
                         move_ch = Some((payload.1, ci));
                     }
-                }
             }
             if let Some((from, to)) = move_ch {
                 let role = profile.channels.remove(from);

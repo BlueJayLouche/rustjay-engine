@@ -307,7 +307,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let eq = EqProcessor::new(dc_source(1.0), settings.clone());
+        let eq = EqProcessor::new(dc_source(1.0), settings);
 
         // Initially disabled
         let mut buf = vec![0.0f32; 4];

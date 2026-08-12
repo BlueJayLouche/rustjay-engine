@@ -155,10 +155,18 @@ pub struct OscRouter {
     root: RouterNode,
 }
 
+// ponytail: Keep callback storage inline; introduce aliases when the router API next changes.
+#[allow(clippy::type_complexity)]
 struct RouterNode {
     handlers: Vec<Box<dyn Fn(&OscMessage) + Send>>,
     children: HashMap<String, RouterNode>,
     wildcard: Option<Box<RouterNode>>,
+}
+
+impl Default for OscRouter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OscRouter {
@@ -371,11 +379,10 @@ impl OscManager {
             // DMX recorder: literal channel input + transport verbs.
             let tx = event_tx.clone();
             r.subscribe("/dmx/?/?", move |msg| {
-                if let Some((universe, channel)) = parse_dmx_addr(&msg.addr) {
-                    if let Some(value) = msg.args.first().and_then(arg_to_dmx) {
+                if let Some((universe, channel)) = parse_dmx_addr(&msg.addr)
+                    && let Some(value) = msg.args.first().and_then(arg_to_dmx) {
                         let _ = tx.send(OscEvent::DmxChannel { universe, channel, value });
                     }
-                }
             });
             for (verb, event) in [
                 ("record", OscEvent::RecorderRecord),
