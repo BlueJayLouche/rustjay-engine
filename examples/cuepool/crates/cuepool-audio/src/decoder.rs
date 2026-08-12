@@ -10,13 +10,13 @@ use crate::SampleProvider;
 use std::cell::UnsafeCell;
 use std::fs::File;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::units::Timestamp;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
@@ -41,7 +41,9 @@ pub struct FileDecoder {
 
 struct Inner {
     format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    decoder: Box<dyn AudioDecoder>,
+    path: String,
+    reopen_on_eof_seek: bool,
     track_id: u32,
     /// Converted-but-unconsumed interleaved f32 samples.
     residual: Vec<f32>,
@@ -59,31 +61,34 @@ impl FileDecoder {
             hint.with_extension(ext);
         }
 
-        let probed = symphonia::default::get_probe().format(
+        let mut format = symphonia::default::get_probe().probe(
             &hint,
             mss,
-            &FormatOptions { enable_gapless: true, ..Default::default() },
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )?;
-        let mut format = probed.format;
 
+        let reopen_on_eof_seek = format.format_info().short_name == "isomp4";
         let (track_id, mut sample_rate, mut channels, n_frames, codec_params) = {
             let track = format
-                .tracks()
-                .iter()
-                .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+                .first_track_known_codec(TrackType::Audio)
+                .ok_or(DecodeError::NoAudioTrack)?;
+            let codec_params = track
+                .codec_params
+                .as_ref()
+                .and_then(|params| params.audio())
                 .ok_or(DecodeError::NoAudioTrack)?;
             (
                 track.id,
-                track.codec_params.sample_rate,
-                track.codec_params.channels.map(|c| c.count() as u16),
-                track.codec_params.n_frames,
-                track.codec_params.clone(),
+                codec_params.sample_rate,
+                codec_params.channels.as_ref().map(|c| c.count() as u16),
+                track.num_frames,
+                codec_params.clone(),
             )
         };
 
         let mut decoder = symphonia::default::get_codecs()
-            .make(&codec_params, &DecoderOptions::default())?;
+            .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())?;
 
         // AAC in MP4 frequently omits the channel count (and occasionally the
         // sample rate) from the container — it's only known once the first packet
@@ -94,20 +99,16 @@ impl FileDecoder {
         if sample_rate.is_none() || channels.is_none() {
             loop {
                 match format.next_packet() {
-                    Ok(packet) => {
-                        if packet.track_id() != track_id {
+                    Ok(Some(packet)) => {
+                        if packet.track_id != track_id {
                             continue;
                         }
                         match decoder.decode(&packet) {
                             Ok(decoded) => {
-                                let spec = *decoded.spec();
-                                sample_rate.get_or_insert(spec.rate);
-                                channels.get_or_insert(spec.channels.count() as u16);
+                                sample_rate.get_or_insert(decoded.spec().rate());
+                                channels.get_or_insert(decoded.spec().channels().count() as u16);
                                 if decoded.frames() > 0 {
-                                    let mut sbuf =
-                                        SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                                    sbuf.copy_interleaved_ref(decoded);
-                                    residual.extend_from_slice(sbuf.samples());
+                                    decoded.copy_to_vec_interleaved(&mut residual);
                                 }
                                 break;
                             }
@@ -118,7 +119,7 @@ impl FileDecoder {
                             }
                         }
                     }
-                    Err(_) => {
+                    Ok(None) | Err(_) => {
                         eof = true;
                         break;
                     }
@@ -134,6 +135,8 @@ impl FileDecoder {
             inner: UnsafeCell::new(Inner {
                 format,
                 decoder,
+                path: path.to_owned(),
+                reopen_on_eof_seek,
                 track_id,
                 residual,
                 residual_pos: 0,
@@ -152,8 +155,8 @@ impl Inner {
     fn fill_residual(&mut self) -> bool {
         loop {
             let packet = match self.format.next_packet() {
-                Ok(p) => p,
-                Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Ok(Some(p)) => p,
+                Ok(None) => {
                     self.eof = true;
                     return false;
                 }
@@ -170,7 +173,7 @@ impl Inner {
                 }
             };
 
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
 
@@ -179,12 +182,7 @@ impl Inner {
                     if decoded.frames() == 0 {
                         continue;
                     }
-                    // ponytail: one SampleBuffer alloc per packet — BG decode thread, not the
-                    // audio callback. Reuse a max-sized buffer if profiling ever flags it.
-                    let mut sbuf = SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                    sbuf.copy_interleaved_ref(decoded);
-                    self.residual.clear();
-                    self.residual.extend_from_slice(sbuf.samples());
+                    decoded.copy_to_vec_interleaved(&mut self.residual);
                     self.residual_pos = 0;
                     return true;
                 }
@@ -231,10 +229,30 @@ impl SampleProvider for FileDecoder {
 
     fn seek(&self, sample: usize) {
         let inner = unsafe { &mut *self.inner.get() };
+        if inner.eof && inner.reopen_on_eof_seek {
+            // ponytail: symphonia 0.6's ISO/MP4 reader cannot seek after Ok(None) (EOF clears the
+            // pending mdat; seek does not restore it — pdeljanov/Symphonia#536). Reopen only at
+            // EOF; remove this workaround when that fix lands.
+            let path = inner.path.clone();
+            match Self::open(&path) {
+                Ok(fresh) => *inner = fresh.inner.into_inner(),
+                Err(e) => {
+                    log::warn!("seek reopen error: {}", e);
+                    return;
+                }
+            }
+        }
         let frame = (sample / self.channels.max(1) as usize) as u64;
+        let Ok(ts) = Timestamp::try_from(frame) else {
+            log::warn!("seek target is out of range: {}", frame);
+            return;
+        };
         if let Err(e) = inner.format.seek(
             SeekMode::Accurate,
-            SeekTo::TimeStamp { ts: frame, track_id: inner.track_id },
+            SeekTo::Timestamp {
+                ts,
+                track_id: inner.track_id,
+            },
         ) {
             log::warn!("seek error: {}", e);
             return;

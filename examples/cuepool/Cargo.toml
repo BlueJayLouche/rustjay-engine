@@ -23,7 +23,7 @@ roxmltree = "0.20"
 # Audio / Video
 cpal = "0.15"
 rubato = "0.16"
-symphonia = { version = "0.5", features = ["all"] }
+symphonia = { version = "0.6", features = ["all"] }
 ffmpeg-next = "8.1"
 
 # GPU / UI
