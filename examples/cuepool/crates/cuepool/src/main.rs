@@ -165,13 +165,25 @@ struct OutputWindow {
 }
 
 impl Drop for OutputWindow {
-    /// Signal the render thread and join it BEFORE the window/surface can die,
-    /// so no thread presents into a torn-down surface. The thread is blocked
-    /// at most one vsync (~20 ms at 50 Hz), so the join is bounded.
+    /// Signal the render thread, but never let a wedged driver call freeze winit.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(join) = self.join.take() {
-            let _ = join.join();
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while !join.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if join.is_finished() {
+                let _ = join.join();
+            } else {
+                // Detaching is the lesser evil: the worker owns its Surface and
+                // cloned GPU/state handles. `create_surface(Arc<Window>)` keeps
+                // that window alive until the worker eventually drops the Surface.
+                log::error!(
+                    "Output '{}' render thread did not stop within 250 ms; detaching",
+                    self.output_config.name,
+                );
+            }
         }
     }
 }
@@ -327,6 +339,39 @@ enum CanvasCommand {
     Overlay(Option<(VideoFrame, CanvasFit)>),
 }
 
+/// Collapse a drained burst to the latest state setters. Survivors stay in
+/// their original order; `Drop` resets every earlier canvas/overlay command.
+fn coalesce_canvas_commands(commands: impl IntoIterator<Item = CanvasCommand>) -> Vec<CanvasCommand> {
+    let mut pending = Vec::new();
+    for command in commands {
+        if matches!(command, CanvasCommand::Drop) {
+            pending.clear();
+        } else {
+            pending.retain(|earlier| {
+                !matches!(
+                    (&command, earlier),
+                    (CanvasCommand::Resize { .. }, CanvasCommand::Resize { .. })
+                        | (CanvasCommand::Overlay(_), CanvasCommand::Overlay(_))
+                        | (
+                            CanvasCommand::BlankCanvas | CanvasCommand::Image(..),
+                            CanvasCommand::BlankCanvas | CanvasCommand::Image(..)
+                        )
+                )
+            });
+        }
+        pending.push(command);
+    }
+    pending
+}
+
+fn fade_elapsed(start: Instant, pause_started: Option<Instant>) -> Duration {
+    pause_started.unwrap_or_else(Instant::now).saturating_duration_since(start)
+}
+
+fn shift_fade_start_after_pause(start: Instant, pause_started: Instant, resumed_at: Instant) -> Instant {
+    start + resumed_at.saturating_duration_since(start.max(pause_started))
+}
+
 /// Raise the Windows timer resolution to 1 ms for the process lifetime.
 /// winit does not do this itself: without it, `ControlFlow::WaitUntil` and
 /// `thread::sleep` quantize to the 15.6 ms default, capping the main-loop tick
@@ -334,19 +379,25 @@ enum CanvasCommand {
 /// cadences). Direct winmm FFI — no crate dependency.
 #[cfg(windows)]
 mod win_timer {
+    const TIMERR_NOCANDO: u32 = 97;
+
     #[link(name = "winmm")]
-    unsafe extern "C" {
+    unsafe extern "system" {
         fn timeBeginPeriod(period: u32) -> u32;
         fn timeEndPeriod(period: u32) -> u32;
     }
     pub fn raise() {
-        unsafe {
-            timeBeginPeriod(1);
+        if unsafe { timeBeginPeriod(1) } == TIMERR_NOCANDO {
+            log::warn!(
+                "timeBeginPeriod(1) failed: TIMERR_NOCANDO; timer quantization may degrade playback"
+            );
         }
     }
     pub fn release() {
-        unsafe {
-            timeEndPeriod(1);
+        if unsafe { timeEndPeriod(1) } == TIMERR_NOCANDO {
+            log::warn!(
+                "timeEndPeriod(1) failed: TIMERR_NOCANDO; timer-resolution request may remain active"
+            );
         }
     }
 }
@@ -415,6 +466,8 @@ struct App {
     /// Stop signal + handle for the consume thread (joined on graceful exit).
     consume_stop: Arc<AtomicBool>,
     consume_join: Option<std::thread::JoinHandle<()>>,
+    /// One-shot guard for the about-to-wait consumer watchdog.
+    consume_failure_reported: bool,
     /// Last projection outputs pushed to the consume thread (change detect).
     published_outputs: Vec<cuepool_core::ProjectorOutput>,
 
@@ -711,6 +764,7 @@ impl App {
             canvas_cmd_tx,
             consume_stop,
             consume_join: Some(consume_join),
+            consume_failure_reported: false,
             published_outputs: Vec::new(),
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
@@ -2561,8 +2615,12 @@ impl App {
             let mut ctl = self.video_control.lock_unpoisoned();
             ctl.paused = false;
             if let Some(t) = ctl.pause_started.take() {
+                let resumed_at = std::time::Instant::now();
                 if let Some(c) = ctl.clock.as_mut() {
-                    *c += t.elapsed();
+                    *c += resumed_at.saturating_duration_since(t);
+                }
+                if let Some((start, _)) = ctl.fade.as_mut() {
+                    *start = shift_fade_start_after_pause(*start, t, resumed_at);
                 }
             }
         }
@@ -4046,6 +4104,15 @@ impl ApplicationHandler<AppEvent> for App {
             self.hard_exit();
         }
 
+        if !self.consume_failure_reported
+            && self.consume_join.as_ref().is_some_and(|join| join.is_finished())
+        {
+            const ERROR: &str = "video-consume thread exited unexpectedly; video output is frozen";
+            self.consume_failure_reported = true;
+            log::error!("{ERROR}");
+            self.cuepool.state().lock_unpoisoned().diagnostics.consumer_error = Some(ERROR.into());
+        }
+
         // A new or loaded project bumps project_generation — stop the old project's
         // cues and close its output windows.
         let project_generation = self.cuepool.state().lock_unpoisoned().project_generation;
@@ -4224,7 +4291,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             let fade_done = ctl
                 .fade
-                .is_some_and(|(start, dur)| start.elapsed().as_secs_f32() >= dur);
+                .is_some_and(|(start, dur)| fade_elapsed(start, ctl.pause_started).as_secs_f32() >= dur);
             drop(ctl);
             if fade_done {
                 self.stop_video_playback();
@@ -4413,7 +4480,7 @@ fn video_consume_thread(
     while !stop.load(Ordering::Relaxed) {
         // ── Cue-driven canvas/overlay commands (rare) ──
         let mut views_dirty = false;
-        while let Ok(cmd) = cmd_rx.try_recv() {
+        for cmd in coalesce_canvas_commands(cmd_rx.try_iter()) {
             match cmd {
                 CanvasCommand::Resize { w, h, force } => {
                     if force || canvas.as_ref().is_none_or(|c| c.width != w || c.height != h) {
@@ -4709,7 +4776,8 @@ fn video_consume_thread(
                 // playback when the ramp completes.
                 let opacity = match ctl.fade {
                     Some((start, dur)) => {
-                        1.0 - (start.elapsed().as_secs_f32() / dur).clamp(0.0, 1.0)
+                        1.0 - (fade_elapsed(start, ctl.pause_started).as_secs_f32() / dur)
+                            .clamp(0.0, 1.0)
                     }
                     None => 1.0,
                 };
@@ -5499,6 +5567,47 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_commands_coalesce_to_latest_state_after_drop() {
+        let commands = coalesce_canvas_commands([
+            CanvasCommand::Resize { w: 640, h: 480, force: false },
+            CanvasCommand::Image("discarded.png".into(), CanvasFit::default()),
+            CanvasCommand::Overlay(None),
+            CanvasCommand::Drop,
+            CanvasCommand::Resize { w: 1280, h: 720, force: false },
+            CanvasCommand::BlankCanvas,
+            CanvasCommand::Overlay(None),
+            CanvasCommand::Resize { w: 1920, h: 1080, force: true },
+            CanvasCommand::Image("latest.png".into(), CanvasFit::default()),
+            CanvasCommand::Overlay(None),
+        ]);
+
+        assert_eq!(commands.len(), 4);
+        assert!(matches!(commands[0], CanvasCommand::Drop));
+        assert!(matches!(
+            commands[1],
+            CanvasCommand::Resize { w: 1920, h: 1080, force: true }
+        ));
+        assert!(matches!(&commands[2], CanvasCommand::Image(path, _) if path == "latest.png"));
+        assert!(matches!(commands[3], CanvasCommand::Overlay(None)));
+    }
+
+    #[test]
+    fn picture_fade_freezes_when_paused_before_or_after_it_starts() {
+        let origin = Instant::now();
+        let paused_at = origin + Duration::from_secs(2);
+        let resumed_at = origin + Duration::from_secs(7);
+
+        assert_eq!(fade_elapsed(origin, Some(paused_at)), Duration::from_secs(2));
+        let shifted = shift_fade_start_after_pause(origin, paused_at, resumed_at);
+        assert_eq!(resumed_at.duration_since(shifted), Duration::from_secs(2));
+
+        let started_while_paused = origin + Duration::from_secs(4);
+        assert_eq!(fade_elapsed(started_while_paused, Some(paused_at)), Duration::ZERO);
+        let shifted = shift_fade_start_after_pause(started_while_paused, paused_at, resumed_at);
+        assert_eq!(shifted, resumed_at);
+    }
 
     #[test]
     fn test_parse_osc_command_address_only() {

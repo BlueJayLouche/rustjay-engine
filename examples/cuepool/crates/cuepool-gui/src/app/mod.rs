@@ -213,6 +213,8 @@ pub struct Diagnostics {
     /// Main event-loop iterations per second. The field diagnostic for a
     /// GPU-stalled winit loop (healthy ≈ 250, the Windows WSI stall showed 10).
     pub event_loop_per_sec: f64,
+    /// Set once if the video consume thread exits while the app is still running.
+    pub consumer_error: Option<String>,
     pub video: Option<VideoDiagnostics>,
 }
 
@@ -266,6 +268,7 @@ impl Diagnostics {
             ("Event Loop/s".into(), format!("{:.0}", self.event_loop_per_sec)),
             ("Presented/s (all outputs)".into(), format!("{:.0}", self.presented_per_sec)),
             ("Starved/s".into(), format!("{:.0}", self.starved_per_sec)),
+            ("Video Consumer".into(), self.consumer_error.clone().unwrap_or_else(|| "running".into())),
         ]));
 
         let env = if self.env_overrides.is_empty() {
