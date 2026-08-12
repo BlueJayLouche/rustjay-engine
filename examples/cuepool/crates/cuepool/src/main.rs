@@ -1092,7 +1092,7 @@ impl App {
             let queue = self.queue.clone();
             let event_loop_proxy = self.event_loop_proxy.clone();
             let fallback_output = output_config.clone();
-            let join = std::thread::Builder::new()
+            let join = match std::thread::Builder::new()
                 .name(format!("output-render-{}", output_config.name))
                 .spawn(move || {
                     output_render_thread(
@@ -1111,8 +1111,19 @@ impl App {
                         out_idx,
                         fallback_output,
                     );
-                })
-                .expect("spawn output render thread");
+                }) {
+                Ok(join) => join,
+                Err(e) => {
+                    // Skipping the pushes below drops the window and registers
+                    // nothing, so the failed output simply stays dark while the
+                    // rest of the show carries on.
+                    log::error!(
+                        "Output '{}' disabled: could not spawn render thread: {e}",
+                        output_config.name
+                    );
+                    continue;
+                }
+            };
             self.output_windows.push(OutputWindow {
                 id: video_id,
                 window,
@@ -1589,10 +1600,16 @@ impl App {
         let (tx, rx) = std::sync::mpsc::sync_channel::<VideoFrame>(3);
         self.pixmap_frame_rx = Some(rx);
         let stop = Arc::clone(&self.pixmap_stop_flag);
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("pixmap-decode".into())
             .spawn(move || pixmap_decode_thread(&resolved, loop_mode, stop, tx))
-            .expect("spawn pixmap decode thread");
+        {
+            // Drop the receiver again so the render tick sees "no stream"
+            // instead of a channel that never fills; the cue degrades to a
+            // dark pixmap rather than aborting mid-show.
+            self.pixmap_frame_rx = None;
+            log::error!("PixelMap cue degraded: could not spawn decode thread: {e}");
+        }
     }
 
     /// Get the pixmap texture, (re)created at the given size.
@@ -2443,12 +2460,18 @@ impl App {
         let pause_flag = Arc::clone(&self.video_pause_flag);
         let diag_state = Arc::clone(self.cuepool.state());
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
                 video_decode_thread(&path, start_before, stop_flag, pause_flag, frame_tx, diag_state);
             })
-            .expect("spawn video decode thread");
+        {
+            // Uninstall the receiver so the consume thread isn't left waiting
+            // on a stream that never starts. The epoch bump above stands — it
+            // correctly invalidates anything queued by the previous decoder.
+            self.video_control.lock_unpoisoned().frame_rx = None;
+            log::error!("Video cue degraded: could not spawn decode thread: {e}");
+        }
     }
 
     /// Restart the current video decode thread (used when audio loops).
