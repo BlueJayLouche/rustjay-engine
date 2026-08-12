@@ -1124,6 +1124,7 @@ dependencies = [
  "cuepool-audio",
  "cuepool-core",
  "cuepool-protocols",
+ "rosc",
  "serde_json",
 ]
 

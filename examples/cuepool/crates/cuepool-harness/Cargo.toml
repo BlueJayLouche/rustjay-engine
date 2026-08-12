@@ -12,4 +12,5 @@ publish = false
 cuepool-core.workspace = true
 cuepool-audio.workspace = true
 cuepool-protocols.workspace = true
+rosc.workspace = true
 serde_json.workspace = true
