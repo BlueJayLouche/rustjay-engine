@@ -119,6 +119,10 @@ pub struct AudioEngine {
     metering: Arc<MeteringProcessor>,
     /// Master limiter core, shared with the audio callback so GR is readable from main thread.
     limiter: Arc<std::sync::Mutex<Limiter>>,
+    /// Set by the audio callback if CPAL supplies an unexpected sample format.
+    format_mismatch: Arc<std::sync::atomic::AtomicBool>,
+    /// Ensures the control thread reports the callback format mismatch only once.
+    format_mismatch_logged: std::sync::atomic::AtomicBool,
 }
 
 /// Simple atomic f32 using `to_bits`/`from_bits`.
@@ -324,6 +328,8 @@ impl AudioEngine {
         // Arc-shared so read_limiter_gr_db() on the main thread reads GR from the callback.
         let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(0.95, sample_rate, channels)));
         let limiter_clone = Arc::clone(&limiter);
+        let format_mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let format_mismatch_clone = Arc::clone(&format_mismatch);
 
         let mut scratch = vec![0.0; scratch_samples];
         let mut oversized_callback_logged = false;
@@ -331,43 +337,17 @@ impl AudioEngine {
             config,
             sample_format,
             move |data: &mut cpal::Data, _info: &cpal::OutputCallbackInfo| {
-                match sample_format {
-                    cpal::SampleFormat::F32 => render_master(
-                        data.as_slice_mut::<f32>().expect("CPAL F32 output buffer"),
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    cpal::SampleFormat::I32 => render_converted::<i32>(
-                        data,
-                        &mut scratch,
-                        &mut oversized_callback_logged,
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    cpal::SampleFormat::I24 => render_converted::<cpal::I24>(
-                        data,
-                        &mut scratch,
-                        &mut oversized_callback_logged,
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    cpal::SampleFormat::I16 => render_converted::<i16>(
-                        data,
-                        &mut scratch,
-                        &mut oversized_callback_logged,
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    _ => data.bytes_mut().fill(0),
-                }
+                render_output(
+                    sample_format,
+                    data,
+                    &mut scratch,
+                    &mut oversized_callback_logged,
+                    &format_mismatch_clone,
+                    &mixer_clone,
+                    &limiter_thresh_clone,
+                    &limiter_clone,
+                    &metering_clone,
+                );
             },
             move |err| {
                 log::error!("Audio stream error: {}", err);
@@ -396,6 +376,8 @@ impl AudioEngine {
             limiter_threshold,
             metering,
             limiter,
+            format_mismatch,
+            format_mismatch_logged: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -426,6 +408,15 @@ impl AudioEngine {
 
     /// Read master metering data.
     pub fn read_meters(&self) -> MeterData {
+        if self
+            .format_mismatch
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .format_mismatch_logged
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::error!("Audio output sample format mismatch; output silenced");
+        }
         self.metering.read_meters()
     }
 
@@ -572,6 +563,61 @@ fn channel_preference(channels: u16) -> (bool, u16) {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_output(
+    sample_format: cpal::SampleFormat,
+    data: &mut cpal::Data,
+    scratch: &mut [f32],
+    oversized_callback_logged: &mut bool,
+    format_mismatch: &std::sync::atomic::AtomicBool,
+    mixer: &Mixer,
+    limiter_threshold: &AtomicF32,
+    limiter: &std::sync::Mutex<Limiter>,
+    metering: &MeteringProcessor,
+) {
+    match sample_format {
+        cpal::SampleFormat::F32 => {
+            let Some(output) = data.as_slice_mut::<f32>() else {
+                data.bytes_mut().fill(0);
+                format_mismatch.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
+            };
+            render_master(output, mixer, limiter_threshold, limiter, metering);
+        }
+        cpal::SampleFormat::I32 => render_converted::<i32>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        cpal::SampleFormat::I24 => render_converted::<cpal::I24>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        cpal::SampleFormat::I16 => render_converted::<i16>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        _ => data.bytes_mut().fill(0),
+    }
+}
+
 fn render_master(
     data: &mut [f32],
     mixer: &Mixer,
@@ -588,10 +634,12 @@ fn render_master(
     metering.analyze(data);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_converted<T>(
     data: &mut cpal::Data,
     scratch: &mut [f32],
     oversized_callback_logged: &mut bool,
+    format_mismatch: &std::sync::atomic::AtomicBool,
     mixer: &Mixer,
     limiter_threshold: &AtomicF32,
     limiter: &std::sync::Mutex<Limiter>,
@@ -599,9 +647,11 @@ fn render_converted<T>(
 ) where
     T: SizedSample + FromSample<f32>,
 {
-    let output = data
-        .as_slice_mut::<T>()
-        .expect("CPAL converted output buffer");
+    let Some(output) = data.as_slice_mut::<T>() else {
+        data.bytes_mut().fill(0);
+        format_mismatch.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    };
     let scratch_len = scratch.len();
     let Some(scratch) = scratch.get_mut(..output.len()) else {
         if !std::mem::replace(oversized_callback_logged, true) {
@@ -702,6 +752,104 @@ pub enum AudioError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_test_output(
+        sample_format: cpal::SampleFormat,
+        data: &mut cpal::Data,
+        scratch: &mut [f32],
+        format_mismatch: &std::sync::atomic::AtomicBool,
+    ) {
+        let mixer = Mixer::new(2, TARGET_RATE);
+        let limiter_threshold = AtomicF32::new(0.95);
+        let limiter = std::sync::Mutex::new(Limiter::new(0.95, TARGET_RATE, 2));
+        let metering = MeteringProcessor::new(Box::new(NullSource {
+            sample_rate: TARGET_RATE,
+            channels: 2,
+        }));
+        render_output(
+            sample_format,
+            data,
+            scratch,
+            &mut false,
+            format_mismatch,
+            &mixer,
+            &limiter_threshold,
+            &limiter,
+            &metering,
+        );
+    }
+
+    #[test]
+    fn f32_callback_format_mismatch_silences_output_and_sets_flag() {
+        let mut backing = vec![1_i16; 8];
+        // SAFETY: `backing` is live, aligned I16 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::I16,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+
+        render_test_output(
+            cpal::SampleFormat::F32,
+            &mut data,
+            &mut [],
+            &format_mismatch,
+        );
+
+        assert!(data.bytes().iter().all(|byte| *byte == 0));
+        assert!(format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn converted_callback_format_mismatch_silences_output_and_sets_flag() {
+        let mut backing = vec![1.0_f32; 8];
+        // SAFETY: `backing` is live, aligned F32 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::F32,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+        let mut scratch = vec![0.0; backing.len()];
+
+        render_test_output(
+            cpal::SampleFormat::I16,
+            &mut data,
+            &mut scratch,
+            &format_mismatch,
+        );
+
+        assert!(data.bytes().iter().all(|byte| *byte == 0));
+        assert!(format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn matching_f32_callback_renders_without_setting_mismatch_flag() {
+        let mut backing = vec![1.0_f32; 8];
+        // SAFETY: `backing` is live, aligned F32 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::F32,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+
+        render_test_output(
+            cpal::SampleFormat::F32,
+            &mut data,
+            &mut [],
+            &format_mismatch,
+        );
+
+        assert!(!format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     #[test]
     fn test_list_devices() {
