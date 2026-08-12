@@ -33,16 +33,20 @@ impl MidiManager {
         log::info!("Opening MIDI input port: {}", port_name);
 
         let (event_tx, event_rx) = mpsc::channel();
-        let input = midi_in.connect(
-            port,
-            "cuepool-midi-in",
-            move |_stamp, message, _| {
-                if let Some(ev) = parse_midi(message) {
-                    let _ = event_tx.send(ev);
-                }
-            },
-            (),
-        )?;
+        let input = midi_in
+            .connect(
+                port,
+                "cuepool-midi-in",
+                move |_stamp, message, _| {
+                    if let Some(ev) = parse_midi(message) {
+                        let _ = event_tx.send(ev);
+                    }
+                },
+                (),
+            )
+            // map_err: midir's ConnectError wraps the MidiInput, which is not
+            // Send+Sync on ALSA, so `?` cannot convert it into anyhow::Error.
+            .map_err(|e| anyhow::anyhow!("failed to connect MIDI input: {e}"))?;
 
         Ok(Self {
             input: Arc::new(Mutex::new(input)),
