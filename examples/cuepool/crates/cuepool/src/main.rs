@@ -87,12 +87,19 @@ fn monitor_descriptor(m: &winit::monitor::MonitorHandle) -> cuepool_core::Monito
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
 enum AppEvent {
-    /// Video stream reached EOF. (Frames travel on a bounded channel, not here.)
-    VideoEof,
+    /// The consume thread uploaded the stream's final due frame.
+    VideoEof(u64),
     /// An output worker needs winit to recreate its window-owned surface.
     OutputSurfaceLost(WindowId),
     /// The shared GPU device is gone; recovery requires rebuilding all resources.
     DeviceLost,
+}
+
+/// Ordered decode output. EOF follows the final frame through the same bounded
+/// channel so it cannot overtake buffered frames.
+enum VideoMessage {
+    Frame(VideoFrame),
+    Eof,
 }
 
 /// Per-window identifiers so we can route events.
@@ -225,10 +232,13 @@ impl Default for OutputFrameState {
 /// this one. The 1 s step-back `recv_timeout` happens AFTER the request is
 /// taken out and the guard dropped.
 struct VideoControl {
+    /// Playback identity. Every play/stop transition invalidates receiver and
+    /// frame work captured under an older epoch.
+    stream_epoch: u64,
     /// Current decode channel receiver, installed by `spawn_video_decode` on
     /// the winit thread and taken out by the consume thread. A new receiver
     /// means a new stream: the consume thread drops its peeked frame.
-    frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
+    frame_rx: Option<std::sync::mpsc::Receiver<VideoMessage>>,
     /// Wall-clock playback anchor (real time = A/V sync reference).
     clock: Option<Instant>,
     /// Set while paused, to freeze `clock` across the pause.
@@ -273,6 +283,7 @@ struct VideoControl {
 impl Default for VideoControl {
     fn default() -> Self {
         Self {
+            stream_epoch: 0,
             frame_rx: None,
             clock: None,
             pause_started: None,
@@ -437,6 +448,8 @@ struct App {
     active_timecodes: Vec<(rust_decimal::Decimal, std::time::Instant)>,
 
     // ── video playback ──
+    /// Kept for render threads to request winit-side surface rebuilds; the
+    /// consume thread gets its own clone at construction.
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     /// The decode channel, clock, pause/step/fade state and frame consumption
     /// live in `video_control` (shared with the consume thread, which owns the
@@ -655,6 +668,7 @@ impl App {
             let frame = Arc::clone(&frame_state);
             let configure_gate = Arc::clone(&configure_gate);
             let stop = Arc::clone(&consume_stop);
+            let proxy = proxy.clone();
             std::thread::Builder::new()
                 .name("video-consume".into())
                 .spawn(move || {
@@ -665,6 +679,7 @@ impl App {
                         control,
                         frame,
                         canvas_cmd_rx,
+                        proxy,
                         stop,
                     )
                 })
@@ -1422,6 +1437,7 @@ impl App {
                 // sending the upload command so no late video frame lands over it.
                 {
                     let mut ctl = self.video_control.lock_unpoisoned();
+                    ctl.stream_epoch += 1;
                     ctl.clock = None;
                     ctl.frame_rx = None;
                     ctl.peek_pts = None;
@@ -2332,7 +2348,6 @@ impl App {
         }
         // A newly-started video should always play, even if the system was paused.
         self.video_pause_flag.store(false, Ordering::Relaxed);
-        self.set_current_video_qid(Some(qid));
 
         let projection = {
             let state = self.cuepool.state().lock_unpoisoned();
@@ -2340,6 +2355,7 @@ impl App {
         };
         {
             let mut ctl = self.video_control.lock_unpoisoned();
+            ctl.stream_epoch += 1;
             // Start the playback clock now; PTS are matched against it (and frames
             // late vs the clock are skipped, so video catches up to audio even if
             // decode open / first-frame took a while).
@@ -2351,8 +2367,12 @@ impl App {
             // A new video always starts at full brightness, cancelling any
             // Stop-cue fade still in flight.
             ctl.fade = None;
+            // A step-back aimed at the previous stream must not replay here
+            // (the epoch gate no longer consumes it against a dead stream).
+            ctl.step_back = None;
             ctl.fit = projection.fit;
         }
+        self.set_current_video_qid(Some(qid));
         // (Re)create the consume thread's canvas at the projection size; `force`
         // clears the previous clip's last frame even when the dims match.
         let _ = self.canvas_cmd_tx.send(CanvasCommand::Resize {
@@ -2383,19 +2403,23 @@ impl App {
         // decode runs at real-time rate — no free-running decoder to drift against
         // the clock. The small buffer absorbs decode jitter. Pacing is the wall
         // clock, not the audio clock, so it can't freeze if the audio device sleeps.
-        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<VideoFrame>(VIDEO_QUEUE_CAP);
+        let (frame_tx, frame_rx) =
+            std::sync::mpsc::sync_channel::<VideoMessage>(VIDEO_QUEUE_CAP);
         // Installing a new receiver also tells the consume thread to drop its
-        // peeked frame (new stream, stale PTS).
-        self.video_control.lock_unpoisoned().frame_rx = Some(frame_rx);
+        // peeked frame and invalidates EOF already queued by the old decoder.
+        {
+            let mut ctl = self.video_control.lock_unpoisoned();
+            ctl.stream_epoch += 1;
+            ctl.frame_rx = Some(frame_rx);
+        }
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
-        let proxy = self.event_loop_proxy.clone();
         let diag_state = Arc::clone(self.cuepool.state());
 
         std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
-                video_decode_thread(&path, start_before, stop_flag, pause_flag, frame_tx, proxy, diag_state);
+                video_decode_thread(&path, start_before, stop_flag, pause_flag, frame_tx, diag_state);
             })
             .expect("spawn video decode thread");
     }
@@ -2435,6 +2459,7 @@ impl App {
         self.video_stop_flag.store(true, Ordering::Relaxed);
         {
             let mut ctl = self.video_control.lock_unpoisoned();
+            ctl.stream_epoch += 1;
             ctl.frame_rx = None;
             ctl.clock = None;
             ctl.peek_pts = None;
@@ -2442,6 +2467,7 @@ impl App {
             ctl.canvas_has_frame = false;
             ctl.fade = None;
             ctl.hold_position = None;
+            ctl.step_back = None;
         }
         self.set_current_video_qid(None);
         self.cuepool.state().lock_unpoisoned().diagnostics.video = None;
@@ -3768,7 +3794,12 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::VideoEof => {
+            AppEvent::VideoEof(epoch) => {
+                let current_epoch = self.video_control.lock_unpoisoned().stream_epoch;
+                if epoch != current_epoch {
+                    log::debug!("Ignoring stale video EOF epoch {epoch} (current {current_epoch})");
+                    return;
+                }
                 log::info!("Video EOF");
                 // MTC follow: hold the last frame on the canvas past the end —
                 // looping, re-locating and blanking are all owned by the MTC
@@ -3808,16 +3839,7 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         _ => {
                             // OneShot (or cue gone): blank the output to black.
-                            self.set_current_video_qid(None);
-                            {
-                                let mut ctl = self.video_control.lock_unpoisoned();
-                                ctl.frame_rx = None;
-                                ctl.clock = None;
-                                ctl.peek_pts = None;
-                                ctl.last_pts = None;
-                                ctl.canvas_has_frame = false;
-                            }
-                            self.cuepool.state().lock_unpoisoned().diagnostics.video = None;
+                            self.stop_video_playback();
                             // Blank the canvas texture too: with a text overlay
                             // active the canvas still renders, and the clip's
                             // last frame must not linger behind the text.
@@ -4372,13 +4394,16 @@ fn video_consume_thread(
     control: Arc<Mutex<VideoControl>>,
     frame_state: Arc<Mutex<OutputFrameState>>,
     cmd_rx: std::sync::mpsc::Receiver<CanvasCommand>,
+    proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     stop: Arc<AtomicBool>,
 ) {
     let mut canvas: Option<cuepool_video::CanvasTexture> = None;
     let mut overlay: Option<cuepool_video::CanvasTexture> = None;
     let mut yuv_converter: Option<cuepool_video::YuvConverter> = None;
     // Decode channel taken out of the control struct; None when stopped/EOF.
-    let mut rx: Option<std::sync::mpsc::Receiver<VideoFrame>> = None;
+    let mut rx: Option<std::sync::mpsc::Receiver<VideoMessage>> = None;
+    // Epoch captured with `rx`; all frame work is discarded if control moves on.
+    let mut rx_epoch: Option<u64> = None;
     // Next decoded frame, peeked but not yet due.
     let mut peek: Option<VideoFrame> = None;
     // Live outputs copy (re-cloned only when `outputs_gen` advances).
@@ -4455,13 +4480,22 @@ fn video_consume_thread(
             }
         }
 
+        let mut eof_epoch = None;
+
         // ── Control handshake: new stream, stop, step-back ──
         {
             let mut ctl = control.lock_unpoisoned();
+            if rx_epoch.is_some_and(|epoch| epoch != ctl.stream_epoch) {
+                rx = None;
+                rx_epoch = None;
+                peek = None;
+                ctl.peek_pts = None;
+            }
             // A newly installed receiver = a new stream: take it and drop the
             // peeked frame (stale PTS).
-            if ctl.frame_rx.is_some() {
-                rx = ctl.frame_rx.take();
+            if let Some(new_rx) = ctl.frame_rx.take() {
+                rx = Some(new_rx);
+                rx_epoch = Some(ctl.stream_epoch);
                 peek = None;
                 ctl.peek_pts = None;
             }
@@ -4469,6 +4503,7 @@ fn video_consume_thread(
             // decode thread's next send fails and it exits.
             if ctl.clock.is_none() {
                 rx = None;
+                rx_epoch = None;
                 peek = None;
                 ctl.peek_pts = None;
             }
@@ -4477,35 +4512,51 @@ fn video_consume_thread(
         // freezes) for the sought frame, snap the frozen clock to its exact
         // PTS, and report the delta back for the show clock. Taken AFTER the
         // channel refresh above so we wait on the NEW (re-seeked) receiver.
-        let step_back = control.lock_unpoisoned().step_back.take();
+        let step_back = {
+            let mut ctl = control.lock_unpoisoned();
+            (rx_epoch == Some(ctl.stream_epoch))
+                .then(|| ctl.step_back.take())
+                .flatten()
+        };
         if let Some(pos) = step_back {
             peek = None;
             let delivered = rx.as_ref().map(|r| r.recv_timeout(Duration::from_millis(1000)));
             let mut ctl = control.lock_unpoisoned();
-            match delivered {
-                Some(Ok(f)) => {
-                    let delta = pos - f.pts;
-                    if delta > 0.0 {
-                        if let Some(c) = ctl.clock {
-                            // Moving the epoch forward rewinds the paused position.
-                            ctl.clock = Some(c + Duration::from_secs_f64(delta));
+            if rx_epoch != Some(ctl.stream_epoch) {
+                rx = None;
+                rx_epoch = None;
+            } else {
+                match delivered {
+                    Some(Ok(VideoMessage::Frame(f))) => {
+                        let delta = pos - f.pts;
+                        if delta > 0.0 {
+                            if let Some(c) = ctl.clock {
+                                // Moving the epoch forward rewinds the paused position.
+                                ctl.clock = Some(c + Duration::from_secs_f64(delta));
+                            }
+                            ctl.step_back_delta = Some(delta);
                         }
-                        ctl.step_back_delta = Some(delta);
+                        ctl.peek_pts = Some(f.pts);
+                        peek = Some(f);
+                        ctl.step_pending = true;
                     }
-                    ctl.peek_pts = Some(f.pts);
-                    peek = Some(f);
-                    ctl.step_pending = true;
+                    Some(Ok(VideoMessage::Eof)) => {
+                        rx = None;
+                        eof_epoch = rx_epoch;
+                        ctl.peek_pts = None;
+                    }
+                    Some(Err(_)) => log::warn!("Frame step back: no frame delivered after seek"),
+                    None => {}
                 }
-                Some(Err(_)) => log::warn!("Frame step back: no frame delivered after seek"),
-                None => {}
             }
         }
 
         // ── Due-frame selection against the video clock ──
         let (target, fit) = {
             let mut ctl = control.lock_unpoisoned();
-            let stepping = std::mem::take(&mut ctl.step_pending);
-            let target = if !ctl.paused || stepping {
+            let stream_current = rx_epoch == Some(ctl.stream_epoch);
+            let stepping = stream_current && std::mem::take(&mut ctl.step_pending);
+            let target = if stream_current && (!ctl.paused || stepping) {
                 // While paused-and-stepping, the target is the frozen position —
                 // clock.elapsed() keeps growing through the pause and would drain
                 // every buffered frame. +1µs absorbs the f64→Duration rounding of
@@ -4525,13 +4576,31 @@ fn video_consume_thread(
             (target, ctl.fit)
         };
 
+        // Keep one frame peeked while paused, and notice an immediately-following
+        // EOF even without a running target clock. A future frame still holds EOF
+        // behind it until playback resumes and presents that frame.
+        if peek.is_none() && eof_epoch.is_none() {
+            match rx.as_ref().map(|r| r.try_recv()) {
+                Some(Ok(VideoMessage::Frame(f))) => peek = Some(f),
+                Some(Ok(VideoMessage::Eof)) => {
+                    rx = None;
+                    eof_epoch = rx_epoch;
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => rx = None,
+                _ => {}
+            }
+        }
+
         let mut consumed: Option<VideoFrame> = None;
         if let Some(target) = target {
             loop {
                 if peek.is_none() {
                     match rx.as_ref().map(|r| r.try_recv()) {
-                        Some(Ok(f)) => peek = Some(f),
-                        // EOF: the decode thread exited — retire the channel.
+                        Some(Ok(VideoMessage::Frame(f))) => peek = Some(f),
+                        Some(Ok(VideoMessage::Eof)) => {
+                            rx = None;
+                            eof_epoch = rx_epoch;
+                        }
                         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => rx = None,
                         _ => {}
                     }
@@ -4543,6 +4612,18 @@ fn video_consume_thread(
                     _ => break, // next frame not due yet, or channel empty
                 }
             }
+        }
+
+        // Check immediately before GPU work without holding the control lock
+        // across uploads/submits. The write-back below checks again afterward.
+        if consumed.is_some()
+            && rx_epoch.is_none_or(|epoch| control.lock_unpoisoned().stream_epoch != epoch)
+        {
+            consumed = None;
+            rx = None;
+            rx_epoch = None;
+            peek = None;
+            eof_epoch = None;
         }
 
         // ── Upload the newest due frame to the canvas (GPU work) ──
@@ -4579,16 +4660,45 @@ fn video_consume_thread(
                 }
             }
             let mut ctl = control.lock_unpoisoned();
-            ctl.last_pts = Some(frame.pts);
-            ctl.canvas_has_frame = true;
-            ctl.peek_pts = peek.as_ref().map(|f| f.pts);
-        } else {
-            let mut ctl = control.lock_unpoisoned();
-            ctl.peek_pts = peek.as_ref().map(|f| f.pts);
-            // Starved: a frame was due (clock running) but the channel is empty.
-            if target.is_some() && peek.is_none() && rx.is_some() {
-                ctl.starved += 1;
+            if rx_epoch == Some(ctl.stream_epoch) {
+                ctl.last_pts = Some(frame.pts);
+                ctl.canvas_has_frame = true;
+                ctl.peek_pts = peek.as_ref().map(|f| f.pts);
+            } else {
+                drop(ctl);
+                rx = None;
+                rx_epoch = None;
+                peek = None;
+                eof_epoch = None;
             }
+        } else if let Some(epoch) = rx_epoch {
+            let mut ctl = control.lock_unpoisoned();
+            if ctl.stream_epoch == epoch {
+                ctl.peek_pts = peek.as_ref().map(|f| f.pts);
+                // Starved: a frame was due (clock running) but the channel is empty.
+                if target.is_some() && peek.is_none() && rx.is_some() {
+                    ctl.starved += 1;
+                }
+            } else {
+                drop(ctl);
+                rx = None;
+                rx_epoch = None;
+                peek = None;
+                eof_epoch = None;
+            }
+        }
+
+        // The marker is observed only after every preceding frame has left the
+        // FIFO. Emit after the final due upload/write-back, tagged for winit.
+        if let Some(epoch) = eof_epoch {
+            if rx_epoch == Some(epoch) {
+                let _ = proxy.send_event(AppEvent::VideoEof(epoch));
+            }
+            rx = None;
+            rx_epoch = None;
+            peek = None;
+        } else if rx.is_none() && peek.is_none() {
+            rx_epoch = None;
         }
 
         // ── Publish the frame-state bundle (change-detect + generation bump) ──
@@ -4894,20 +5004,20 @@ fn output_render_thread(
 /// a frame, polling so it stays responsive to the stop signal. The bounded
 /// channel is what paces decode to what playback actually consumes.
 /// Returns `false` when the thread should exit (stopped or disconnected).
-fn send_video_frame(
-    frame_tx: &std::sync::mpsc::SyncSender<VideoFrame>,
+fn send_video_message(
+    frame_tx: &std::sync::mpsc::SyncSender<VideoMessage>,
     stop_flag: &AtomicBool,
-    mut frame: VideoFrame,
+    mut message: VideoMessage,
 ) -> bool {
     use std::sync::mpsc::TrySendError;
     loop {
         if stop_flag.load(Ordering::Relaxed) {
             return false;
         }
-        match frame_tx.try_send(frame) {
+        match frame_tx.try_send(message) {
             Ok(()) => return true,
-            Err(TrySendError::Full(f)) => {
-                frame = f;
+            Err(TrySendError::Full(m)) => {
+                message = m;
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(TrySendError::Disconnected(_)) => return false,
@@ -4915,7 +5025,7 @@ fn send_video_frame(
     }
 }
 
-/// Video decode thread: sleeps until each frame's PTS, then sends it to the main loop.
+/// Video decode thread: sends frames and EOF through the bounded consumer channel.
 /// `start_before`: deliver first the last frame with PTS strictly below this
 /// timestamp (frame-step-back), then continue with the frames after it.
 fn video_decode_thread(
@@ -4923,8 +5033,7 @@ fn video_decode_thread(
     start_before: Option<f64>,
     stop_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
-    frame_tx: std::sync::mpsc::SyncSender<VideoFrame>,
-    proxy: winit::event_loop::EventLoopProxy<AppEvent>,
+    frame_tx: std::sync::mpsc::SyncSender<VideoMessage>,
     diag_state: SharedStateHandle,
 ) {
     let mut source = match VideoSource::open(path) {
@@ -4959,11 +5068,11 @@ fn video_decode_thread(
                 Some(f) if f.pts + 1e-4 < t => prev = Some(f),
                 Some(f) => {
                     if let Some(p) = prev.take() {
-                        if !send_video_frame(&frame_tx, &stop_flag, p) {
+                        if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
                             return;
                         }
                     }
-                    if !send_video_frame(&frame_tx, &stop_flag, f) {
+                    if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(f)) {
                         return;
                     }
                     break;
@@ -4971,8 +5080,11 @@ fn video_decode_thread(
                 None => {
                     // t is past the last frame: deliver that frame and end.
                     if let Some(p) = prev.take() {
-                        send_video_frame(&frame_tx, &stop_flag, p);
+                        if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
+                            return;
+                        }
                     }
+                    send_video_message(&frame_tx, &stop_flag, VideoMessage::Eof);
                     return;
                 }
             }
@@ -4994,12 +5106,12 @@ fn video_decode_thread(
                         v.decode_path = source.decode_path().to_string();
                     }
                 }
-                if !send_video_frame(&frame_tx, &stop_flag, frame) {
+                if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(frame)) {
                     return;
                 }
             }
             None => {
-                let _ = proxy.send_event(AppEvent::VideoEof);
+                send_video_message(&frame_tx, &stop_flag, VideoMessage::Eof);
                 break;
             }
         }
