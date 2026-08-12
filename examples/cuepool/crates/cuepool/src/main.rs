@@ -963,6 +963,16 @@ impl App {
             } else {
                 wgpu::PresentMode::Fifo
             };
+            if matches!(
+                config.present_mode,
+                wgpu::PresentMode::Mailbox | wgpu::PresentMode::Immediate
+            ) {
+                log::warn!(
+                    "Output '{}' uses {:?}, which free-runs; throttling to ~120 fps for safety",
+                    output.name,
+                    config.present_mode
+                );
+            }
             {
                 let _configure_guard = self
                     .configure_gate
@@ -4871,6 +4881,12 @@ fn output_render_thread(
         surface_texture.present();
         drop(submit_guard);
         presented.fetch_add(1, Ordering::Relaxed);
+        if !matches!(
+            config.present_mode,
+            wgpu::PresentMode::Fifo | wgpu::PresentMode::FifoRelaxed
+        ) {
+            std::thread::sleep(Duration::from_millis(8));
+        }
     }
 }
 
