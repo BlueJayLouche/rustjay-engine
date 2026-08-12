@@ -12,11 +12,49 @@ limiter. Output is via cpal.
 
 | Setting | Meaning |
 |---|---|
-| Output device | Any device cpal can see. |
+| Output driver | Windows audio host. WASAPI is the default; ASIO uses CPAL's separate ASIO host when the build enables it. |
+| Output device | A device enumerated from the selected driver host. The exact name is saved in the project. |
 | Latency | Requested output latency in ms (default 10). |
 | Channel offset | Shift all output channels — useful on interfaces where outputs 1-2 are not the mains. |
-| Exclusive mode / driver | Windows only: WASAPI (default), Wave, DirectSound, ASIO. |
+| Exclusive mode | Windows-only output preference. |
 | Limiter | Master-bus brick-wall limiter: input gain, threshold, attack, release. |
+
+`Wave` and `DirectSound` are retained as legacy show-file values and use CPAL's
+platform-default host, as older CuePool builds did. `ASIO` is the only alternate
+CPAL host selected by this setting.
+
+## Building with ASIO on Windows
+
+ASIO is opt-in so normal builds on Windows, macOS, and Linux keep their existing
+dependencies:
+
+```powershell
+cd examples/cuepool
+$env:CPAL_ASIO_DIR = 'C:\SDKs\asiosdk'
+$env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
+cargo run --release -p cuepool --features asio
+```
+
+Install LLVM (including libclang) and the Steinberg ASIO SDK first.
+`CPAL_ASIO_DIR` must point to the extracted SDK root. The feature forwards to
+CPAL's `asio` feature and therefore only builds the SDK bindings on Windows.
+Enabling `--features asio` on another operating system deliberately adds no
+native backend; choosing ASIO there reports that ASIO is Windows-only.
+
+Dante Virtual Soundcard should be running in ASIO mode at 48 kHz with at least
+8 x 8 channels. CPAL 0.15 accepts Dante's 16- and 32-bit ASIO encodings but not
+its packed 24-bit encoding, so select 32-bit in DVS's ASIO settings. CuePool
+requests eight output channels and keeps the existing per-cue pair/matrix
+routing.
+
+## Output errors
+
+CuePool never substitutes another host or device for a saved non-empty device
+name. If ASIO support was not compiled, the ASIO host is unavailable, the saved
+driver is missing, or the device cannot open its stream, the Project Settings
+window shows the configured driver/device, the reason, and any devices that
+were available from that host. Audio playback stays disabled until a valid
+output is selected; the project remains open and non-audio cues remain usable.
 
 ## Per-cue level, pan & fades
 

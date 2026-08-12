@@ -7,6 +7,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Real-time audio engine (cpal + symphonia + custom DSP)"
 
+[features]
+asio = ["cpal/asio"]
+
 [dependencies]
 cuepool-core = { workspace = true }
 cpal = { workspace = true }

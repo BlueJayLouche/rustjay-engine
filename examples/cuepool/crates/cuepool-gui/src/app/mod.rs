@@ -304,6 +304,8 @@ pub struct SharedState {
     pub show_settings_window: bool,
     /// Current audio output device name.
     pub audio_device_name: String,
+    /// Why audio playback is disabled, if output configuration failed.
+    pub audio_error: Option<String>,
     /// Cached waveform peaks: path → Vec<(min, max)>.
     pub waveform_cache: std::collections::HashMap<String, Vec<(f32, f32)>>,
     /// Paths currently being processed for waveform generation.
@@ -426,6 +428,7 @@ impl Default for SharedState {
             recent_files: Vec::new(),
             show_settings_window: false,
             audio_device_name: String::new(),
+            audio_error: None,
             waveform_cache: std::collections::HashMap::new(),
             pending_waveforms: std::collections::HashSet::new(),
             waveform_zoom: 1.0,
@@ -528,6 +531,7 @@ pub enum AppCommand {
     MoveSelectedCueDown,
     MoveCue { from_idx: usize, to_idx: usize, parent: Option<Decimal> },
     SetLimiterThreshold(f32),
+    SetAudioDriver(cuepool_core::AudioOutputDriver),
     SetAudioDevice(String),
     ToggleVideoWindow,
     ToggleVideoFullscreen,
@@ -806,6 +810,7 @@ impl CuePoolApp {
         if show_settings {
             let mut settings_changed = false;
             let mut limiter_cmd: Option<AppCommand> = None;
+            let mut audio_driver_cmd: Option<AppCommand> = None;
             let mut audio_device_cmd: Option<AppCommand> = None;
             egui::Window::new("Project Settings")
                 .collapsible(false)
@@ -817,6 +822,7 @@ impl CuePoolApp {
                     if let Ok(mut state) = self.state.lock() {
                         let devices = state.audio_devices.clone();
                         let current_device = state.audio_device_name.clone();
+                        let audio_error = state.audio_error.clone();
                         let threshold = state.command_queue.iter().rev().find_map(|cmd| {
                             if let AppCommand::SetLimiterThreshold(t) = cmd { Some(*t) } else { None }
                         }).unwrap_or(0.95);
@@ -846,6 +852,31 @@ impl CuePoolApp {
                             settings_changed |= ui.checkbox(&mut settings.exclusive_mode, "Exclusive Mode").changed();
 
                             ui.horizontal(|ui| {
+                                ui.label("Output Driver:");
+                                egui::ComboBox::from_id_salt("audio_driver")
+                                    .selected_text(format!("{:?}", settings.audio_output_driver))
+                                    .show_ui(ui, |ui| {
+                                        for driver in [
+                                            cuepool_core::AudioOutputDriver::WASAPI,
+                                            cuepool_core::AudioOutputDriver::Wave,
+                                            cuepool_core::AudioOutputDriver::DirectSound,
+                                            cuepool_core::AudioOutputDriver::ASIO,
+                                        ] {
+                                            if ui
+                                                .selectable_label(
+                                                    driver == settings.audio_output_driver,
+                                                    format!("{driver:?}"),
+                                                )
+                                                .clicked()
+                                            {
+                                                audio_driver_cmd =
+                                                    Some(AppCommand::SetAudioDriver(driver));
+                                            }
+                                        }
+                                    });
+                            });
+
+                            ui.horizontal(|ui| {
                                 ui.label("Output Device:");
                                 egui::ComboBox::from_id_salt("audio_device")
                                     .selected_text(&current_device)
@@ -858,6 +889,13 @@ impl CuePoolApp {
                                         }
                                     });
                             });
+
+                            if let Some(error) = &audio_error {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_RED,
+                                    format!("Audio playback disabled: {error}"),
+                                );
+                            }
 
                             ui.label("Master Limiter Threshold:");
                             let mut db = 20.0 * threshold.log10();
@@ -981,6 +1019,9 @@ impl CuePoolApp {
                     state.dirty = true;
                 }
                 if let Some(cmd) = limiter_cmd {
+                    state.command_queue.push(cmd);
+                }
+                if let Some(cmd) = audio_driver_cmd {
                     state.command_queue.push(cmd);
                 }
                 if let Some(cmd) = audio_device_cmd {
@@ -1227,11 +1268,13 @@ impl CuePoolApp {
                                     request.sections,
                                 );
                                 state.dirty = true;
-                                // Wholesale projection/patch replace: same reset as
-                                // New/Open — stops cues and rebuilds output windows.
-                                // (The lighting engine re-reads show_file.lighting
-                                // every tick on its own.)
-                                if request.sections.projection || request.sections.lighting {
+                                // Wholesale projection/patch/settings replace: same reset
+                                // as New/Open. Show settings include the audio host/device,
+                                // which the control binary must apply before another cue fires.
+                                if request.sections.projection
+                                    || request.sections.lighting
+                                    || request.sections.show_settings
+                                {
                                     state.project_generation =
                                         state.project_generation.wrapping_add(1);
                                 }
@@ -1943,7 +1986,8 @@ impl CuePoolApp {
                         }
                     }
                 }
-                // Go, Stop, Pause, SetLimiterThreshold, SetAudioDevice are handled by main.rs
+                // Go, Stop, Pause, SetLimiterThreshold, SetAudioDriver, and
+                // SetAudioDevice are handled by main.rs.
                 other => {
                     unhandled.push(other);
                 }

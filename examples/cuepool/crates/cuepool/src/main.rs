@@ -11,7 +11,9 @@
 //!   thread that submits behind vsync-blocked swapchains).
 
 use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
-use cuepool_core::{CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan};
+use cuepool_core::{
+    AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
+};
 use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, SharedStateHandle, VideoDiagnostics};
 use cuepool_gui::app::CueState;
 use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
@@ -59,6 +61,15 @@ const IDENTIFY_COLORS: [wgpu::Color; 6] = [
     wgpu::Color { r: 0.0, g: 1.0, b: 1.0, a: 1.0 }, // cyan
 ];
 const IDENTIFY_COLOR_NAMES: [&str; 6] = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN"];
+
+fn configured_audio_error(
+    driver: AudioOutputDriver,
+    device: &str,
+    error: &cuepool_audio::AudioError,
+) -> String {
+    let device = if device.is_empty() { "<default>" } else { device };
+    format!("configured {driver:?} output device '{device}' failed: {error}")
+}
 
 /// Build a stable-ish descriptor from a winit monitor (name + resolution + position).
 fn monitor_descriptor(m: &winit::monitor::MonitorHandle) -> cuepool_core::MonitorId {
@@ -400,7 +411,10 @@ struct App {
     window_ids: Option<WindowIds>,
 
     // ── audio ──
-    audio_engine: AudioEngine,
+    /// `None` means output configuration failed. Keeping this optional is the
+    /// fail-closed boundary: no old/default stream survives a requested ASIO failure.
+    audio_engine: Option<AudioEngine>,
+    active_audio_driver: Option<AudioOutputDriver>,
     active_cues: Vec<ActiveCue>,
     delayed_cues: Vec<DelayedCue>,
     paused: bool,
@@ -498,17 +512,29 @@ impl App {
         queue: wgpu::Queue,
         proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     ) -> Self {
-        let audio_engine = AudioEngine::new_default().expect("audio engine init failed");
         let cuepool = CuePoolApp::new();
 
-        // Sync audio device info into GUI state
-        {
-            let devices: Vec<String> = AudioEngine::list_devices().into_iter().map(|(n, _)| n).collect();
-            let device_name = audio_engine.device_name().to_string();
-            if let Ok(mut state) = cuepool.state().lock() {
-                state.audio_devices = devices;
-                state.audio_device_name = device_name;
-            }
+        let driver = AudioOutputDriver::default();
+        let devices = AudioEngine::list_devices(driver)
+            .map(|devices| devices.into_iter().map(|(name, _)| name).collect())
+            .unwrap_or_default();
+        let (audio_engine, active_audio_driver, audio_error) =
+            match AudioEngine::new_configured(driver, "") {
+                Ok(engine) => (Some(engine), Some(driver), None),
+                Err(error) => {
+                    let message = configured_audio_error(driver, "", &error);
+                    log::error!("{message}");
+                    (None, None, Some(message))
+                }
+            };
+        if let Ok(mut state) = cuepool.state().lock() {
+            state.audio_devices = devices;
+            state.audio_device_name = audio_engine
+                .as_ref()
+                .map(|engine| engine.device_name().to_string())
+                .unwrap_or_else(|| "<default>".to_string());
+            state.audio_error = audio_error;
+            state.show_settings_window = state.audio_error.is_some();
         }
 
         // Protocol settings from project settings (fallback to defaults)
@@ -664,6 +690,7 @@ impl App {
             cuepool,
             window_ids: None,
             audio_engine,
+            active_audio_driver,
             event_loop_proxy: proxy,
             current_text_qid: None,
             output_windows: Vec::new(),
@@ -1023,9 +1050,9 @@ impl App {
         // Start the show clock on first Go
         if self.show_start_time.is_none() {
             self.show_start_time = Some(Instant::now());
-            self.show_start_clock = Some(self.audio_engine.playback_time());
+            self.show_start_clock = Some(self.audio_clock());
             self.show_paused_offset = 0.0;
-            self.show_pause_started = self.paused.then(|| self.audio_engine.playback_time());
+            self.show_pause_started = self.paused.then(|| self.audio_clock());
             self.triggered_timecodes.clear();
             self.active_timecodes.clear();
             self.timecode_fired.clear();
@@ -1762,6 +1789,31 @@ impl App {
         routing: cuepool_core::AudioRouting,
         preload_only: bool,
     ) {
+        let (requested_driver, requested_device, configured_error) = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            (
+                state.show_file.show_settings.audio_output_driver,
+                state.show_file.show_settings.audio_output_device.clone(),
+                state.audio_error.clone(),
+            )
+        };
+        let Some(audio_engine) = self.audio_engine.as_ref().filter(|engine| {
+            self.active_audio_driver == Some(requested_driver)
+                && (requested_device.is_empty() || requested_device == engine.device_name())
+        }) else {
+            let reason = configured_error.unwrap_or_else(|| {
+                format!(
+                    "configured {requested_driver:?} output device '{}' is not active",
+                    if requested_device.is_empty() {
+                        "<default>"
+                    } else {
+                        &requested_device
+                    }
+                )
+            });
+            log::error!("Cannot play audio cue Q{qid}: audio playback is disabled: {reason}");
+            return;
+        };
         let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
         if resolved != path {
             log::info!("Resolved path '{}' -> '{}'", path, resolved);
@@ -1771,7 +1823,7 @@ impl App {
                 let sample_rate = decoder.sample_rate();
                 // input.position()/length() are reported in device-rate samples (post-resample),
                 // so anything compared against them (loop bounds, fade trigger) must scale too.
-                let out_scale = self.audio_engine.sample_rate() as f64 / sample_rate as f64;
+                let out_scale = audio_engine.sample_rate() as f64 / sample_rate as f64;
                 let start_frame = (start_time.as_secs_f64() * sample_rate as f64) as u64;
                 let end_frame = if duration.as_secs_f64() > 0.0 {
                     start_frame + (duration.as_secs_f64() * sample_rate as f64) as u64
@@ -1817,7 +1869,7 @@ impl App {
                     source = Box::new(fade_proc);
                 }
 
-                let input = self.audio_engine.play(source);
+                let input = audio_engine.play(source);
                 input.set_volume(volume);
                 input.set_pan(pan);
                 input.set_routing(routing.out_pair, routing.send, routing.crosspoints);
@@ -1877,7 +1929,7 @@ impl App {
 
             let input = &self.active_cues[idx].input;
             if fade_out_time > 0.0 {
-                let sample_rate = self.audio_engine.sample_rate();
+                let sample_rate = self.audio_sample_rate();
                 let fade_frames = (fade_out_time * sample_rate as f32) as u32;
                 input.start_fade(0.0, fade_frames.max(1), fade_type);
                 log::info!("Fade-out Q{} over {} frames", stop_qid, fade_frames);
@@ -2010,36 +2062,85 @@ impl App {
         }
     }
 
-    /// Restart the audio engine with a specific device.
-    fn restart_audio_engine(&mut self, device: &cpal::Device) {
+    /// Apply the project's exact driver/device request. Any failure drops the
+    /// previous stream before reporting the error, so ASIO can never fall back
+    /// to WASAPI or continue through a stale device.
+    fn apply_audio_settings(&mut self) {
+        let (driver, configured_device) = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            (
+                state.show_file.show_settings.audio_output_driver,
+                state.show_file.show_settings.audio_output_device.clone(),
+            )
+        };
+
         self.stop_all();
-        match AudioEngine::new(device) {
-            Ok(new_engine) => {
-                let name = new_engine.device_name().to_string();
-                self.audio_engine = new_engine;
-                if let Ok(mut state) = self.cuepool.state().lock() {
-                    state.audio_device_name = name;
-                }
-                log::info!("Switched audio output device");
-            }
+        self.audio_engine = None;
+        self.active_audio_driver = None;
+
+        let devices = match AudioEngine::list_devices(driver) {
+            Ok(devices) => devices.into_iter().map(|(name, _)| name).collect(),
             Err(e) => {
-                log::error!("Failed to switch audio device: {}. Attempting fallback to default.", e);
-                if let Ok(fallback) = AudioEngine::new_default() {
-                    let name = fallback.device_name().to_string();
-                    self.audio_engine = fallback;
-                    if let Ok(mut state) = self.cuepool.state().lock() {
-                        state.audio_device_name = name;
-                    }
+                log::error!("Could not list {driver:?} output devices: {e}");
+                Vec::new()
+            }
+        };
+
+        match AudioEngine::new_configured(driver, &configured_device) {
+            Ok(engine) => {
+                let device_name = engine.device_name().to_string();
+                self.audio_engine = Some(engine);
+                self.active_audio_driver = Some(driver);
+                let mut state = self.cuepool.state().lock_unpoisoned();
+                state.audio_devices = devices;
+                state.audio_device_name = device_name.clone();
+                state.audio_error = None;
+                // ASIO has no system default. Persist CPAL's selected first
+                // driver so the same hardware is requested next load.
+                if driver == AudioOutputDriver::ASIO
+                    && state.show_file.show_settings.audio_output_device.is_empty()
+                {
+                    state.show_file.show_settings.audio_output_device = device_name;
+                    state.dirty = true;
                 }
+                log::info!("Applied {driver:?} audio output configuration");
+            }
+            Err(error) => {
+                let message = configured_audio_error(driver, &configured_device, &error);
+                log::error!("{message}; audio playback is disabled");
+                let mut state = self.cuepool.state().lock_unpoisoned();
+                state.audio_devices = devices;
+                state.audio_device_name = if configured_device.is_empty() {
+                    "<default>".to_string()
+                } else {
+                    configured_device
+                };
+                state.audio_error = Some(message);
+                state.show_settings_window = true;
             }
         }
+    }
+
+    fn audio_clock(&self) -> Duration {
+        self.audio_engine
+            .as_ref()
+            .map(AudioEngine::playback_time)
+            .or_else(|| self.show_start_time.map(|start| start.elapsed()))
+            .unwrap_or_default()
+    }
+
+    fn audio_sample_rate(&self) -> u32 {
+        self.audio_engine
+            .as_ref()
+            .map(AudioEngine::sample_rate)
+            .unwrap_or(48_000)
     }
 
     /// Start a cue's tail fade-out when playback reaches `fade_out` seconds before
     /// its end. Mirrors C# SoundCue, where FadeOut begins (Duration - FadeOut)
     /// before the natural end. Looping cues are skipped (state != Playing).
     fn check_fade_outs(&mut self) {
-        let sr = self.audio_engine.sample_rate();
+        let sr = self.audio_sample_rate();
         for ac in &mut self.active_cues {
             if ac.fade_out <= 0.0 || ac.fade_out_started || ac.state != CueState::Playing {
                 continue;
@@ -2111,7 +2212,7 @@ impl App {
 
     /// Execute scheduled LoopEnd stops when their target reaches the loop boundary.
     fn check_pending_stops(&mut self) {
-        let sr = self.audio_engine.sample_rate();
+        let sr = self.audio_sample_rate();
         for ac in &mut self.active_cues {
             let Some(ref pending) = ac.pending_stop else { continue };
             if pending.mode != cuepool_core::StopMode::LoopEnd {
@@ -2146,7 +2247,7 @@ impl App {
         if let Some(ac) = target {
             let input = &ac.input;
             if fade_time > 0.0 {
-                let sample_rate = self.audio_engine.sample_rate();
+                let sample_rate = self.audio_sample_rate();
                 let fade_frames = (fade_time * sample_rate as f32) as u32;
                 input.start_fade(target_volume.max(0.0), fade_frames.max(1), fade_type);
                 log::info!("Volume fade Q{} to {} over {} frames", sound_qid, target_volume, fade_frames);
@@ -2285,7 +2386,9 @@ impl App {
         self.video_pause_flag.store(false, Ordering::Relaxed);
         // StopAll releases the MTC-follow cue too.
         self.mtc_follow = None;
-        self.audio_engine.stop_all();
+        if let Some(engine) = &self.audio_engine {
+            engine.stop_all();
+        }
         self.active_cues.clear();
         self.delayed_cues.clear();
         self.active_timecodes.clear();
@@ -2341,7 +2444,7 @@ impl App {
         }
         // Freeze the show clock — timecode must not advance (or fire) mid-pause.
         if self.show_pause_started.is_none() {
-            self.show_pause_started = Some(self.audio_engine.playback_time());
+            self.show_pause_started = Some(self.audio_clock());
         }
         log::info!("Paused {} cue(s)", self.active_cues.len());
     }
@@ -2369,7 +2472,7 @@ impl App {
         // Unfreeze the show clock: the paused interval joins the offset.
         if let Some(p) = self.show_pause_started.take() {
             self.show_paused_offset +=
-                (self.audio_engine.playback_time().saturating_sub(p)).as_secs_f64();
+                (self.audio_clock().saturating_sub(p)).as_secs_f64();
         }
         log::info!("Resumed {} cue(s)", self.active_cues.len());
     }
@@ -2380,7 +2483,7 @@ impl App {
         let start = self.show_start_clock?;
         let now = self
             .show_pause_started
-            .unwrap_or_else(|| self.audio_engine.playback_time());
+            .unwrap_or_else(|| self.audio_clock());
         Some((now.as_secs_f64() - start.as_secs_f64() - self.show_paused_offset).max(0.0))
     }
 
@@ -2709,16 +2812,27 @@ impl App {
                     }
                 }
                 AppCommand::SetLimiterThreshold(threshold) => {
-                    self.audio_engine.set_limiter_threshold(threshold);
-                    log::info!("Set master limiter threshold to {:.2} dB", 20.0 * threshold.log10());
+                    if let Some(engine) = &self.audio_engine {
+                        engine.set_limiter_threshold(threshold);
+                        log::info!("Set master limiter threshold to {:.2} dB", 20.0 * threshold.log10());
+                    }
+                }
+                AppCommand::SetAudioDriver(driver) => {
+                    {
+                        let mut state = self.cuepool.state().lock_unpoisoned();
+                        state.show_file.show_settings.audio_output_driver = driver;
+                        state.show_file.show_settings.audio_output_device.clear();
+                        state.dirty = true;
+                    }
+                    self.apply_audio_settings();
                 }
                 AppCommand::SetAudioDevice(name) => {
-                    let devices = AudioEngine::list_devices();
-                    if let Some((_, device)) = devices.into_iter().find(|(n, _)| n == &name) {
-                        self.restart_audio_engine(&device);
-                    } else {
-                        log::warn!("Audio device '{}' not found", name);
+                    {
+                        let mut state = self.cuepool.state().lock_unpoisoned();
+                        state.show_file.show_settings.audio_output_device = name;
+                        state.dirty = true;
                     }
+                    self.apply_audio_settings();
                 }
                 AppCommand::Preload => {
                     self.handle_preload(event_loop);
@@ -3371,7 +3485,9 @@ impl App {
         // the mixer snapshot after, so any play() calls are reflected before
         // the next audio callback fires.
         self.process_commands(event_loop);
-        self.audio_engine.refresh();
+        if let Some(engine) = &self.audio_engine {
+            engine.refresh();
+        }
     }
 
     fn render_control(&mut self) {
@@ -3396,7 +3512,7 @@ impl App {
         let raw_input = egui_state.take_egui_input(window);
         // Sync active cue state into the GUI shared state
         {
-            let sr = (self.audio_engine.sample_rate() as f64).max(1.0);
+            let sr = (self.audio_sample_rate() as f64).max(1.0);
             // Interleaved stereo samples → seconds.
             let secs = |samples: usize| (samples as f64 / 2.0 / sr) as f32;
             let mut gui_active: Vec<cuepool_gui::ActiveCueInfo> = self.active_cues.iter().map(|ac| {
@@ -3463,13 +3579,13 @@ impl App {
         }
 
         // Sync master meter data into the GUI shared state
-        {
-            let meters = self.audio_engine.read_meters();
+        if let Some(engine) = &self.audio_engine {
+            let meters = engine.read_meters();
             let peak_l_db = if meters.peak_l > 0.0 { 20.0 * meters.peak_l.log10() } else { -f32::INFINITY };
             let peak_r_db = if meters.peak_r > 0.0 { 20.0 * meters.peak_r.log10() } else { -f32::INFINITY };
             let rms_l_db = if meters.rms_l > 0.0 { 20.0 * meters.rms_l.log10() } else { -f32::INFINITY };
             let rms_r_db = if meters.rms_r > 0.0 { 20.0 * meters.rms_r.log10() } else { -f32::INFINITY };
-            let limiter_gr_db = self.audio_engine.read_limiter_gr_db();
+            let limiter_gr_db = engine.read_limiter_gr_db();
             if let Ok(mut state) = self.cuepool.state().lock() {
                 state.meter_data = cuepool_gui::GuiMeterData {
                     peak_l_db,
@@ -3480,6 +3596,8 @@ impl App {
                     limiter_gr_db,
                 };
             }
+        } else if let Ok(mut state) = self.cuepool.state().lock() {
+            state.meter_data = cuepool_gui::GuiMeterData::default();
         }
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
@@ -3786,6 +3904,7 @@ impl ApplicationHandler<AppEvent> for App {
         if project_generation != self.last_project_generation {
             self.last_project_generation = project_generation;
             self.reset_for_project_change();
+            self.apply_audio_settings();
         }
 
         // Structural projection edits (output count, monitor assignment) only take
@@ -5013,12 +5132,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App::new(instance, adapter, device, queue, proxy);
 
-    // Load persisted settings and sync audio device name
+    // Load app-level settings. Project audio settings live in the show file
+    // and are applied when its project generation changes.
     let settings = load_settings();
-    let device_name = app.audio_engine.device_name().to_string();
     if let Ok(mut state) = app.cuepool.state().lock() {
         state.recent_files = settings.recent_files;
-        state.audio_device_name = device_name;
     }
 
     // Optional CLI: `cuepool path/to/show.qproj` opens a project on startup.

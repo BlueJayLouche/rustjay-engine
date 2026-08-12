@@ -333,6 +333,8 @@ mod tests {
         let sf = ShowFile {
             show_settings: ShowSettings {
                 title: "My Show".into(),
+                audio_output_driver: AudioOutputDriver::ASIO,
+                audio_output_device: "Dante Virtual Soundcard (x64)".into(),
                 ..Default::default()
             },
             cues: vec![
@@ -350,6 +352,22 @@ mod tests {
         println!("{}", json);
         let de: ShowFile = serde_json::from_str(&json).unwrap();
         assert_eq!(sf, de);
+        assert_eq!(de.show_settings.audio_output_driver, AudioOutputDriver::ASIO);
+        assert_eq!(
+            de.show_settings.audio_output_device,
+            "Dante Virtual Soundcard (x64)"
+        );
+    }
+
+    #[test]
+    fn old_show_without_audio_output_fields_defaults_to_wasapi() {
+        let show: ShowFile = serde_json::from_str(r#"{"show_settings":{"title":"Old Show"}}"#)
+            .unwrap();
+        assert_eq!(
+            show.show_settings.audio_output_driver,
+            AudioOutputDriver::WASAPI
+        );
+        assert!(show.show_settings.audio_output_device.is_empty());
     }
 
     #[test]
