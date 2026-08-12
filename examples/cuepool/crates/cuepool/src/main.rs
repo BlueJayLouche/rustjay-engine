@@ -24,7 +24,7 @@ use cuepool_video::{VideoFrame, VideoSource};
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -371,6 +371,10 @@ struct App {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// `Surface::configure` takes this exclusively; GPU queue/present cycles
+    /// take it shared. Lock it without `VideoControl` or `frame_state` held;
+    /// configure paths never take either user mutex while holding the gate.
+    configure_gate: Arc<RwLock<()>>,
 
     // ── control window (egui) ──
     control_window: Option<Arc<Window>>,
@@ -637,6 +641,7 @@ impl App {
         // the Windows/NVIDIA WSI stall behind the vsync-blocked render threads.
         let video_control = Arc::new(Mutex::new(VideoControl::default()));
         let frame_state = Arc::new(Mutex::new(OutputFrameState::default()));
+        let configure_gate = Arc::new(RwLock::new(()));
         let (canvas_cmd_tx, canvas_cmd_rx) = std::sync::mpsc::channel::<CanvasCommand>();
         let consume_stop = Arc::new(AtomicBool::new(false));
         let consume_join = {
@@ -644,10 +649,21 @@ impl App {
             let queue = queue.clone();
             let control = Arc::clone(&video_control);
             let frame = Arc::clone(&frame_state);
+            let configure_gate = Arc::clone(&configure_gate);
             let stop = Arc::clone(&consume_stop);
             std::thread::Builder::new()
                 .name("video-consume".into())
-                .spawn(move || video_consume_thread(device, queue, control, frame, canvas_cmd_rx, stop))
+                .spawn(move || {
+                    video_consume_thread(
+                        device,
+                        queue,
+                        configure_gate,
+                        control,
+                        frame,
+                        canvas_cmd_rx,
+                        stop,
+                    )
+                })
                 .expect("spawn video consume thread")
         };
 
@@ -656,6 +672,7 @@ impl App {
             adapter,
             device,
             queue,
+            configure_gate,
             control_window: None,
             control_surface: None,
             control_config: None,
@@ -755,7 +772,13 @@ impl App {
         } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
             config.present_mode = wgpu::PresentMode::Immediate;
         }
-        surface.configure(&self.device, &config);
+        {
+            let _configure_guard = self
+                .configure_gate
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            surface.configure(&self.device, &config);
+        }
 
         let egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -874,6 +897,7 @@ impl App {
             / windowed_count as f64)
             .max(160.0);
         let mut windowed_idx = 0usize;
+        let mut pending_outputs = Vec::with_capacity(outputs.len());
 
         for (out_idx, output) in outputs.iter().enumerate() {
             let mut attrs = winit::window::WindowAttributes::default()
@@ -935,7 +959,13 @@ impl App {
             } else {
                 wgpu::PresentMode::Fifo
             };
-            surface.configure(&self.device, &config);
+            {
+                let _configure_guard = self
+                    .configure_gate
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
+                surface.configure(&self.device, &config);
+            }
 
             if std::env::var("QPLAYER_FPS_DEBUG").is_ok() {
                 let refresh = window
@@ -961,43 +991,73 @@ impl App {
                 pixel_perfect,
             );
 
-            let video_id = window.id();
             let size_atomic = Arc::new(AtomicU64::new(pack_size(size.width, size.height)));
             let stop = Arc::new(AtomicBool::new(false));
             let presented = Arc::new(AtomicU32::new(0));
             let present_mode = config.present_mode;
             let format = config.format;
-            let join = {
-                let frame_state = Arc::clone(&self.frame_state);
-                let thread_size = Arc::clone(&size_atomic);
-                let thread_stop = Arc::clone(&stop);
-                let thread_presented = Arc::clone(&presented);
-                let device = self.device.clone();
-                let queue = self.queue.clone();
-                let fallback_output = output.clone();
-                std::thread::Builder::new()
-                    .name(format!("output-render-{}", output.name))
-                    .spawn(move || {
-                        output_render_thread(
-                            surface,
-                            config,
-                            renderer,
-                            device,
-                            queue,
-                            frame_state,
-                            thread_size,
-                            thread_stop,
-                            thread_presented,
-                            out_idx,
-                            fallback_output,
-                        );
-                    })
-                    .expect("spawn output render thread")
-            };
+            pending_outputs.push((
+                out_idx,
+                output.clone(),
+                window,
+                surface,
+                config,
+                renderer,
+                size_atomic,
+                stop,
+                presented,
+                present_mode,
+                format,
+            ));
+        }
+
+        // All surfaces must be configured before any render thread can submit.
+        for (
+            out_idx,
+            output_config,
+            window,
+            surface,
+            config,
+            renderer,
+            size_atomic,
+            stop,
+            presented,
+            present_mode,
+            format,
+        ) in pending_outputs
+        {
+            let video_id = window.id();
+            let frame_state = Arc::clone(&self.frame_state);
+            let configure_gate = Arc::clone(&self.configure_gate);
+            let thread_size = Arc::clone(&size_atomic);
+            let thread_stop = Arc::clone(&stop);
+            let thread_presented = Arc::clone(&presented);
+            let device = self.device.clone();
+            let queue = self.queue.clone();
+            let fallback_output = output_config.clone();
+            let join = std::thread::Builder::new()
+                .name(format!("output-render-{}", output_config.name))
+                .spawn(move || {
+                    output_render_thread(
+                        surface,
+                        config,
+                        renderer,
+                        device,
+                        queue,
+                        configure_gate,
+                        frame_state,
+                        thread_size,
+                        thread_stop,
+                        thread_presented,
+                        out_idx,
+                        fallback_output,
+                    );
+                })
+                .expect("spawn output render thread");
             self.output_windows.push(OutputWindow {
                 id: video_id,
                 window,
-                output_config: output.clone(),
+                output_config,
                 size: size_atomic,
                 stop,
                 presented,
@@ -1454,6 +1514,10 @@ impl App {
             let img = img.to_rgba8();
             let (w, h) = (img.width(), img.height());
             self.ensure_pixmap_texture(w, h);
+            let _configure_guard = self
+                .configure_gate
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             self.pixmap_texture.as_ref().unwrap().upload_frame(
                 &self.queue,
                 &VideoFrame::new(w, h, img.into_raw(), 0.0),
@@ -1493,6 +1557,8 @@ impl App {
         }
         let Some(frame) = latest else { return };
         let (w, h) = (frame.width, frame.height);
+        let configure_gate = Arc::clone(&self.configure_gate);
+        let _configure_guard = configure_gate.read().unwrap_or_else(|e| e.into_inner());
         if frame.rgba().is_some() {
             self.ensure_pixmap_texture(w, h);
             let tex = self.pixmap_texture.as_ref().unwrap();
@@ -2387,7 +2453,12 @@ impl App {
         self.pixmap_frame_rx = None;
         if let Some(tex) = self.pixmap_texture.as_ref() {
             let (w, h) = (tex.width, tex.height);
-            tex.upload_rgba(&self.queue, &vec![0u8; (w * h * 4) as usize]);
+            let blank = vec![0u8; (w * h * 4) as usize];
+            let _configure_guard = self
+                .configure_gate
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            tex.upload_rgba(&self.queue, &blank);
         }
         self.clear_text_overlay();
         // The render threads present every vsync, so the cleared/black state
@@ -3484,6 +3555,12 @@ impl App {
         let Some(egui_state) = self.egui_state.as_mut() else { return };
         let Some(egui_renderer) = self.egui_renderer.as_mut() else { return };
 
+        // Acquire (under the shared gate) BEFORE running the egui pass: bailing
+        // out after `run` would discard its texture deltas and desync the atlas.
+        let _configure_guard = self
+            .configure_gate
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let output = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
             // Control window covered/minimized — skip this frame quietly (no spam).
@@ -3597,11 +3674,11 @@ impl App {
             pixels_per_point: window.scale_factor() as f32 * self.egui_ctx.zoom_factor(),
         };
 
+        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("control-encoder"),
         });
 
-        let paint_jobs = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
         for (id, image_delta) in &full_output.textures_delta.set {
             egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
         }
@@ -3751,6 +3828,10 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(surface) = self.control_surface.as_ref() {
                             if let Some(config) = self.control_config.as_ref() {
+                                let _configure_guard = self
+                                    .configure_gate
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner());
                                 surface.configure(&self.device, config);
                             }
                         }
@@ -3960,6 +4041,7 @@ impl ApplicationHandler<AppEvent> for App {
                     .collect();
                 if !batch.is_empty() {
                     self.last_pixel_sample = Instant::now();
+                    let configure_gate = Arc::clone(&self.configure_gate);
                     let sampler = self
                         .pixel_sampler
                         .get_or_insert_with(|| cuepool_video::PixelSampler::new(&self.device));
@@ -3975,6 +4057,8 @@ impl ApplicationHandler<AppEvent> for App {
                             self.lighting.set_segment_pixels(id, cols, rows, rgba);
                         }
                     }
+                    let _configure_guard =
+                        configure_gate.read().unwrap_or_else(|e| e.into_inner());
                     sampler.sample(&self.device, &self.queue, &batch);
                 }
             }
@@ -4226,6 +4310,7 @@ fn resolve_goto_target(
 fn video_consume_thread(
     device: wgpu::Device,
     queue: wgpu::Queue,
+    configure_gate: Arc<RwLock<()>>,
     control: Arc<Mutex<VideoControl>>,
     frame_state: Arc<Mutex<OutputFrameState>>,
     cmd_rx: std::sync::mpsc::Receiver<CanvasCommand>,
@@ -4264,22 +4349,47 @@ fn video_consume_thread(
                 }
                 CanvasCommand::BlankCanvas => {
                     if let Some(c) = canvas.as_ref() {
-                        c.upload_rgba(&queue, &vec![0u8; (c.width * c.height * 4) as usize]);
+                        let blank = vec![0u8; (c.width * c.height * 4) as usize];
+                        let _configure_guard =
+                            configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        c.upload_rgba(&queue, &blank);
                     }
                 }
                 CanvasCommand::Image(path, fit) => {
                     if let Some(c) = canvas.as_ref() {
-                        if let Err(e) = c.upload_image(&queue, &path, fit) {
-                            log::error!("Image cue failed to load '{path}': {e}");
+                        match image::open(&path) {
+                            Ok(image) => {
+                                let image = image.to_rgba8();
+                                let frame = VideoFrame::new(
+                                    image.width(),
+                                    image.height(),
+                                    image.into_raw(),
+                                    0.0,
+                                );
+                                let _configure_guard = configure_gate
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                c.upload_frame(&queue, &frame, fit);
+                            }
+                            Err(e) => log::error!("Image cue failed to load '{path}': {e}"),
                         }
                     }
                 }
                 CanvasCommand::Overlay(content) => {
                     if let Some(ov) = overlay.as_ref() {
                         match content {
-                            Some((frame, fit)) => ov.upload_frame(&queue, &frame, fit),
+                            Some((frame, fit)) => {
+                                let _configure_guard = configure_gate
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                ov.upload_frame(&queue, &frame, fit);
+                            }
                             None => {
-                                ov.upload_rgba(&queue, &vec![0u8; (ov.width * ov.height * 4) as usize])
+                                let blank = vec![0u8; (ov.width * ov.height * 4) as usize];
+                                let _configure_guard = configure_gate
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner());
+                                ov.upload_rgba(&queue, &blank)
                             }
                         }
                     }
@@ -4382,6 +4492,8 @@ fn video_consume_thread(
             match frame.pixels {
                 cuepool_video::FramePixels::Rgba(_) => {
                     if let Some(c) = canvas.as_ref() {
+                        let _configure_guard =
+                            configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         c.upload_frame(&queue, &frame, fit);
                     }
                 }
@@ -4396,6 +4508,8 @@ fn video_consume_thread(
                         ));
                     }
                     if let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut()) {
+                        let _configure_guard =
+                            configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -4519,6 +4633,7 @@ fn output_render_thread(
     renderer: cuepool_video::ProjectionRenderer,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    configure_gate: Arc<RwLock<()>>,
     frame_state: Arc<Mutex<OutputFrameState>>,
     size: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
@@ -4542,6 +4657,7 @@ fn output_render_thread(
         if w > 0 && h > 0 && (w != config.width || h != config.height) {
             config.width = w;
             config.height = h;
+            let _configure_guard = configure_gate.write().unwrap_or_else(|e| e.into_inner());
             surface.configure(&device, &config);
         }
         if w == 0 || h == 0 {
@@ -4551,18 +4667,26 @@ fn output_render_thread(
         }
 
         use wgpu::CurrentSurfaceTexture::{Lost, Occluded, Outdated, Suboptimal, Success};
+        let mut submit_guard = configure_gate.read().unwrap_or_else(|e| e.into_inner());
         let surface_texture = match surface.get_current_texture() {
             Success(o) | Suboptimal(o) => o,
             // Output window covered/minimized — skip quietly (decode + audio keep
             // running on their own threads, so playback is unaffected). Sleep so
             // the non-blocking Occluded return can't free-spin this thread.
             Occluded => {
+                drop(submit_guard);
                 std::thread::sleep(Duration::from_millis(8));
                 continue;
             }
             Lost | Outdated => {
                 log::debug!("Output surface lost/outdated, reconfiguring");
-                surface.configure(&device, &config);
+                drop(submit_guard);
+                {
+                    let _configure_guard =
+                        configure_gate.write().unwrap_or_else(|e| e.into_inner());
+                    surface.configure(&device, &config);
+                }
+                submit_guard = configure_gate.read().unwrap_or_else(|e| e.into_inner());
                 match surface.get_current_texture() {
                     Success(o) | Suboptimal(o) => o,
                     err => {
@@ -4573,6 +4697,7 @@ fn output_render_thread(
             }
             err => {
                 log::warn!("Output surface acquire failed: {err:?}");
+                drop(submit_guard);
                 std::thread::sleep(Duration::from_millis(8));
                 continue;
             }
@@ -4677,6 +4802,7 @@ fn output_render_thread(
 
         queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        drop(submit_guard);
         presented.fetch_add(1, Ordering::Relaxed);
     }
 }
