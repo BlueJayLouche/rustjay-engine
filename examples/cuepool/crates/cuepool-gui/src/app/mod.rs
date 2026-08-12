@@ -2047,10 +2047,10 @@ impl CuePoolApp {
                             file_paths.push(path.clone());
                         }
                     }
-                    cuepool_core::Cue::Text { font, .. } => {
-                        if !font.is_empty() && !file_paths.contains(font) {
-                            file_paths.push(font.clone());
-                        }
+                    cuepool_core::Cue::Text { font, .. }
+                        if !font.is_empty() && !file_paths.contains(font) =>
+                    {
+                        file_paths.push(font.clone());
                     }
                     _ => {}
                 }

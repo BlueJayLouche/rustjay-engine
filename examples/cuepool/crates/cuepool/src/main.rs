@@ -3408,14 +3408,14 @@ impl App {
                                 }
                         }
                     }
-                    OscEvent::RemotePreload { target, qid, time: _ } => {
-                        if self.is_remote_target_match(&target) {
-                            if let Ok(qid_dec) = qid.parse::<rust_decimal::Decimal>() {
-                                let _ = self.cuepool.state().lock().map(|mut s| s.selected_cue_id = Some(qid_dec));
-                            }
-                            if let Ok(mut state) = self.cuepool.state().lock() {
-                                state.command_queue.push(AppCommand::Preload);
-                            }
+                    OscEvent::RemotePreload { target, qid, time: _ }
+                        if self.is_remote_target_match(&target) =>
+                    {
+                        if let Ok(qid_dec) = qid.parse::<rust_decimal::Decimal>() {
+                            let _ = self.cuepool.state().lock().map(|mut s| s.selected_cue_id = Some(qid_dec));
+                        }
+                        if let Ok(mut state) = self.cuepool.state().lock() {
+                            state.command_queue.push(AppCommand::Preload);
                         }
                     }
                     _ => {}
@@ -3944,30 +3944,30 @@ impl ApplicationHandler<AppEvent> for App {
                 WindowEvent::ModifiersChanged(modifiers) => {
                     self.modifiers = modifiers.state();
                 }
-                WindowEvent::KeyboardInput { event: key_event, .. } if !egui_consumed => {
+                WindowEvent::KeyboardInput { event: key_event, .. }
+                    if !egui_consumed && key_event.state == winit::event::ElementState::Pressed =>
+                {
                     // Toggle the video-output window fullscreen from the control window
                     // (Ctrl/Cmd+F or F11) so it works while operating the cue list.
                     // Creates the output window first if it isn't open yet.
-                    if key_event.state == winit::event::ElementState::Pressed {
-                        use winit::keyboard::{Key, KeyCode, PhysicalKey};
-                        let is_f11 = matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F11));
-                        let is_f = key_event.logical_key == Key::Character("f".into());
-                        let has_ctrl = self.modifiers.control_key() || self.modifiers.super_key();
-                        if is_f11 || (is_f && has_ctrl) {
-                            if self.output_windows.is_empty() {
-                                self.create_output_windows(event_loop);
-                            }
-                            self.toggle_output_fullscreen();
-                        } else {
-                            // Check cue hotkey triggers (only bare keys, not Ctrl/Cmd combos).
-                            let key_name = match &key_event.logical_key {
-                                Key::Character(s) => s.to_string(),
-                                Key::Named(n) => format!("{:?}", n),
-                                _ => String::new(),
-                            };
-                            if !key_name.is_empty() && !has_ctrl {
-                                self.fire_hotkey_trigger(&key_name, event_loop);
-                            }
+                    use winit::keyboard::{Key, KeyCode, PhysicalKey};
+                    let is_f11 = matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F11));
+                    let is_f = key_event.logical_key == Key::Character("f".into());
+                    let has_ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+                    if is_f11 || (is_f && has_ctrl) {
+                        if self.output_windows.is_empty() {
+                            self.create_output_windows(event_loop);
+                        }
+                        self.toggle_output_fullscreen();
+                    } else {
+                        // Check cue hotkey triggers (only bare keys, not Ctrl/Cmd combos).
+                        let key_name = match &key_event.logical_key {
+                            Key::Character(s) => s.to_string(),
+                            Key::Named(n) => format!("{:?}", n),
+                            _ => String::new(),
+                        };
+                        if !key_name.is_empty() && !has_ctrl {
+                            self.fire_hotkey_trigger(&key_name, event_loop);
                         }
                     }
                 }
