@@ -1972,7 +1972,13 @@ impl App {
                     source = Box::new(fade_proc);
                 }
 
-                let input = audio_engine.play(source);
+                let input = match audio_engine.play(source) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        log::error!("Cannot play audio cue Q{qid}: {e}");
+                        return;
+                    }
+                };
                 input.set_volume(volume);
                 input.set_pan(pan);
                 input.set_routing(routing.out_pair, routing.send, routing.crosspoints);

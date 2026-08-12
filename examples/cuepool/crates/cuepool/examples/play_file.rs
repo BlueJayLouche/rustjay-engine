@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Play
-    let _input = engine.play(Box::new(decoder));
+    let _input = engine.play(Box::new(decoder)).expect("resampler setup failed");
     println!("Playing for 5 seconds... (press Ctrl+C to stop early)");
 
     // Refresh mixer snapshot so the audio callback sees the new input

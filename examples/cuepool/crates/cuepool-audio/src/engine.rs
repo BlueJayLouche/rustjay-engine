@@ -433,14 +433,20 @@ impl AudioEngine {
     ///
     /// Automatically inserts a resampler if the source sample rate differs
     /// from the device rate, and a mono-to-stereo converter if needed.
-    pub fn play(&self, source: Box<dyn SampleProvider>) -> Arc<MixerInput> {
+    pub fn play(&self, source: Box<dyn SampleProvider>) -> Result<Arc<MixerInput>, AudioError> {
         let mut source = source;
 
         // Resample if needed
         if source.sample_rate() != self.sample_rate {
+            let source_rate = source.sample_rate();
             source = Box::new(
-                ResamplerProcessor::new(source, self.sample_rate)
-                    .expect("resampler creation failed — invalid audio parameters?"),
+                ResamplerProcessor::new(source, self.sample_rate).map_err(|e| {
+                    AudioError::Resampler {
+                        source_rate,
+                        target_rate: self.sample_rate,
+                        source: e,
+                    }
+                })?,
             );
         }
 
@@ -456,7 +462,7 @@ impl AudioEngine {
         let max_buffer = self.sample_rate as usize * self.channels as usize; // 1 second
         let input = Arc::new(MixerInput::new(source, max_buffer));
         self.mixer.add_input(input.clone());
-        input
+        Ok(input)
     }
 
     /// Refresh the mixer snapshot. Call from the main thread each frame.
@@ -482,16 +488,22 @@ impl AudioEngine {
         source: Box<dyn SampleProvider>,
         _eq_settings: cuepool_core::EQSettings,
         _initial_volume: f32,
-    ) -> Box<dyn SampleProvider> {
+    ) -> Result<Box<dyn SampleProvider>, AudioError> {
         // TODO: wire LoopProcessor, EqProcessor, FadeProcessor, PanProcessor
         // when the binary crate provides cue parameters.
         // For now, resample and upmix only.
         let mut chain = source;
 
         if chain.sample_rate() != self.sample_rate {
+            let source_rate = chain.sample_rate();
             chain = Box::new(
-                ResamplerProcessor::new(chain, self.sample_rate)
-                    .expect("resampler creation failed"),
+                ResamplerProcessor::new(chain, self.sample_rate).map_err(|e| {
+                    AudioError::Resampler {
+                        source_rate,
+                        target_rate: self.sample_rate,
+                        source: e,
+                    }
+                })?,
             );
         }
 
@@ -499,7 +511,7 @@ impl AudioEngine {
             chain = Box::new(MonoToStereo::new(chain));
         }
 
-        chain
+        Ok(chain)
     }
 
     /// List output devices from exactly the configured driver host.
@@ -696,6 +708,13 @@ impl SampleProvider for NullSource {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
+    #[error("could not create a resampler ({source_rate} Hz -> {target_rate} Hz): {source}")]
+    Resampler {
+        source_rate: u32,
+        target_rate: u32,
+        #[source]
+        source: rubato::ResamplerConstructionError,
+    },
     #[error("audio output driver {driver} was requested, but CuePool was built without ASIO support; rebuild cuepool with `--features asio`")]
     DriverNotCompiled { driver: &'static str },
     #[error("audio output driver {driver} is only supported on Windows, not {platform}")]
