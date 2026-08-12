@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+    # rkyv 0.7.46 unsoundness (2026). rkyv is an OPTIONAL, non-default feature of
+    # rust_decimal — it sits in Cargo.lock but nothing in CuePool enables the
+    # feature, so it is never compiled in (cargo tree -i rkyv finds no active
+    # path). Ignored so first-contact CI is green; drop this once rust_decimal
+    # ships a lockfile that no longer pins vulnerable rkyv, or audit stops
+    # flagging unbuilt optional deps.
+    "RUSTSEC-2026-0235",
+]
