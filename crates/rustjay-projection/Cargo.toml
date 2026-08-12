@@ -21,7 +21,7 @@ anyhow       = { workspace = true }
 image        = { workspace = true, optional = true }
 imageproc    = { workspace = true, optional = true }
 earcutr      = { workspace = true, optional = true }
-usvg         = { version = "0.45", optional = true }
+usvg         = { version = "0.48", optional = true }
 dxf          = { version = "0.6", optional = true }
 thiserror    = { version = "2", optional = true }
 
