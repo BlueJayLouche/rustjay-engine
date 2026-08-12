@@ -317,3 +317,16 @@ were all inside `#[cfg(test)]` modules.
 6. Leave standalone-example usage panics as Low unless those tools become operator
    workflows; the reachable filesystem write error at `gen_lx_test.rs:92` is the
    only one worth normal CLI error reporting now.
+
+## Addendum: changes on `main` after the audited revision (2026-08-13)
+
+Two changes landed between the audited revision and this document merging:
+
+- PR #98 removed the two Critical audio-callback aborts (`engine.rs:325` and
+  `engine.rs:579` above); a sample-format mismatch now silences the callback
+  instead of aborting. Worklist item 1 is done. `engine.rs` line numbers in this
+  document predate that change — the resampler-construction sites from worklist
+  item 4 now sit at `engine.rs:443` and `engine.rs:494`.
+- PR #99 synced the nested `Cargo.lock` with the cpal 0.18 manifests.
+
+Worklist items 2–6 are unaffected and remain open.
