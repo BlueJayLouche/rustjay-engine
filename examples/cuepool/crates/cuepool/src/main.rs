@@ -89,6 +89,10 @@ fn monitor_descriptor(m: &winit::monitor::MonitorHandle) -> cuepool_core::Monito
 enum AppEvent {
     /// Video stream reached EOF. (Frames travel on a bounded channel, not here.)
     VideoEof,
+    /// An output worker needs winit to recreate its window-owned surface.
+    OutputSurfaceLost(WindowId),
+    /// The shared GPU device is gone; recovery requires rebuilding all resources.
+    DeviceLost,
 }
 
 /// Per-window identifiers so we can route events.
@@ -1034,6 +1038,7 @@ impl App {
             let thread_presented = Arc::clone(&presented);
             let device = self.device.clone();
             let queue = self.queue.clone();
+            let event_loop_proxy = self.event_loop_proxy.clone();
             let fallback_output = output_config.clone();
             let join = std::thread::Builder::new()
                 .name(format!("output-render-{}", output_config.name))
@@ -1045,10 +1050,12 @@ impl App {
                         device,
                         queue,
                         configure_gate,
+                        event_loop_proxy,
                         frame_state,
                         thread_size,
                         thread_stop,
                         thread_presented,
+                        video_id,
                         out_idx,
                         fallback_output,
                     );
@@ -3549,27 +3556,58 @@ impl App {
         self.update_window_title();
         // Read before egui_state's mutable borrow below (E0502 otherwise).
         let sample_rate = (self.audio_sample_rate() as f64).max(1.0);
-        let Some(surface) = self.control_surface.as_ref() else { return };
-        let Some(config) = self.control_config.as_ref() else { return };
-        let Some(window) = self.control_window.as_ref() else { return };
-        let Some(egui_state) = self.egui_state.as_mut() else { return };
-        let Some(egui_renderer) = self.egui_renderer.as_mut() else { return };
 
         // Acquire (under the shared gate) BEFORE running the egui pass: bailing
         // out after `run` would discard its texture deltas and desync the atlas.
-        let _configure_guard = self
+        let submit_guard = self
             .configure_gate
             .read()
             .unwrap_or_else(|e| e.into_inner());
+        let Some(surface) = self.control_surface.as_ref() else { return };
         let output = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(o) | wgpu::CurrentSurfaceTexture::Suboptimal(o) => o,
             // Control window covered/minimized — skip this frame quietly (no spam).
             wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                drop(submit_guard);
+                log::debug!("Control surface outdated, reconfiguring");
+                let Some(surface) = self.control_surface.as_ref() else { return };
+                let Some(config) = self.control_config.as_ref() else { return };
+                let _configure_guard = self
+                    .configure_gate
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner());
+                surface.configure(&self.device, config);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                drop(submit_guard);
+                log::warn!("Control surface lost, recreating");
+                let Some(window) = self.control_window.as_ref() else { return };
+                let Some(config) = self.control_config.as_ref() else { return };
+                let surface = self
+                    .instance
+                    .create_surface(Arc::clone(window))
+                    .expect("recreate control surface");
+                {
+                    let _configure_guard = self
+                        .configure_gate
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    surface.configure(&self.device, config);
+                }
+                self.control_surface = Some(surface);
+                return;
+            }
             err => {
                 log::warn!("Control surface acquire failed: {err:?}");
                 return;
             }
         };
+        let Some(config) = self.control_config.as_ref() else { return };
+        let Some(window) = self.control_window.as_ref() else { return };
+        let Some(egui_state) = self.egui_state.as_mut() else { return };
+        let Some(egui_renderer) = self.egui_renderer.as_mut() else { return };
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let raw_input = egui_state.take_egui_input(window);
@@ -3777,6 +3815,16 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                     }
                 }
+            }
+            AppEvent::OutputSurfaceLost(window_id) => {
+                if self.output_windows.iter().any(|out| out.id == window_id) {
+                    log::warn!("Output surface lost — rebuilding output windows");
+                    self.create_output_windows(event_loop);
+                }
+            }
+            AppEvent::DeviceLost => {
+                log::error!("GPU device lost; CuePool cannot recover without a restart — exiting");
+                event_loop.exit();
             }
         }
     }
@@ -4634,10 +4682,12 @@ fn output_render_thread(
     device: wgpu::Device,
     queue: wgpu::Queue,
     configure_gate: Arc<RwLock<()>>,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     frame_state: Arc<Mutex<OutputFrameState>>,
     size: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     presented: Arc<AtomicU32>,
+    window_id: WindowId,
     out_index: usize,
     fallback_output: cuepool_core::ProjectorOutput,
 ) {
@@ -4678,8 +4728,23 @@ fn output_render_thread(
                 std::thread::sleep(Duration::from_millis(8));
                 continue;
             }
-            Lost | Outdated => {
-                log::debug!("Output surface lost/outdated, reconfiguring");
+            Lost => {
+                log::warn!("Output surface lost; requesting a winit-side rebuild");
+                drop(submit_guard);
+                if event_loop_proxy
+                    .send_event(AppEvent::OutputSurfaceLost(window_id))
+                    .is_err()
+                {
+                    log::error!("Cannot request output surface rebuild: event loop closed");
+                    break;
+                }
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(8));
+                }
+                break;
+            }
+            Outdated => {
+                log::debug!("Output surface outdated, reconfiguring");
                 drop(submit_guard);
                 {
                     let _configure_guard =
@@ -4691,6 +4756,8 @@ fn output_render_thread(
                     Success(o) | Suboptimal(o) => o,
                     err => {
                         log::warn!("Output surface acquire failed after reconfigure: {err:?}");
+                        drop(submit_guard);
+                        std::thread::sleep(Duration::from_millis(8));
                         continue;
                     }
                 }
@@ -5242,6 +5309,13 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     ))?;
+    let device_lost_proxy = proxy.clone();
+    device.set_device_lost_callback(move |reason, message| {
+        log::error!("GPU device lost ({reason:?}): {message}");
+        if device_lost_proxy.send_event(AppEvent::DeviceLost).is_err() {
+            log::error!("Cannot report GPU device loss: event loop closed");
+        }
+    });
 
     let mut app = App::new(instance, adapter, device, queue, proxy);
 
