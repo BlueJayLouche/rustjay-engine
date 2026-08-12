@@ -204,7 +204,7 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release ${{ matrix.manifest }} -p ${{ matrix.app }} --all-features
+        run: cargo build --release --locked ${{ matrix.manifest }} -p ${{ matrix.app }} --all-features
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
