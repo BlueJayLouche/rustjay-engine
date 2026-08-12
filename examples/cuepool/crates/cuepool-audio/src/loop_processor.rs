@@ -199,8 +199,9 @@ impl SampleProvider for LoopProcessor {
         let frame = self.samples_to_frames(sample);
         inner.total_frames = frame;
         inner.exhausted = false;
-        // Adjust for trim start
-        let seek_frame = inner.start_frame + frame;
+        // Use the command value so a seek before the first read still observes
+        // the configured trim start.
+        let seek_frame = self.cmd_start_frame.load(Ordering::Relaxed) + frame;
         self.source.seek(self.frames_to_samples(seek_frame));
     }
 

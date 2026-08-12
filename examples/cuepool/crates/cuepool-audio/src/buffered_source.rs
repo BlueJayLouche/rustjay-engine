@@ -25,8 +25,10 @@ struct Inner {
     eof: AtomicBool,
     /// Set on Drop so the background thread exits instead of looping forever.
     shutdown: AtomicBool,
-    /// Seek target sample (set by audio thread, consumed by BG thread).
+    /// Seek target sample (set by the control thread, consumed by BG thread).
     seek_target: AtomicUsize,
+    /// Absolute sample corresponding to ring-buffer read position zero.
+    position_base: AtomicUsize,
     /// Source is behind a Mutex — only the BG thread ever locks it.
     source: Mutex<Box<dyn SampleProvider>>,
 }
@@ -52,6 +54,7 @@ impl BufferedSource {
             eof: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             seek_target: AtomicUsize::new(usize::MAX), // MAX = no seek pending
+            position_base: AtomicUsize::new(0),
             source: Mutex::new(source),
         });
 
@@ -75,8 +78,9 @@ impl BufferedSource {
             }
 
             // Check for pending seek
-            let seek = inner.seek_target.swap(usize::MAX, Ordering::Acquire);
+            let seek = inner.seek_target.load(Ordering::Acquire);
             if seek != usize::MAX {
+                inner.position_base.store(seek, Ordering::Release);
                 if let Ok(src) = inner.source.lock() {
                     src.seek(seek);
                 }
@@ -84,6 +88,13 @@ impl BufferedSource {
                 inner.read_pos.store(0, Ordering::Release);
                 inner.write_pos.store(0, Ordering::Release);
                 inner.eof.store(false, Ordering::Relaxed);
+                // Do not erase a newer target posted while this seek ran.
+                let _ = inner.seek_target.compare_exchange(
+                    seek,
+                    usize::MAX,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                );
             }
 
             if inner.eof.load(Ordering::Relaxed) {
@@ -158,7 +169,7 @@ impl SampleProvider for BufferedSource {
 
     fn seek(&self, sample: usize) {
         self.inner.seek_target.store(sample, Ordering::Release);
-        // Spin briefly to let the BG thread pick up the seek
+        // Wait briefly for the BG thread to seek and reset the ring.
         for _ in 0..100 {
             if self.inner.seek_target.load(Ordering::Acquire) == usize::MAX {
                 return;
@@ -168,7 +179,15 @@ impl SampleProvider for BufferedSource {
     }
 
     fn position(&self) -> usize {
-        self.inner.read_pos.load(Ordering::Relaxed)
+        let pending = self.inner.seek_target.load(Ordering::Acquire);
+        if pending != usize::MAX {
+            pending
+        } else {
+            self.inner
+                .position_base
+                .load(Ordering::Acquire)
+                .saturating_add(self.inner.read_pos.load(Ordering::Relaxed))
+        }
     }
 
     fn length(&self) -> Option<usize> {

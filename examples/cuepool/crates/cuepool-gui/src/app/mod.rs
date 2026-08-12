@@ -574,6 +574,10 @@ pub enum AppCommand {
     FrameStep,
     /// Step one video frame back while paused (show clock follows).
     FrameStepBack,
+    /// Seek an active Sound or Video cue in the `ActiveCueInfo` timeline.
+    /// Looped cues use seconds relative to the loop region; targets outside
+    /// that region clamp to its final frame.
+    SeekCue { qid: Decimal, secs: f32 },
 }
 
 fn audio_driver_command(

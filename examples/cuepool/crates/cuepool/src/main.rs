@@ -129,6 +129,15 @@ struct ActiveCue {
     pending_stop: Option<PendingStop>,
 }
 
+fn active_cue_length_samples(cue: &ActiveCue) -> Option<usize> {
+    let region_frames = cue.loop_end_frame.saturating_sub(cue.loop_start_frame);
+    if region_frames > 0 {
+        usize::try_from(region_frames).ok()?.checked_mul(2)
+    } else {
+        cue.input.length()
+    }
+}
+
 /// A cue that is waiting for its delay timer to expire before playing.
 struct DelayedCue {
     cue: cuepool_core::Cue,
@@ -243,6 +252,12 @@ impl Default for OutputFrameState {
 /// lock or the frame bundle lock, and those two are never held while taking
 /// this one. The 1 s step-back `recv_timeout` happens AFTER the request is
 /// taken out and the guard dropped.
+#[derive(Clone, Copy)]
+struct VideoSeekFrameRequest {
+    position: f64,
+    adjust_show_clock: bool,
+}
+
 #[derive(Default)]
 struct VideoControl {
     /// Playback identity. Every play/stop transition invalidates receiver and
@@ -265,17 +280,21 @@ struct VideoControl {
     peek_pts: Option<f64>,
     /// PTS of the most recently consumed frame (frame-step-back anchor).
     last_pts: Option<f64>,
-    /// Frame-step-back request: the frozen position to snap to once the
-    /// re-seeked decode thread delivers its first frame.
-    step_back: Option<f64>,
-    /// The clock delta a completed step-back applied; the winit thread folds
-    /// it into the show clock (`show_paused_offset`) on its next tick.
-    step_back_delta: Option<f64>,
+    /// Paused seek request: display the first frame from the re-seeked decoder;
+    /// frame-step-back additionally snaps the frozen clock to that frame.
+    seek_frame: Option<VideoSeekFrameRequest>,
+    /// Clock delta from a frame-step-back; the winit thread folds it into the
+    /// show clock (`show_paused_offset`) on its next tick.
+    seek_show_delta: Option<f64>,
     /// Stop-cue picture fade: (start, duration_secs). The winit thread stops
     /// playback when it completes; the consume thread only reads it for opacity.
     fade: Option<(Instant, f32)>,
     /// MTC-hold position mirror (the MTC master owns the position).
     hold_position: Option<f64>,
+    /// Full media duration reported by the active decoder.
+    media_length_secs: Option<f64>,
+    /// Media timestamp corresponding to position zero in `ActiveCueInfo`.
+    timeline_offset_secs: f64,
     /// Mirrors of `App::current_video_qid.is_some()` / `current_text_qid.is_some()`.
     video_active: bool,
     text_active: bool,
@@ -345,6 +364,73 @@ fn fade_elapsed(start: Instant, pause_started: Option<Instant>) -> Duration {
 
 fn shift_fade_start_after_pause(start: Instant, pause_started: Instant, resumed_at: Instant) -> Instant {
     start + resumed_at.saturating_duration_since(start.max(pause_started))
+}
+
+fn sanitized_seek_secs(secs: f32) -> f64 {
+    if secs.is_nan() || secs <= 0.0 {
+        0.0
+    } else {
+        f64::from(secs)
+    }
+}
+
+fn audio_seek_target(secs: f32, length_samples: usize, sample_rate: u32, channels: usize) -> usize {
+    let channels = channels.max(1);
+    let final_frame = length_samples.saturating_sub(1) / channels * channels;
+    let target_frame = (sanitized_seek_secs(secs) * f64::from(sample_rate)) as usize;
+    target_frame.saturating_mul(channels).min(final_frame)
+}
+
+fn clamp_video_seek_secs(target: f64, length_secs: Option<f64>) -> f64 {
+    match length_secs.filter(|length| length.is_finite() && *length > 0.0) {
+        Some(length) => target.min(length.next_down()),
+        None if target.is_finite() => target,
+        None => 0.0,
+    }
+}
+
+fn video_seek_target(secs: f32, length_secs: Option<f64>) -> f64 {
+    clamp_video_seek_secs(sanitized_seek_secs(secs), length_secs)
+}
+
+fn video_media_secs(timeline_secs: f64, media_offset_secs: f64) -> f64 {
+    timeline_secs + media_offset_secs.max(0.0)
+}
+
+fn video_timeline_secs(media_secs: f64, media_offset_secs: f64) -> f64 {
+    (media_secs - media_offset_secs.max(0.0)).max(0.0)
+}
+
+fn video_seek_clock(
+    now: Instant,
+    target_secs: f64,
+    paused: bool,
+) -> Option<(Instant, Option<Instant>)> {
+    let target = Duration::try_from_secs_f64(target_secs).ok()?;
+    let clock = now.checked_sub(target)?;
+    Some((clock, paused.then_some(now)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TailFadeSeekAction {
+    Unchanged,
+    Rearm,
+    Restart,
+}
+
+fn tail_fade_seek_action(
+    fade_started: bool,
+    target_samples: usize,
+    end_samples: usize,
+    fade_samples: usize,
+) -> TailFadeSeekAction {
+    if target_samples >= end_samples.saturating_sub(fade_samples) {
+        TailFadeSeekAction::Restart
+    } else if fade_started {
+        TailFadeSeekAction::Rearm
+    } else {
+        TailFadeSeekAction::Unchanged
+    }
 }
 
 /// Raise the Windows timer resolution to 1 ms for the process lifetime.
@@ -1941,6 +2027,10 @@ impl App {
         match FileDecoder::open(&resolved) {
             Ok(decoder) => {
                 let sample_rate = decoder.sample_rate();
+                let source_end_frame = decoder
+                    .length()
+                    .map(|samples| samples / decoder.channels().max(1) as usize)
+                    .and_then(|frames| u64::try_from(frames).ok());
                 // input.position()/length() are reported in device-rate samples (post-resample),
                 // so anything compared against them (loop bounds, fade trigger) must scale too.
                 let out_scale = audio_engine.sample_rate() as f64 / sample_rate as f64;
@@ -1949,6 +2039,11 @@ impl App {
                     start_frame + (duration.as_secs_f64() * sample_rate as f64) as u64
                 } else {
                     0 // auto-detect from source length
+                };
+                let effective_end_frame = match (end_frame, source_end_frame) {
+                    (0, Some(source_end)) => source_end,
+                    (requested, Some(source_end)) => requested.min(source_end),
+                    (requested, None) => requested,
                 };
 
                 // Create a shared loop counter so the main thread can detect loop boundaries
@@ -2020,7 +2115,7 @@ impl App {
                     video_loop_count: 0,
                     // Device-rate frames, to match input.position()/length() (post-resample).
                     loop_start_frame: (start_frame as f64 * out_scale) as u64,
-                    loop_end_frame: (end_frame as f64 * out_scale) as u64,
+                    loop_end_frame: (effective_end_frame as f64 * out_scale) as u64,
                     fade_out,
                     fade_type,
                     fade_out_started: false,
@@ -2268,21 +2363,164 @@ impl App {
             .unwrap_or(48_000)
     }
 
+    fn seek_active_audio_cue(
+        &mut self,
+        qid: rust_decimal::Decimal,
+        secs: f32,
+    ) -> Option<f64> {
+        let sample_rate = self.audio_sample_rate();
+        let cue = self.active_cues.iter_mut().find(|cue| {
+            cue.qid == qid
+                && matches!(
+                    cue.state,
+                    CueState::Playing | CueState::PlayingLooped | CueState::Paused
+                )
+        })?;
+        let length_samples = active_cue_length_samples(cue)?;
+        if length_samples == 0 {
+            return None;
+        }
+
+        let target_samples = audio_seek_target(secs, length_samples, sample_rate, 2);
+        cue.input.seek(target_samples);
+
+        let fade_frames = (cue.fade_out.max(0.0) * sample_rate as f32) as u32;
+        let fade_samples = fade_frames as usize * 2;
+        if fade_frames > 0 && cue.loop_counter.is_none() {
+            match tail_fade_seek_action(
+                cue.fade_out_started,
+                target_samples,
+                length_samples,
+                fade_samples,
+            ) {
+                TailFadeSeekAction::Unchanged => {}
+                TailFadeSeekAction::Rearm => {
+                    cue.input.cancel_fade();
+                    cue.fade_out_started = false;
+                }
+                TailFadeSeekAction::Restart => {
+                    if cue.fade_out_started {
+                        cue.input.cancel_fade();
+                    }
+                    cue.input
+                        .start_fade(0.0, fade_frames.max(1), cue.fade_type);
+                    cue.fade_out_started = true;
+                }
+            }
+        }
+
+        Some(target_samples as f64 / 2.0 / f64::from(sample_rate))
+    }
+
+    fn seek_video_cue(
+        &mut self,
+        qid: rust_decimal::Decimal,
+        path: &str,
+        target_secs: f64,
+        media_offset_secs: f64,
+    ) {
+        let paused = self.video_control.lock_unpoisoned().paused;
+        let now = Instant::now();
+        let media_target_secs = video_media_secs(target_secs, media_offset_secs);
+        let Some((clock, pause_started)) = video_seek_clock(now, media_target_secs, paused) else {
+            log::debug!("Video seek target {target_secs:.3}s is outside the clock range");
+            return;
+        };
+        {
+            let mut ctl = self.video_control.lock_unpoisoned();
+            ctl.clock = Some(clock);
+            ctl.pause_started = pause_started;
+            ctl.peek_pts = None;
+            ctl.last_pts = None;
+            ctl.timeline_offset_secs = media_offset_secs;
+            if ctl.hold_position.is_some() {
+                ctl.hold_position = Some(target_secs);
+            }
+        }
+        if let Some(follow) = self.mtc_follow.as_mut()
+            && follow.qid == qid
+            && follow.hold_position.is_some()
+        {
+            follow.hold_position = Some(target_secs);
+        }
+        self.spawn_video_decode(
+            path,
+            Some(media_target_secs),
+            paused.then_some(VideoSeekFrameRequest {
+                position: media_target_secs,
+                adjust_show_clock: false,
+            }),
+            true,
+        );
+    }
+
+    fn seek_cue(&mut self, qid: rust_decimal::Decimal, secs: f32) {
+        let cue = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            state.show_file.cues.iter().find(|cue| cue.base().qid == qid).cloned()
+        };
+        let Some(cue) = cue else {
+            log::debug!("SeekCue Q{qid}: unknown cue; ignoring");
+            return;
+        };
+
+        match cue {
+            cuepool_core::Cue::Sound { .. } => {
+                if self.seek_active_audio_cue(qid, secs).is_none() {
+                    log::debug!("SeekCue Q{qid}: cue is inactive or has no known length; ignoring");
+                }
+            }
+            cuepool_core::Cue::Video {
+                path,
+                start_time,
+                duration,
+                ..
+            } => {
+                if self.current_video_qid != Some(qid) {
+                    log::debug!("SeekCue Q{qid}: video cue is inactive; ignoring");
+                    return;
+                }
+                let audio_target = self.seek_active_audio_cue(qid, secs);
+                let media_offset = start_time.as_secs_f64();
+                let configured_length =
+                    (duration.as_secs_f64() > 0.0).then(|| duration.as_secs_f64());
+                let media_length = self
+                    .video_control
+                    .lock_unpoisoned()
+                    .media_length_secs
+                    .map(|length| video_timeline_secs(length, media_offset));
+                let cue_length = match (configured_length, media_length) {
+                    (Some(configured), Some(media)) => Some(configured.min(media)),
+                    (configured, media) => configured.or(media),
+                };
+                if cue_length == Some(0.0) {
+                    log::debug!("SeekCue Q{qid}: video cue has no seekable region; ignoring");
+                    return;
+                }
+                let target = audio_target.map_or_else(
+                    || video_seek_target(secs, cue_length),
+                    |audio| clamp_video_seek_secs(audio, cue_length),
+                );
+                self.seek_video_cue(qid, &path, target, media_offset);
+            }
+            _ => log::debug!("SeekCue Q{qid}: cue type is not seekable; ignoring"),
+        }
+    }
+
     /// Start a cue's tail fade-out when playback reaches `fade_out` seconds before
     /// its end. Mirrors C# SoundCue, where FadeOut begins (Duration - FadeOut)
-    /// before the natural end. Looping cues are skipped (state != Playing).
+    /// before the natural end. Looping cues never run a tail fade.
     fn check_fade_outs(&mut self) {
         let sr = self.audio_sample_rate();
         for ac in &mut self.active_cues {
-            if ac.fade_out <= 0.0 || ac.fade_out_started || ac.state != CueState::Playing {
+            if ac.fade_out <= 0.0
+                || ac.fade_out_started
+                || ac.loop_counter.is_some()
+                || ac.state != CueState::Playing
+            {
                 continue;
             }
-            // End position in interleaved (stereo) samples.
-            let end_samples = if ac.loop_end_frame > 0 {
-                ac.loop_end_frame as usize * 2
-            } else if let Some(len) = ac.input.length() {
-                len
-            } else {
+            let Some(end_samples) = active_cue_length_samples(ac) else {
                 continue; // unknown length — can't schedule a tail fade
             };
             let fade_frames = (ac.fade_out * sr as f32) as u32;
@@ -2350,12 +2588,7 @@ impl App {
             if pending.mode != cuepool_core::StopMode::LoopEnd {
                 continue;
             }
-            // End position in interleaved (stereo) samples.
-            let end_samples = if ac.loop_end_frame > 0 {
-                ac.loop_end_frame as usize * 2
-            } else if let Some(len) = ac.input.length() {
-                len
-            } else {
+            let Some(end_samples) = active_cue_length_samples(ac) else {
                 continue; // unknown length — can't schedule a loop-end stop
             };
             let fade_frames = (pending.fade_out_time * sr as f32) as u32;
@@ -2414,12 +2647,14 @@ impl App {
             ctl.peek_pts = None;
             ctl.last_pts = None;
             ctl.canvas_has_frame = false;
+            ctl.media_length_secs = None;
+            ctl.timeline_offset_secs = 0.0;
             // A new video always starts at full brightness, cancelling any
             // Stop-cue fade still in flight.
             ctl.fade = None;
             // A step-back aimed at the previous stream must not replay here
             // (the epoch gate no longer consumes it against a dead stream).
-            ctl.step_back = None;
+            ctl.seek_frame = None;
             ctl.fit = projection.fit;
         }
         self.set_current_video_qid(Some(qid));
@@ -2431,13 +2666,21 @@ impl App {
             force: true,
         });
 
-        self.spawn_video_decode(path, None);
+        self.spawn_video_decode(path, None, None, false);
     }
 
     /// (Re)spawn the video decode thread. `start_before`: seek so the first
     /// frame delivered is the last one with a PTS strictly below this
-    /// timestamp (frame-step-back), followed by the frames after it.
-    fn spawn_video_decode(&mut self, path: &str, start_before: Option<f64>) {
+    /// timestamp (seeking and frame-step-back), followed by the frames after it.
+    /// `clamp_to_media` covers SeekCue when container duration is learned only
+    /// after the decoder opens; clock correction stays on the decode thread.
+    fn spawn_video_decode(
+        &mut self,
+        path: &str,
+        start_before: Option<f64>,
+        seek_frame: Option<VideoSeekFrameRequest>,
+        clamp_to_media: bool,
+    ) {
         // Kill any previous decode thread by signalling its own stop flag, then
         // install a fresh one for the new thread. Per-thread flags (vs. a shared flag
         // reset to false) guarantee the old thread exits — resetting a shared flag
@@ -2457,19 +2700,32 @@ impl App {
             std::sync::mpsc::sync_channel::<VideoMessage>(VIDEO_QUEUE_CAP);
         // Installing a new receiver also tells the consume thread to drop its
         // peeked frame and invalidates EOF already queued by the old decoder.
-        {
+        let stream_epoch = {
             let mut ctl = self.video_control.lock_unpoisoned();
             ctl.stream_epoch += 1;
             ctl.frame_rx = Some(frame_rx);
-        }
+            ctl.seek_frame = seek_frame;
+            ctl.stream_epoch
+        };
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
         let diag_state = Arc::clone(self.cuepool.state());
+        let video_control = Arc::clone(&self.video_control);
 
         if let Err(e) = std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
-                video_decode_thread(&path, start_before, stop_flag, pause_flag, frame_tx, diag_state);
+                video_decode_thread(
+                    &path,
+                    start_before,
+                    stop_flag,
+                    pause_flag,
+                    frame_tx,
+                    diag_state,
+                    video_control,
+                    stream_epoch,
+                    clamp_to_media,
+                );
             })
         {
             // Uninstall the receiver so the consume thread isn't left waiting
@@ -2523,7 +2779,9 @@ impl App {
             ctl.canvas_has_frame = false;
             ctl.fade = None;
             ctl.hold_position = None;
-            ctl.step_back = None;
+            ctl.seek_frame = None;
+            ctl.media_length_secs = None;
+            ctl.timeline_offset_secs = 0.0;
         }
         self.set_current_video_qid(None);
         self.cuepool.state().lock_unpoisoned().diagnostics.video = None;
@@ -2689,7 +2947,7 @@ impl App {
         let Some(follow) = self.mtc_follow.as_ref() else { return };
         let path = follow.path.clone();
         log::info!("[MTC] Hard sync Q{} to {:.2}s", follow.qid, target);
-        self.spawn_video_decode(&path, Some(target));
+        self.spawn_video_decode(&path, Some(target), None, false);
         self.mtc_reanchor(target);
     }
 
@@ -2851,10 +3109,17 @@ impl App {
                 };
                 path
             };
-            self.spawn_video_decode(&path, Some(cur));
             // The consume thread does the (blocking) wait for the sought frame,
             // snaps the clock, and reports the delta back for the show clock.
-            self.video_control.lock_unpoisoned().step_back = Some(pos);
+            self.spawn_video_decode(
+                &path,
+                Some(cur),
+                Some(VideoSeekFrameRequest {
+                    position: pos,
+                    adjust_show_clock: true,
+                }),
+                false,
+            );
             return;
         }
         // No video: rewind the frozen clock by one display frame.
@@ -3051,6 +3316,7 @@ impl App {
                 AppCommand::RecorderScrub { frame } => self.recorder.set_scrub(frame),
                 AppCommand::FrameStep => self.frame_step(),
                 AppCommand::FrameStepBack => self.frame_step_back(),
+                AppCommand::SeekCue { qid, secs } => self.seek_cue(qid, secs),
                 _ => {}
             }
         }
@@ -3706,7 +3972,7 @@ impl App {
                 // For looping cues with explicit loop boundaries, show loop-relative
                 // position so the progress bar resets to 0 on each loop iteration.
                 let loop_length_frames = ac.loop_end_frame.saturating_sub(ac.loop_start_frame) as usize;
-                let (position, length) = if ac.state == CueState::PlayingLooped && loop_length_frames > 0 {
+                let (position, length) = if ac.loop_counter.is_some() && loop_length_frames > 0 {
                     let total_frames = ac.input.position() / 2; // mixer is stereo
                     let rel_frames = total_frames % loop_length_frames;
                     (rel_frames * 2, Some(loop_length_frames * 2))
@@ -3725,14 +3991,19 @@ impl App {
             }).collect();
             // Video clock state for the synthesized entry below — read BEFORE
             // the GUI state lock so the two locks are never held together.
-            let (video_paused, video_pos_secs) = {
+            let (video_paused, video_pos_secs, video_length_secs) = {
                 let ctl = self.video_control.lock_unpoisoned();
-                let pos = match (ctl.clock, ctl.pause_started) {
-                    (Some(clock), Some(paused_at)) => paused_at.duration_since(clock).as_secs_f32(),
-                    (Some(clock), None) => clock.elapsed().as_secs_f32(),
+                let media_pos = match (ctl.clock, ctl.pause_started) {
+                    (Some(clock), Some(paused_at)) => paused_at.duration_since(clock).as_secs_f64(),
+                    (Some(clock), None) => clock.elapsed().as_secs_f64(),
                     _ => 0.0,
                 };
-                (ctl.pause_started.is_some(), pos)
+                (
+                    ctl.pause_started.is_some(),
+                    video_timeline_secs(media_pos, ctl.timeline_offset_secs) as f32,
+                    ctl.media_length_secs
+                        .map(|length| video_timeline_secs(length, ctl.timeline_offset_secs) as f32),
+                )
             };
             if let Ok(mut state) = self.cuepool.state().lock() {
                 // A video with no audio track (or whose audio failed to open) has
@@ -3745,17 +4016,20 @@ impl App {
                         && let Some(cue) = state.show_file.cues.iter().find(|c| c.base().qid == vqid) {
                             let paused = video_paused;
                             let position_secs = video_pos_secs;
-                            let dur = match cue {
+                            let configured_duration = match cue {
                                 cuepool_core::Cue::Video { duration, .. } => duration.as_secs_f64() as f32,
                                 _ => 0.0,
                             };
+                            let length_secs = (configured_duration > 0.0)
+                                .then_some(configured_duration)
+                                .or(video_length_secs);
                             gui_active.push(cuepool_gui::ActiveCueInfo {
                                 qid: vqid,
                                 name: cue.base().name.clone(),
                                 volume: 0.0,
                                 paused,
                                 position_secs,
-                                length_secs: (dur > 0.0).then_some(dur),
+                                length_secs,
                                 state: if paused { CueState::Paused } else { CueState::Playing },
                             });
                         }
@@ -4263,7 +4537,7 @@ impl ApplicationHandler<AppEvent> for App {
                 ctl.outputs_gen += 1;
             }
             ctl.identify = self.identify_until.is_some_and(|t| std::time::Instant::now() < t);
-            if let Some(delta) = ctl.step_back_delta.take() {
+            if let Some(delta) = ctl.seek_show_delta.take() {
                 self.show_paused_offset += delta;
             }
             let fade_done = ctl
@@ -4528,7 +4802,7 @@ fn video_consume_thread(
 
         let mut eof_epoch = None;
 
-        // ── Control handshake: new stream, stop, step-back ──
+        // ── Control handshake: new stream, stop, paused seek ──
         {
             let mut ctl = control.lock_unpoisoned();
             if rx_epoch.is_some_and(|epoch| epoch != ctl.stream_epoch) {
@@ -4554,17 +4828,15 @@ fn video_consume_thread(
                 ctl.peek_pts = None;
             }
         }
-        // Frame-step-back: wait (blocking, but on THIS thread, so the GUI never
-        // freezes) for the sought frame, snap the frozen clock to its exact
-        // PTS, and report the delta back for the show clock. Taken AFTER the
-        // channel refresh above so we wait on the NEW (re-seeked) receiver.
-        let step_back = {
+        // A paused seek waits here, off the GUI thread, for the new decoder's
+        // first frame. Frame-step-back also snaps both clocks to that frame.
+        let seek_frame = {
             let mut ctl = control.lock_unpoisoned();
             (rx_epoch == Some(ctl.stream_epoch))
-                .then(|| ctl.step_back.take())
+                .then(|| ctl.seek_frame.take())
                 .flatten()
         };
-        if let Some(pos) = step_back {
+        if let Some(request) = seek_frame {
             peek = None;
             let delivered = rx.as_ref().map(|r| r.recv_timeout(Duration::from_millis(1000)));
             let mut ctl = control.lock_unpoisoned();
@@ -4574,13 +4846,13 @@ fn video_consume_thread(
             } else {
                 match delivered {
                     Some(Ok(VideoMessage::Frame(f))) => {
-                        let delta = pos - f.pts;
-                        if delta > 0.0 {
+                        let delta = request.position - f.pts;
+                        if delta > 0.0 && request.adjust_show_clock {
                             if let Some(c) = ctl.clock {
                                 // Moving the epoch forward rewinds the paused position.
                                 ctl.clock = Some(c + Duration::from_secs_f64(delta));
                             }
-                            ctl.step_back_delta = Some(delta);
+                            ctl.seek_show_delta = Some(delta);
                         }
                         ctl.peek_pts = Some(f.pts);
                         peek = Some(f);
@@ -4591,7 +4863,7 @@ fn video_consume_thread(
                         eof_epoch = rx_epoch;
                         ctl.peek_pts = None;
                     }
-                    Some(Err(_)) => log::warn!("Frame step back: no frame delivered after seek"),
+                    Some(Err(_)) => log::warn!("Video seek: no frame delivered after seek"),
                     None => {}
                 }
             }
@@ -5074,7 +5346,9 @@ fn send_video_message(
 
 /// Video decode thread: sends frames and EOF through the bounded consumer channel.
 /// `start_before`: deliver first the last frame with PTS strictly below this
-/// timestamp (frame-step-back), then continue with the frames after it.
+/// timestamp (seeking and frame-step-back), then continue with the frames after it.
+// ponytail: Keep the one-thread entry point flat; introduce a context struct if it grows again.
+#[allow(clippy::too_many_arguments)]
 fn video_decode_thread(
     path: &str,
     start_before: Option<f64>,
@@ -5082,6 +5356,9 @@ fn video_decode_thread(
     pause_flag: Arc<AtomicBool>,
     frame_tx: std::sync::mpsc::SyncSender<VideoMessage>,
     diag_state: SharedStateHandle,
+    video_control: Arc<Mutex<VideoControl>>,
+    stream_epoch: u64,
+    clamp_to_media: bool,
 ) {
     let mut source = match VideoSource::open(path) {
         Ok(s) => s,
@@ -5098,8 +5375,33 @@ fn video_decode_thread(
         height: source.height(),
         decode_path: source.decode_path().to_string(),
     });
+    let media_length_secs = source.duration_secs();
+    let seek_target = if clamp_to_media {
+        start_before.map(|target| clamp_video_seek_secs(target, media_length_secs))
+    } else {
+        start_before
+    };
+    {
+        let mut ctl = video_control.lock_unpoisoned();
+        if ctl.stream_epoch == stream_epoch {
+            ctl.media_length_secs = media_length_secs;
+            if let (Some(requested), Some(actual)) = (start_before, seek_target)
+                && requested != actual
+            {
+                let now = Instant::now();
+                if let Some((clock, pause_started)) = video_seek_clock(now, actual, ctl.paused) {
+                    ctl.clock = Some(clock);
+                    ctl.pause_started = pause_started;
+                    if ctl.hold_position.is_some() {
+                        ctl.hold_position =
+                            Some(video_timeline_secs(actual, ctl.timeline_offset_secs));
+                    }
+                }
+            }
+        }
+    }
 
-    if let Some(t) = start_before {
+    if let Some(t) = seek_target {
         // Seek to the keyframe at/before t, then scan forward for the frame
         // pair straddling t. On seek failure the scan decodes from the start —
         // slower, but still lands on the right frame.
@@ -5669,6 +5971,69 @@ mod tests {
         assert_eq!(fade_elapsed(started_while_paused, Some(paused_at)), Duration::ZERO);
         let shifted = shift_fade_start_after_pause(started_while_paused, paused_at, resumed_at);
         assert_eq!(shifted, resumed_at);
+    }
+
+    #[test]
+    fn audio_seek_target_clamps_to_complete_stereo_frames() {
+        let len = 20;
+        assert_eq!(audio_seek_target(f32::NAN, len, 10, 2), 0);
+        assert_eq!(audio_seek_target(-1.0, len, 10, 2), 0);
+        assert_eq!(audio_seek_target(0.5, len, 10, 2), 10);
+        assert_eq!(audio_seek_target(1.0, len, 10, 2), 18);
+        assert_eq!(audio_seek_target(f32::INFINITY, len, 10, 2), 18);
+    }
+
+    #[test]
+    fn video_seek_target_stays_strictly_before_the_end() {
+        assert_eq!(video_seek_target(f32::NAN, Some(10.0)), 0.0);
+        assert_eq!(video_seek_target(-1.0, Some(10.0)), 0.0);
+        assert_eq!(video_seek_target(4.5, Some(10.0)), 4.5);
+        let final_target = video_seek_target(10.0, Some(10.0));
+        assert!(final_target < 10.0);
+        assert_eq!(final_target, 10.0f64.next_down());
+        assert_eq!(video_seek_target(f32::INFINITY, Some(10.0)), final_target);
+        assert_eq!(clamp_video_seek_secs(12.0, Some(10.0)), final_target);
+    }
+
+    #[test]
+    fn video_seek_clock_freezes_only_when_paused() {
+        let now = Instant::now();
+        let target = 3.25;
+
+        let (clock, pause_started) = video_seek_clock(now, target, false).unwrap();
+        assert_eq!(pause_started, None);
+        assert_eq!(now.duration_since(clock), Duration::from_secs_f64(target));
+
+        let (clock, pause_started) = video_seek_clock(now, target, true).unwrap();
+        assert_eq!(pause_started, Some(now));
+        assert_eq!(now.duration_since(clock), Duration::from_secs_f64(target));
+    }
+
+    #[test]
+    fn video_seek_translates_between_cue_and_media_timelines() {
+        assert_eq!(video_media_secs(3.25, 10.0), 13.25);
+        assert_eq!(video_timeline_secs(13.25, 10.0), 3.25);
+        assert_eq!(video_timeline_secs(5.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn seeking_back_rearms_tail_fade_and_seeking_into_it_restarts() {
+        assert_eq!(
+            tail_fade_seek_action(true, 30, 100, 20),
+            TailFadeSeekAction::Rearm
+        );
+        assert_eq!(
+            tail_fade_seek_action(true, 80, 100, 20),
+            TailFadeSeekAction::Restart
+        );
+        assert_eq!(
+            tail_fade_seek_action(false, 80, 100, 20),
+            TailFadeSeekAction::Restart
+        );
+        assert_eq!(
+            tail_fade_seek_action(false, 30, 100, 20),
+            TailFadeSeekAction::Unchanged
+        );
     }
 
     #[test]

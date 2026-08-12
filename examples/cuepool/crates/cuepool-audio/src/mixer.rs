@@ -153,7 +153,14 @@ impl MixerInput {
         self.finished.load(Ordering::Relaxed)
     }
 
-    /// Current playback position in samples (mono count).
+    /// Seek to an interleaved source sample and make the input playable after EOF.
+    #[inline]
+    pub fn seek(&self, sample: usize) {
+        self.source.seek(sample);
+        self.finished.store(false, Ordering::Relaxed);
+    }
+
+    /// Current playback position in interleaved source samples.
     #[inline]
     pub fn position(&self) -> usize {
         self.source.position()
@@ -179,6 +186,16 @@ impl MixerInput {
     /// Is a fade currently active?
     pub fn is_fading(&self) -> bool {
         self.fade_active.load(Ordering::Acquire)
+    }
+
+    /// Cancel a real-time fade and restore the volume it started from.
+    /// The callback uses `try_lock`, so taking this guard cannot block it.
+    pub fn cancel_fade(&self) {
+        let _buffer = self.temp_buffer.lock_unpoisoned();
+        self.fade_active.store(false, Ordering::Release);
+        self.fade_remaining.store(0, Ordering::Relaxed);
+        self.volume
+            .store(self.fade_start.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 }
 
