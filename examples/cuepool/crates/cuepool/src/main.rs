@@ -243,6 +243,15 @@ impl Default for OutputFrameState {
     }
 }
 
+/// A paused-seek frame request: the media position whose first decoded frame
+/// the consume thread should display; frame-step-back also snaps the show
+/// clock to it.
+#[derive(Clone, Copy)]
+struct VideoSeekFrameRequest {
+    position: f64,
+    adjust_show_clock: bool,
+}
+
 /// Video playback control shared between the winit thread and the video
 /// consume thread. The winit thread owns user-driven mutations (play, stop,
 /// pause, seek, step, MTC nudges); the consume thread owns the decode-channel
@@ -252,12 +261,6 @@ impl Default for OutputFrameState {
 /// lock or the frame bundle lock, and those two are never held while taking
 /// this one. The 1 s step-back `recv_timeout` happens AFTER the request is
 /// taken out and the guard dropped.
-#[derive(Clone, Copy)]
-struct VideoSeekFrameRequest {
-    position: f64,
-    adjust_show_clock: bool,
-}
-
 #[derive(Default)]
 struct VideoControl {
     /// Playback identity. Every play/stop transition invalidates receiver and
