@@ -9,6 +9,7 @@ pub mod inspector;
 pub mod log_window;
 pub mod logging;
 pub mod lighting_panel;
+pub mod preview;
 pub mod recorder_panel;
 pub mod status_panel;
 pub mod take_editor;
