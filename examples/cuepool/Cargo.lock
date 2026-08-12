@@ -1110,6 +1110,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuepool-harness"
+version = "0.1.0"
+dependencies = [
+ "cuepool-audio",
+ "cuepool-core",
+ "cuepool-protocols",
+ "serde_json",
+]
+
+[[package]]
 name = "cuepool-protocols"
 version = "0.1.0"
 dependencies = [
