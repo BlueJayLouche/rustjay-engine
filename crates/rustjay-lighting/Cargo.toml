@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "DMX lighting output (sACN / Art-Net) for rustjay-engine"
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/BlueJayLouche/rustjay-engine"
 keywords = ["dmx", "sacn", "artnet", "e131", "lighting"]
 categories = ["multimedia"]

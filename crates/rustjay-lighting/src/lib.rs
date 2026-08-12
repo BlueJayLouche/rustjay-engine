@@ -1,7 +1,8 @@
 //! DMX lighting output for rustjay — sACN (E1.31) and Art-Net over UDP.
 //!
-//! This crate is the **network spine** of the lighting subsystem (see
-//! `LIGHTING_SACN.md`). It is pure CPU + networking: it knows nothing about
+//! This crate is the **network spine** of the lighting subsystem (design
+//! notes: `guide/src/lighting.md` in the repository). It is pure CPU +
+//! networking: it knows nothing about
 //! wgpu, surfaces, or sampling. Callers build a [`DmxFrame`] (universe → 512
 //! channel bytes) and hand it to a [`DmxSender`], which paces transmission on a
 //! background thread through a [`DmxTransport`] ([`SacnTransport`] or
