@@ -3476,6 +3476,8 @@ impl App {
 
     fn render_control(&mut self) {
         self.update_window_title();
+        // Read before egui_state's mutable borrow below (E0502 otherwise).
+        let sample_rate = (self.audio_sample_rate() as f64).max(1.0);
         let Some(surface) = self.control_surface.as_ref() else { return };
         let Some(config) = self.control_config.as_ref() else { return };
         let Some(window) = self.control_window.as_ref() else { return };
@@ -3496,7 +3498,7 @@ impl App {
         let raw_input = egui_state.take_egui_input(window);
         // Sync active cue state into the GUI shared state
         {
-            let sr = (self.audio_sample_rate() as f64).max(1.0);
+            let sr = sample_rate;
             // Interleaved stereo samples → seconds.
             let secs = |samples: usize| (samples as f64 / 2.0 / sr) as f32;
             let mut gui_active: Vec<cuepool_gui::ActiveCueInfo> = self.active_cues.iter().map(|ac| {
