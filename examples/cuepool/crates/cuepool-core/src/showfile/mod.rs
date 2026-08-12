@@ -254,6 +254,23 @@ pub enum AudioOutputDriver {
     ASIO,
 }
 
+impl AudioOutputDriver {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::WASAPI => "WASAPI",
+            Self::Wave => "Wave",
+            Self::DirectSound => "DirectSound",
+            Self::ASIO => "ASIO",
+        }
+    }
+}
+
+impl std::fmt::Display for AudioOutputDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct AudioLimiterSettings {
     #[serde(default)]

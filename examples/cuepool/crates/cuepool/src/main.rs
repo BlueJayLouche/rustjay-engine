@@ -68,7 +68,7 @@ fn configured_audio_error(
     error: &cuepool_audio::AudioError,
 ) -> String {
     let device = if device.is_empty() { "<default>" } else { device };
-    format!("configured {driver:?} output device '{device}' failed: {error}")
+    format!("configured {driver} output device '{device}' failed: {error}")
 }
 
 /// Build a stable-ish descriptor from a winit monitor (name + resolution + position).
@@ -414,7 +414,6 @@ struct App {
     /// `None` means output configuration failed. Keeping this optional is the
     /// fail-closed boundary: no old/default stream survives a requested ASIO failure.
     audio_engine: Option<AudioEngine>,
-    active_audio_driver: Option<AudioOutputDriver>,
     active_cues: Vec<ActiveCue>,
     delayed_cues: Vec<DelayedCue>,
     paused: bool,
@@ -513,29 +512,6 @@ impl App {
         proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     ) -> Self {
         let cuepool = CuePoolApp::new();
-
-        let driver = AudioOutputDriver::default();
-        let devices = AudioEngine::list_devices(driver)
-            .map(|devices| devices.into_iter().map(|(name, _)| name).collect())
-            .unwrap_or_default();
-        let (audio_engine, active_audio_driver, audio_error) =
-            match AudioEngine::new_configured(driver, "") {
-                Ok(engine) => (Some(engine), Some(driver), None),
-                Err(error) => {
-                    let message = configured_audio_error(driver, "", &error);
-                    log::error!("{message}");
-                    (None, None, Some(message))
-                }
-            };
-        if let Ok(mut state) = cuepool.state().lock() {
-            state.audio_devices = devices;
-            state.audio_device_name = audio_engine
-                .as_ref()
-                .map(|engine| engine.device_name().to_string())
-                .unwrap_or_else(|| "<default>".to_string());
-            state.audio_error = audio_error;
-            state.show_settings_window = state.audio_error.is_some();
-        }
 
         // Protocol settings from project settings (fallback to defaults)
         let (nic, subnet, osc_rx_port, osc_tx_port, is_remote_host, enable_remote_control) = {
@@ -675,7 +651,7 @@ impl App {
                 .expect("spawn video consume thread")
         };
 
-        Self {
+        let mut app = Self {
             instance,
             adapter,
             device,
@@ -689,8 +665,7 @@ impl App {
             egui_renderer: None,
             cuepool,
             window_ids: None,
-            audio_engine,
-            active_audio_driver,
+            audio_engine: None,
             event_loop_proxy: proxy,
             current_text_qid: None,
             output_windows: Vec::new(),
@@ -744,7 +719,9 @@ impl App {
             pixmap_stop_flag: Arc::new(AtomicBool::new(false)),
             wall_clock_fired: std::collections::HashMap::new(),
             timecode_fired: std::collections::HashSet::new(),
-        }
+        };
+        app.apply_audio_settings();
+        app
     }
 
     /// Create the control window + surface + egui state.
@@ -1798,12 +1775,12 @@ impl App {
             )
         };
         let Some(audio_engine) = self.audio_engine.as_ref().filter(|engine| {
-            self.active_audio_driver == Some(requested_driver)
+            engine.driver() == requested_driver
                 && (requested_device.is_empty() || requested_device == engine.device_name())
         }) else {
             let reason = configured_error.unwrap_or_else(|| {
                 format!(
-                    "configured {requested_driver:?} output device '{}' is not active",
+                    "configured {requested_driver} output device '{}' is not active",
                     if requested_device.is_empty() {
                         "<default>"
                     } else {
@@ -2066,31 +2043,37 @@ impl App {
     /// previous stream before reporting the error, so ASIO can never fall back
     /// to WASAPI or continue through a stale device.
     fn apply_audio_settings(&mut self) {
-        let (driver, configured_device) = {
+        let (driver, configured_device, audio_ok) = {
             let state = self.cuepool.state().lock_unpoisoned();
             (
                 state.show_file.show_settings.audio_output_driver,
                 state.show_file.show_settings.audio_output_device.clone(),
+                state.audio_error.is_none(),
             )
         };
 
+        if audio_ok
+            && self.audio_engine.as_ref().is_some_and(|engine| {
+                engine.driver() == driver
+                    && (configured_device.is_empty() || configured_device == engine.device_name())
+            })
+        {
+            return;
+        }
+
         self.stop_all();
         self.audio_engine = None;
-        self.active_audio_driver = None;
 
-        let devices = match AudioEngine::list_devices(driver) {
-            Ok(devices) => devices.into_iter().map(|(name, _)| name).collect(),
-            Err(e) => {
-                log::error!("Could not list {driver:?} output devices: {e}");
-                Vec::new()
-            }
-        };
+        let setup = AudioEngine::configure(driver, &configured_device);
+        if let Some(error) = setup.device_list_error {
+            log::error!("Could not list {driver} output devices: {error}");
+        }
+        let devices = setup.device_names;
 
-        match AudioEngine::new_configured(driver, &configured_device) {
+        match setup.engine {
             Ok(engine) => {
                 let device_name = engine.device_name().to_string();
                 self.audio_engine = Some(engine);
-                self.active_audio_driver = Some(driver);
                 let mut state = self.cuepool.state().lock_unpoisoned();
                 state.audio_devices = devices;
                 state.audio_device_name = device_name.clone();
@@ -2103,7 +2086,7 @@ impl App {
                     state.show_file.show_settings.audio_output_device = device_name;
                     state.dirty = true;
                 }
-                log::info!("Applied {driver:?} audio output configuration");
+                log::info!("Applied {driver} audio output configuration");
             }
             Err(error) => {
                 let message = configured_audio_error(driver, &configured_device, &error);
@@ -2834,6 +2817,7 @@ impl App {
                     }
                     self.apply_audio_settings();
                 }
+                AppCommand::ApplyAudioSettings => self.apply_audio_settings(),
                 AppCommand::Preload => {
                     self.handle_preload(event_loop);
                 }
@@ -3596,8 +3580,9 @@ impl App {
                     limiter_gr_db,
                 };
             }
-        } else if let Ok(mut state) = self.cuepool.state().lock() {
-            state.meter_data = cuepool_gui::GuiMeterData::default();
+        } else {
+            self.cuepool.state().lock_unpoisoned().meter_data =
+                cuepool_gui::GuiMeterData::default();
         }
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {

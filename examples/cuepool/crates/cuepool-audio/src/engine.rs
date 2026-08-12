@@ -11,13 +11,14 @@ use crate::mixer::{Mixer, MixerInput};
 use crate::resampler::ResamplerProcessor;
 use crate::SampleProvider;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Sample;
+use cpal::{FromSample, SizedSample, SupportedBufferSize};
 use cuepool_core::AudioOutputDriver;
 use std::sync::Arc;
 use std::time::Duration;
 
 const TARGET_OUTPUTS: u16 = 8;
 const TARGET_RATE: u32 = 48_000;
+const FALLBACK_MAX_BUFFER_FRAMES: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostChoice {
@@ -34,15 +35,6 @@ fn host_choice(driver: AudioOutputDriver) -> HostChoice {
     }
 }
 
-fn driver_name(driver: AudioOutputDriver) -> &'static str {
-    match driver {
-        AudioOutputDriver::WASAPI => "WASAPI",
-        AudioOutputDriver::Wave => "Wave",
-        AudioOutputDriver::DirectSound => "DirectSound",
-        AudioOutputDriver::ASIO => "ASIO",
-    }
-}
-
 fn host_for_driver(driver: AudioOutputDriver) -> Result<cpal::Host, AudioError> {
     match host_choice(driver) {
         HostChoice::Default => Ok(cpal::default_host()),
@@ -53,20 +45,22 @@ fn host_for_driver(driver: AudioOutputDriver) -> Result<cpal::Host, AudioError> 
 #[cfg(all(target_os = "windows", feature = "asio"))]
 fn asio_host() -> Result<cpal::Host, AudioError> {
     cpal::host_from_id(cpal::HostId::Asio).map_err(|source| AudioError::HostUnavailable {
-        driver: "ASIO",
+        driver: AudioOutputDriver::ASIO.name(),
         source,
     })
 }
 
 #[cfg(not(feature = "asio"))]
 fn asio_host() -> Result<cpal::Host, AudioError> {
-    Err(AudioError::DriverNotCompiled { driver: "ASIO" })
+    Err(AudioError::DriverNotCompiled {
+        driver: AudioOutputDriver::ASIO.name(),
+    })
 }
 
 #[cfg(all(feature = "asio", not(target_os = "windows")))]
 fn asio_host() -> Result<cpal::Host, AudioError> {
     Err(AudioError::UnsupportedPlatform {
-        driver: "ASIO",
+        driver: AudioOutputDriver::ASIO.name(),
         platform: std::env::consts::OS,
     })
 }
@@ -75,14 +69,27 @@ fn named_output_devices(
     driver: AudioOutputDriver,
     host: &cpal::Host,
 ) -> Result<Vec<(String, cpal::Device)>, AudioError> {
-    Ok(host
-        .output_devices()
+    host.output_devices()
         .map_err(|source| AudioError::EnumerateDevices {
-            driver: driver_name(driver),
+            driver: driver.name(),
             source,
         })?
-        .filter_map(|device| device.name().ok().map(|name| (name, device)))
-        .collect())
+        .map(|device| {
+            let name = device.name().map_err(|source| AudioError::DeviceName {
+                driver: driver.name(),
+                source,
+            })?;
+            Ok((name, device))
+        })
+        .collect()
+}
+
+/// Result of one host-scoped output configuration attempt.
+pub struct AudioEngineSetup {
+    pub engine: Result<AudioEngine, AudioError>,
+    pub device_names: Vec<String>,
+    /// Enumeration is best-effort only for the legacy unnamed/default path.
+    pub device_list_error: Option<AudioError>,
 }
 
 fn available_devices(names: &[String]) -> String {
@@ -97,6 +104,7 @@ fn available_devices(names: &[String]) -> String {
 pub struct AudioEngine {
     mixer: Arc<Mixer>,
     _stream: cpal::Stream,
+    driver: AudioOutputDriver,
     device_name: String,
     sample_rate: u32,
     channels: u16,
@@ -141,76 +149,131 @@ impl AudioEngine {
         driver: AudioOutputDriver,
         configured_device: &str,
     ) -> Result<Self, AudioError> {
-        let host = host_for_driver(driver)?;
+        let AudioEngineSetup {
+            engine,
+            device_list_error,
+            ..
+        } = Self::configure(driver, configured_device);
+        if let Some(error) = device_list_error {
+            log::warn!("{error}");
+        }
+        engine
+    }
+
+    /// Build the selected host once, returning both its device names and engine result.
+    pub fn configure(driver: AudioOutputDriver, configured_device: &str) -> AudioEngineSetup {
+        let host = match host_for_driver(driver) {
+            Ok(host) => host,
+            Err(error) => {
+                return AudioEngineSetup {
+                    engine: Err(error),
+                    device_names: Vec::new(),
+                    device_list_error: None,
+                };
+            }
+        };
 
         // Preserve the existing default-backend path: an empty WASAPI setting
         // asks CPAL directly for the OS default and does not depend on device
         // enumeration succeeding. ASIO has no CPAL default device, so it is
         // deliberately handled by the strict enumeration path below.
         if configured_device.is_empty() && host_choice(driver) == HostChoice::Default {
-            let device = host
-                .default_output_device()
-                .ok_or_else(|| AudioError::NoOutputDevice {
-                    driver: driver_name(driver),
-                    available: "not enumerated (default host)".to_string(),
-                })?;
-            let device_name = device.name().map_err(|source| AudioError::DeviceName {
-                driver: driver_name(driver),
-                source,
-            })?;
-            return Self::new(&device).map_err(|source| AudioError::OpenDevice {
-                driver: driver_name(driver),
-                device: device_name,
-                available: "not enumerated (default host)".to_string(),
-                reason: source.to_string(),
-            });
+            let (device_names, device_list_error) = match named_output_devices(driver, &host) {
+                Ok(devices) => (devices.into_iter().map(|(name, _)| name).collect(), None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+            let available = if device_list_error.is_some() {
+                "not enumerated (default host)".to_string()
+            } else {
+                available_devices(&device_names)
+            };
+            let engine = match host.default_output_device() {
+                Some(device) => {
+                    // The legacy default path opened unnamed devices before driver selection.
+                    let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
+                    Self::open(driver, &device, device_name.clone()).map_err(|source| {
+                        AudioError::OpenDevice {
+                            driver: driver.name(),
+                            device: device_name,
+                            available,
+                            reason: source.to_string(),
+                        }
+                    })
+                }
+                None => Err(AudioError::NoOutputDevice {
+                    driver: driver.name(),
+                    available,
+                }),
+            };
+            return AudioEngineSetup {
+                engine,
+                device_names,
+                device_list_error,
+            };
         }
 
-        let devices = named_output_devices(driver, &host)?;
+        let devices = match named_output_devices(driver, &host) {
+            Ok(devices) => devices,
+            Err(error) => {
+                return AudioEngineSetup {
+                    engine: Err(error),
+                    device_names: Vec::new(),
+                    device_list_error: None,
+                };
+            }
+        };
         let names: Vec<_> = devices.iter().map(|(name, _)| name.clone()).collect();
         let alternatives = available_devices(&names);
 
-        let (device_name, device) = if configured_device.is_empty() {
+        let selected = if configured_device.is_empty() {
             devices
                 .into_iter()
                 .next()
                 .ok_or_else(|| AudioError::NoOutputDevice {
-                    driver: driver_name(driver),
+                    driver: driver.name(),
                     available: alternatives.clone(),
-                })?
+                })
         } else {
             devices
                 .into_iter()
                 .find(|(name, _)| name == configured_device)
                 .ok_or_else(|| AudioError::DeviceNotFound {
-                    driver: driver_name(driver),
+                    driver: driver.name(),
                     device: configured_device.to_string(),
                     available: alternatives.clone(),
-                })?
+                })
         };
 
-        Self::new(&device).map_err(|source| AudioError::OpenDevice {
-            driver: driver_name(driver),
-            device: device_name,
-            available: alternatives,
-            reason: source.to_string(),
-        })
+        let engine = match selected {
+            Ok((device_name, device)) => Self::open(driver, &device, device_name.clone()).map_err(
+                |source| AudioError::OpenDevice {
+                    driver: driver.name(),
+                    device: device_name,
+                    available: alternatives,
+                    reason: source.to_string(),
+                },
+            ),
+            Err(error) => Err(error),
+        };
+
+        AudioEngineSetup {
+            engine,
+            device_names: names,
+            device_list_error: None,
+        }
     }
 
-    /// Create an audio engine with a specific device.
-    pub fn new(device: &cpal::Device) -> Result<Self, AudioError> {
+    fn open(
+        driver: AudioOutputDriver,
+        device: &cpal::Device,
+        device_name: String,
+    ) -> Result<Self, AudioError> {
         let all_configs: Vec<_> = device.supported_output_configs()?.collect();
         // Prefer F32, then the integer formats exposed by CPAL's ASIO backend.
         // Within that format choose eight channels, then a larger configuration
         // before falling back below eight, and 48 kHz. Dante can expose I16/I32
         // depending on its ASIO encoding.
-        let sample_format = all_configs
-            .iter()
-            .filter_map(|config| {
-                sample_format_rank(config.sample_format()).map(|rank| (rank, config.sample_format()))
-            })
-            .min_by_key(|(rank, _)| *rank)
-            .map(|(_, format)| format)
+        let config = select_output_config(&all_configs)
             .ok_or_else(|| AudioError::NoSupportedFormat {
                 available: all_configs
                     .iter()
@@ -218,27 +281,16 @@ impl AudioEngine {
                     .collect::<Vec<_>>()
                     .join(", "),
             })?;
-        let config = *all_configs
-            .iter()
-            .filter(|config| config.sample_format() == sample_format)
-            .min_by_key(|c| {
-                let channel_rank = channel_preference(c.channels());
-                let rate_distance = if (c.min_sample_rate().0..=c.max_sample_rate().0)
-                    .contains(&TARGET_RATE)
-                {
-                    0u64
-                } else {
-                    (c.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
-                };
-                (channel_rank, rate_distance)
-            })
-            .ok_or_else(|| AudioError::NoSupportedFormat {
-                available: sample_format.to_string(),
-            })?;
 
+        let sample_format = config.sample_format();
         let sample_rate = TARGET_RATE.clamp(config.min_sample_rate().0, config.max_sample_rate().0);
         let buffer_size = cpal::BufferSize::Default;
         let channels = config.channels();
+        let scratch_samples = if sample_format == cpal::SampleFormat::F32 {
+            0
+        } else {
+            max_callback_samples(&config)
+        };
 
         let config = cpal::StreamConfig {
             channels,
@@ -263,7 +315,7 @@ impl AudioEngine {
         let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(0.95, sample_rate, channels)));
         let limiter_clone = Arc::clone(&limiter);
 
-        let mut scratch = Vec::new();
+        let mut scratch = vec![0.0; scratch_samples];
         let stream = device.build_output_stream_raw(
             &config,
             sample_format,
@@ -276,42 +328,22 @@ impl AudioEngine {
                         &limiter_clone,
                         &metering_clone,
                     ),
-                    cpal::SampleFormat::I32 => {
-                        scratch.resize(data.len(), 0.0);
-                        render_master(
-                            &mut scratch,
-                            &mixer_clone,
-                            &limiter_thresh_clone,
-                            &limiter_clone,
-                            &metering_clone,
-                        );
-                        for (output, sample) in data
-                            .as_slice_mut::<i32>()
-                            .expect("CPAL I32 output buffer")
-                            .iter_mut()
-                            .zip(&scratch)
-                        {
-                            *output = i32::from_sample(*sample);
-                        }
-                    }
-                    cpal::SampleFormat::I16 => {
-                        scratch.resize(data.len(), 0.0);
-                        render_master(
-                            &mut scratch,
-                            &mixer_clone,
-                            &limiter_thresh_clone,
-                            &limiter_clone,
-                            &metering_clone,
-                        );
-                        for (output, sample) in data
-                            .as_slice_mut::<i16>()
-                            .expect("CPAL I16 output buffer")
-                            .iter_mut()
-                            .zip(&scratch)
-                        {
-                            *output = i16::from_sample(*sample);
-                        }
-                    }
+                    cpal::SampleFormat::I32 => render_converted::<i32>(
+                        data,
+                        &mut scratch,
+                        &mixer_clone,
+                        &limiter_thresh_clone,
+                        &limiter_clone,
+                        &metering_clone,
+                    ),
+                    cpal::SampleFormat::I16 => render_converted::<i16>(
+                        data,
+                        &mut scratch,
+                        &mixer_clone,
+                        &limiter_thresh_clone,
+                        &limiter_clone,
+                        &metering_clone,
+                    ),
                     _ => data.bytes_mut().fill(0),
                 }
             },
@@ -323,9 +355,9 @@ impl AudioEngine {
 
         stream.play()?;
 
-        let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
         log::info!(
-            "Audio engine started: {} @ {} Hz, {} channels",
+            "Audio engine started: {} / {} @ {} Hz, {} channels",
+            driver,
             device_name,
             sample_rate,
             channels
@@ -334,6 +366,7 @@ impl AudioEngine {
         Ok(Self {
             mixer,
             _stream: stream,
+            driver,
             device_name,
             sample_rate,
             channels,
@@ -357,6 +390,10 @@ impl AudioEngine {
 
     pub fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    pub fn driver(&self) -> AudioOutputDriver {
+        self.driver
     }
 
     /// Set the master limiter threshold (linear gain, e.g. 0.95).
@@ -469,6 +506,41 @@ fn sample_format_rank(format: cpal::SampleFormat) -> Option<u8> {
     }
 }
 
+fn config_preference(config: &cpal::SupportedStreamConfigRange) -> Option<(u8, (bool, u16), u64)> {
+    let rate_distance = if (config.min_sample_rate().0..=config.max_sample_rate().0)
+        .contains(&TARGET_RATE)
+    {
+        0
+    } else {
+        (config.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+    };
+    Some((
+        sample_format_rank(config.sample_format())?,
+        channel_preference(config.channels()),
+        rate_distance,
+    ))
+}
+
+fn select_output_config(
+    configs: &[cpal::SupportedStreamConfigRange],
+) -> Option<cpal::SupportedStreamConfigRange> {
+    configs
+        .iter()
+        .filter_map(|config| config_preference(config).map(|key| (key, *config)))
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, config)| config)
+}
+
+fn max_callback_samples(config: &cpal::SupportedStreamConfigRange) -> usize {
+    let frames = match config.buffer_size() {
+        SupportedBufferSize::Range { max, .. } => *max as usize,
+        // ponytail: CPAL exposes no ceiling for some hosts. Oversized callbacks
+        // are silenced below; raise this cap if a backend needs larger buffers.
+        SupportedBufferSize::Unknown => FALLBACK_MAX_BUFFER_FRAMES,
+    };
+    frames.saturating_mul(config.channels() as usize)
+}
+
 fn channel_preference(channels: u16) -> (bool, u16) {
     (
         channels < TARGET_OUTPUTS,
@@ -490,6 +562,29 @@ fn render_master(
         limiter.process(data);
     }
     metering.analyze(data);
+}
+
+fn render_converted<T>(
+    data: &mut cpal::Data,
+    scratch: &mut [f32],
+    mixer: &Mixer,
+    limiter_threshold: &AtomicF32,
+    limiter: &std::sync::Mutex<Limiter>,
+    metering: &MeteringProcessor,
+) where
+    T: SizedSample + FromSample<f32>,
+{
+    let output = data
+        .as_slice_mut::<T>()
+        .expect("CPAL converted output buffer");
+    let Some(scratch) = scratch.get_mut(..output.len()) else {
+        output.fill(T::EQUILIBRIUM);
+        return;
+    };
+    render_master(scratch, mixer, limiter_threshold, limiter, metering);
+    for (output, sample) in output.iter_mut().zip(scratch) {
+        *output = T::from_sample(*sample);
+    }
 }
 
 /// Placeholder source for master metering (metering is driven directly in callback).
@@ -590,7 +685,7 @@ mod tests {
     #[test]
     fn missing_device_error_names_driver_device_and_alternatives() {
         let error = AudioError::DeviceNotFound {
-            driver: "ASIO",
+            driver: AudioOutputDriver::ASIO.name(),
             device: "Dante Virtual Soundcard (x64)".to_string(),
             available: available_devices(&[
                 "ASIO4ALL v2".to_string(),
@@ -629,5 +724,72 @@ mod tests {
     fn eight_channels_then_larger_configs_are_preferred() {
         assert!(channel_preference(8) < channel_preference(9));
         assert!(channel_preference(9) < channel_preference(2));
+    }
+
+    #[test]
+    fn single_pass_format_selection_matches_two_pass_policy() {
+        fn config(
+            format: cpal::SampleFormat,
+            channels: u16,
+            min_rate: u32,
+            max_rate: u32,
+        ) -> cpal::SupportedStreamConfigRange {
+            cpal::SupportedStreamConfigRange::new(
+                channels,
+                cpal::SampleRate(min_rate),
+                cpal::SampleRate(max_rate),
+                SupportedBufferSize::Range { min: 64, max: 1024 },
+                format,
+            )
+        }
+
+        fn two_pass(
+            configs: &[cpal::SupportedStreamConfigRange],
+        ) -> Option<cpal::SupportedStreamConfigRange> {
+            let format = configs
+                .iter()
+                .filter_map(|config| {
+                    sample_format_rank(config.sample_format())
+                        .map(|rank| (rank, config.sample_format()))
+                })
+                .min_by_key(|(rank, _)| *rank)?
+                .1;
+            configs
+                .iter()
+                .filter(|config| config.sample_format() == format)
+                .min_by_key(|config| {
+                    let rate_distance = if (config.min_sample_rate().0
+                        ..=config.max_sample_rate().0)
+                        .contains(&TARGET_RATE)
+                    {
+                        0
+                    } else {
+                        (config.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+                    };
+                    (channel_preference(config.channels()), rate_distance)
+                })
+                .copied()
+        }
+
+        let cases = [
+            vec![
+                config(cpal::SampleFormat::I32, 8, 48_000, 48_000),
+                config(cpal::SampleFormat::F32, 2, 44_100, 44_100),
+                config(cpal::SampleFormat::F32, 8, 96_000, 96_000),
+            ],
+            vec![
+                config(cpal::SampleFormat::I16, 2, 48_000, 48_000),
+                config(cpal::SampleFormat::I16, 9, 44_100, 96_000),
+                config(cpal::SampleFormat::I16, 8, 96_000, 96_000),
+            ],
+            vec![
+                config(cpal::SampleFormat::F64, 8, 48_000, 48_000),
+                config(cpal::SampleFormat::U16, 8, 48_000, 48_000),
+            ],
+        ];
+
+        for configs in cases {
+            assert_eq!(select_output_config(&configs), two_pass(&configs));
+        }
     }
 }

@@ -10,6 +10,8 @@ Make CuePool's existing `audio_output_driver` and `audio_output_device` settings
 
 The app applies the current show's driver/device configuration at startup, after a new project or show file is loaded, after show settings are imported, and when the operator changes either setting. The settings window gains a driver selector. Changing the driver refreshes its device list and opens its configured/default device; changing the device opens that exact named device. A successful choice is written back to the existing schema fields and marked dirty.
 
+Audio changes use a dedicated application command. `project_generation` remains limited to whole-project and projection/lighting resets, so importing show settings or restoring them through undo/redo cannot close projector windows or reset lighting. The audio engine owns its active driver and device identity; applying unchanged settings is a no-op when the engine is healthy. Host creation, device enumeration, and engine construction share one configuration attempt.
+
 No schema or migration changes are needed: both fields already use serde defaults, so old projects continue to deserialize as WASAPI with an empty device name. Tests will explicitly preserve that compatibility and round-trip an ASIO driver/device pair.
 
 ## Failure behavior
@@ -23,6 +25,8 @@ For the default WASAPI configuration with no persisted device name, CuePool sele
 ## Stream and routing
 
 Stream selection still prefers F32, eight output channels, and 48 kHz. It also accepts I32 and I16 because Dante Virtual Soundcard can expose native integer ASIO formats; samples are converted from the mixer's existing F32 bus in the output callback. Per-cue routing remains in the existing mixer, which receives the actual stream channel count.
+
+Integer conversion scratch space is allocated before stream construction from CPAL's advertised maximum buffer size. Hosts without an advertised maximum use a fixed generous cap; an unexpectedly larger callback is silenced rather than allocating on the realtime thread.
 
 ## Verification
 
