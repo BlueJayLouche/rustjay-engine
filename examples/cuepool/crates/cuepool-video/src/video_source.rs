@@ -22,6 +22,45 @@ fn no_direct_pool() -> DirectPoolOption {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenRoute {
+    HardwareCandidates,
+    SoftwareOnly,
+}
+
+struct OpenOptions {
+    route: OpenRoute,
+    availability: Option<ZeroCopyAvailability>,
+    fallback_reason: Option<String>,
+}
+
+impl OpenOptions {
+    fn hardware(availability: Option<ZeroCopyAvailability>) -> Self {
+        Self {
+            route: OpenRoute::HardwareCandidates,
+            availability,
+            fallback_reason: None,
+        }
+    }
+
+    #[cfg(any(windows, test))]
+    fn after_zero_copy_decline(reason: String) -> Self {
+        Self {
+            route: OpenRoute::HardwareCandidates,
+            availability: None,
+            fallback_reason: Some(format!("shareable D3D11VA pool rejected: {reason}")),
+        }
+    }
+
+    fn software(fallback_reason: Option<String>) -> Self {
+        Self {
+            route: OpenRoute::SoftwareOnly,
+            availability: None,
+            fallback_reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZeroCopyPreference {
     Disabled,
     Enabled,
@@ -306,7 +345,7 @@ impl VideoSource {
     }
 
     pub fn open_with_pool(path: &str, frame_pool: Arc<FramePool>) -> anyhow::Result<Self> {
-        Self::open_with_options(path, frame_pool, None)
+        Self::open_with_options(path, frame_pool, OpenOptions::hardware(None))
     }
 
     pub fn open_with_zero_copy(
@@ -314,22 +353,31 @@ impl VideoSource {
         frame_pool: Arc<FramePool>,
         availability: ZeroCopyAvailability,
     ) -> anyhow::Result<Self> {
-        Self::open_with_options(path, frame_pool, Some(availability))
+        Self::open_with_options(path, frame_pool, OpenOptions::hardware(Some(availability)))
     }
 
     fn open_with_options(
         path: &str,
         frame_pool: Arc<FramePool>,
-        availability: Option<ZeroCopyAvailability>,
+        options: OpenOptions,
     ) -> anyhow::Result<Self> {
-        let fallback_reason = availability
-            .as_ref()
-            .and_then(ZeroCopyAvailability::fallback_reason)
-            .map(str::to_owned);
+        let OpenOptions {
+            route,
+            availability,
+            fallback_reason,
+        } = options;
+        let fallback_reason = fallback_reason.or_else(|| {
+            availability
+                .as_ref()
+                .and_then(ZeroCopyAvailability::fallback_reason)
+                .map(str::to_owned)
+        });
         #[cfg(windows)]
         let mut fallback_reason = fallback_reason;
         // Escape hatch for A/B diagnosis on production machines.
-        if std::env::var("QPLAYER_NO_HWACCEL").as_deref() == Ok("1") {
+        if route == OpenRoute::SoftwareOnly
+            || std::env::var("QPLAYER_NO_HWACCEL").as_deref() == Ok("1")
+        {
             return Self::open_with(
                 path,
                 None,
@@ -729,21 +777,22 @@ impl VideoSource {
     #[cfg(windows)]
     fn reopen_d3d11_readback(&mut self, reason: String) -> bool {
         let path = self.path.clone();
-        let fallback_reason = format!("shareable D3D11VA pool rejected: {reason}");
-        log::warn!("Video zero-copy fallback: {fallback_reason}; reopening readback once");
-        match Self::open_with(
+        let options = OpenOptions::after_zero_copy_decline(reason);
+        log::warn!(
+            "Video zero-copy fallback: {}; retrying hardware readback",
+            options.fallback_reason.as_deref().unwrap_or_default()
+        );
+        match Self::open_with_options(
             &path,
-            Some(HW_CANDIDATES[0]),
             Arc::clone(&self.frame_pool),
-            None,
-            Some(fallback_reason),
+            options,
         ) {
             Ok(source) => {
                 *self = source;
                 true
             }
             Err(error) => {
-                log::error!("Video zero-copy fallback: D3D11VA readback reopen failed: {error}");
+                log::error!("Video zero-copy fallback: readback reopen failed: {error}");
                 self.eof = true;
                 false
             }
@@ -767,12 +816,10 @@ impl VideoSource {
     /// escape hatch; playback position is lost, this is not a routine path).
     fn reopen_software(&mut self) -> bool {
         let path = self.path.clone();
-        match Self::open_with(
+        match Self::open_with_options(
             &path,
-            None,
             Arc::clone(&self.frame_pool),
-            no_direct_pool(),
-            self.fallback_reason.clone(),
+            OpenOptions::software(self.fallback_reason.clone()),
         ) {
             Ok(src) => {
                 log::warn!("Video decode: hardware broke on first frame, reopened in software");
@@ -869,6 +916,24 @@ mod tests {
         for value in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some(" 1")] {
             assert_eq!(ZeroCopyPreference::from_value(value), ZeroCopyPreference::Disabled);
         }
+    }
+
+    #[test]
+    fn declined_zero_copy_retries_hardware_without_a_direct_pool() {
+        let options = OpenOptions::after_zero_copy_decline("canary mismatch".into());
+
+        assert_eq!(options.route, OpenRoute::HardwareCandidates);
+        assert!(options.availability.is_none());
+    }
+
+    #[test]
+    fn declined_zero_copy_preserves_the_reason() {
+        let options = OpenOptions::after_zero_copy_decline("canary mismatch".into());
+
+        assert_eq!(
+            options.fallback_reason.as_deref(),
+            Some("shareable D3D11VA pool rejected: canary mismatch")
+        );
     }
 
     #[test]
