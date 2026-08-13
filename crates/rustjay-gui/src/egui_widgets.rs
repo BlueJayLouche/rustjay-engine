@@ -130,12 +130,13 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
 }
 
 /// Interactive section header with an expand/collapse chevron.
-/// Returns the new expanded state (toggles on click).
+/// Takes and returns the section's *collapsed* state (toggles on click),
+/// matching the `sidebar_collapsed` flags every caller stores.
 pub fn hud_collapsible_section_header(
     ui: &mut Ui,
     title: &str,
     counter: Option<&str>,
-    expanded: bool,
+    collapsed: bool,
 ) -> bool {
     ui.add_space(8.0);
     let row_height = 18.0;
@@ -148,8 +149,8 @@ pub fn hud_collapsible_section_header(
         painter.rect_filled(rect, 0.0, Color32::from_rgba_premultiplied(8, 12, 16, 24));
     }
 
-    // Chevron (▶ / ▼)
-    let chevron_text = if expanded { "▼" } else { "▶" };
+    // Chevron (▶ collapsed / ▼ expanded)
+    let chevron_text = if collapsed { "▶" } else { "▼" };
     let chevron_galley =
         painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), INK_3);
     let chevron_w = chevron_galley.size().x;
@@ -213,11 +214,7 @@ pub fn hud_collapsible_section_header(
     }
     ui.add_space(6.0);
 
-    if resp.clicked() {
-        !expanded
-    } else {
-        expanded
-    }
+    if resp.clicked() { !collapsed } else { collapsed }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

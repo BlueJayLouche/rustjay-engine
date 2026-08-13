@@ -116,11 +116,29 @@ fn every_sidebar_section_collapses_and_expands() {
         ("APP", "DUMMY APP"),
     ] {
         assert_painted(&harness, child, true);
+        assert_eq!(chevrons_beside(&harness, header, "▼"), 1, "{header} expanded");
         click_painted_text(&mut harness, header);
         assert_painted(&harness, child, false);
+        // A collapsed section's own header shows ▶, not ▼.
+        assert_eq!(chevrons_beside(&harness, header, "▶"), 1, "{header} collapsed");
+        assert_eq!(chevrons_beside(&harness, header, "▼"), 0, "{header} collapsed");
         click_painted_text(&mut harness, header);
         assert_painted(&harness, child, true);
     }
+}
+
+/// Count chevron glyphs painted on the same row as `header` (the sidebar
+/// paints each section's chevron at the left edge of its header row). Other
+/// UI regions also use ▶ (start buttons, index markers), so counting globally
+/// is meaningless.
+fn chevrons_beside(harness: &Harness<'_>, header: &str, glyph: &str) -> usize {
+    let headers = painted_text_rects(harness, header);
+    assert_eq!(headers.len(), 1, "expected one painted {header:?}");
+    let row_y = headers[0].center().y;
+    painted_text_rects(harness, glyph)
+        .iter()
+        .filter(|r| (r.center().y - row_y).abs() < 6.0)
+        .count()
 }
 
 #[test]
