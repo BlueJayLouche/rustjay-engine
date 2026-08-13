@@ -1,6 +1,7 @@
 //! Cue list — the main view replacing WPF's DataGrid.
 
 use crate::app::{AppCommand, CueType, SharedStateHandle};
+use crate::{colour_to_egui, cue_type_label};
 use egui::{Color32, RichText};
 use cuepool_core::Cue;
 use rust_decimal::Decimal;
@@ -55,6 +56,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     }
 
     // Header row — use fixed column widths so headers align with body cells.
+    const COL_PLAYHEAD: f32 = 18.0;
     const COL_DRAG: f32 = 20.0;
     const COL_QID: f32 = 48.0;
     const COL_NAME: f32 = 140.0;
@@ -72,6 +74,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     ui.horizontal(|ui| {
         ui.add_space(ROW_MARGIN);
+        ui.add_sized([COL_PLAYHEAD, 18.0], egui::Label::new(""));
         if show_mode == crate::app::ShowMode::Edit {
             ui.add_sized([COL_DRAG, 18.0], egui::Label::new(""));
         }
@@ -86,6 +89,15 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         ui.add_sized([COL_COLOUR, 18.0], egui::Label::new(""));
     });
     ui.separator();
+
+    // Remember the observed selection in egui temp memory so changes scroll only
+    // enough to reveal the row, without jerking an already-visible selection.
+    let scroll_memory_id = egui::Id::new("cue_list_last_scrolled_selection");
+    let selection_changed = ui.data_mut(|data| {
+        let changed = data.get_temp::<Option<Decimal>>(scroll_memory_id) != Some(selected_id);
+        data.insert_temp(scroll_memory_id, selected_id);
+        changed
+    });
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Group membership is the `parent` field: a member points at its Group
@@ -107,27 +119,47 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             let is_active = active_positions.contains_key(&qid);
             let is_paused = active_positions.get(&qid).is_some_and(|(_, _, p)| *p);
 
-            let bg = if is_selected && is_active {
-                selected_active_fill(ui.visuals())
-            } else if is_selected {
-                ui.visuals().selection.bg_fill
-            } else if is_paused {
+            let bg = if is_paused {
                 paused_row_fill(ui.visuals())
             } else if is_active {
                 active_row_fill(ui.visuals())
             } else if is_group {
                 ui.visuals().widgets.active.weak_bg_fill
+            } else if is_selected {
+                ui.visuals().selection.bg_fill
             } else {
                 ui.visuals().panel_fill
             };
 
             let frame = egui::Frame::new()
-                .fill(bg)
                 .inner_margin(egui::Margin::symmetric(ROW_MARGIN as i8, 4));
 
-            let (drop_response, dropped_payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
+            let row_content = |ui: &mut egui::Ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(20.0);
+
+                    // Painted rather than font-backed so the standby marker is
+                    // distinct from the green playing glyph and always renders.
+                    let (marker_rect, marker_response) = ui.allocate_exact_size(
+                        egui::vec2(COL_PLAYHEAD, 18.0),
+                        egui::Sense::hover(),
+                    );
+                    if is_selected {
+                        let marker_color = ui.visuals().selection.stroke.color;
+                        let stroke = egui::Stroke::new(2.5_f32, marker_color);
+                        let x = marker_rect.center().x;
+                        let y = marker_rect.center().y;
+                        ui.painter().line_segment(
+                            [egui::pos2(x - 3.0, y - 5.0), egui::pos2(x + 2.0, y)],
+                            stroke,
+                        );
+                        ui.painter().line_segment(
+                            [egui::pos2(x + 2.0, y), egui::pos2(x - 3.0, y + 5.0)],
+                            stroke,
+                        );
+                        marker_response.on_hover_text("Standby: Go fires this cue");
+                    }
+
                     if in_group {
                         ui.add_space(GROUP_INDENT);
                     }
@@ -350,7 +382,30 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     })
                     .on_hover_text("Cue colour tag");
                 });
-            });
+            };
+            let (drop_response, dropped_payload) = ui
+                .scope(|ui| {
+                    ui.visuals_mut().widgets.inactive.bg_fill = bg;
+                    ui.dnd_drop_zone::<usize, ()>(frame, row_content)
+                })
+                .inner;
+
+            if is_selected {
+                ui.painter().rect_stroke(
+                    drop_response.response.rect,
+                    0.0,
+                    egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
+                    egui::StrokeKind::Inside,
+                );
+                if selection_changed {
+                    // Instant, not egui's default 0.1–0.3s animated scroll: arrow-key
+                    // navigation repeats faster than the animation, so the viewport
+                    // would permanently chase the playhead.
+                    drop_response
+                        .response
+                        .scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+                }
+            }
 
             // Select on a click anywhere over the row, and open a context menu on
             // right-click — both read the pointer state directly rather than adding
@@ -376,20 +431,20 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     .at_pointer_fixed()
                     .open_memory(menu_open)
                     .show(|ui| {
-                    if ui.button("Move Up").clicked() {
+                    if ui.button(format!("Move Q{qid} Up")).clicked() {
                         queue_cmd(state, AppCommand::MoveSelectedCueUp);
                         ui.close();
                     }
-                    if ui.button("Move Down").clicked() {
+                    if ui.button(format!("Move Q{qid} Down")).clicked() {
                         queue_cmd(state, AppCommand::MoveSelectedCueDown);
                         ui.close();
                     }
                     ui.separator();
-                    if ui.button("Duplicate").clicked() {
+                    if ui.button(format!("Duplicate Q{qid}")).clicked() {
                         queue_cmd(state, AppCommand::DuplicateSelectedCue);
                         ui.close();
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.button(format!("Delete Q{qid}")).clicked() {
                         queue_cmd(state, AppCommand::DeleteSelectedCue);
                         ui.close();
                     }
@@ -445,13 +500,18 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         // from any group. Lets you place cues after a group (which can't be done
         // by reordering alone, since membership is the parent field).
         if show_mode == crate::app::ShowMode::Edit {
+            let bg = ui.visuals().faint_bg_color;
             let frame = egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::same(8));
-            let (_resp, payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.weak("⤓  drop here to ungroup / move to end");
-            });
+            let (_resp, payload) = ui
+                .scope(|ui| {
+                    ui.visuals_mut().widgets.inactive.bg_fill = bg;
+                    ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.weak("⤓  drop here to ungroup / move to end");
+                    })
+                })
+                .inner;
             if let Some(source_idx) = payload {
                 queue_cmd(
                     state,
@@ -482,25 +542,6 @@ fn queue_select(state: &SharedStateHandle, qid: Decimal) {
 fn queue_cmd(state: &SharedStateHandle, cmd: AppCommand) {
     if let Ok(mut state) = state.lock() {
         state.command_queue.push(cmd);
-    }
-}
-
-fn cue_type_label(cue: &Cue) -> &'static str {
-    match cue {
-        Cue::Group { .. } => "GRP",
-        Cue::Sound { .. } => "SND",
-        Cue::Video { .. } => "VID",
-        Cue::Stop { .. } => "STP",
-        Cue::Volume { .. } => "VOL",
-        Cue::Dummy { .. } => "DUM",
-        Cue::TimeCode { .. } => "TC",
-        Cue::Osc { .. } => "OSC",
-        Cue::Text { .. } => "TXT",
-        Cue::Image { .. } => "IMG",
-        Cue::Goto { .. } => "GTO",
-        Cue::Lighting { .. } => "LX",
-        Cue::DmxShow { .. } => "DMX",
-        Cue::PixelMap { .. } => "PXM",
     }
 }
 
@@ -603,25 +644,6 @@ fn paused_row_fill(visuals: &egui::Visuals) -> Color32 {
     } else {
         Color32::from_rgb(240, 214, 140)
     }
-}
-
-/// Row fill for a cue that is both selected and playing: the selection colour
-/// shifted toward the active green.
-fn selected_active_fill(visuals: &egui::Visuals) -> Color32 {
-    if visuals.dark_mode {
-        Color32::from_rgb(43, 105, 96)
-    } else {
-        Color32::from_rgb(150, 210, 195)
-    }
-}
-
-fn colour_to_egui(c: cuepool_core::SerializedColour) -> Color32 {
-    Color32::from_rgba_premultiplied(
-        (c.r * 255.0) as u8,
-        (c.g * 255.0) as u8,
-        (c.b * 255.0) as u8,
-        (c.a * 255.0) as u8,
-    )
 }
 
 fn format_duration(d: &cuepool_core::Timespan) -> String {

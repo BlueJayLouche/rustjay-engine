@@ -13,7 +13,7 @@ log       = { workspace = true }
 crossbeam = { workspace = true }
 flate2    = { workspace = true }
 serde     = { workspace = true, features = ["derive"] }
-socket2   = { workspace = true }
+socket2   = { version = "0.6", features = ["all"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
