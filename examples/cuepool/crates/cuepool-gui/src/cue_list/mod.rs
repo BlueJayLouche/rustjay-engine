@@ -132,10 +132,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             };
 
             let frame = egui::Frame::new()
-                .fill(bg)
                 .inner_margin(egui::Margin::symmetric(ROW_MARGIN as i8, 4));
 
-            let (drop_response, dropped_payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
+            let row_content = |ui: &mut egui::Ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(20.0);
 
@@ -383,7 +382,13 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     })
                     .on_hover_text("Cue colour tag");
                 });
-            });
+            };
+            let (drop_response, dropped_payload) = ui
+                .scope(|ui| {
+                    ui.visuals_mut().widgets.inactive.bg_fill = bg;
+                    ui.dnd_drop_zone::<usize, ()>(frame, row_content)
+                })
+                .inner;
 
             if is_selected {
                 ui.painter().rect_stroke(
@@ -490,13 +495,18 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         // from any group. Lets you place cues after a group (which can't be done
         // by reordering alone, since membership is the parent field).
         if show_mode == crate::app::ShowMode::Edit {
+            let bg = ui.visuals().faint_bg_color;
             let frame = egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::same(8));
-            let (_resp, payload) = ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.weak("⤓  drop here to ungroup / move to end");
-            });
+            let (_resp, payload) = ui
+                .scope(|ui| {
+                    ui.visuals_mut().widgets.inactive.bg_fill = bg;
+                    ui.dnd_drop_zone::<usize, ()>(frame, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.weak("⤓  drop here to ungroup / move to end");
+                    })
+                })
+                .inner;
             if let Some(source_idx) = payload {
                 queue_cmd(
                     state,

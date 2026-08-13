@@ -9,7 +9,7 @@ const STANDBY_NAME_MAX_CHARS: usize = 18;
 
 fn standby_label(standby: Option<(Decimal, &str)>) -> String {
     let Some((qid, name)) = standby else {
-        return "GO → (no cue selected)".to_string();
+        return "Standby: (no cue selected)".to_string();
     };
     let name = if name.chars().count() > STANDBY_NAME_MAX_CHARS {
         format!(
@@ -22,9 +22,9 @@ fn standby_label(standby: Option<(Decimal, &str)>) -> String {
         name.to_string()
     };
     if name.is_empty() {
-        format!("GO → Q{qid}")
+        format!("Standby: Q{qid}")
     } else {
-        format!("GO → Q{qid}  {name}")
+        format!("Standby: Q{qid}  {name}")
     }
 }
 
@@ -374,14 +374,14 @@ mod tests {
 
     #[test]
     fn standby_labels_cover_empty_named_and_truncated_states() {
-        assert_eq!(standby_label(None), "GO → (no cue selected)");
+        assert_eq!(standby_label(None), "Standby: (no cue selected)");
         assert_eq!(
             standby_label(Some((Decimal::new(35, 1), "Lights up"))),
-            "GO → Q3.5  Lights up"
+            "Standby: Q3.5  Lights up"
         );
         assert_eq!(
             standby_label(Some((Decimal::from(7), "123456789012345678901"))),
-            "GO → Q7  12345678901234567…"
+            "Standby: Q7  12345678901234567…"
         );
     }
 
