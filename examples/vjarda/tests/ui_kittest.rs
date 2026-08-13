@@ -77,5 +77,6 @@ fn outputs_projector_panel_snapshot() {
 
     harness.get_by_label("Projectors");
     harness.get(By::new().role(Role::TextInput).value("Projector"));
+    harness.get_by_label("Fullscreen");
     harness.snapshot("outputs_projector_panel");
 }

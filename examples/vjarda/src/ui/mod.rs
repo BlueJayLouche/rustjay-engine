@@ -2605,7 +2605,13 @@ mod egui_impl {
                 ui.label(egui::RichText::new("Projectors").strong());
                 let mut remove_proj: Option<usize> = None;
                 let mut proj_dirty = false;
+                let mut live_projector_idx = 0;
                 for (i, proj) in state.stage.projectors.iter_mut().enumerate() {
+                    let runtime_idx = proj.enabled.then(|| {
+                        let idx = live_projector_idx;
+                        live_projector_idx += 1;
+                        idx
+                    });
                     ui.push_id(i, |ui| {
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut proj.enabled, "");
@@ -2694,6 +2700,33 @@ mod egui_impl {
                                 });
                             if proj.rotation != prev_rot {
                                 proj_dirty = true;
+                            }
+                            let is_fullscreen = runtime_idx.and_then(|idx| {
+                                let handle = state.projection_handle.as_ref()?;
+                                let any_guard =
+                                    handle.lock().unwrap_or_else(|e| e.into_inner());
+                                let sub = any_guard
+                                    .downcast_ref::<rustjay_engine::ProjectionSubsystem>()?;
+                                sub.is_projector_fullscreen(idx)
+                            });
+                            if ui
+                                .add_enabled(
+                                    is_fullscreen.is_some(),
+                                    egui::Button::new("Fullscreen")
+                                        .selected(is_fullscreen.unwrap_or(false)),
+                                )
+                                .on_disabled_hover_text("Projector window is not running")
+                                .clicked()
+                                && let (Some(idx), Some(handle)) =
+                                    (runtime_idx, state.projection_handle.as_ref())
+                            {
+                                let mut any_guard =
+                                    handle.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(sub) = any_guard
+                                    .downcast_mut::<rustjay_engine::ProjectionSubsystem>()
+                                {
+                                    sub.toggle_projector_fullscreen(idx);
+                                }
                             }
                             if ui.button("🗑").clicked() {
                                 remove_proj = Some(i);
