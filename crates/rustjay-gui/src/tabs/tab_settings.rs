@@ -1,4 +1,5 @@
 use crate::control_gui::ControlGui;
+use crate::resolution_presets::{RESOLUTION_PRESETS, preset_dimensions};
 use rustjay_core::OutputCommand;
 
 impl ControlGui {
@@ -38,55 +39,35 @@ impl ControlGui {
         ui.text_colored([0.0, 1.0, 1.0, 1.0], "Resolution Settings");
 
         // Resolution preset dropdown
-        let presets = [
-            ("Custom", 0, 0),
-            ("480p (640x480)", 640, 480),
-            ("720p (1280x720)", 1280, 720),
-            ("1080p (1920x1080)", 1920, 1080),
-            ("1440p (2560x1440)", 2560, 1440),
-            ("4K UHD (3840x2160)", 3840, 2160),
-            ("Square 1:1 (1080x1080)", 1080, 1080),
-            ("Vertical 9:16 (1080x1920)", 1080, 1920),
-        ];
-
-        let preset_names: Vec<&str> = presets.iter().map(|(name, _, _)| *name).collect();
+        let preset_names: Vec<&str> = RESOLUTION_PRESETS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
 
         // Internal Resolution Section
         ui.text("Internal Resolution (Processing):");
 
-        let (current_internal_w, current_internal_h) = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                state.resolution.internal_width,
-                state.resolution.internal_height,
-            )
-        };
-
-        // Find current preset index
-        let mut internal_preset_idx = 0;
-        for (i, (_, w, h)) in presets.iter().enumerate().skip(1) {
-            if *w == current_internal_w && *h == current_internal_h {
-                internal_preset_idx = i;
-                break;
-            }
-        }
+        let mut internal_preset_idx = self.internal_resolution_preset;
 
         let old_internal_preset = internal_preset_idx;
         if ui.combo_simple_string("Preset##internal", &mut internal_preset_idx, &preset_names)
             && internal_preset_idx != old_internal_preset
-            && internal_preset_idx > 0
         {
-            let (_, w, h) = presets[internal_preset_idx];
-            self.pending_internal_width = w;
-            self.pending_internal_height = h;
+            self.internal_resolution_preset = internal_preset_idx;
+            if let Some((width, height)) = preset_dimensions(internal_preset_idx) {
+                self.pending_internal_width = width;
+                self.pending_internal_height = height;
+            }
         }
 
         // Manual input
         let mut w = self.pending_internal_width as i32;
         let mut h = self.pending_internal_height as i32;
         ui.text("Custom:");
-        ui.input_int("Width##internal", &mut w).step(1).build();
-        ui.input_int("Height##internal", &mut h).step(1).build();
+        ui.disabled(self.internal_resolution_preset != 0, || {
+            ui.input_int("Width##internal", &mut w).step(1).build();
+            ui.input_int("Height##internal", &mut h).step(1).build();
+        });
         self.pending_internal_width = w.max(320) as u32;
         self.pending_internal_height = h.max(240) as u32;
 
@@ -94,36 +75,27 @@ impl ControlGui {
         ui.spacing();
         ui.text("Output Resolution (Display/NDI):");
 
-        let (current_output_w, current_output_h) = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.output_width, state.output_height)
-        };
-
-        // Find current preset index
-        let mut output_preset_idx = 0;
-        for (i, (_, w, h)) in presets.iter().enumerate().skip(1) {
-            if *w == current_output_w && *h == current_output_h {
-                output_preset_idx = i;
-                break;
-            }
-        }
+        let mut output_preset_idx = self.output_resolution_preset;
 
         let old_output_preset = output_preset_idx;
         if ui.combo_simple_string("Preset##output", &mut output_preset_idx, &preset_names)
             && output_preset_idx != old_output_preset
-            && output_preset_idx > 0
         {
-            let (_, w, h) = presets[output_preset_idx];
-            self.pending_output_width = w;
-            self.pending_output_height = h;
+            self.output_resolution_preset = output_preset_idx;
+            if let Some((width, height)) = preset_dimensions(output_preset_idx) {
+                self.pending_output_width = width;
+                self.pending_output_height = height;
+            }
         }
 
         // Manual input
         let mut ow = self.pending_output_width as i32;
         let mut oh = self.pending_output_height as i32;
         ui.text("Custom:");
-        ui.input_int("Width##output", &mut ow).step(1).build();
-        ui.input_int("Height##output", &mut oh).step(1).build();
+        ui.disabled(self.output_resolution_preset != 0, || {
+            ui.input_int("Width##output", &mut ow).step(1).build();
+            ui.input_int("Height##output", &mut oh).step(1).build();
+        });
         self.pending_output_width = ow.max(320) as u32;
         self.pending_output_height = oh.max(240) as u32;
 

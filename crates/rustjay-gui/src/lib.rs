@@ -4,6 +4,8 @@ pub mod control_gui;
 pub mod renderer;
 pub mod tabs;
 
+mod resolution_presets;
+
 #[cfg(feature = "egui")]
 pub mod egui_control_gui;
 #[cfg(feature = "egui")]

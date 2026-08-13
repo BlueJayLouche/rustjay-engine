@@ -71,6 +71,8 @@ pub struct EguiControlGui {
     pub(crate) pending_internal_height: u32,
     pub(crate) pending_output_width: u32,
     pub(crate) pending_output_height: u32,
+    pub(crate) internal_resolution_preset: usize,
+    pub(crate) output_resolution_preset: usize,
 
     // Preset save form
     pub(crate) preset_name_buffer: String,
@@ -167,6 +169,12 @@ impl EguiControlGui {
             pending_internal_height: internal_h,
             pending_output_width: output_w,
             pending_output_height: output_h,
+            internal_resolution_preset: crate::resolution_presets::detect_resolution_preset(
+                internal_w, internal_h,
+            ),
+            output_resolution_preset: crate::resolution_presets::detect_resolution_preset(
+                output_w, output_h,
+            ),
             preset_name_buffer: String::new(),
             saving_preset: false,
             active_tab: GuiTab::Input,

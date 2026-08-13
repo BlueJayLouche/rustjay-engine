@@ -3,8 +3,11 @@
 
 #![cfg(feature = "egui")]
 
-use egui::{Rect, epaint::Shape};
-use egui_kittest::Harness;
+use egui::{Rect, accesskit::Role, epaint::Shape};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable as _},
+};
 use rustjay_core::EngineState;
 use rustjay_gui::{AnyEguiTab, EguiControlGui};
 use std::sync::{Arc, Mutex};
@@ -146,6 +149,36 @@ fn settings_and_output_snapshots_via_sidebar() {
     let mut harness = control_harness([800.0, 700.0], 1.0);
 
     click_painted_text(&mut harness, "SETTINGS");
+
+    let disabled_dimension_inputs = harness
+        .query_all_by_role(Role::SpinButton)
+        .filter(|node| node.accesskit_node().is_disabled())
+        .count();
+    assert_eq!(disabled_dimension_inputs, 4);
+
+    harness
+        .query_all_by_role(Role::ComboBox)
+        .next()
+        .expect("internal resolution preset dropdown")
+        .click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "NTSC (720x480)")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "PAL (720x576)")
+            .is_some()
+    );
+    harness
+        .query_all_by_role(Role::ComboBox)
+        .next()
+        .expect("internal resolution preset dropdown")
+        .click();
+    harness.run();
+
     harness.snapshot("settings_tab");
 
     click_painted_text(&mut harness, "OUTPUT");

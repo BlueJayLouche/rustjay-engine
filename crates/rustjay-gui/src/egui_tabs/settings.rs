@@ -2,6 +2,7 @@
 
 use crate::egui_control_gui::EguiControlGui;
 use crate::egui_theme::colors::*;
+use crate::resolution_presets::{RESOLUTION_PRESETS, preset_dimensions};
 use egui::Color32;
 use rustjay_core::OutputCommand;
 
@@ -48,35 +49,14 @@ impl EguiControlGui {
                 .strong(),
         );
 
-        let presets = [
-            ("Custom", 0, 0),
-            ("480p (640x480)", 640, 480),
-            ("720p (1280x720)", 1280, 720),
-            ("1080p (1920x1080)", 1920, 1080),
-            ("1440p (2560x1440)", 2560, 1440),
-            ("4K UHD (3840x2160)", 3840, 2160),
-            ("Square 1:1 (1080x1080)", 1080, 1080),
-            ("Vertical 9:16 (1080x1920)", 1080, 1920),
-        ];
-        let preset_names: Vec<&str> = presets.iter().map(|(name, _, _)| *name).collect();
+        let preset_names: Vec<&str> = RESOLUTION_PRESETS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
 
         // Internal Resolution
         ui.label("Internal Resolution (Processing):");
-        let (current_internal_w, current_internal_h) = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                state.resolution.internal_width,
-                state.resolution.internal_height,
-            )
-        };
-
-        let mut internal_preset_idx = 0;
-        for (i, (_, w, h)) in presets.iter().enumerate().skip(1) {
-            if *w == current_internal_w && *h == current_internal_h {
-                internal_preset_idx = i;
-                break;
-            }
-        }
+        let mut internal_preset_idx = self.internal_resolution_preset;
         let old_internal = internal_preset_idx;
         egui::ComboBox::from_id_salt("int_res")
             .width(200.0)
@@ -91,18 +71,26 @@ impl EguiControlGui {
                     }
                 }
             });
-        if internal_preset_idx != old_internal && internal_preset_idx > 0 {
-            let (_, w, h) = presets[internal_preset_idx];
-            self.pending_internal_width = w;
-            self.pending_internal_height = h;
+        if internal_preset_idx != old_internal {
+            self.internal_resolution_preset = internal_preset_idx;
+            if let Some((width, height)) = preset_dimensions(internal_preset_idx) {
+                self.pending_internal_width = width;
+                self.pending_internal_height = height;
+            }
         }
 
         ui.horizontal(|ui| {
             let mut w = self.pending_internal_width as i32;
             let mut h = self.pending_internal_height as i32;
-            ui.add(egui::DragValue::new(&mut w).speed(1).range(320..=8192));
+            ui.add_enabled(
+                self.internal_resolution_preset == 0,
+                egui::DragValue::new(&mut w).speed(1).range(320..=8192),
+            );
             ui.label("×");
-            ui.add(egui::DragValue::new(&mut h).speed(1).range(240..=4320));
+            ui.add_enabled(
+                self.internal_resolution_preset == 0,
+                egui::DragValue::new(&mut h).speed(1).range(240..=4320),
+            );
             ui.label("Custom");
             self.pending_internal_width = w.max(320) as u32;
             self.pending_internal_height = h.max(240) as u32;
@@ -111,18 +99,7 @@ impl EguiControlGui {
         // Output Resolution
         ui.add_space(8.0);
         ui.label("Output Resolution (Display/NDI):");
-        let (current_output_w, current_output_h) = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            (state.output_width, state.output_height)
-        };
-
-        let mut output_preset_idx = 0;
-        for (i, (_, w, h)) in presets.iter().enumerate().skip(1) {
-            if *w == current_output_w && *h == current_output_h {
-                output_preset_idx = i;
-                break;
-            }
-        }
+        let mut output_preset_idx = self.output_resolution_preset;
         let old_output = output_preset_idx;
         egui::ComboBox::from_id_salt("out_res")
             .width(200.0)
@@ -134,18 +111,26 @@ impl EguiControlGui {
                     }
                 }
             });
-        if output_preset_idx != old_output && output_preset_idx > 0 {
-            let (_, w, h) = presets[output_preset_idx];
-            self.pending_output_width = w;
-            self.pending_output_height = h;
+        if output_preset_idx != old_output {
+            self.output_resolution_preset = output_preset_idx;
+            if let Some((width, height)) = preset_dimensions(output_preset_idx) {
+                self.pending_output_width = width;
+                self.pending_output_height = height;
+            }
         }
 
         ui.horizontal(|ui| {
             let mut ow = self.pending_output_width as i32;
             let mut oh = self.pending_output_height as i32;
-            ui.add(egui::DragValue::new(&mut ow).speed(1).range(320..=8192));
+            ui.add_enabled(
+                self.output_resolution_preset == 0,
+                egui::DragValue::new(&mut ow).speed(1).range(320..=8192),
+            );
             ui.label("×");
-            ui.add(egui::DragValue::new(&mut oh).speed(1).range(240..=4320));
+            ui.add_enabled(
+                self.output_resolution_preset == 0,
+                egui::DragValue::new(&mut oh).speed(1).range(240..=4320),
+            );
             ui.label("Custom");
             self.pending_output_width = ow.max(320) as u32;
             self.pending_output_height = oh.max(240) as u32;
