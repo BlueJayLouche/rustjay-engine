@@ -4,6 +4,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub const MAX_ZERO_COPY_LEASES: usize = 5;
 
+#[cfg(any(windows, test))]
+pub(crate) fn expanded_pool_size(initial: i32, driver_limit: u32) -> Option<i32> {
+    let expanded = initial.checked_add(i32::try_from(MAX_ZERO_COPY_LEASES - 1).ok()?)?;
+    (initial > 0 && u32::try_from(expanded).ok()? <= driver_limit).then_some(expanded)
+}
+
 #[derive(Debug)]
 pub struct LeaseBudget {
     live: AtomicUsize,
@@ -112,6 +118,14 @@ mod tests {
         assert_eq!(budget.live(), MAX_ZERO_COPY_LEASES);
         drop(leases);
         assert_eq!(budget.live(), 0);
+    }
+
+    #[test]
+    fn pool_growth_rejects_invalid_or_excessive_sizes() {
+        assert_eq!(expanded_pool_size(12, 2048), Some(16));
+        assert_eq!(expanded_pool_size(0, 2048), None);
+        assert_eq!(expanded_pool_size(2045, 2048), None);
+        assert_eq!(expanded_pool_size(i32::MAX, 2048), None);
     }
 
     #[test]

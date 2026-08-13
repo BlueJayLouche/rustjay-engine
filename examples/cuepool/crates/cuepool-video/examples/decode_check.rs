@@ -37,6 +37,8 @@ fn main() {
                     format!("GPU YUV {subsample:?} {bit_depth:?}")
                 }
                 FramePixels::Nv12 { .. } => "GPU NV12".to_string(),
+                #[cfg(windows)]
+                FramePixels::D3d11Nv12(_) => "GPU D3D11 NV12".to_string(),
             };
             println!("pixel path: {path_kind}");
         }

@@ -26,4 +26,17 @@ anyhow = { workspace = true }
 bytemuck = { version = "1.21", features = ["derive"] }
 image = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+ash = "0.38"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+] }
+
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
