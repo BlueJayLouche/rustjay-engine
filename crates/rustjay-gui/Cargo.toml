@@ -38,3 +38,6 @@ egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 link   = ["rustjay-core/link"]
 prodj  = ["rustjay-core/prodj"]
 mtc    = ["rustjay-control/mtc"]
+
+[dev-dependencies]
+egui_kittest = { version = "=0.34.2", features = ["snapshot", "wgpu"] }
