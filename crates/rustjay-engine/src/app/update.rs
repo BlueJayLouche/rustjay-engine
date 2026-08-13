@@ -1,5 +1,5 @@
 use super::App;
-use rustjay_core::EffectPlugin;
+use rustjay_core::{EffectPlugin, EngineState};
 #[allow(unused_imports)] // used only by the macOS/Windows input paths
 use rustjay_core::InputType;
 use std::sync::Arc;
@@ -7,13 +7,25 @@ use std::sync::Arc;
 /// Minimum interval between device-enumeration polls (audio/MIDI/input lists).
 /// Devices change on a human timescale, so polling once per frame wastes CPU.
 const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
-/// Minimum time between audio stream reconnection attempts. Without this,
-/// a broken device causes CPAL to enumerate + re-init every frame (~16 ms),
-/// spawning threads and hammering CoreAudio.
-const AUDIO_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+pub(super) struct LfoFrame {
+    modulation: Arc<std::sync::Mutex<rustjay_core::modulation::ModulationEngine>>,
+    bpm: f32,
+    stable_beat_phase: f32,
+    volume: f32,
+    sample_rate: f32,
+}
+
+pub(super) struct WebModulationUpdate {
+    modulation: Arc<std::sync::Mutex<rustjay_core::modulation::ModulationEngine>>,
+    audio_routes: Vec<rustjay_core::routing::AudioRoute>,
+    audio_routing_enabled: bool,
+    bpm: f32,
+    tap_tempo_info: String,
+}
 
 impl<P: EffectPlugin> App<P> {
-    pub(super) fn update_input(&mut self) {
+    pub(super) fn update_input(&mut self, state: &mut EngineState) {
         // Slot 1 always uploads. Slot 2 only uploads when the active effect
         // actually samples a second input — uploading a full-res frame costs a
         // CPU memmove into wgpu's staging buffer (matters on CPU-bound targets).
@@ -21,11 +33,16 @@ impl<P: EffectPlugin> App<P> {
         // Read the cached count: `self.plugin` is None after resumed() moves the
         // plugin into the engine, so it can't be queried directly here.
         let second_needed = self.plugin_input_count >= 2;
-        self.update_input_slot(false, true);
-        self.update_input_slot(true, second_needed);
+        self.update_input_slot(state, false, true);
+        self.update_input_slot(state, true, second_needed);
     }
 
-    fn update_input_slot(&mut self, is_second: bool, upload_texture: bool) {
+    fn update_input_slot(
+        &mut self,
+        state: &mut EngineState,
+        is_second: bool,
+        upload_texture: bool,
+    ) {
         let manager_opt = if is_second {
             self.second_input_manager.as_mut()
         } else {
@@ -39,7 +56,6 @@ impl<P: EffectPlugin> App<P> {
                 "[NDI] Source lost — clearing input {} state",
                 if is_second { 2 } else { 1 }
             );
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let input = if is_second {
                 &mut state.second_input
             } else {
@@ -68,7 +84,6 @@ impl<P: EffectPlugin> App<P> {
                                 }
                             }
                     manager.clear_syphon_frame();
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     let input = if is_second {
                         &mut state.second_input
                     } else {
@@ -92,7 +107,6 @@ impl<P: EffectPlugin> App<P> {
                             engine.input_texture.update(&frame_data, width, height);
                         }
                     }
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let input = if is_second {
                     &mut state.second_input
                 } else {
@@ -119,7 +133,6 @@ impl<P: EffectPlugin> App<P> {
                                 }
                             }
                         }
-                        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         let input = if is_second {
                             &mut state.second_input
                         } else {
@@ -144,7 +157,6 @@ impl<P: EffectPlugin> App<P> {
                         engine.input_texture.update(&frame_data, width, height);
                     }
                 }
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let input = if is_second {
                     &mut state.second_input
                 } else {
@@ -171,7 +183,6 @@ impl<P: EffectPlugin> App<P> {
                         engine.input_texture.update(&frame_data, width, height);
                     }
                 }
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 let input = if is_second {
                     &mut state.second_input
                 } else {
@@ -184,35 +195,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    pub(super) fn update_audio(&mut self) {
-        if let Some(ref analyzer) = self.audio_analyzer
-            && analyzer.take_stream_error() {
-                let may_reconnect = self
-                    .last_audio_reconnect_attempt
-                    .is_none_or(|t| t.elapsed() >= AUDIO_RECONNECT_INTERVAL);
-                if may_reconnect {
-                    self.last_audio_reconnect_attempt = Some(std::time::Instant::now());
-                    let device = {
-                        let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.audio.selected_device.clone()
-                    };
-                    log::warn!(
-                        "[Audio] Stream error — attempting reconnect (device: {:?})",
-                        device
-                    );
-                    if let Some(ref mut analyzer) = self.audio_analyzer {
-                        match analyzer.start_with_device(device.as_deref()) {
-                            Ok(actual_name) => {
-                                let mut state =
-                                    self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.audio.selected_device = Some(actual_name);
-                            }
-                            Err(e) => log::error!("[Audio] Reconnect failed: {}", e),
-                        }
-                    }
-                }
-            }
-
+    pub(super) fn update_audio(&mut self, state: &mut EngineState) {
         if let Some(ref analyzer) = self.audio_analyzer {
             // Push last-frame's cached params to the analyzer — avoids a lock acquisition
             // on the hot path. The cache is refreshed below at the end of the same call so
@@ -228,7 +211,6 @@ impl<P: EffectPlugin> App<P> {
             let beat = analyzer.is_beat();
             let phase = analyzer.get_beat_phase();
 
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if state.audio.enabled {
                 state.audio.fft = fft;
                 std::mem::swap(&mut state.audio.spectrum, &mut self.cached_spectrum);
@@ -265,21 +247,22 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    pub(super) fn update_lfo(&mut self) {
-        // --- F1 fix: read from state, drop lock, tick modulation, then re-acquire ---
-        let (mod_arc, bpm, stable_beat_phase, volume, sample_rate) = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let mod_arc = state.modulation.clone();
-            let bpm = state.effective_bpm();
-            let stable_beat_phase = state.stable_beat_phase();
-            // S1: copy full spectrum into reusable scratch buffer (avoids per-frame allocation).
-            self.cached_fft.clear();
-            if state.audio.enabled {
-                self.cached_fft.extend_from_slice(&state.audio.spectrum);
-            }
-            (mod_arc, bpm, stable_beat_phase, state.audio.volume, state.audio.sample_rate)
-        };
+    pub(super) fn prepare_lfo(&mut self, state: &EngineState) -> LfoFrame {
+        // S1: copy full spectrum into reusable scratch buffer (avoids per-frame allocation).
+        self.cached_fft.clear();
+        if state.audio.enabled {
+            self.cached_fft.extend_from_slice(&state.audio.spectrum);
+        }
+        LfoFrame {
+            modulation: Arc::clone(&state.modulation),
+            bpm: state.effective_bpm(),
+            stable_beat_phase: state.stable_beat_phase(),
+            volume: state.audio.volume,
+            sample_rate: state.audio.sample_rate,
+        }
+    }
 
+    pub(super) fn update_lfo(&mut self, frame: LfoFrame) -> Vec<(String, f32)> {
         // Build AudioValues after dropping state (borrows from self.cached_fft).
         let audio = {
             let mut values = rustjay_core::modulation::AudioValues::default();
@@ -288,8 +271,8 @@ impl<P: EffectPlugin> App<P> {
                     0,
                     rustjay_core::modulation::AudioSourceValues {
                         fft: &self.cached_fft,
-                        level: volume,
-                        sample_rate,
+                        level: frame.volume,
+                        sample_rate: frame.sample_rate,
                     },
                 );
             }
@@ -301,12 +284,15 @@ impl<P: EffectPlugin> App<P> {
         // frame_delta_time accumulator which runs fast under ControlFlow::Poll.
         let mod_time = self.modulation_start.elapsed().as_secs_f32();
         let offsets = {
-            let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut mod_eng = frame
+                .modulation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             log::debug!(
                 "[update_lfo] mod_time={:.3} bpm={:.1} beat_phase={:.2}",
-                mod_time, bpm, stable_beat_phase
+                mod_time, frame.bpm, frame.stable_beat_phase
             );
-            mod_eng.update(mod_time, bpm, stable_beat_phase, &audio);
+            mod_eng.update(mod_time, frame.bpm, frame.stable_beat_phase, &audio);
 
             let mut offsets = Vec::with_capacity(mod_eng.assignments.len());
             for param_id in mod_eng.assignments.keys() {
@@ -316,17 +302,14 @@ impl<P: EffectPlugin> App<P> {
             offsets
         };
 
-        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        state.modulation_offsets = offsets;
-
         // NOTE: HSB params are no longer pre-computed here.
         // get_param("hue_shift"|"saturation"|"brightness") reads modulation_offsets
         // on demand, eliminating the double-modulation bug (F4).
+        offsets
     }
 
     #[cfg(feature = "link")]
-    pub(super) fn update_link(&mut self) {
-        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    pub(super) fn update_link(&mut self, state: &mut EngineState) {
         // Lazily construct/drop around the `enabled` toggle. LinkManager::new()
         // spawns Ableton Link's background threads (Link Main/Dispatcher), so
         // keeping it alive while disabled burned idle CPU for nothing.
@@ -348,8 +331,7 @@ impl<P: EffectPlugin> App<P> {
     }
 
     #[cfg(feature = "prodj")]
-    pub(super) fn update_prodj(&mut self) {
-        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    pub(super) fn update_prodj(&mut self, state: &mut EngineState) {
         // Lazily construct/drop around the `enabled` toggle. ProDjManager::new()
         // binds UDP 50000/50002 and JOINS the Pro DJ Link network on construction,
         // so every launch was joining a DJ network for a feature nobody enabled.
@@ -368,7 +350,7 @@ impl<P: EffectPlugin> App<P> {
         }
     }
 
-    pub(super) fn update_midi(&mut self) {
+    pub(super) fn poll_midi_device(&mut self) -> bool {
         if let Some(ref mut manager) = self.midi_manager
             && let Some(false) = manager.check_device_available_if_needed() {
                 let name = manager
@@ -381,11 +363,27 @@ impl<P: EffectPlugin> App<P> {
                     name
                 );
                 manager.disconnect();
-                if let Ok(mut state) = self.shared_state.lock() {
-                    state.midi_selected_device = None;
-                    state.midi_enabled = false;
-                }
+                return true;
             }
+        false
+    }
+
+    #[cfg(feature = "mtc")]
+    pub(super) fn poll_mtc(&mut self) -> Option<rustjay_core::MtcState> {
+        self.mtc_receiver.as_mut().map(|receiver| {
+            // refresh() may enumerate and open hardware every five seconds, so
+            // it must run without the frame's EngineState guard.
+            receiver.refresh();
+            receiver.tick();
+            receiver.clone_state()
+        })
+    }
+
+    pub(super) fn update_midi(&mut self, state: &mut EngineState, disconnected: bool) {
+        if disconnected {
+            state.midi_selected_device = None;
+            state.midi_enabled = false;
+        }
 
         if let Some(ref manager) = self.midi_manager {
             // Collect dirty MIDI values and snapshot learn/mapping state in one lock.
@@ -420,58 +418,44 @@ impl<P: EffectPlugin> App<P> {
                 (learn_active, learning_name, mapping_snapshot, last_input)
             };
 
-            if let Ok(mut shared) = self.shared_state.lock() {
-                shared.midi_last_input = last_input;
-                shared.midi_learn_active = learn_active;
-                if !learn_active {
-                    shared.midi_learning_param_name = None;
-                } else if learning_name.is_some() {
-                    shared.midi_learning_param_name = learning_name;
-                }
-                shared.midi_mappings = mapping_snapshot;
+            state.midi_last_input = last_input;
+            state.midi_learn_active = learn_active;
+            if !learn_active {
+                state.midi_learning_param_name = None;
+            } else if learning_name.is_some() {
+                state.midi_learning_param_name = learning_name;
+            }
+            state.midi_mappings = mapping_snapshot;
 
-                for (path, value) in &self.midi_dirty_scratch {
-                    match path.as_str() {
-                        "color/hue_shift" => {
-                            shared.hsb_params.hue_shift = value.clamp(-180.0, 180.0)
-                        }
-                        "color/saturation" => shared.hsb_params.saturation = value.clamp(0.0, 2.0),
-                        "color/brightness" => shared.hsb_params.brightness = value.clamp(0.0, 2.0),
-                        "audio/amplitude" => shared.audio.amplitude = value.clamp(0.0, 5.0),
-                        "audio/smoothing" => shared.audio.smoothing = value.clamp(0.0, 1.0),
-                        _ => {
-                            // Try app-specific param resolver first (hierarchical paths).
-                            let resolved = shared
-                                .param_resolver
-                                .as_ref()
-                                .and_then(|r| r.resolve(path))
-                                .unwrap_or_else(|| path.clone());
-                            let id = resolved.split('/').next_back().unwrap_or(&resolved);
-                            if shared.param_descriptors.iter().any(|d| d.id == id) {
-                                shared.set_param_base(id, *value);
-                            }
+            for (path, value) in &self.midi_dirty_scratch {
+                match path.as_str() {
+                    "color/hue_shift" => {
+                        state.hsb_params.hue_shift = value.clamp(-180.0, 180.0)
+                    }
+                    "color/saturation" => state.hsb_params.saturation = value.clamp(0.0, 2.0),
+                    "color/brightness" => state.hsb_params.brightness = value.clamp(0.0, 2.0),
+                    "audio/amplitude" => state.audio.amplitude = value.clamp(0.0, 5.0),
+                    "audio/smoothing" => state.audio.smoothing = value.clamp(0.0, 1.0),
+                    _ => {
+                        // Try app-specific param resolver first (hierarchical paths).
+                        let resolved = state
+                            .param_resolver
+                            .as_ref()
+                            .and_then(|r| r.resolve(path))
+                            .unwrap_or_else(|| path.clone());
+                        let id = resolved.split('/').next_back().unwrap_or(&resolved);
+                        if state.param_descriptors.iter().any(|d| d.id == id) {
+                            state.set_param_base(id, *value);
                         }
                     }
                 }
             }
         }
-
-        // MTC: refresh port list, age out playing flag, copy state into EngineState.
-        #[cfg(feature = "mtc")]
-        if let Some(ref mut receiver) = self.mtc_receiver {
-            receiver.refresh();
-            receiver.tick();
-            let mtc = receiver.clone_state();
-            if let Ok(mut shared) = self.shared_state.lock() {
-                shared.mtc = mtc;
-            }
-        }
     }
 
-    pub(super) fn update_osc(&mut self) {
+    pub(super) fn update_osc(&mut self, shared: &mut EngineState) {
         if let Some(ref server) = self.osc_server
-            && let Ok(mut shared) = self.shared_state.lock()
-                && let Ok(mut osc_state) = server.state().lock() {
+            && let Ok(mut osc_state) = server.state().lock() {
                     if let Some(v) = osc_state.get_value_if_dirty("/rustjay/color/hue_shift") {
                         shared.hsb_params.hue_shift = v.clamp(-180.0, 180.0);
                     }
@@ -547,59 +531,55 @@ impl<P: EffectPlugin> App<P> {
                 }
     }
 
-    pub(super) fn update_web(&mut self) {
+    pub(super) fn update_web(&mut self, state: &EngineState) -> Option<WebModulationUpdate> {
         if let Some(ref mut server) = self.web_server {
             if !server.is_running() {
-                return;
+                return None;
             }
-            if let Ok(state) = self.shared_state.lock() {
-                server.update_parameter("color/hue_shift", state.hsb_params.hue_shift);
-                server.update_parameter("color/saturation", state.hsb_params.saturation);
-                server.update_parameter("color/brightness", state.hsb_params.brightness);
-                server
-                    .update_parameter("color/enabled", if state.color_enabled { 1.0 } else { 0.0 });
-                server.update_parameter("audio/amplitude", state.audio.amplitude);
-                server.update_parameter("audio/smoothing", state.audio.smoothing);
-                server
-                    .update_parameter("audio/enabled", if state.audio.enabled { 1.0 } else { 0.0 });
-                server.update_parameter(
-                    "audio/normalize",
-                    if state.audio.normalize { 1.0 } else { 0.0 },
-                );
-                server.update_parameter(
-                    "audio/pink_noise",
-                    if state.audio.pink_noise_shaping {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                );
-                server.update_parameter(
-                    "output/fullscreen",
-                    if state.output_fullscreen { 1.0 } else { 0.0 },
-                );
-                let descriptors = Arc::clone(&state.param_descriptors);
-                for (i, desc) in descriptors.iter().enumerate() {
-                    if let Some(addr) = state.param_osc_addresses.get(i) {
-                        // OSC full addresses are "/rustjay/category/id"; web uses "category/id"
-                        let id = addr.strip_prefix("/rustjay/").unwrap_or(addr.trim_start_matches('/'));
-                        let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
-                        server.update_parameter(id, value);
-                    }
+            server.update_parameter("color/hue_shift", state.hsb_params.hue_shift);
+            server.update_parameter("color/saturation", state.hsb_params.saturation);
+            server.update_parameter("color/brightness", state.hsb_params.brightness);
+            server
+                .update_parameter("color/enabled", if state.color_enabled { 1.0 } else { 0.0 });
+            server.update_parameter("audio/amplitude", state.audio.amplitude);
+            server.update_parameter("audio/smoothing", state.audio.smoothing);
+            server
+                .update_parameter("audio/enabled", if state.audio.enabled { 1.0 } else { 0.0 });
+            server.update_parameter(
+                "audio/normalize",
+                if state.audio.normalize { 1.0 } else { 0.0 },
+            );
+            server.update_parameter(
+                "audio/pink_noise",
+                if state.audio.pink_noise_shaping {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
+            server.update_parameter(
+                "output/fullscreen",
+                if state.output_fullscreen { 1.0 } else { 0.0 },
+            );
+            let descriptors = Arc::clone(&state.param_descriptors);
+            for (i, desc) in descriptors.iter().enumerate() {
+                if let Some(addr) = state.param_osc_addresses.get(i) {
+                    // OSC full addresses are "/rustjay/category/id"; web uses "category/id"
+                    let id = addr.strip_prefix("/rustjay/").unwrap_or(addr.trim_start_matches('/'));
+                    let value = state.get_param_base(&desc.id).unwrap_or(desc.default);
+                    server.update_parameter(id, value);
                 }
             }
 
             if server.input_dirty {
-                if let Ok(state) = self.shared_state.lock() {
-                    server.send_input_state(&rustjay_control::InputStateJson {
-                        devices: state.input.available_devices.clone(),
-                        active_index: state.input.device_index,
-                        active_name: state.input.source_name.clone(),
-                        width: state.input.width,
-                        height: state.input.height,
-                        fps: state.input.fps,
-                    });
-                }
+                server.send_input_state(&rustjay_control::InputStateJson {
+                    devices: state.input.available_devices.clone(),
+                    active_index: state.input.device_index,
+                    active_name: state.input.source_name.clone(),
+                    width: state.input.width,
+                    height: state.input.height,
+                    fps: state.input.fps,
+                });
                 server.input_dirty = false;
             }
             if server.control_dirty {
@@ -611,21 +591,15 @@ impl<P: EffectPlugin> App<P> {
                     midi_devices,
                     midi_learn_active,
                     midi_learning_param_name,
-                ) = {
-                    match self.shared_state.lock() { Ok(state) => {
-                        (
-                            state.osc_enabled,
-                            state.osc_port,
-                            state.midi_enabled,
-                            state.midi_selected_device.clone(),
-                            state.midi_available_devices.clone(),
-                            state.midi_learn_active,
-                            state.midi_learning_param_name.clone(),
-                        )
-                    } _ => {
-                        (false, 9000, false, None, vec![], false, None)
-                    }}
-                };
+                ) = (
+                    state.osc_enabled,
+                    state.osc_port,
+                    state.midi_enabled,
+                    state.midi_selected_device.clone(),
+                    state.midi_available_devices.clone(),
+                    state.midi_learn_active,
+                    state.midi_learning_param_name.clone(),
+                );
                 let midi_mappings: Vec<rustjay_core::MidiMappingSnapshot> =
                     if let Some(ref m) = self.midi_manager {
                         match m.state().lock() { Ok(midi_st) => {
@@ -661,47 +635,54 @@ impl<P: EffectPlugin> App<P> {
                 server.control_dirty = false;
             }
             if server.modulation_dirty {
-                // F1 fix: clone Arc out of shared_state, drop guard, then lock modulation alone.
-                let (mod_arc, audio_routes, audio_routing_enabled, bpm, tap_tempo_info) = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    (
-                        Arc::clone(&state.modulation),
-                        state.audio_routing.matrix.routes().to_vec(),
-                        state.audio_routing.enabled,
-                        state.audio.bpm,
-                        state.audio.tap_tempo_info.clone(),
-                    )
-                };
-                let mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
-                server.send_modulation_state(&rustjay_control::ModulationStateJson {
-                    lfos: mod_eng.to_lfo_vec(),
-                    audio_routes,
-                    audio_routing_enabled,
-                    bpm,
-                    tap_tempo_info,
+                return Some(WebModulationUpdate {
+                    modulation: Arc::clone(&state.modulation),
+                    audio_routes: state.audio_routing.matrix.routes().to_vec(),
+                    audio_routing_enabled: state.audio_routing.enabled,
+                    bpm: state.audio.bpm,
+                    tap_tempo_info: state.audio.tap_tempo_info.clone(),
                 });
-                server.modulation_dirty = false;
             }
-            if server.preset_dirty {
-                if let Some(ref bank) = self.preset_bank {
-                    server.send_preset_state(&rustjay_control::PresetStateJson {
-                        presets: bank
-                            .presets
-                            .iter()
-                            .enumerate()
-                            .map(|(i, p)| rustjay_control::PresetInfo {
-                                index: i,
-                                name: p.name.clone(),
-                            })
-                            .collect(),
-                    });
-                }
-                server.preset_dirty = false;
+        }
+        None
+    }
+
+    pub(super) fn finish_web_update(&mut self, modulation: Option<WebModulationUpdate>) {
+        let Some(ref mut server) = self.web_server else { return };
+        if !server.is_running() {
+            return;
+        }
+        if let Some(update) = modulation {
+            // The caller has dropped EngineState before entering this function.
+            let mod_eng = update.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            server.send_modulation_state(&rustjay_control::ModulationStateJson {
+                lfos: mod_eng.to_lfo_vec(),
+                audio_routes: update.audio_routes,
+                audio_routing_enabled: update.audio_routing_enabled,
+                bpm: update.bpm,
+                tap_tempo_info: update.tap_tempo_info,
+            });
+            server.modulation_dirty = false;
+        }
+        if server.preset_dirty {
+            if let Some(ref bank) = self.preset_bank {
+                server.send_preset_state(&rustjay_control::PresetStateJson {
+                    presets: bank
+                        .presets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| rustjay_control::PresetInfo {
+                            index: i,
+                            name: p.name.clone(),
+                        })
+                        .collect(),
+                });
             }
+            server.preset_dirty = false;
         }
     }
 
-    pub(super) fn poll_device_discovery(&mut self) {
+    pub(super) fn poll_device_discovery(&mut self, state: &mut EngineState) {
         // Device discovery completes on a human timescale, so polling the
         // background scan every frame wastes CPU (perf: matters on the Pi
         // target). Throttle to ~750 ms — a slower device-list refresh is fine.
@@ -741,10 +722,7 @@ impl<P: EffectPlugin> App<P> {
             }
         }
         if done {
-            self.shared_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .input_discovering = false;
+            state.input_discovering = false;
         }
     }
 

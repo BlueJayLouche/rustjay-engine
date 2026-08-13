@@ -53,8 +53,12 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
 
     // Send full state snapshot on connect.
     let initial_json = {
-        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
-        match &guard.engine_state {
+        let engine = state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .engine_state
+            .clone();
+        match engine {
             Some(engine_arc) => match engine_arc.lock() {
                 Ok(engine) => match serde_json::to_value(crate::build_snapshot(&engine)) {
                     Ok(v) => v,
@@ -108,8 +112,12 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
             tokio::select! {
                 _ = interval.tick() => {
                     let current_json = {
-                        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                        match &guard.engine_state {
+                        let engine = state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .engine_state
+                            .clone();
+                        match engine {
                             Some(engine_arc) => match engine_arc.lock() {
                                 Ok(engine) => match serde_json::to_value(crate::build_snapshot(&engine)) {
                                     Ok(v) => v,

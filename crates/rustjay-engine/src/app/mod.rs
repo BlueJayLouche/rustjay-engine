@@ -647,6 +647,15 @@ impl<P: EffectPlugin> App<P> {
         if let Ok(state) = self.shared_state.lock() {
             self.config_manager.settings = AppSettings::from_state(&state);
         }
+        self.persist_settings();
+    }
+
+    pub(crate) fn save_settings_snapshot(&mut self, settings: AppSettings) {
+        self.config_manager.settings = settings;
+        self.persist_settings();
+    }
+
+    fn persist_settings(&self) {
         match self.config_manager.save() { Err(e) => {
             log::error!("Failed to save settings: {}", e);
         } _ => {

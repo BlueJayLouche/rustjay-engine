@@ -110,22 +110,19 @@ fn clamp_to_descriptor(engine: &rustjay_core::EngineState, id: &str, value: f32)
 pub async fn get_app_ui(State(state): State<SharedState>) -> impl IntoResponse {
     use axum::http::StatusCode;
 
-    // Pull the HTML and the bearer token together under one lock.
-    let (html_opt, token) = {
+    // Clone the engine Arc out before locking it so frame publication can take
+    // EngineState -> WebServerState without an ABBA lock order.
+    let (engine, token) = {
         let ws = match state.lock() {
             Ok(g) => g,
             Err(_) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "lock poisoned").into_response()
             }
         };
-        let html = ws
-            .engine_state
-            .as_ref()
-            .and_then(|arc| arc.lock().ok())
-            .and_then(|e| e.app_ui_html.clone());
-        let token = ws.bearer_token.clone();
-        (html, token)
+        (ws.engine_state.clone(), ws.bearer_token.clone())
     };
+    let html_opt = engine
+        .and_then(|arc| arc.lock().ok().and_then(|e| e.app_ui_html.clone()));
 
     match html_opt {
         None => (StatusCode::NOT_FOUND, "No app UI registered").into_response(),
