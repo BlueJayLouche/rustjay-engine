@@ -367,7 +367,7 @@ impl YuvConverter {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("d3d11va-canary"),
         });
-        direct.record_vulkan_acquire(&mut encoder)?;
+        unsafe { direct.record_vulkan_acquire(&mut encoder) }?;
         direct_converter.encode(&mut encoder, &direct_texture.create_view(&Default::default()));
         readback_converter.encode(
             &mut encoder,
@@ -387,8 +387,8 @@ impl YuvConverter {
             canvas_size,
             bytes_per_row,
         );
-        direct.record_vulkan_release(&mut encoder)?;
-        direct.attach_keyed_mutex(&mut encoder)?;
+        unsafe { direct.record_vulkan_release(&mut encoder) }?;
+        unsafe { direct.attach_keyed_mutex(&mut encoder) }?;
         direct.release_to_vulkan()?;
         let submission = queue.submit(std::iter::once(encoder.finish()));
 

@@ -4780,13 +4780,12 @@ fn video_consume_thread(
                                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                     label: Some("canvas-d3d11va-convert"),
                                 });
-                            let prepared = direct
-                                .record_vulkan_acquire(&mut encoder)
+                            let prepared = unsafe { direct.record_vulkan_acquire(&mut encoder) }
                                 .and_then(|()| {
                                     conv.encode(&mut encoder, &c.render_view());
-                                    direct.record_vulkan_release(&mut encoder)
+                                    unsafe { direct.record_vulkan_release(&mut encoder) }
                                 })
-                                .and_then(|()| direct.attach_keyed_mutex(&mut encoder));
+                                .and_then(|()| unsafe { direct.attach_keyed_mutex(&mut encoder) });
                             let epoch = rx_epoch.unwrap_or_default();
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {

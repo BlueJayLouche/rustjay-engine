@@ -768,15 +768,45 @@ impl D3d11Frame {
         self.0.pool.acquire_for_decoder()
     }
 
-    pub fn record_vulkan_acquire(&self, encoder: &mut wgpu::CommandEncoder) -> Result<(), String> {
+    /// Records the external-to-Vulkan ownership and layout transition.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain this frame through submission completion, submit the resulting
+    /// command buffer exactly once after releasing the keyed mutex to Vulkan, and record a
+    /// matching release transition before finishing it.
+    pub unsafe fn record_vulkan_acquire(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), String> {
         self.0.pool.record_barrier(encoder, true)
     }
 
-    pub fn record_vulkan_release(&self, encoder: &mut wgpu::CommandEncoder) -> Result<(), String> {
+    /// Records the Vulkan-to-external ownership and layout transition.
+    ///
+    /// # Safety
+    ///
+    /// The caller must record this after all accesses to the imported image, attach this frame's
+    /// keyed-mutex operations to the same command buffer, and retain the frame through submission
+    /// completion.
+    pub unsafe fn record_vulkan_release(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), String> {
         self.0.pool.record_barrier(encoder, false)
     }
 
-    pub fn attach_keyed_mutex(&self, encoder: &mut wgpu::CommandEncoder) -> Result<(), String> {
+    /// Attaches this pool's keyed-mutex acquire and release to the encoder's submission.
+    ///
+    /// # Safety
+    ///
+    /// The encoder must contain this frame's matching ownership transitions, its command buffer
+    /// must be submitted exactly once after [`Self::release_to_vulkan`], and the frame must remain
+    /// alive until that submission completes.
+    pub unsafe fn attach_keyed_mutex(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), String> {
         let memory = self.0.pool.memory();
         unsafe {
             encoder.as_hal_submission_mut::<wgpu::hal::api::Vulkan, _, _>(|hal_encoder| {
