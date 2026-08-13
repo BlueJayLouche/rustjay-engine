@@ -72,7 +72,6 @@ realfft = "3.4"
 # Async / threading
 tokio     = { version = "1.42", features = ["rt-multi-thread", "sync", "net"] }
 crossbeam = "0.8"
-socket2   = { version = "0.5", features = ["all"] }
 
 # Control protocols
 midir = "0.11"
