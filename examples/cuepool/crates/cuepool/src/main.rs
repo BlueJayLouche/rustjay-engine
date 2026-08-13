@@ -40,6 +40,8 @@ mod mtc_follow;
 use mtc_follow::MtcFollowState;
 mod recorder;
 use recorder::Recorder;
+mod settings;
+use settings::{AppSettings, load_settings, save_settings};
 
 
 /// Decode-channel depth (frames). A small buffer absorbs decode jitter; the
@@ -5665,35 +5667,6 @@ fn spawn_autosave_thread(state: SharedStateHandle, running: Arc<AtomicBool>) {
             }
         }
     });
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-struct AppSettings {
-    recent_files: Vec<std::path::PathBuf>,
-}
-
-fn settings_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|p| p.join("CuePool").join("settings.json"))
-}
-
-fn load_settings() -> AppSettings {
-    if let Some(path) = settings_path()
-        && let Ok(data) = std::fs::read_to_string(&path)
-            && let Ok(settings) = serde_json::from_str(&data) {
-                return settings;
-            }
-    AppSettings::default()
-}
-
-fn save_settings(settings: &AppSettings) {
-    if let Some(path) = settings_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(data) = serde_json::to_string_pretty(settings) {
-            let _ = std::fs::write(path, data);
-        }
-    }
 }
 
 /// Attempt an emergency save before the process exits.
