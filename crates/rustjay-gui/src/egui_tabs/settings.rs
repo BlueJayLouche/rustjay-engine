@@ -23,6 +23,20 @@ impl EguiControlGui {
             state.ui_scale = ui_scale;
         }
 
+        let mut hide_main_output = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.no_primary_output
+        };
+        if ui
+            .checkbox(&mut hide_main_output, "Hide main output window")
+            .on_hover_text("Projector, headless, and control outputs keep running.")
+            .changed()
+        {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.no_primary_output = hide_main_output;
+            state.save_settings_requested = true;
+        }
+
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(8.0);
