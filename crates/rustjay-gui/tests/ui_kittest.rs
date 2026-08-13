@@ -27,7 +27,7 @@ impl AnyEguiTab for DummyAppTab {
 }
 
 #[allow(deprecated)] // Context harness is required for the control GUI's top-level panels.
-fn control_harness(size: [f32; 2]) -> Harness<'static> {
+fn control_harness(size: [f32; 2], pixels_per_point: f32) -> Harness<'static> {
     let mut engine = EngineState::default();
     engine.audio.enabled = false;
     let shared_state = Arc::new(Mutex::new(engine));
@@ -37,7 +37,7 @@ fn control_harness(size: [f32; 2]) -> Harness<'static> {
 
     let mut harness = Harness::builder()
         .with_size(size)
-        .with_pixels_per_point(1.0)
+        .with_pixels_per_point(pixels_per_point)
         .with_theme(egui::Theme::Dark)
         .build(move |ctx| gui.build_ui(ctx, &mut app_state));
 
@@ -99,14 +99,14 @@ fn click_painted_text(harness: &mut Harness<'_>, label: &str) {
 
 #[test]
 fn expanded_sidebar_snapshot() {
-    let mut harness = control_harness([400.0, 700.0]);
+    let mut harness = control_harness([800.0, 1400.0], 0.5);
 
     harness.snapshot("sidebar_expanded");
 }
 
 #[test]
 fn every_sidebar_section_collapses_and_expands() {
-    let mut harness = control_harness([400.0, 900.0]);
+    let mut harness = control_harness([400.0, 900.0], 1.0);
 
     for (header, child) in [
         ("SIGNAL", "OUTPUT"),
@@ -125,7 +125,7 @@ fn every_sidebar_section_collapses_and_expands() {
 
 #[test]
 fn settings_and_output_snapshots_via_sidebar() {
-    let mut harness = control_harness([800.0, 700.0]);
+    let mut harness = control_harness([800.0, 700.0], 1.0);
 
     click_painted_text(&mut harness, "SETTINGS");
     harness.snapshot("settings_tab");
