@@ -229,25 +229,36 @@ impl SampleProvider for FileDecoder {
 
     fn seek(&self, sample: usize) {
         let inner = unsafe { &mut *self.inner.get() };
-        if inner.eof && inner.reopen_on_eof_seek {
-            // ponytail: symphonia 0.6's ISO/MP4 reader cannot seek after Ok(None) (EOF clears the
-            // pending mdat; seek does not restore it — pdeljanov/Symphonia#536). Reopen only at
-            // EOF; remove this workaround when that fix lands.
-            let path = inner.path.clone();
-            match Self::open(&path) {
-                Ok(fresh) => *inner = fresh.inner.into_inner(),
-                Err(e) => {
-                    log::warn!("seek reopen error: {}", e);
-                    return;
-                }
-            }
-        }
         let frame = (sample / self.channels.max(1) as usize) as u64;
         let Ok(ts) = Timestamp::try_from(frame) else {
             log::warn!("seek target is out of range: {}", frame);
             return;
         };
-        if let Err(e) = inner.format.seek(
+        if inner.eof && inner.reopen_on_eof_seek {
+            // ponytail: symphonia 0.6's ISO/MP4 reader cannot seek after Ok(None) (EOF clears the
+            // pending mdat; seek does not restore it — pdeljanov/Symphonia#536). Reopen only at
+            // EOF; remove this workaround when that fix lands. Commit the fresh reader only after
+            // its seek succeeds — otherwise a failed seek (e.g. target past EOF) would swap in a
+            // reader rewound to the start and replay audio instead of staying silent at EOF.
+            let mut fresh = match Self::open(&inner.path) {
+                Ok(f) => f.inner.into_inner(),
+                Err(e) => {
+                    log::warn!("seek reopen error: {}", e);
+                    return;
+                }
+            };
+            if let Err(e) = fresh.format.seek(
+                SeekMode::Accurate,
+                SeekTo::Timestamp {
+                    ts,
+                    track_id: fresh.track_id,
+                },
+            ) {
+                log::warn!("seek error: {}", e);
+                return;
+            }
+            *inner = fresh;
+        } else if let Err(e) = inner.format.seek(
             SeekMode::Accurate,
             SeekTo::Timestamp {
                 ts,
@@ -319,5 +330,40 @@ mod tests {
         // A real signal has many zero crossings.
         let zc = buf[..read].windows(2).filter(|w| w[0] * w[1] < 0.0).count();
         assert!(zc > 100, "real audio should cross zero often, got {}", zc);
+    }
+
+    // Exercises the isomp4 reopen-on-EOF seek workaround (see seek()). Needs an
+    // MP4 container, so build one from Ping.aiff with afconvert (ships with macOS).
+    #[test]
+    fn test_m4a_seek_after_eof() {
+        if !std::path::Path::new(PING).exists() {
+            return;
+        }
+        let m4a = std::env::temp_dir().join("cuepool_seek_eof_test.m4a");
+        let converted = std::process::Command::new("afconvert")
+            .args(["-f", "m4af", "-d", "aac", PING])
+            .arg(&m4a)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !converted {
+            return;
+        }
+
+        let decoder = FileDecoder::open(m4a.to_str().unwrap()).unwrap();
+        let mut buf = vec![0.0f32; 4096];
+        while decoder.read(&mut buf) > 0 {}
+
+        // A seek past the end fails (isomp4 returns OutOfRange); the reader must
+        // stay at EOF rather than being swapped for one rewound to the start.
+        let len = decoder.length().unwrap_or(1 << 24);
+        decoder.seek(len * 10);
+        assert_eq!(decoder.read(&mut buf), 0, "failed seek at EOF must stay silent");
+
+        // The workaround itself: a valid seek after EOF replays audio.
+        decoder.seek(0);
+        assert!(decoder.read(&mut buf) > 0, "valid seek after EOF should replay");
+
+        let _ = std::fs::remove_file(&m4a);
     }
 }
