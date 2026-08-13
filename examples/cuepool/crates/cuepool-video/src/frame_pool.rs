@@ -17,7 +17,8 @@ impl FramePool {
 
     pub(crate) fn copy_from_slice(&self, data: &[u8]) -> Vec<u8> {
         let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
-        // ponytail: linear best-fit scans at most 30 buffers; use size bins if the bound grows.
+        // Linear best-fit scan is fine for the small retained bound; switch to
+        // size bins if the bound ever grows.
         let buffer_index = buffers
             .iter()
             .enumerate()

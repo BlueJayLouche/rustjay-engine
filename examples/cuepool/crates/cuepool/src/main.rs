@@ -4688,10 +4688,14 @@ fn video_consume_thread(
         if consumed.is_some()
             && rx_epoch.is_none_or(|epoch| control.lock_unpoisoned().stream_epoch != epoch)
         {
-            consumed = None;
+            if let Some(f) = consumed.take() {
+                frame_pool.recycle_frame(f);
+            }
+            if let Some(f) = peek.take() {
+                frame_pool.recycle_frame(f);
+            }
             rx = None;
             rx_epoch = None;
-            peek = None;
             eof_epoch = None;
         }
 
