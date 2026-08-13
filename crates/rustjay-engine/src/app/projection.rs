@@ -32,6 +32,23 @@ fn pick_projector_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Textur
         .or_else(|| formats.first().copied())
 }
 
+fn should_toggle_projector_fullscreen(
+    key: &winit::keyboard::Key,
+    state: winit::event::ElementState,
+    shift_pressed: bool,
+    fullscreen: bool,
+) -> bool {
+    if state != winit::event::ElementState::Pressed {
+        return false;
+    }
+
+    match key {
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => fullscreen,
+        winit::keyboard::Key::Character(ch) => shift_pressed && ch.eq_ignore_ascii_case("f"),
+        _ => false,
+    }
+}
+
 /// A single projector output window with its own stage chain.
 pub struct ProjectorOutput {
     window: Arc<Window>,
@@ -463,6 +480,10 @@ impl ProjectorOutput {
         self.window.set_cursor_visible(false);
     }
 
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
     pub fn hide_cursor(&self) {
         self.window.set_cursor_visible(false);
     }
@@ -709,11 +730,14 @@ impl ProjectionSubsystem {
                             *shift_pressed =
                                 event.state == winit::event::ElementState::Pressed;
                         }
-                        if event.state == winit::event::ElementState::Pressed
-                            && let winit::keyboard::Key::Character(ch) = &event.logical_key
-                                && *shift_pressed && ch.to_lowercase() == "f" {
-                                    proj.toggle_fullscreen();
-                                }
+                        if should_toggle_projector_fullscreen(
+                            &event.logical_key,
+                            event.state,
+                            *shift_pressed,
+                            proj.is_fullscreen(),
+                        ) {
+                            proj.toggle_fullscreen();
+                        }
                     }
                     _ => {}
                 }
@@ -889,6 +913,18 @@ impl ProjectionSubsystem {
 
     pub fn is_projector_recording(&self, index: usize) -> bool {
         self.projectors.get(index).is_some_and(|p| p.is_recording())
+    }
+
+    pub fn toggle_projector_fullscreen(&mut self, index: usize) -> bool {
+        let Some(proj) = self.projectors.get_mut(index) else {
+            return false;
+        };
+        proj.toggle_fullscreen();
+        true
+    }
+
+    pub fn is_projector_fullscreen(&self, index: usize) -> Option<bool> {
+        self.projectors.get(index).map(ProjectorOutput::is_fullscreen)
     }
 
     // ── Projector output senders (NDI / Syphon / Spout / V4L2) ──────────────
@@ -1175,5 +1211,39 @@ mod tests {
             fallback.message,
             "Projector \"Varda Projector 2 - Stage Right\" requested monitor 3, but it was not found (available monitor count: 2); falling back to windowed mode"
         );
+    use winit::{
+        event::ElementState,
+        keyboard::{Key, NamedKey},
+    };
+
+    #[test]
+    fn projector_fullscreen_key_controls_respect_runtime_state() {
+        let escape = Key::Named(NamedKey::Escape);
+        let f = Key::Character("f".into());
+
+        assert!(should_toggle_projector_fullscreen(
+            &escape,
+            ElementState::Pressed,
+            false,
+            true,
+        ));
+        assert!(!should_toggle_projector_fullscreen(
+            &escape,
+            ElementState::Pressed,
+            false,
+            false,
+        ));
+        assert!(should_toggle_projector_fullscreen(
+            &f,
+            ElementState::Pressed,
+            true,
+            false,
+        ));
+        assert!(!should_toggle_projector_fullscreen(
+            &f,
+            ElementState::Released,
+            true,
+            true,
+        ));
     }
 }
