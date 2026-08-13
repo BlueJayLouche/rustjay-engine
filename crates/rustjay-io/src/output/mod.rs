@@ -517,8 +517,9 @@ impl OutputManager {
             // Harvest the previous frame's data (never blocks).
             if let Some((_data, _width, _height)) = self.readback_pool.harvest_previous() {
                 #[cfg(feature = "ndi")]
-                if let Some(ref sender) = self.ndi_output {
-                    sender.submit_frame(&_data, _width, _height);
+                if let Some(ref mut sender) = self.ndi_output
+                    && let Err(e) = sender.submit_frame(&_data, _width, _height) {
+                    log::error!("NDI output error: {}", e);
                 }
 
                 #[cfg(target_os = "windows")]

@@ -159,15 +159,30 @@ impl NdiOutputSender {
     }
 
     /// Submit a frame for sending
-    pub fn submit_frame(&self, bgra_data: &[u8], width: u32, height: u32) {
+    pub fn submit_frame(
+        &mut self,
+        bgra_data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<()> {
         if width != self.width || height != self.height {
-            log::warn!("[NDI OUTPUT] Frame size mismatch");
-            return;
+            log::info!(
+                "[NDI OUTPUT] Resolution change: {}x{} -> {}x{} (restarting '{}')",
+                self.width,
+                self.height,
+                width,
+                height,
+                self.name
+            );
+            let name = self.name.clone();
+            let include_alpha = self.include_alpha;
+            self.stop();
+            *self = Self::new(name, width, height, include_alpha)?;
         }
 
         if bgra_data.is_empty() {
             log::warn!("[NDI OUTPUT] Empty frame data received");
-            return;
+            return Ok(());
         }
 
         let frame = FrameData {
@@ -187,6 +202,8 @@ impl NdiOutputSender {
                 log::warn!("[NDI OUTPUT] Frame channel disconnected");
             }
         }
+
+        Ok(())
     }
 
     /// Stop the NDI sender
