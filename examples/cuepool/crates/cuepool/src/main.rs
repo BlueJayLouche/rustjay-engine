@@ -34,6 +34,10 @@ use winit::window::{Window, WindowId};
 
 use human_panic::Metadata;
 
+mod cue_exec;
+use cue_exec::{
+    ActiveCue, DelayedCue, PendingStop, fade_elapsed, shift_fade_start_after_pause,
+};
 mod cue_sequence;
 use cue_sequence::{next_after_last, next_standby_qid, resolve_goto_target};
 mod lighting_engine;
@@ -110,52 +114,10 @@ enum AppEvent {
 
 
 
-#[derive(Clone)]
-struct ActiveCue {
-    qid: rust_decimal::Decimal,
-    name: String,
-    input: std::sync::Arc<cuepool_audio::MixerInput>,
-    state: CueState,
-    /// Shared counter incremented by LoopProcessor on each loop boundary.
-    loop_counter: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
-    /// Last known loop count (used to detect new loops).
-    video_loop_count: u32,
-    /// Loop boundaries in frames, for computing loop-relative position.
-    loop_start_frame: u64,
-    loop_end_frame: u64,
-    /// Tail fade-out (seconds) — begins `fade_out` before the cue's natural end.
-    fade_out: f32,
-    fade_type: cuepool_core::FadeType,
-    fade_out_started: bool,
-    /// Stop action scheduled by a StopCue targeting this cue.
-    pending_stop: Option<PendingStop>,
-}
-
-/// A cue that is waiting for its delay timer to expire before playing.
-struct DelayedCue {
-    cue: cuepool_core::Cue,
-    start_at: std::time::Instant,
-}
-
-/// Pending stop action scheduled by a StopCue with mode != Immediate.
-#[derive(Clone, Copy)]
-struct PendingStop {
-    mode: cuepool_core::StopMode,
-    fade_out_time: f32,
-    fade_type: cuepool_core::FadeType,
-}
 
 
 
 
-
-fn fade_elapsed(start: Instant, pause_started: Option<Instant>) -> Duration {
-    pause_started.unwrap_or_else(Instant::now).saturating_duration_since(start)
-}
-
-fn shift_fade_start_after_pause(start: Instant, pause_started: Instant, resumed_at: Instant) -> Instant {
-    start + resumed_at.saturating_duration_since(start.max(pause_started))
-}
 
 
 struct App {
@@ -4387,20 +4349,5 @@ mod tests {
     }
 
 
-    #[test]
-    fn picture_fade_freezes_when_paused_before_or_after_it_starts() {
-        let origin = Instant::now();
-        let paused_at = origin + Duration::from_secs(2);
-        let resumed_at = origin + Duration::from_secs(7);
-
-        assert_eq!(fade_elapsed(origin, Some(paused_at)), Duration::from_secs(2));
-        let shifted = shift_fade_start_after_pause(origin, paused_at, resumed_at);
-        assert_eq!(resumed_at.duration_since(shifted), Duration::from_secs(2));
-
-        let started_while_paused = origin + Duration::from_secs(4);
-        assert_eq!(fade_elapsed(started_while_paused, Some(paused_at)), Duration::ZERO);
-        let shifted = shift_fade_start_after_pause(started_while_paused, paused_at, resumed_at);
-        assert_eq!(shifted, resumed_at);
-    }
 
 }
