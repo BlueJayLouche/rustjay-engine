@@ -39,7 +39,7 @@ pub fn demo_show() -> ShowFile {
         },
         Cue::Sound {
             base: cue_base(sound, "Lobby Ambience", Some(group)),
-            path: String::new(),
+            path: "lobby-ambience.wav".into(),
             start_time: Timespan::ZERO,
             duration: Timespan::from_secs_f64(180.0),
             volume: 0.8,
@@ -109,7 +109,7 @@ pub fn demo_show() -> ShowFile {
 }
 
 fn populate_telemetry(state: &mut SharedState) {
-    state.selected_cue_id = Some(Decimal::new(13, 1));
+    state.selected_cue_id = Some(Decimal::new(11, 1));
     state.active_cues = vec![
         ActiveCueInfo {
             qid: Decimal::new(11, 1),
@@ -139,6 +139,18 @@ fn populate_telemetry(state: &mut SharedState) {
             state: CueState::Playing,
         },
     ];
+    state.waveform_cache.insert(
+        "lobby-ambience.wav".into(),
+        crate::waveform::WaveformData {
+            peaks: (0..200)
+                .map(|index| {
+                    let amplitude = 0.2 + (index * 37 % 70) as f32 / 100.0;
+                    (-amplitude, amplitude)
+                })
+                .collect(),
+            duration_secs: 180.0,
+        },
+    );
     state.meter_data = GuiMeterData {
         peak_l_db: -12.0,
         peak_r_db: -14.0,

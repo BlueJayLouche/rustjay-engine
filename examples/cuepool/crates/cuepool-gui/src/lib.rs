@@ -11,6 +11,7 @@ pub mod logging;
 pub mod lighting_panel;
 pub mod preview;
 pub mod recorder_panel;
+mod scrub;
 pub mod status_panel;
 pub mod take_editor;
 pub mod projection_panel;

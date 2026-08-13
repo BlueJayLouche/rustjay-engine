@@ -314,8 +314,8 @@ pub struct SharedState {
     pub audio_device_name: String,
     /// Why audio playback is disabled, if output configuration failed.
     pub audio_error: Option<String>,
-    /// Cached waveform peaks: path → Vec<(min, max)>.
-    pub waveform_cache: std::collections::HashMap<String, Vec<(f32, f32)>>,
+    /// Cached whole-media waveform data by path.
+    pub waveform_cache: std::collections::HashMap<String, crate::waveform::WaveformData>,
     /// Paths currently being processed for waveform generation.
     pub pending_waveforms: std::collections::HashSet<String>,
     /// Waveform zoom level (1.0 = fit to width, >1.0 = zoomed in).
@@ -1112,12 +1112,12 @@ impl CuePoolApp {
                 .show(ctx, |ui| {
                     if selected_path.is_empty() {
                         ui.label("Select a Sound or Video cue to view its waveform.");
-                    } else if let Some(peaks) = peaks {
+                    } else if let Some(waveform) = peaks {
                         ui.label(std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path).to_string());
-                        let (new_zoom, new_scroll) = crate::waveform::draw(ui, &peaks, zoom, scroll, 200.0);
+                        let response = crate::waveform::draw(ui, &waveform, zoom, scroll, 200.0, None);
                         if let Ok(mut state) = self.state.lock() {
-                            state.waveform_window_zoom = new_zoom;
-                            state.waveform_window_scroll = new_scroll;
+                            state.waveform_window_zoom = response.zoom;
+                            state.waveform_window_scroll = response.scroll_offset;
                         }
                     } else {
                         ui.label("Generating waveform…");

@@ -44,18 +44,37 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     let Ok(mut state) = state.lock() else { return };
 
-    // Pre-fetch waveform data and zoom/scroll before taking mutable cue reference
-    let waveform_data = if let Some(cue) = state.selected_cue() {
-        let path = match cue {
-            cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. } => path.clone(),
-            _ => String::new(),
+    // Pre-fetch waveform and active timeline data before taking a mutable cue reference.
+    let waveform_data = state.selected_cue().and_then(|cue| {
+        let (qid, path, region_start_secs, kind) = match cue {
+            cuepool_core::Cue::Sound { base, path, start_time, .. } => (
+                base.qid,
+                path.clone(),
+                start_time.as_secs_f64() as f32,
+                crate::scrub::SeekKind::Sound,
+            ),
+            cuepool_core::Cue::Video { base, path, start_time, .. } => (
+                base.qid,
+                path.clone(),
+                start_time.as_secs_f64() as f32,
+                crate::scrub::SeekKind::Video,
+            ),
+            _ => return None,
         };
-        let peaks = state.waveform_cache.get(&path).cloned();
+        let waveform = state.waveform_cache.get(&path).cloned();
         let pending = state.pending_waveforms.contains(&path);
-        Some((peaks, pending))
-    } else {
-        None
-    };
+        let playhead = state.active_cues.iter().find(|active| active.qid == qid).map(|active| {
+            let seek_length_secs = active.length_secs.unwrap_or_default();
+            crate::waveform::Playhead {
+                position_secs: active.position_secs,
+                region_start_secs,
+                seek_length_secs,
+                kind: (state.show_mode == crate::app::ShowMode::Edit && seek_length_secs > 0.0)
+                    .then_some(kind),
+            }
+        });
+        Some((qid, waveform, pending, playhead))
+    });
     let (mut waveform_zoom, mut waveform_scroll) = (state.waveform_zoom, state.waveform_scroll);
 
     // Pre-fetch the fixture patch for lighting cues (before the mutable cue borrow).
@@ -198,11 +217,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         changed = true;
                     }
             });
-            if let Some((Some(ref peaks), _)) = waveform_data {
-                let (new_zoom, new_scroll) = crate::waveform::draw(ui, peaks, waveform_zoom, waveform_scroll, 48.0);
-                waveform_zoom = new_zoom;
-                waveform_scroll = new_scroll;
-            } else if let Some((None, true)) = waveform_data {
+            if let Some((qid, Some(ref waveform), _, playhead)) = waveform_data {
+                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, playhead);
+                waveform_zoom = response.zoom;
+                waveform_scroll = response.scroll_offset;
+                if let Some(secs) = response.seek_target {
+                    pending_commands.push(crate::app::AppCommand::SeekCue { qid, secs });
+                }
+            } else if let Some((_, None, true, _)) = waveform_data {
                 ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
             }
             ui.horizontal(|ui| {
@@ -260,11 +282,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         changed = true;
                     }
             });
-            if let Some((Some(ref peaks), _)) = waveform_data {
-                let (new_zoom, new_scroll) = crate::waveform::draw(ui, peaks, waveform_zoom, waveform_scroll, 48.0);
-                waveform_zoom = new_zoom;
-                waveform_scroll = new_scroll;
-            } else if let Some((None, true)) = waveform_data {
+            if let Some((qid, Some(ref waveform), _, playhead)) = waveform_data {
+                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, playhead);
+                waveform_zoom = response.zoom;
+                waveform_scroll = response.scroll_offset;
+                if let Some(secs) = response.seek_target {
+                    pending_commands.push(crate::app::AppCommand::SeekCue { qid, secs });
+                }
+            } else if let Some((_, None, true, _)) = waveform_data {
                 ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
             }
             ui.horizontal(|ui| {
@@ -1211,4 +1236,3 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
         });
     }
 }
-

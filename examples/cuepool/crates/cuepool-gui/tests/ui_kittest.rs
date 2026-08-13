@@ -75,6 +75,47 @@ fn go_button_queues_transport_command() {
 }
 
 #[test]
+fn active_progress_scrubs_only_in_edit_mode() {
+    let (mut harness, state) = demo_harness();
+    let bar = harness.get_by_label("Scrub active cue Q1.1").rect();
+    let drag = |harness: &mut Harness<'static>| {
+        let from = egui::pos2(bar.left() + bar.width() * 0.2, bar.center().y);
+        let to = egui::pos2(bar.left() + bar.width() * 0.75, bar.center().y);
+        harness.drag_at(from);
+        harness.step();
+        harness.hover_at(to);
+        harness.step();
+        harness.drop_at(to);
+        harness.run();
+    };
+
+    drag(&mut harness);
+    let commands: Vec<_> = state.lock().unwrap().command_queue.drain(..).collect();
+    let Some(AppCommand::SeekCue { qid, secs }) = commands
+        .iter()
+        .rev()
+        .find(|command| matches!(command, AppCommand::SeekCue { .. }))
+    else {
+        panic!("edit-mode drag should queue SeekCue");
+    };
+    assert_eq!(*qid, Decimal::new(11, 1));
+    assert!((*secs - 135.0).abs() < 0.01, "unexpected seek target: {secs}");
+
+    harness.get_by_label("Edit Mode").click();
+    harness.run();
+    drag(&mut harness);
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .command_queue
+            .iter()
+            .all(|command| !matches!(command, AppCommand::SeekCue { .. })),
+        "show-mode drag must not queue SeekCue"
+    );
+}
+
+#[test]
 fn edit_and_show_mode_snapshots() {
     let (mut harness, _) = demo_harness();
 
