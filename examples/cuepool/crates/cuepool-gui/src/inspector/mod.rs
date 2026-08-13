@@ -1,6 +1,7 @@
 //! Cue inspector — right-side panel showing details for the selected cue.
 
 use crate::app::SharedStateHandle;
+use crate::{colour_to_egui, cue_type_label};
 use egui::RichText;
 use rust_decimal::Decimal;
 
@@ -78,11 +79,34 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         return;
     };
 
+    let cue_type = cue_type_label(cue);
     let base = cue.base_mut();
     let mut changed = false;
     let mut pending_commands: Vec<crate::app::AppCommand> = Vec::new();
 
-    ui.label(RichText::new(format!("Q{}", base.qid)).strong().size(18.0));
+    ui.horizontal(|ui| {
+        let (swatch_rect, swatch_response) =
+            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(swatch_rect, 3.0, colour_to_egui(base.colour));
+        swatch_response.on_hover_text("Cue colour tag");
+        egui::Frame::new()
+            .fill(ui.visuals().widgets.inactive.weak_bg_fill)
+            .corner_radius(2.0)
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.label(RichText::new(cue_type).monospace().strong().size(10.0));
+            });
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("Q{} · {}", base.qid, base.name))
+                    .strong()
+                    .size(18.0),
+            )
+            .truncate(),
+        )
+        .on_hover_text(format!("Q{} · {}", base.qid, base.name));
+    });
     ui.add_space(8.0);
 
     // Common fields
@@ -1211,4 +1235,3 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
         });
     }
 }
-

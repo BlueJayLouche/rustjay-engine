@@ -1,7 +1,32 @@
 //! Transport controls — Go, Stop, Pause buttons.
 
 use crate::app::{AppCommand, GuiMeterData, SharedStateHandle};
+use crate::colour_to_egui;
 use egui::{Button, Color32, RichText, Vec2};
+use rust_decimal::Decimal;
+
+const STANDBY_NAME_MAX_CHARS: usize = 18;
+
+fn standby_label(standby: Option<(Decimal, &str)>) -> String {
+    let Some((qid, name)) = standby else {
+        return "GO → (no cue selected)".to_string();
+    };
+    let name = if name.chars().count() > STANDBY_NAME_MAX_CHARS {
+        format!(
+            "{}…",
+            name.chars()
+                .take(STANDBY_NAME_MAX_CHARS - 1)
+                .collect::<String>()
+        )
+    } else {
+        name.to_string()
+    };
+    if name.is_empty() {
+        format!("GO → Q{qid}")
+    } else {
+        format!("GO → Q{qid}  {name}")
+    }
+}
 
 /// `HH:MM:SS.ff` at a display-only frame rate (triggers store seconds).
 pub(crate) fn format_timecode(secs: f64, fps: f32) -> String {
@@ -43,16 +68,58 @@ pub(crate) fn parse_timecode(text: &str, fps: f32) -> Option<f64> {
 }
 
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
-    ui.horizontal(|ui| {
+    let standby = state.lock().ok().and_then(|state| {
+        state.selected_cue().map(|cue| {
+            let base = cue.base();
+            (base.qid, base.name.clone(), base.colour)
+        })
+    });
+    let has_standby = standby.is_some();
+
+    let controls = |ui: &mut egui::Ui| {
         let button_size = Vec2::new(60.0, 32.0);
 
         let go_btn = Button::new(RichText::new("▶ GO").strong().color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 180, 0))
             .min_size(button_size);
-        if ui.add(go_btn).on_hover_text("Fire the selected cue (Space)").clicked()
+        let go_hover = standby.as_ref().map_or_else(
+            || "Select a cue before using Go".to_string(),
+            |(qid, name, _)| format!("Fire Q{qid} {name} (Space)"),
+        );
+        if ui
+            .add_enabled(has_standby, go_btn)
+            .on_hover_text(go_hover)
+            .clicked()
             && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Go);
             }
+
+        let readout = standby_label(standby.as_ref().map(|(qid, name, _)| (*qid, name.as_str())));
+        let readout_hover = standby.as_ref().map_or_else(
+            || "Select a cue to set the standby playhead".to_string(),
+            |(qid, name, _)| format!("Standby: Q{qid} {name}. Go fires this cue."),
+        );
+        let readout_width = ui.available_width().min(190.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(readout_width, 32.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                if let Some((_, _, colour)) = &standby {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, colour_to_egui(*colour));
+                    response.on_hover_text("Standby cue colour tag");
+                }
+                let text = if has_standby {
+                    RichText::new(readout).strong()
+                } else {
+                    RichText::new(readout).weak()
+                };
+                ui.add(egui::Label::new(text).truncate());
+            },
+        )
+        .response
+        .on_hover_text(readout_hover);
 
         let stop_btn = Button::new(RichText::new("⏹ STOP").strong())
             .fill(Color32::from_rgb(200, 0, 0))
@@ -109,8 +176,12 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         let preload_btn = Button::new(RichText::new("PRELOAD"))
             .min_size(Vec2::new(70.0, 32.0));
         if ui
-            .add(preload_btn)
-            .on_hover_text("Load the selected cue's media into memory so Go starts instantly")
+            .add_enabled(has_standby, preload_btn)
+            .on_hover_text(if has_standby {
+                "Load the standby cue's media into memory so Go starts instantly"
+            } else {
+                "Select a cue before preloading"
+            })
             .clicked()
             && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Preload);
@@ -209,16 +280,21 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 };
                 state.dirty = true;
             }
+    };
 
-        // Master meter bridge
-        let meter_data = {
-            let Ok(state) = state.lock() else { return };
-            state.meter_data
-        };
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    egui::containers::Sides::new()
+        .height(32.0)
+        .shrink_left()
+        .truncate()
+        .show(ui, controls, |ui| {
+            // Reserve the right edge for the master meter so the bounded standby
+            // readout cannot push it off-screen in a narrow window.
+            let meter_data = {
+                let Ok(state) = state.lock() else { return };
+                state.meter_data
+            };
             draw_meter(ui, &meter_data);
         });
-    });
 }
 
 fn draw_meter(ui: &mut egui::Ui, data: &GuiMeterData) {
@@ -293,7 +369,21 @@ fn draw_meter(ui: &mut egui::Ui, data: &GuiMeterData) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_timecode, parse_timecode};
+    use super::{format_timecode, parse_timecode, standby_label};
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn standby_labels_cover_empty_named_and_truncated_states() {
+        assert_eq!(standby_label(None), "GO → (no cue selected)");
+        assert_eq!(
+            standby_label(Some((Decimal::new(35, 1), "Lights up"))),
+            "GO → Q3.5  Lights up"
+        );
+        assert_eq!(
+            standby_label(Some((Decimal::from(7), "123456789012345678901"))),
+            "GO → Q7  12345678901234567…"
+        );
+    }
 
     #[test]
     fn timecode_formatting() {

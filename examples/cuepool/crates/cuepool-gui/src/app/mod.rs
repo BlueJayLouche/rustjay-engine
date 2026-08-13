@@ -550,6 +550,10 @@ pub enum AppCommand {
     Stop,
     Pause,
     SelectCue(Decimal),
+    SelectPreviousCue,
+    SelectNextCue,
+    SelectFirstCue,
+    SelectLastCue,
     Undo,
     Redo,
     AddCue { cue_type: CueType },
@@ -594,6 +598,32 @@ pub enum AppCommand {
     FrameStep,
     /// Step one video frame back while paused (show clock follows).
     FrameStepBack,
+}
+
+#[derive(Clone, Copy)]
+enum SelectionStep {
+    Previous,
+    Next,
+    First,
+    Last,
+}
+
+fn step_selection(
+    cues: &[Cue],
+    current: Option<Decimal>,
+    step: SelectionStep,
+) -> Option<Decimal> {
+    if cues.is_empty() {
+        return None;
+    }
+    let current_idx = current.and_then(|qid| cues.iter().position(|cue| cue.base().qid == qid));
+    let idx = match step {
+        SelectionStep::Previous => current_idx.map_or(cues.len() - 1, |idx| idx.saturating_sub(1)),
+        SelectionStep::Next => current_idx.map_or(0, |idx| (idx + 1).min(cues.len() - 1)),
+        SelectionStep::First => 0,
+        SelectionStep::Last => cues.len() - 1,
+    };
+    Some(cues[idx].base().qid)
 }
 
 fn audio_driver_command(
@@ -710,8 +740,8 @@ impl CuePoolApp {
         // Panels lay out in the root `ui`; windows/areas/input still go through
         // the context.
         let ctx = &ui.ctx().clone();
-        // Keyboard shortcuts. Skip the bare Delete/Backspace cue-delete while a
-        // text field is focused so editing isn't hijacked.
+        // Keyboard shortcuts. Skip bare cue-selection/deletion keys while a text
+        // field is focused so editing isn't hijacked.
         let editing_text = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
             let modifiers = i.modifiers;
@@ -769,6 +799,26 @@ impl CuePoolApp {
                 if i.key_pressed(egui::Key::ArrowDown)
                     && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::MoveSelectedCueDown);
+                }
+            }
+
+            // Walk the standby playhead in list order. Text fields keep the
+            // unmodified arrows/Home/End for caret navigation.
+            if !editing_text && modifiers.is_none() {
+                let command = if i.key_pressed(egui::Key::ArrowUp) {
+                    Some(AppCommand::SelectPreviousCue)
+                } else if i.key_pressed(egui::Key::ArrowDown) {
+                    Some(AppCommand::SelectNextCue)
+                } else if i.key_pressed(egui::Key::Home) {
+                    Some(AppCommand::SelectFirstCue)
+                } else if i.key_pressed(egui::Key::End) {
+                    Some(AppCommand::SelectLastCue)
+                } else {
+                    None
+                };
+                if let Some(command) = command
+                    && let Ok(mut state) = self.state.lock() {
+                        state.command_queue.push(command);
                     }
             }
 
@@ -1730,6 +1780,26 @@ impl CuePoolApp {
                         state.selected_cue_id = Some(id);
                     }
                 }
+                navigation @ (AppCommand::SelectPreviousCue
+                | AppCommand::SelectNextCue
+                | AppCommand::SelectFirstCue
+                | AppCommand::SelectLastCue) => {
+                    let step = match navigation {
+                        AppCommand::SelectPreviousCue => SelectionStep::Previous,
+                        AppCommand::SelectNextCue => SelectionStep::Next,
+                        AppCommand::SelectFirstCue => SelectionStep::First,
+                        AppCommand::SelectLastCue => SelectionStep::Last,
+                        _ => unreachable!(),
+                    };
+                    if let Ok(mut state) = self.state.lock()
+                        && let Some(next) =
+                            step_selection(&state.show_file.cues, state.selected_cue_id, step)
+                        && state.selected_cue_id != Some(next) {
+                            let snapshot = Snapshot::from_state(&state);
+                            state.undo_redo.push(snapshot);
+                            state.selected_cue_id = Some(next);
+                        }
+                }
                 AppCommand::Undo => {
                     if let Ok(mut state) = self.state.lock() {
                         let current = Snapshot::from_state(&state);
@@ -2202,6 +2272,55 @@ mod tests {
         let state = SharedState::new();
         assert!(state.show_file.cues.is_empty());
         assert_eq!(state.selected_cue_id, None);
+    }
+
+    #[test]
+    fn selection_steps_by_list_position_and_clamps() {
+        let cue = |qid| Cue::Dummy {
+            base: CueBase {
+                qid,
+                ..Default::default()
+            },
+        };
+        let cues = vec![
+            cue(Decimal::from(9)),
+            cue(Decimal::new(15, 1)),
+            cue(Decimal::from(4)),
+        ];
+
+        assert_eq!(step_selection(&[], None, SelectionStep::Next), None);
+        assert_eq!(
+            step_selection(&cues, None, SelectionStep::Next),
+            Some(Decimal::from(9))
+        );
+        assert_eq!(
+            step_selection(&cues, None, SelectionStep::Previous),
+            Some(Decimal::from(4))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::from(9)), SelectionStep::Previous),
+            Some(Decimal::from(9))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::from(4)), SelectionStep::Next),
+            Some(Decimal::from(4))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::from(9)), SelectionStep::Next),
+            Some(Decimal::new(15, 1))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::from(4)), SelectionStep::Previous),
+            Some(Decimal::new(15, 1))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::new(15, 1)), SelectionStep::First),
+            Some(Decimal::from(9))
+        );
+        assert_eq!(
+            step_selection(&cues, Some(Decimal::new(15, 1)), SelectionStep::Last),
+            Some(Decimal::from(4))
+        );
     }
 
     #[test]
