@@ -15,6 +15,10 @@ fn default_present_mode() -> rustjay_core::PresentMode {
     rustjay_core::PresentMode::AutoVsync
 }
 
+fn default_show_stage_preview() -> bool {
+    true
+}
+
 fn default_midi_kind() -> rustjay_core::MidiMsgKind {
     rustjay_core::MidiMsgKind::Cc
 }
@@ -108,6 +112,8 @@ pub(crate) struct AppSettings {
     /// `None` lets an application supply its default until the user saves a choice.
     #[serde(default)]
     pub hide_main_output: Option<bool>,
+    #[serde(default = "default_show_stage_preview")]
+    pub show_stage_preview: bool,
     #[serde(default = "default_target_fps")]
     pub target_fps: u32,
     #[serde(default = "default_present_mode")]
@@ -159,6 +165,7 @@ impl Default for AppSettings {
             ui_scale: 1.0,
             show_preview: true,
             hide_main_output: None,
+            show_stage_preview: true,
             target_fps: 60,
             present_mode: rustjay_core::PresentMode::AutoVsync,
             custom_params: HashMap::new(),
@@ -307,6 +314,7 @@ impl AppSettings {
         state.web_lan_trust = self.web_lan_trust;
         state.ui_scale = self.ui_scale;
         state.show_preview = self.show_preview;
+        state.show_stage_preview = self.show_stage_preview;
         state.target_fps = self.target_fps;
         state.present_mode = self.present_mode;
         // Store the desired startup device; the engine issues StartWebcam once
@@ -406,6 +414,7 @@ impl AppSettings {
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
             hide_main_output: Some(state.no_primary_output),
+            show_stage_preview: state.show_stage_preview,
             target_fps: state.target_fps,
             present_mode: state.present_mode,
             custom_params: state

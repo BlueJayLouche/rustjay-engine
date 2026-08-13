@@ -24,6 +24,10 @@ pub(super) struct WebModulationUpdate {
     tap_tempo_info: String,
 }
 
+fn should_refresh_preview(show_preview: bool, show_stage_preview: bool) -> bool {
+    show_preview || show_stage_preview
+}
+
 impl<P: EffectPlugin> App<P> {
     pub(super) fn update_input(&mut self, state: &mut EngineState) {
         // Slot 1 always uploads. Slot 2 only uploads when the active effect
@@ -727,11 +731,13 @@ impl<P: EffectPlugin> App<P> {
     }
 
     pub(super) fn update_preview_textures(&mut self) {
-        // Note: previously this early-returned when `show_preview` was false.
-        // The output preview texture now also backs custom egui tabs (e.g.
-        // vjarda's Stage canvas), which must show the live master regardless of
-        // whether the built-in preview panel is visible, so we always refresh.
-        // The extra input-preview copies when hidden are negligible.
+        let should_refresh = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            should_refresh_preview(state.show_preview, state.show_stage_preview)
+        };
+        if !should_refresh {
+            return;
+        }
 
         if self.use_egui {
             #[cfg(feature = "egui")]
@@ -835,6 +841,27 @@ impl<P: EffectPlugin> App<P> {
                 && let Some(ref mut engine) = self.output_engine {
                     engine.enqueue_command(encoder.finish());
                 }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_preview;
+
+    #[test]
+    fn preview_refreshes_when_any_consumer_is_visible() {
+        for (show_preview, show_stage_preview, expected) in [
+            (false, false, false),
+            (false, true, true),
+            (true, false, true),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                should_refresh_preview(show_preview, show_stage_preview),
+                expected,
+                "show_preview={show_preview}, show_stage_preview={show_stage_preview}"
+            );
         }
     }
 }

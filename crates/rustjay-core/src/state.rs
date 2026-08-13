@@ -968,6 +968,8 @@ pub struct EngineState {
     pub startup_webcam_device: Option<usize>,
     /// Whether preview windows are shown.
     pub show_preview: bool,
+    /// Whether custom Stage canvases consume the live master-output preview.
+    pub show_stage_preview: bool,
     /// Raw value of the egui `TextureId` backing the live master-output preview,
     /// published by the egui control GUI each time the preview texture is
     /// (re)created. Custom egui tabs (e.g. vjarda's Stage tab) read this to draw
@@ -1197,6 +1199,7 @@ impl EngineState {
             performance: Mutex::new(PerformanceMetrics::default()),
             startup_webcam_device: None,
             show_preview: true,
+            show_stage_preview: true,
             stage_preview_texture_id: None,
             target_fps: 60,
             present_mode: PresentMode::default(),
