@@ -123,12 +123,10 @@ impl Limiter {
             if target_gr < self.envelope {
                 self.envelope = attack_coef * self.envelope + (1.0 - attack_coef) * target_gr;
                 self.hold_counter = hold_samples;
+            } else if self.hold_counter > 0 {
+                self.hold_counter -= 1;
             } else {
-                if self.hold_counter > 0 {
-                    self.hold_counter -= 1;
-                } else {
-                    self.envelope = release_coef * self.envelope + (1.0 - release_coef) * target_gr;
-                }
+                self.envelope = release_coef * self.envelope + (1.0 - release_coef) * target_gr;
             }
 
             self.envelope = self.envelope.clamp(0.0, 1.0);

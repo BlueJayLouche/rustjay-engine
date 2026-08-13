@@ -310,6 +310,8 @@ impl Drop for MamscDriver {
 }
 
 /// High-level MSC manager with command filtering.
+// ponytail: Keep callback storage inline; introduce aliases when the manager API next changes.
+#[allow(clippy::type_complexity)]
 #[allow(dead_code)]
 pub struct MscManager {
     driver: MamscDriver,
@@ -340,6 +342,8 @@ impl MscManager {
         event_tx: std::sync::mpsc::Sender<MscEvent>,
     ) -> anyhow::Result<Self> {
         let mut driver = MamscDriver::bind(nic, rx_port, tx_port, subnet)?;
+        // ponytail: Match the field inline; introduce an alias when the manager API next changes.
+        #[allow(clippy::type_complexity)]
         let subscribers: Arc<Mutex<Vec<(MscCommandFlags, Box<dyn Fn(&MamscPacket) + Send>)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let subs = Arc::clone(&subscribers);

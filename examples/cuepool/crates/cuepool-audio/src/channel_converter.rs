@@ -71,9 +71,7 @@ mod tests {
     fn test_mono_to_stereo() {
         let source = Box::new(FnSource::new(
             |buf| {
-                for i in 0..buf.len() {
-                    buf[i] = 0.5;
-                }
+                buf.fill(0.5);
                 buf.len()
             },
             48000,

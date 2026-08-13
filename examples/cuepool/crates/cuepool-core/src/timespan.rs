@@ -38,7 +38,6 @@ impl Timespan {
         let total_secs = self.0.as_secs();
         let nanos = self.0.subsec_nanos();
         let sign = "";
-        let total_secs = total_secs;
         let days = total_secs / 86_400;
         let rem = total_secs % 86_400;
         let hours = rem / 3_600;

@@ -75,10 +75,14 @@ fn named_output_devices(
             source,
         })?
         .map(|device| {
-            let name = device.name().map_err(|source| AudioError::DeviceName {
-                driver: driver.name(),
-                source,
-            })?;
+            let name = device
+                .description()
+                .map_err(|source| AudioError::DeviceName {
+                    driver: driver.name(),
+                    source,
+                })?
+                .name()
+                .to_string();
             Ok((name, device))
         })
         .collect()
@@ -115,6 +119,10 @@ pub struct AudioEngine {
     metering: Arc<MeteringProcessor>,
     /// Master limiter core, shared with the audio callback so GR is readable from main thread.
     limiter: Arc<std::sync::Mutex<Limiter>>,
+    /// Set by the audio callback if CPAL supplies an unexpected sample format.
+    format_mismatch: Arc<std::sync::atomic::AtomicBool>,
+    /// Ensures the control thread reports the callback format mismatch only once.
+    format_mismatch_logged: std::sync::atomic::AtomicBool,
 }
 
 /// Simple atomic f32 using `to_bits`/`from_bits`.
@@ -190,7 +198,10 @@ impl AudioEngine {
             let engine = match host.default_output_device() {
                 Some(device) => {
                     // The legacy default path opened unnamed devices before driver selection.
-                    let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
+                    let device_name = device
+                        .description()
+                        .map(|description| description.name().to_string())
+                        .unwrap_or_else(|_| "Unknown".into());
                     Self::open(driver, &device, device_name.clone()).map_err(|source| {
                         AudioError::OpenDevice {
                             driver: driver.name(),
@@ -268,11 +279,14 @@ impl AudioEngine {
         device: &cpal::Device,
         device_name: String,
     ) -> Result<Self, AudioError> {
-        let all_configs: Vec<_> = device.supported_output_configs()?.collect();
+        let all_configs: Vec<_> = device
+            .supported_output_configs()
+            .map_err(AudioError::SupportedConfigs)?
+            .collect();
         // Prefer F32, then the integer formats exposed by CPAL's ASIO backend.
         // Within that format choose eight channels, then a larger configuration
-        // before falling back below eight, and 48 kHz. Dante can expose I16/I32
-        // depending on its ASIO encoding.
+        // before falling back below eight, and 48 kHz. Dante can expose
+        // I16/I24/I32 depending on its ASIO encoding.
         let config = select_output_config(&all_configs)
             .ok_or_else(|| AudioError::NoSupportedFormat {
                 available: all_configs
@@ -283,7 +297,7 @@ impl AudioEngine {
             })?;
 
         let sample_format = config.sample_format();
-        let sample_rate = TARGET_RATE.clamp(config.min_sample_rate().0, config.max_sample_rate().0);
+        let sample_rate = TARGET_RATE.clamp(config.min_sample_rate(), config.max_sample_rate());
         let buffer_size = cpal::BufferSize::Default;
         let channels = config.channels();
         let scratch_samples = if sample_format == cpal::SampleFormat::F32 {
@@ -294,7 +308,7 @@ impl AudioEngine {
 
         let config = cpal::StreamConfig {
             channels,
-            sample_rate: cpal::SampleRate(sample_rate),
+            sample_rate,
             buffer_size,
         };
 
@@ -314,46 +328,35 @@ impl AudioEngine {
         // Arc-shared so read_limiter_gr_db() on the main thread reads GR from the callback.
         let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(0.95, sample_rate, channels)));
         let limiter_clone = Arc::clone(&limiter);
+        let format_mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let format_mismatch_clone = Arc::clone(&format_mismatch);
 
         let mut scratch = vec![0.0; scratch_samples];
+        let mut oversized_callback_logged = false;
         let stream = device.build_output_stream_raw(
-            &config,
+            config,
             sample_format,
             move |data: &mut cpal::Data, _info: &cpal::OutputCallbackInfo| {
-                match sample_format {
-                    cpal::SampleFormat::F32 => render_master(
-                        data.as_slice_mut::<f32>().expect("CPAL F32 output buffer"),
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    cpal::SampleFormat::I32 => render_converted::<i32>(
-                        data,
-                        &mut scratch,
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    cpal::SampleFormat::I16 => render_converted::<i16>(
-                        data,
-                        &mut scratch,
-                        &mixer_clone,
-                        &limiter_thresh_clone,
-                        &limiter_clone,
-                        &metering_clone,
-                    ),
-                    _ => data.bytes_mut().fill(0),
-                }
+                render_output(
+                    sample_format,
+                    data,
+                    &mut scratch,
+                    &mut oversized_callback_logged,
+                    &format_mismatch_clone,
+                    &mixer_clone,
+                    &limiter_thresh_clone,
+                    &limiter_clone,
+                    &metering_clone,
+                );
             },
             move |err| {
                 log::error!("Audio stream error: {}", err);
             },
             None,
-        )?;
+        );
+        let stream = stream.map_err(AudioError::Cpal)?;
 
-        stream.play()?;
+        stream.play().map_err(AudioError::Play)?;
 
         log::info!(
             "Audio engine started: {} / {} @ {} Hz, {} channels",
@@ -373,6 +376,8 @@ impl AudioEngine {
             limiter_threshold,
             metering,
             limiter,
+            format_mismatch,
+            format_mismatch_logged: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -403,6 +408,15 @@ impl AudioEngine {
 
     /// Read master metering data.
     pub fn read_meters(&self) -> MeterData {
+        if self
+            .format_mismatch
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .format_mismatch_logged
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::error!("Audio output sample format mismatch; output silenced");
+        }
         self.metering.read_meters()
     }
 
@@ -419,14 +433,20 @@ impl AudioEngine {
     ///
     /// Automatically inserts a resampler if the source sample rate differs
     /// from the device rate, and a mono-to-stereo converter if needed.
-    pub fn play(&self, source: Box<dyn SampleProvider>) -> Arc<MixerInput> {
+    pub fn play(&self, source: Box<dyn SampleProvider>) -> Result<Arc<MixerInput>, AudioError> {
         let mut source = source;
 
         // Resample if needed
         if source.sample_rate() != self.sample_rate {
+            let source_rate = source.sample_rate();
             source = Box::new(
-                ResamplerProcessor::new(source, self.sample_rate)
-                    .expect("resampler creation failed — invalid audio parameters?"),
+                ResamplerProcessor::new(source, self.sample_rate).map_err(|e| {
+                    AudioError::Resampler {
+                        source_rate,
+                        target_rate: self.sample_rate,
+                        source: e,
+                    }
+                })?,
             );
         }
 
@@ -442,7 +462,7 @@ impl AudioEngine {
         let max_buffer = self.sample_rate as usize * self.channels as usize; // 1 second
         let input = Arc::new(MixerInput::new(source, max_buffer));
         self.mixer.add_input(input.clone());
-        input
+        Ok(input)
     }
 
     /// Refresh the mixer snapshot. Call from the main thread each frame.
@@ -468,16 +488,22 @@ impl AudioEngine {
         source: Box<dyn SampleProvider>,
         _eq_settings: cuepool_core::EQSettings,
         _initial_volume: f32,
-    ) -> Box<dyn SampleProvider> {
+    ) -> Result<Box<dyn SampleProvider>, AudioError> {
         // TODO: wire LoopProcessor, EqProcessor, FadeProcessor, PanProcessor
         // when the binary crate provides cue parameters.
         // For now, resample and upmix only.
         let mut chain = source;
 
         if chain.sample_rate() != self.sample_rate {
+            let source_rate = chain.sample_rate();
             chain = Box::new(
-                ResamplerProcessor::new(chain, self.sample_rate)
-                    .expect("resampler creation failed"),
+                ResamplerProcessor::new(chain, self.sample_rate).map_err(|e| {
+                    AudioError::Resampler {
+                        source_rate,
+                        target_rate: self.sample_rate,
+                        source: e,
+                    }
+                })?,
             );
         }
 
@@ -485,7 +511,7 @@ impl AudioEngine {
             chain = Box::new(MonoToStereo::new(chain));
         }
 
-        chain
+        Ok(chain)
     }
 
     /// List output devices from exactly the configured driver host.
@@ -501,18 +527,19 @@ fn sample_format_rank(format: cpal::SampleFormat) -> Option<u8> {
     match format {
         cpal::SampleFormat::F32 => Some(0),
         cpal::SampleFormat::I32 => Some(1),
-        cpal::SampleFormat::I16 => Some(2),
+        cpal::SampleFormat::I24 => Some(2),
+        cpal::SampleFormat::I16 => Some(3),
         _ => None,
     }
 }
 
 fn config_preference(config: &cpal::SupportedStreamConfigRange) -> Option<(u8, (bool, u16), u64)> {
-    let rate_distance = if (config.min_sample_rate().0..=config.max_sample_rate().0)
+    let rate_distance = if (config.min_sample_rate()..=config.max_sample_rate())
         .contains(&TARGET_RATE)
     {
         0
     } else {
-        (config.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+        (config.min_sample_rate() as i64 - TARGET_RATE as i64).unsigned_abs() + 1
     };
     Some((
         sample_format_rank(config.sample_format())?,
@@ -548,6 +575,61 @@ fn channel_preference(channels: u16) -> (bool, u16) {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_output(
+    sample_format: cpal::SampleFormat,
+    data: &mut cpal::Data,
+    scratch: &mut [f32],
+    oversized_callback_logged: &mut bool,
+    format_mismatch: &std::sync::atomic::AtomicBool,
+    mixer: &Mixer,
+    limiter_threshold: &AtomicF32,
+    limiter: &std::sync::Mutex<Limiter>,
+    metering: &MeteringProcessor,
+) {
+    match sample_format {
+        cpal::SampleFormat::F32 => {
+            let Some(output) = data.as_slice_mut::<f32>() else {
+                data.bytes_mut().fill(0);
+                format_mismatch.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
+            };
+            render_master(output, mixer, limiter_threshold, limiter, metering);
+        }
+        cpal::SampleFormat::I32 => render_converted::<i32>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        cpal::SampleFormat::I24 => render_converted::<cpal::I24>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        cpal::SampleFormat::I16 => render_converted::<i16>(
+            data,
+            scratch,
+            oversized_callback_logged,
+            format_mismatch,
+            mixer,
+            limiter_threshold,
+            limiter,
+            metering,
+        ),
+        _ => data.bytes_mut().fill(0),
+    }
+}
+
 fn render_master(
     data: &mut [f32],
     mixer: &Mixer,
@@ -564,9 +646,12 @@ fn render_master(
     metering.analyze(data);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_converted<T>(
     data: &mut cpal::Data,
     scratch: &mut [f32],
+    oversized_callback_logged: &mut bool,
+    format_mismatch: &std::sync::atomic::AtomicBool,
     mixer: &Mixer,
     limiter_threshold: &AtomicF32,
     limiter: &std::sync::Mutex<Limiter>,
@@ -574,16 +659,35 @@ fn render_converted<T>(
 ) where
     T: SizedSample + FromSample<f32>,
 {
-    let output = data
-        .as_slice_mut::<T>()
-        .expect("CPAL converted output buffer");
+    let Some(output) = data.as_slice_mut::<T>() else {
+        data.bytes_mut().fill(0);
+        format_mismatch.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    };
+    let scratch_len = scratch.len();
     let Some(scratch) = scratch.get_mut(..output.len()) else {
+        if !std::mem::replace(oversized_callback_logged, true) {
+            log::error!(
+                "Audio {format} callback needs {needed} samples, but the conversion scratch buffer holds {scratch_len}; output silenced",
+                format = T::FORMAT,
+                needed = output.len(),
+            );
+        }
         output.fill(T::EQUILIBRIUM);
         return;
     };
     render_master(scratch, mixer, limiter_threshold, limiter, metering);
-    for (output, sample) in output.iter_mut().zip(scratch) {
-        *output = T::from_sample(*sample);
+    convert_samples(output, scratch);
+}
+
+fn convert_samples<T: SizedSample + FromSample<f32>>(output: &mut [T], input: &[f32]) {
+    for (output, sample) in output.iter_mut().zip(input) {
+        let sample = if T::FORMAT == cpal::SampleFormat::I24 {
+            sample.clamp(-1.0, 1.0 - 1.0 / 8_388_608.0)
+        } else {
+            *sample
+        };
+        *output = T::from_sample(sample);
     }
 }
 
@@ -604,6 +708,13 @@ impl SampleProvider for NullSource {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
+    #[error("could not create a resampler ({source_rate} Hz -> {target_rate} Hz): {source}")]
+    Resampler {
+        source_rate: u32,
+        target_rate: u32,
+        #[source]
+        source: rubato::ResamplerConstructionError,
+    },
     #[error("audio output driver {driver} was requested, but CuePool was built without ASIO support; rebuild cuepool with `--features asio`")]
     DriverNotCompiled { driver: &'static str },
     #[error("audio output driver {driver} is only supported on Windows, not {platform}")]
@@ -615,13 +726,13 @@ pub enum AudioError {
     HostUnavailable {
         driver: &'static str,
         #[source]
-        source: cpal::HostUnavailable,
+        source: cpal::Error,
     },
     #[error("could not enumerate {driver} output devices: {source}")]
     EnumerateDevices {
         driver: &'static str,
         #[source]
-        source: cpal::DevicesError,
+        source: cpal::Error,
     },
     #[error("no {driver} output device is available; available devices: {available}")]
     NoOutputDevice {
@@ -638,7 +749,7 @@ pub enum AudioError {
     DeviceName {
         driver: &'static str,
         #[source]
-        source: cpal::DeviceNameError,
+        source: cpal::Error,
     },
     #[error("configured {driver} output device '{device}' could not open: {reason}; available devices: {available}")]
     OpenDevice {
@@ -647,19 +758,117 @@ pub enum AudioError {
         available: String,
         reason: String,
     },
-    #[error("no supported output sample format (F32, I32, or I16); device formats: {available}")]
+    #[error("no supported output sample format (F32, I32, I24, or I16); device formats: {available}")]
     NoSupportedFormat { available: String },
     #[error("cpal error: {0}")]
-    Cpal(#[from] cpal::BuildStreamError),
+    Cpal(cpal::Error),
     #[error("cpal supported configs error: {0}")]
-    SupportedConfigs(#[from] cpal::SupportedStreamConfigsError),
+    SupportedConfigs(cpal::Error),
     #[error("cpal play error: {0}")]
-    Play(#[from] cpal::PlayStreamError),
+    Play(cpal::Error),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_test_output(
+        sample_format: cpal::SampleFormat,
+        data: &mut cpal::Data,
+        scratch: &mut [f32],
+        format_mismatch: &std::sync::atomic::AtomicBool,
+    ) {
+        let mixer = Mixer::new(2, TARGET_RATE);
+        let limiter_threshold = AtomicF32::new(0.95);
+        let limiter = std::sync::Mutex::new(Limiter::new(0.95, TARGET_RATE, 2));
+        let metering = MeteringProcessor::new(Box::new(NullSource {
+            sample_rate: TARGET_RATE,
+            channels: 2,
+        }));
+        render_output(
+            sample_format,
+            data,
+            scratch,
+            &mut false,
+            format_mismatch,
+            &mixer,
+            &limiter_threshold,
+            &limiter,
+            &metering,
+        );
+    }
+
+    #[test]
+    fn f32_callback_format_mismatch_silences_output_and_sets_flag() {
+        let mut backing = vec![1_i16; 8];
+        // SAFETY: `backing` is live, aligned I16 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::I16,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+
+        render_test_output(
+            cpal::SampleFormat::F32,
+            &mut data,
+            &mut [],
+            &format_mismatch,
+        );
+
+        assert!(data.bytes().iter().all(|byte| *byte == 0));
+        assert!(format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn converted_callback_format_mismatch_silences_output_and_sets_flag() {
+        let mut backing = vec![1.0_f32; 8];
+        // SAFETY: `backing` is live, aligned F32 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::F32,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+        let mut scratch = vec![0.0; backing.len()];
+
+        render_test_output(
+            cpal::SampleFormat::I16,
+            &mut data,
+            &mut scratch,
+            &format_mismatch,
+        );
+
+        assert!(data.bytes().iter().all(|byte| *byte == 0));
+        assert!(format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn matching_f32_callback_renders_without_setting_mismatch_flag() {
+        let mut backing = vec![1.0_f32; 8];
+        // SAFETY: `backing` is live, aligned F32 storage with `backing.len()` samples.
+        let mut data = unsafe {
+            cpal::Data::from_parts(
+                backing.as_mut_ptr().cast(),
+                backing.len(),
+                cpal::SampleFormat::F32,
+            )
+        };
+        let format_mismatch = std::sync::atomic::AtomicBool::new(false);
+
+        render_test_output(
+            cpal::SampleFormat::F32,
+            &mut data,
+            &mut [],
+            &format_mismatch,
+        );
+
+        assert!(!format_mismatch.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     #[test]
     fn test_list_devices() {
@@ -717,7 +926,43 @@ mod tests {
     fn asio_native_integer_formats_are_supported() {
         assert_eq!(sample_format_rank(cpal::SampleFormat::F32), Some(0));
         assert_eq!(sample_format_rank(cpal::SampleFormat::I32), Some(1));
-        assert_eq!(sample_format_rank(cpal::SampleFormat::I16), Some(2));
+        assert_eq!(sample_format_rank(cpal::SampleFormat::I24), Some(2));
+        assert_eq!(sample_format_rank(cpal::SampleFormat::I16), Some(3));
+    }
+
+    #[test]
+    fn i24_is_selected_over_i16() {
+        let configs = [
+            cpal::SupportedStreamConfigRange::new(
+                8,
+                48_000,
+                48_000,
+                SupportedBufferSize::Range { min: 64, max: 1024 },
+                cpal::SampleFormat::I16,
+            ),
+            cpal::SupportedStreamConfigRange::new(
+                2,
+                44_100,
+                44_100,
+                SupportedBufferSize::Range { min: 64, max: 1024 },
+                cpal::SampleFormat::I24,
+            ),
+        ];
+
+        assert_eq!(
+            select_output_config(&configs).unwrap().sample_format(),
+            cpal::SampleFormat::I24
+        );
+    }
+
+    #[test]
+    fn float_samples_saturate_when_converted_to_cpal_i24() {
+        let mut output = [cpal::I24::default(); 5];
+        convert_samples(&mut output, &[1.0, 1.5, 2.0, -1.0, -1.5]);
+        assert_eq!(
+            output.map(cpal::I24::inner),
+            [8_388_607, 8_388_607, 8_388_607, -8_388_608, -8_388_608]
+        );
     }
 
     #[test]
@@ -736,8 +981,8 @@ mod tests {
         ) -> cpal::SupportedStreamConfigRange {
             cpal::SupportedStreamConfigRange::new(
                 channels,
-                cpal::SampleRate(min_rate),
-                cpal::SampleRate(max_rate),
+                min_rate,
+                max_rate,
                 SupportedBufferSize::Range { min: 64, max: 1024 },
                 format,
             )
@@ -758,13 +1003,13 @@ mod tests {
                 .iter()
                 .filter(|config| config.sample_format() == format)
                 .min_by_key(|config| {
-                    let rate_distance = if (config.min_sample_rate().0
-                        ..=config.max_sample_rate().0)
+                    let rate_distance = if (config.min_sample_rate()
+                        ..=config.max_sample_rate())
                         .contains(&TARGET_RATE)
                     {
                         0
                     } else {
-                        (config.min_sample_rate().0 as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+                        (config.min_sample_rate() as i64 - TARGET_RATE as i64).unsigned_abs() + 1
                     };
                     (channel_preference(config.channels()), rate_distance)
                 })

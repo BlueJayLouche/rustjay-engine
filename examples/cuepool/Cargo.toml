@@ -21,7 +21,7 @@ flate2 = "1"
 roxmltree = "0.20"
 
 # Audio / Video
-cpal = "0.15"
+cpal = "0.18.1"
 rubato = "0.16"
 symphonia = { version = "0.5", features = ["all"] }
 ffmpeg-next = "8.1"

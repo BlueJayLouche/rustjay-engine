@@ -77,16 +77,14 @@ impl UndoRedo {
         if self.suppress {
             return;
         }
-        if let Some(ref key) = snapshot.merge_key {
-            if let Some(top) = self.undo_stack.last() {
-                if top.merge_key.as_ref() == Some(key) {
+        if let Some(ref key) = snapshot.merge_key
+            && let Some(top) = self.undo_stack.last()
+                && top.merge_key.as_ref() == Some(key) {
                     // Replace top snapshot with new one (merge consecutive edits)
                     *self.undo_stack.last_mut().unwrap() = snapshot;
                     self.redo_stack.clear();
                     return;
                 }
-            }
-        }
         self.undo_stack.push(snapshot);
         if self.undo_stack.len() > self.max_depth {
             self.undo_stack.remove(0);
@@ -707,76 +705,63 @@ impl CuePoolApp {
             }
 
             // New / Open / Save
-            if modifiers.command && i.key_pressed(egui::Key::N) {
-                if let Ok(mut state) = self.state.lock() {
+            if modifiers.command && i.key_pressed(egui::Key::N)
+                && let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::NewProject);
                 }
-            }
-            if modifiers.command && i.key_pressed(egui::Key::O) {
-                if let Some(path) = rfd::FileDialog::new()
+            if modifiers.command && i.key_pressed(egui::Key::O)
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("CuePool project", &["qproj"])
                     .pick_file()
-                {
-                    if let Ok(mut state) = self.state.lock() {
+                    && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::OpenProject { path });
                     }
-                }
-            }
-            if modifiers.command && i.key_pressed(egui::Key::S) {
-                if let Ok(mut state) = self.state.lock() {
+            if modifiers.command && i.key_pressed(egui::Key::S)
+                && let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::SaveProject);
                 }
-            }
 
             // Delete selected cue (Delete, or Backspace which is the Mac "delete").
             if !editing_text
                 && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
-            {
-                if let Ok(mut state) = self.state.lock() {
+                && let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::DeleteSelectedCue);
                 }
-            }
 
             // Duplicate selected cue
-            if modifiers.command && i.key_pressed(egui::Key::D) {
-                if let Ok(mut state) = self.state.lock() {
+            if modifiers.command && i.key_pressed(egui::Key::D)
+                && let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::DuplicateSelectedCue);
                 }
-            }
 
             // Add new sound cue
-            if modifiers.command && i.key_pressed(egui::Key::T) {
-                if let Ok(mut state) = self.state.lock() {
+            if modifiers.command && i.key_pressed(egui::Key::T)
+                && let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(AppCommand::AddCue { cue_type: CueType::Sound });
                 }
-            }
 
             // Move selected cue up/down
             if modifiers.command {
-                if i.key_pressed(egui::Key::ArrowUp) {
-                    if let Ok(mut state) = self.state.lock() {
+                if i.key_pressed(egui::Key::ArrowUp)
+                    && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::MoveSelectedCueUp);
                     }
-                }
-                if i.key_pressed(egui::Key::ArrowDown) {
-                    if let Ok(mut state) = self.state.lock() {
+                if i.key_pressed(egui::Key::ArrowDown)
+                    && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::MoveSelectedCueDown);
                     }
-                }
             }
 
             // Go / Stop / Pause (transport shortcuts)
             if !modifiers.command && !modifiers.alt {
-                if i.key_pressed(egui::Key::Space) {
-                    if let Ok(mut state) = self.state.lock() {
+                if i.key_pressed(egui::Key::Space)
+                    && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::Go);
                     }
-                }
-                if i.key_pressed(egui::Key::Escape) {
-                    if let Ok(mut state) = self.state.lock() {
+                if i.key_pressed(egui::Key::Escape)
+                    && let Ok(mut state) = self.state.lock() {
                         state.command_queue.push(AppCommand::Stop);
                     }
-                }
             }
         });
 
@@ -1124,7 +1109,7 @@ impl CuePoolApp {
                     if selected_path.is_empty() {
                         ui.label("Select a Sound or Video cue to view its waveform.");
                     } else if let Some(peaks) = peaks {
-                        ui.label(format!("{}", std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path)));
+                        ui.label(std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path).to_string());
                         let (new_zoom, new_scroll) = crate::waveform::draw(ui, &peaks, zoom, scroll, 200.0);
                         if let Ok(mut state) = self.state.lock() {
                             state.waveform_window_zoom = new_zoom;
@@ -1224,17 +1209,15 @@ impl CuePoolApp {
                 ui.label("You have unsaved changes or running cues. Discard and quit?");
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Discard & Quit").clicked() {
-                        if let Ok(mut s) = self.state.lock() {
+                    if ui.button("Discard & Quit").clicked()
+                        && let Ok(mut s) = self.state.lock() {
                             s.pending_close_confirm = false;
                             s.quit = true;
                         }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        if let Ok(mut s) = self.state.lock() {
+                    if ui.button("Cancel").clicked()
+                        && let Ok(mut s) = self.state.lock() {
                             s.pending_close_confirm = false;
                         }
-                    }
                 });
             });
         }
@@ -1305,25 +1288,22 @@ impl CuePoolApp {
                         let any_checked = request.sections.projection
                             || request.sections.lighting
                             || request.sections.show_settings;
-                        if ui.add_enabled(any_checked, egui::Button::new("Import")).clicked() {
-                            if let Ok(mut state) = self.state.lock() {
+                        if ui.add_enabled(any_checked, egui::Button::new("Import")).clicked()
+                            && let Ok(mut state) = self.state.lock() {
                                 apply_project_import(&mut state, &request.show, request.sections);
                                 state.import_request = None;
                             }
-                        }
-                        if ui.button("Cancel").clicked() {
-                            if let Ok(mut state) = self.state.lock() {
+                        if ui.button("Cancel").clicked()
+                            && let Ok(mut state) = self.state.lock() {
                                 state.import_request = None;
                             }
-                        }
                     });
                 });
             // Persist checkbox edits unless Import/Cancel cleared the request.
-            if let Ok(mut state) = self.state.lock() {
-                if state.import_request.is_some() {
+            if let Ok(mut state) = self.state.lock()
+                && state.import_request.is_some() {
                     state.import_request = Some(request);
                 }
-            }
         }
 
         // Process any commands queued during the frame
@@ -1345,11 +1325,9 @@ impl CuePoolApp {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("CuePool project", &["qproj"])
                         .pick_file()
-                    {
-                        if let Ok(mut state) = self.state.lock() {
+                        && let Ok(mut state) = self.state.lock() {
                             state.command_queue.push(AppCommand::OpenProject { path });
                         }
-                    }
                     ui.close();
                 }
                 if ui
@@ -1398,11 +1376,9 @@ impl CuePoolApp {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("CuePool project", &["qproj"])
                         .save_file()
-                    {
-                        if let Ok(mut state) = self.state.lock() {
+                        && let Ok(mut state) = self.state.lock() {
                             state.command_queue.push(AppCommand::SaveProjectAs { path });
                         }
-                    }
                     ui.close();
                 }
 
@@ -1711,11 +1687,9 @@ impl CuePoolApp {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("CuePool project", &["qproj"])
                             .save_file()
-                        {
-                            if let Err(e) = self.save_to_path(&path) {
+                            && let Err(e) = self.save_to_path(&path) {
                                 log::error!("Failed to save project: {}", e);
                             }
-                        }
                     }
                 }
                 AppCommand::SaveProjectAs { path } => {
@@ -1874,19 +1848,18 @@ impl CuePoolApp {
                     }
                 }
                 AppCommand::DeleteSelectedCue => {
-                    if let Ok(mut state) = self.state.lock() {
-                        if let Some(id) = state.selected_cue_id {
+                    if let Ok(mut state) = self.state.lock()
+                        && let Some(id) = state.selected_cue_id {
                             let snapshot = Snapshot::from_state(&state);
                             state.undo_redo.push(snapshot);
                             state.show_file.cues.retain(|c| c.base().qid != id);
                             state.selected_cue_id = None;
                             state.dirty = true;
                         }
-                    }
                 }
                 AppCommand::DuplicateSelectedCue => {
-                    if let Ok(mut state) = self.state.lock() {
-                        if let Some(cue) = state.selected_cue().cloned() {
+                    if let Ok(mut state) = self.state.lock()
+                        && let Some(cue) = state.selected_cue().cloned() {
                             let snapshot = Snapshot::from_state(&state);
                             state.undo_redo.push(snapshot);
 
@@ -1898,40 +1871,35 @@ impl CuePoolApp {
                             state.show_file.cues.push(new_cue);
                             state.dirty = true;
                         }
-                    }
                 }
                 AppCommand::MoveSelectedCueUp => {
-                    if let Ok(mut state) = self.state.lock() {
-                        if let Some(id) = state.selected_cue_id {
+                    if let Ok(mut state) = self.state.lock()
+                        && let Some(id) = state.selected_cue_id {
                             let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                            if let Some(i) = idx {
-                                if i > 0 {
+                            if let Some(i) = idx
+                                && i > 0 {
                                     let snapshot = Snapshot::from_state(&state)
                                         .with_merge_key("move_cue");
                                     state.undo_redo.push(snapshot);
                                     state.show_file.cues.swap(i, i - 1);
                                     state.dirty = true;
                                 }
-                            }
                         }
-                    }
                 }
                 AppCommand::MoveSelectedCueDown => {
-                    if let Ok(mut state) = self.state.lock() {
-                        if let Some(id) = state.selected_cue_id {
+                    if let Ok(mut state) = self.state.lock()
+                        && let Some(id) = state.selected_cue_id {
                             let len = state.show_file.cues.len();
                             let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                            if let Some(i) = idx {
-                                if i + 1 < len {
+                            if let Some(i) = idx
+                                && i + 1 < len {
                                     let snapshot = Snapshot::from_state(&state)
                                         .with_merge_key("move_cue");
                                     state.undo_redo.push(snapshot);
                                     state.show_file.cues.swap(i, i + 1);
                                     state.dirty = true;
                                 }
-                            }
                         }
-                    }
                 }
                 AppCommand::MoveCue { from_idx, to_idx, parent } => {
                     if let Ok(mut state) = self.state.lock() {
@@ -2024,11 +1992,10 @@ impl CuePoolApp {
         }
 
         // Put back commands that main.rs should handle
-        if !unhandled.is_empty() {
-            if let Ok(mut state) = self.state.lock() {
+        if !unhandled.is_empty()
+            && let Ok(mut state) = self.state.lock() {
                 state.command_queue.extend(unhandled);
             }
-        }
     }
 
     fn save_to_path(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -2080,10 +2047,10 @@ impl CuePoolApp {
                             file_paths.push(path.clone());
                         }
                     }
-                    cuepool_core::Cue::Text { font, .. } => {
-                        if !font.is_empty() && !file_paths.contains(font) {
-                            file_paths.push(font.clone());
-                        }
+                    cuepool_core::Cue::Text { font, .. }
+                        if !font.is_empty() && !file_paths.contains(font) =>
+                    {
+                        file_paths.push(font.clone());
                     }
                     _ => {}
                 }
@@ -2110,7 +2077,7 @@ impl CuePoolApp {
             }
 
             // Copy files and build path mapping
-            for (_fname, entries) in &by_filename {
+            for entries in by_filename.values() {
                 if entries.len() > 1 {
                     // Name collision: preserve subdir structure by finding common prefix
                     let abs_paths: Vec<_> = entries.iter().map(|(_, abs)| abs.clone()).collect();

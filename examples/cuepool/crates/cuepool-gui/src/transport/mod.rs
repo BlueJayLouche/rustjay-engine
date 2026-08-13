@@ -49,28 +49,25 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         let go_btn = Button::new(RichText::new("▶ GO").strong().color(Color32::WHITE))
             .fill(Color32::from_rgb(0, 180, 0))
             .min_size(button_size);
-        if ui.add(go_btn).on_hover_text("Fire the selected cue (Space)").clicked() {
-            if let Ok(mut state) = state.lock() {
+        if ui.add(go_btn).on_hover_text("Fire the selected cue (Space)").clicked()
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Go);
             }
-        }
 
         let stop_btn = Button::new(RichText::new("⏹ STOP").strong())
             .fill(Color32::from_rgb(200, 0, 0))
             .min_size(button_size);
-        if ui.add(stop_btn).on_hover_text("Stop all cues (Esc)").clicked() {
-            if let Ok(mut state) = state.lock() {
+        if ui.add(stop_btn).on_hover_text("Stop all cues (Esc)").clicked()
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Stop);
             }
-        }
 
         let pause_btn = Button::new(RichText::new("⏸ PAUSE"))
             .min_size(button_size);
-        if ui.add(pause_btn).on_hover_text("Pause/resume the show clock").clicked() {
-            if let Ok(mut state) = state.lock() {
+        if ui.add(pause_btn).on_hover_text("Pause/resume the show clock").clicked()
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Pause);
             }
-        }
 
         let (show_time, show_paused, next_tc, tc_fps) = {
             let Ok(state) = state.lock() else { return };
@@ -97,21 +94,17 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add_enabled(show_paused, back_btn)
             .on_hover_text("Step one video frame back (paused only); the show clock follows")
             .clicked()
-        {
-            if let Ok(mut state) = state.lock() {
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::FrameStepBack);
             }
-        }
         let step_btn = Button::new(RichText::new("⏭")).min_size(Vec2::new(36.0, 32.0));
         if ui
             .add_enabled(show_paused, step_btn)
             .on_hover_text("Step one video frame forward (paused only); the show clock follows")
             .clicked()
-        {
-            if let Ok(mut state) = state.lock() {
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::FrameStep);
             }
-        }
 
         let preload_btn = Button::new(RichText::new("PRELOAD"))
             .min_size(Vec2::new(70.0, 32.0));
@@ -119,11 +112,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add(preload_btn)
             .on_hover_text("Load the selected cue's media into memory so Go starts instantly")
             .clicked()
-        {
-            if let Ok(mut state) = state.lock() {
+            && let Ok(mut state) = state.lock() {
                 state.command_queue.push(AppCommand::Preload);
             }
-        }
 
         ui.separator();
 
@@ -209,8 +200,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add(mode_btn)
             .on_hover_text("Toggle Show/Edit mode — cue editing is locked in Show mode")
             .clicked()
-        {
-            if let Ok(mut state) = state.lock() {
+            && let Ok(mut state) = state.lock() {
                 let snapshot = crate::app::Snapshot::from_state(&state);
                 state.undo_redo.push(snapshot);
                 state.show_mode = match state.show_mode {
@@ -219,7 +209,6 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 };
                 state.dirty = true;
             }
-        }
 
         // Master meter bridge
         let meter_data = {

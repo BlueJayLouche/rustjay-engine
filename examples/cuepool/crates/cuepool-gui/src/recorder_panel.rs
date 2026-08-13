@@ -14,23 +14,21 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         ui.horizontal(|ui| {
             ui.label("Take:");
             ui.text_edit_singleline(&mut state.recorder_file);
-            if ui.button("Browse…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
+            if ui.button("Browse…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("DMX recording", &["dmxrec"])
                     .pick_file()
                 {
                     state.recorder_file = path.to_string_lossy().to_string();
                 }
-            }
-            if ui.button("New…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
+            if ui.button("New…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
                     .add_filter("DMX recording", &["dmxrec"])
                     .set_file_name("take.dmxrec")
                     .save_file()
                 {
                     state.recorder_file = path.to_string_lossy().to_string();
                 }
-            }
         });
     });
 

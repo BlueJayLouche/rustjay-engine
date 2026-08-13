@@ -23,3 +23,7 @@ pathdiff = "0.2"
 serde_json = { workspace = true }
 rust_decimal = { workspace = true }
 rfd = { workspace = true }
+
+[dev-dependencies]
+eframe = { workspace = true }
+egui_kittest = { version = "0.34", features = ["snapshot", "wgpu"] }

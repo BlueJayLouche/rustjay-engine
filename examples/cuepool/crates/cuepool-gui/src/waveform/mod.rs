@@ -54,7 +54,7 @@ fn load_peaks(audio_path: &str) -> Option<Vec<(f32, f32)>> {
 
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic).ok()?;
-    if &magic != QPEK_MAGIC {
+    if magic != QPEK_MAGIC {
         return None;
     }
 
@@ -146,12 +146,11 @@ pub fn draw(ui: &mut egui::Ui, peaks: &[(f32, f32)], zoom: f32, scroll_offset: f
     let visible_bars = (rect.width() / bar_width.max(1.0)).ceil() as usize + 1;
     let end_bar = (start_bar + visible_bars).min(peaks.len());
 
-    for i in start_bar..end_bar {
+    for (i, (min_val, max_val)) in peaks.iter().enumerate().take(end_bar).skip(start_bar) {
         let x = rect.min.x + (i as f32 - new_scroll) * bar_width;
         if x < rect.min.x - bar_width || x > rect.max.x {
             continue;
         }
-        let (min_val, max_val) = &peaks[i];
         let y_top = (center_y + max_val * half_height).clamp(rect.min.y, rect.max.y);
         let y_bottom = (center_y + min_val * half_height).clamp(rect.min.y, rect.max.y);
 

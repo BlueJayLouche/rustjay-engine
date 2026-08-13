@@ -85,11 +85,10 @@ fn parse_description(xml: &str) -> Result<GdtfFixture, String> {
 
             let (role, fine) = map_attribute(attribute, default);
             set(coarse - 1, role);
-            if let Some(&f) = offsets.get(1) {
-                if f > 0 {
+            if let Some(&f) = offsets.get(1)
+                && f > 0 {
                     set(f - 1, fine);
                 }
-            }
         }
 
         // Gaps in the declared layout hold 0.

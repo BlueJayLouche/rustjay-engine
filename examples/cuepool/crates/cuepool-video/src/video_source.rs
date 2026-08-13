@@ -359,8 +359,8 @@ impl VideoSource {
     /// Handle the frame sitting in `self.decoded_frame`: download it from the
     /// GPU if it's a hw frame, then convert it to a `VideoFrame`.
     fn handle_decoded(&mut self) -> Decoded {
-        if let Some(hw_fmt) = self.hw_pix_fmt {
-            if self.decoded_frame.format() == format::Pixel::from(hw_fmt) {
+        if let Some(hw_fmt) = self.hw_pix_fmt
+            && self.decoded_frame.format() == format::Pixel::from(hw_fmt) {
                 // hw frames live in GPU memory and aren't readable via
                 // `plane()`; download into the reusable CPU frame first.
                 // `copy_props` carries PTS / color range / color space over,
@@ -398,7 +398,6 @@ impl VideoSource {
                 )
                 .map_or(Decoded::Skip, Decoded::Frame);
             }
-        }
         convert_frame(
             &self.decoded_frame,
             &mut self.scaler,

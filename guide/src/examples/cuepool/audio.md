@@ -42,10 +42,10 @@ Enabling `--features asio` on another operating system deliberately adds no
 native backend; choosing ASIO there reports that ASIO is Windows-only.
 
 Dante Virtual Soundcard should be running in ASIO mode at 48 kHz with at least
-8 x 8 channels. CPAL 0.15 accepts Dante's 16- and 32-bit ASIO encodings but not
-its packed 24-bit encoding, so select 32-bit in DVS's ASIO settings. CuePool
-requests eight output channels and keeps the existing per-cue pair/matrix
-routing.
+8 x 8 channels. CuePool supports Dante's native 16-, 24-, and 32-bit ASIO
+encodings, requests eight output channels, and keeps the existing per-cue
+pair/matrix routing. Older CuePool builds based on CPAL 0.15 require DVS's
+32-bit encoding as a lossless compatibility workaround for 24-bit audio.
 
 ## Output errors
 

@@ -175,21 +175,19 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         changed = true;
     }
 
-    if let Some(idx) = remove_idx {
-        if projection.outputs.len() > 1 {
+    if let Some(idx) = remove_idx
+        && projection.outputs.len() > 1 {
             projection.outputs.remove(idx);
             changed = true;
         }
-    }
 
-    if let Some(idx) = duplicate_idx {
-        if let Some(original) = projection.outputs.get(idx).cloned() {
+    if let Some(idx) = duplicate_idx
+        && let Some(original) = projection.outputs.get(idx).cloned() {
             let mut copy = original;
             copy.name.push_str(" (copy)");
             projection.outputs.insert(idx + 1, copy);
             changed = true;
         }
-    }
 
     ui.separator();
     ui.horizontal(|ui| {

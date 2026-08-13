@@ -250,8 +250,8 @@ mod tests {
         let mut bq = Biquad::bell(1000.0, 0.0, 1.0, 48000.0);
         // With 0 dB gain, bell should be unity at all frequencies
         let mut out = [0.0f64; 100];
-        for i in 0..100 {
-            out[i] = bq.process(1.0);
+        for sample in &mut out {
+            *sample = bq.process(1.0);
         }
         // After transient, should settle to ~1.0
         assert!((out[99] - 1.0).abs() < 0.001, "unity gain bell should pass DC, got {}", out[99]);
@@ -279,8 +279,8 @@ mod tests {
     fn test_high_pass_blocks_dc() {
         let mut bq = Biquad::high_pass(100.0, 0.7, 48000.0);
         let mut out = [0.0f64; 1000];
-        for i in 0..1000 {
-            out[i] = bq.process(1.0);
+        for sample in &mut out {
+            *sample = bq.process(1.0);
         }
         // After transient, DC should be blocked
         assert!(out[999].abs() < 0.01, "HP should block DC, got {}", out[999]);
