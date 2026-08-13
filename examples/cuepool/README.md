@@ -17,9 +17,9 @@ cargo run --release
 
 | Area | What it is |
 |---|---|
-| Top | Menu bar + transport (GO / Stop / Pause, master meter) |
+| Top | Menu bar + transport (GO / Stop / Pause, standby readout, master meter) |
 | Left | **Active Cues** — every playing cue with state, volume meter, and a progress bar (`elapsed / total  −remaining`; yellow = paused) |
-| Center | **Cue list** — the show, in playback order (selected cue highlighted blue, playing cues green with a ▶ marker, paused cues amber) |
+| Center | **Cue list** — the show, in playback order. The standby cue (what GO will fire) carries a chevron in the left gutter and an outlined row; playing cues are green with a ▶ marker, paused cues amber, idle standby blue |
 | Right | **Inspector** — full editor for the selected cue |
 | Bottom | Status bar |
 
@@ -45,8 +45,10 @@ locks the cue list so a stray click can't rearrange your show mid-performance.
 
 | Key | Action |
 |---|---|
-| Space | GO (fire next cue) |
+| Space | GO (fire the standby cue) |
 | Esc | Stop all |
+| ↑ / ↓ | Move the standby cue up / down the list |
+| Home / End | Standby the first / last cue |
 | Cmd/Ctrl+Z / Shift+Z | Undo / Redo |
 | Cmd/Ctrl+N / O / S | New / Open / Save project |
 | Cmd/Ctrl+T | Add sound cue |
