@@ -5,27 +5,11 @@ use crate::colour_to_egui;
 use egui::{Button, Color32, RichText, Vec2};
 use rust_decimal::Decimal;
 
-const STANDBY_NAME_MAX_CHARS: usize = 18;
-
-fn standby_label(standby: Option<(Decimal, &str)>) -> String {
-    let Some((qid, name)) = standby else {
+fn standby_label(standby: Option<Decimal>) -> String {
+    let Some(qid) = standby else {
         return "Standby: (no cue selected)".to_string();
     };
-    let name = if name.chars().count() > STANDBY_NAME_MAX_CHARS {
-        format!(
-            "{}…",
-            name.chars()
-                .take(STANDBY_NAME_MAX_CHARS - 1)
-                .collect::<String>()
-        )
-    } else {
-        name.to_string()
-    };
-    if name.is_empty() {
-        format!("Standby: Q{qid}")
-    } else {
-        format!("Standby: Q{qid}  {name}")
-    }
+    format!("Standby: Q{qid}")
 }
 
 /// `HH:MM:SS.ff` at a display-only frame rate (triggers store seconds).
@@ -94,7 +78,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 state.command_queue.push(AppCommand::Go);
             }
 
-        let readout = standby_label(standby.as_ref().map(|(qid, name, _)| (*qid, name.as_str())));
+        let readout = standby_label(standby.as_ref().map(|(qid, _, _)| *qid));
         let readout_hover = standby.as_ref().map_or_else(
             || "Select a cue to set the standby playhead".to_string(),
             |(qid, name, _)| format!("Standby: Q{qid} {name}. Go fires this cue."),
@@ -115,7 +99,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 } else {
                     RichText::new(readout).weak()
                 };
-                ui.add(egui::Label::new(text).truncate());
+                ui.label(text);
+                if let Some((_, name, _)) = &standby {
+                    ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
+                }
             },
         )
         .response
@@ -373,15 +360,11 @@ mod tests {
     use rust_decimal::Decimal;
 
     #[test]
-    fn standby_labels_cover_empty_named_and_truncated_states() {
+    fn standby_labels_cover_empty_and_selected_states() {
         assert_eq!(standby_label(None), "Standby: (no cue selected)");
         assert_eq!(
-            standby_label(Some((Decimal::new(35, 1), "Lights up"))),
-            "Standby: Q3.5  Lights up"
-        );
-        assert_eq!(
-            standby_label(Some((Decimal::from(7), "123456789012345678901"))),
-            "Standby: Q7  12345678901234567…"
+            standby_label(Some(Decimal::new(35, 1))),
+            "Standby: Q3.5"
         );
     }
 
