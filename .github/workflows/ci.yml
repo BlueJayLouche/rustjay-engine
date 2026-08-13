@@ -26,6 +26,12 @@ jobs:
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The kittest UI suites hide behind off-by-default features, so the
+      # workspace run above never executes them: rustjay-gui's tests need
+      # `egui`, and vjarda's Stage/projector tests need `projection`.
+      # Snapshots render on lavapipe (mesa-vulkan-drivers above).
+      - run: cargo test -p rustjay-gui --features egui
+      - run: cargo test -p vjarda --features projection
       - name: Validate WGSL shaders
         run: |
           cargo install naga-cli --locked
