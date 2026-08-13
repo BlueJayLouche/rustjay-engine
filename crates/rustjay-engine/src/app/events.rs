@@ -119,6 +119,21 @@ impl<P: EffectPlugin> App<P> {
     }
 }
 
+#[cfg(feature = "projection")]
+fn post_projector_notifications(
+    shared_state: &std::sync::Mutex<rustjay_core::EngineState>,
+    notifications: Vec<super::projection::ProjectionNotification>,
+) {
+    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    for notification in notifications {
+        state.notify(
+            notification.message,
+            notification.level,
+            std::time::Duration::from_secs(5),
+        );
+    }
+}
+
 impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // ── DRM/GBM path: bypass winit window + wgpu entirely ────────────────
@@ -386,7 +401,15 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     (self.projection_subsystem.as_ref(), inst, device, queue, adapter)
                 {
                     let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
-                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
+                    let notifications = sub.create_pending(
+                        event_loop,
+                        inst,
+                        Arc::clone(device),
+                        Arc::clone(queue),
+                        adapter,
+                    );
+                    drop(sub);
+                    post_projector_notifications(self.shared_state.as_ref(), notifications);
                 }
             }
         }
@@ -843,7 +866,15 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             {
                 let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
                 if sub.pending_len() > 0 {
-                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
+                    let notifications = sub.create_pending(
+                        event_loop,
+                        inst,
+                        Arc::clone(device),
+                        Arc::clone(queue),
+                        adapter,
+                    );
+                    drop(sub);
+                    post_projector_notifications(self.shared_state.as_ref(), notifications);
                 }
             }
         }
