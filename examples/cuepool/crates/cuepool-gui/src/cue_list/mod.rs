@@ -90,8 +90,8 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     });
     ui.separator();
 
-    // Remember the observed selection in egui temp memory so programmatic
-    // changes scroll once, while leaving manual scrolling unpinned afterward.
+    // Remember the observed selection in egui temp memory so changes scroll only
+    // enough to reveal the row, without jerking an already-visible selection.
     let scroll_memory_id = egui::Id::new("cue_list_last_scrolled_selection");
     let selection_changed = ui.data_mut(|data| {
         let changed = data.get_temp::<Option<Decimal>>(scroll_memory_id) != Some(selected_id);
@@ -393,7 +393,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     egui::StrokeKind::Inside,
                 );
                 if selection_changed {
-                    drop_response.response.scroll_to_me(Some(egui::Align::Center));
+                    drop_response.response.scroll_to_me(None);
                 }
             }
 

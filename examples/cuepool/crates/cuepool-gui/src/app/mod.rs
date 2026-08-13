@@ -1795,7 +1795,8 @@ impl CuePoolApp {
                         && let Some(next) =
                             step_selection(&state.show_file.cues, state.selected_cue_id, step)
                         && state.selected_cue_id != Some(next) {
-                            let snapshot = Snapshot::from_state(&state);
+                            let snapshot =
+                                Snapshot::from_state(&state).with_merge_key("selection");
                             state.undo_redo.push(snapshot);
                             state.selected_cue_id = Some(next);
                         }
