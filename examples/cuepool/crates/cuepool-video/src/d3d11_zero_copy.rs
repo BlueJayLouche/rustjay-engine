@@ -223,6 +223,10 @@ pub(crate) unsafe fn configure_pool(
     codec: *mut ffi::AVCodecContext,
     request: &DirectPoolRequest,
 ) -> Result<ffi::AVPixelFormat, String> {
+    if crate::zero_copy::direct_path_poisoned() {
+        request.fail(crate::zero_copy::DIRECT_PATH_POISONED_REASON);
+        return Err(crate::zero_copy::DIRECT_PATH_POISONED_REASON.into());
+    }
     let mut frames_ref = std::ptr::null_mut();
     let result = unsafe {
         ffi::avcodec_get_hw_frames_parameters(
@@ -773,8 +777,8 @@ impl D3d11Frame {
     /// # Safety
     ///
     /// The caller must retain this frame through submission completion, submit the resulting
-    /// command buffer exactly once after releasing the keyed mutex to Vulkan, and record a
-    /// matching release transition before finishing it.
+    /// command buffer exactly once after releasing the keyed mutex to Vulkan, and include a
+    /// matching release transition after all image accesses in the same queue submission.
     pub unsafe fn record_vulkan_acquire(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -786,9 +790,9 @@ impl D3d11Frame {
     ///
     /// # Safety
     ///
-    /// The caller must record this after all accesses to the imported image, attach this frame's
-    /// keyed-mutex operations to the same command buffer, and retain the frame through submission
-    /// completion.
+    /// The caller must submit this after all accesses to the imported image, attach this frame's
+    /// keyed-mutex operations to a command buffer in the same submission, and retain the frame
+    /// through submission completion.
     pub unsafe fn record_vulkan_release(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -800,9 +804,9 @@ impl D3d11Frame {
     ///
     /// # Safety
     ///
-    /// The encoder must contain this frame's matching ownership transitions, its command buffer
-    /// must be submitted exactly once after [`Self::release_to_vulkan`], and the frame must remain
-    /// alive until that submission completes.
+    /// The encoder's command buffer must be submitted exactly once, in the same submission as this
+    /// frame's matching ownership transitions, after [`Self::release_to_vulkan`]. The frame must
+    /// remain alive until that submission completes.
     pub unsafe fn attach_keyed_mutex(
         &self,
         encoder: &mut wgpu::CommandEncoder,

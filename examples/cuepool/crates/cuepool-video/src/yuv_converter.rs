@@ -349,6 +349,35 @@ impl YuvConverter {
         let FramePixels::D3d11Nv12(direct) = &direct_frame.pixels else {
             return Err("canary direct frame is not D3D11 NV12".into());
         };
+        match crate::ZeroCopyAvailability::catch_direct_path_panic(|| {
+            Self::run_d3d11_canary_inner(
+                device,
+                queue,
+                direct,
+                direct_frame,
+                readback_frame,
+                canvas_size,
+                fit,
+            )
+        }) {
+            Ok(result) => result,
+            Err(reason) => {
+                direct.complete(Err(reason.clone()));
+                Err(reason)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn run_d3d11_canary_inner(
+        device: &Device,
+        queue: &Queue,
+        direct: &crate::D3d11Frame,
+        direct_frame: &VideoFrame,
+        readback_frame: &VideoFrame,
+        canvas_size: [u32; 2],
+        fit: CanvasFit,
+    ) -> Result<(), String> {
         if canvas_size[0] == 0 || canvas_size[1] == 0 {
             return Err("canary canvas has zero dimensions".into());
         }
@@ -364,33 +393,49 @@ impl YuvConverter {
         let buffer_size = u64::from(bytes_per_row) * u64::from(canvas_size[1]);
         let direct_buffer = canary_buffer(device, "d3d11va-canary-direct-readback", buffer_size);
         let readback_buffer = canary_buffer(device, "d3d11va-canary-cpu-readback", buffer_size);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("d3d11va-canary"),
+        let mut acquire_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("d3d11va-canary-acquire"),
         });
-        unsafe { direct.record_vulkan_acquire(&mut encoder) }?;
-        direct_converter.encode(&mut encoder, &direct_texture.create_view(&Default::default()));
+        let mut convert_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("d3d11va-canary-convert"),
+        });
+        let mut release_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("d3d11va-canary-release"),
+        });
+        unsafe { direct.record_vulkan_acquire(&mut acquire_encoder) }?;
+        direct_converter.encode(
+            &mut convert_encoder,
+            &direct_texture.create_view(&Default::default()),
+        );
         readback_converter.encode(
-            &mut encoder,
+            &mut convert_encoder,
             &readback_texture.create_view(&Default::default()),
         );
         copy_canary_texture(
-            &mut encoder,
+            &mut convert_encoder,
             &direct_texture,
             &direct_buffer,
             canvas_size,
             bytes_per_row,
         );
         copy_canary_texture(
-            &mut encoder,
+            &mut convert_encoder,
             &readback_texture,
             &readback_buffer,
             canvas_size,
             bytes_per_row,
         );
-        unsafe { direct.record_vulkan_release(&mut encoder) }?;
-        unsafe { direct.attach_keyed_mutex(&mut encoder) }?;
+        unsafe { direct.record_vulkan_release(&mut release_encoder) }?;
+        unsafe { direct.attach_keyed_mutex(&mut acquire_encoder) }?;
+        let command_buffers = [
+            acquire_encoder.finish(),
+            convert_encoder.finish(),
+            release_encoder.finish(),
+        ];
         direct.release_to_vulkan()?;
-        let submission = queue.submit(std::iter::once(encoder.finish()));
+        // Vulkan pipeline barriers are queue-scoped: one ordered submission makes the acquire and
+        // release command buffers bracket every conversion access between them.
+        let submission = queue.submit(command_buffers);
 
         let (direct_tx, direct_rx) = std::sync::mpsc::sync_channel(1);
         direct_buffer

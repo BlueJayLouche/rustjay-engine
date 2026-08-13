@@ -574,13 +574,20 @@ pub(crate) fn video_consume_thread(
                 }
                 #[cfg(windows)]
                 cuepool_video::FramePixels::D3d11Nv12(direct) => {
-                    if yuv_converter.is_none() {
-                        yuv_converter = Some(cuepool_video::YuvConverter::new(
-                            &device,
-                            wgpu::TextureFormat::Rgba8Unorm,
-                        ));
+                    if let Err(reason) = cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
+                        if yuv_converter.is_none() {
+                            yuv_converter = Some(cuepool_video::YuvConverter::new(
+                                &device,
+                                wgpu::TextureFormat::Rgba8Unorm,
+                            ));
+                        }
+                    }) {
+                        direct.complete(Err(reason));
+                        frame_presented = false;
                     }
-                    if let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut()) {
+                    if frame_presented
+                        && let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut())
+                    {
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(readback) = direct.take_canary_readback() {
@@ -601,38 +608,81 @@ pub(crate) fn video_consume_thread(
                         }
 
                         if frame_presented {
-                            let upload_started = Instant::now();
-                            conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
-                            timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
-                            let conversion_started = Instant::now();
-                            let mut encoder =
-                                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: Some("canvas-d3d11va-convert"),
-                                });
-                            let prepared = unsafe { direct.record_vulkan_acquire(&mut encoder) }
-                                .and_then(|()| {
-                                    conv.encode(&mut encoder, &c.render_view());
-                                    unsafe { direct.record_vulkan_release(&mut encoder) }
-                                })
-                                .and_then(|()| unsafe { direct.attach_keyed_mutex(&mut encoder) });
+                            let prepared = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
+                                let upload_started = Instant::now();
+                                conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
+                                timings.upload.set_ms(
+                                    upload_timing.record(upload_started.elapsed()),
+                                );
+                                let conversion_started = Instant::now();
+                                let mut acquire_encoder = device.create_command_encoder(
+                                    &wgpu::CommandEncoderDescriptor {
+                                        label: Some("canvas-d3d11va-acquire"),
+                                    },
+                                );
+                                let mut convert_encoder = device.create_command_encoder(
+                                    &wgpu::CommandEncoderDescriptor {
+                                        label: Some("canvas-d3d11va-convert"),
+                                    },
+                                );
+                                let mut release_encoder = device.create_command_encoder(
+                                    &wgpu::CommandEncoderDescriptor {
+                                        label: Some("canvas-d3d11va-release"),
+                                    },
+                                );
+                                unsafe { direct.record_vulkan_acquire(&mut acquire_encoder) }
+                                    .and_then(|()| {
+                                        conv.encode(&mut convert_encoder, &c.render_view());
+                                        unsafe {
+                                            direct.record_vulkan_release(&mut release_encoder)
+                                        }
+                                    })
+                                    .and_then(|()| unsafe {
+                                        direct.attach_keyed_mutex(&mut acquire_encoder)
+                                    })?;
+                                Ok((
+                                    [
+                                        acquire_encoder.finish(),
+                                        convert_encoder.finish(),
+                                        release_encoder.finish(),
+                                    ],
+                                    conversion_started,
+                                ))
+                            }) {
+                                Ok(prepared) => prepared,
+                                Err(reason) => Err(reason),
+                            };
                             let epoch = rx_epoch.unwrap_or_default();
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {
-                                (Ok(()), Ok(completed)) => {
-                                    if let Err(reason) = direct.release_to_vulkan() {
+                                (Ok((command_buffers, conversion_started)), Ok(completed)) => {
+                                    let completion = direct.clone();
+                                    let callback_completed = Arc::clone(&completed);
+                                    let retirement_tx = retirement_tx.clone();
+                                    let submitted = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
+                                        || {
+                                            direct.release_to_vulkan()?;
+                                            // Vulkan pipeline barriers are queue-scoped: one
+                                            // ordered submission makes acquire and release bracket
+                                            // every access in the middle conversion command buffer.
+                                            queue.submit(command_buffers);
+                                            queue.on_submitted_work_done(move || {
+                                                callback_completed.store(true, Ordering::Release);
+                                                completion.complete(Ok(()));
+                                                let _ = retirement_tx.send(());
+                                            });
+                                            Ok(())
+                                        },
+                                    ) {
+                                        Ok(submitted) => submitted,
+                                        Err(reason) => Err(reason),
+                                    };
+                                    if let Err(reason) = submitted {
                                         completed.store(true, Ordering::Release);
                                         direct_retirement.drain_completed();
                                         direct.complete(Err(reason));
                                         frame_presented = false;
                                     } else {
-                                        queue.submit(std::iter::once(encoder.finish()));
-                                        let completion = direct.clone();
-                                        let retirement_tx = retirement_tx.clone();
-                                        queue.on_submitted_work_done(move || {
-                                            completed.store(true, Ordering::Release);
-                                            completion.complete(Ok(()));
-                                            let _ = retirement_tx.send(());
-                                        });
                                         direct_submitted = true;
                                         uploaded = true;
                                         timings.conversion_submit.set_ms(
@@ -647,7 +697,7 @@ pub(crate) fn video_consume_thread(
                                     direct.complete(Err(reason));
                                     frame_presented = false;
                                 }
-                                (Ok(()), Err(_)) => {
+                                (Ok(_), Err(_)) => {
                                     direct.complete(Err(
                                         "zero-copy submission retirement budget exhausted".into(),
                                     ));
@@ -659,7 +709,7 @@ pub(crate) fn video_consume_thread(
                                 }
                             }
                         }
-                    } else {
+                    } else if frame_presented {
                         direct.complete(Err("zero-copy canvas is unavailable".into()));
                         frame_presented = false;
                     }
