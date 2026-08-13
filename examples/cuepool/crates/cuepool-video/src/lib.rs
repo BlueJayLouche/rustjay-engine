@@ -10,15 +10,22 @@
 //! winit event loop, syncing video presentation to the audio master clock.
 
 mod canvas_texture;
+#[cfg(windows)]
+mod d3d11_zero_copy;
 mod frame;
+mod frame_lease;
 mod frame_pool;
 mod pixel_sampler;
 mod projection_renderer;
 mod video_source;
 mod yuv_converter;
+mod zero_copy;
 
 pub use canvas_texture::CanvasTexture;
+#[cfg(windows)]
+pub use d3d11_zero_copy::{D3d11Frame, D3d11Handoff};
 pub use frame_pool::FramePool;
+pub use frame_lease::{LeaseBudget, LeasePermit, SubmissionRetirement, MAX_ZERO_COPY_LEASES};
 
 /// FFmpeg library version (libavutil, encoded major<<16 | minor<<8 | micro),
 /// for the Status diagnostics window.
@@ -28,5 +35,6 @@ pub fn ffmpeg_version() -> u32 {
 pub use pixel_sampler::PixelSampler;
 pub use frame::{BitDepth, ChromaSubsample, FramePixels, VideoFrame, YuvPlane};
 pub use projection_renderer::ProjectionRenderer;
-pub use video_source::VideoSource;
+pub use video_source::{VideoFrameTimings, VideoSource, ZeroCopyPreference};
 pub use yuv_converter::YuvConverter;
+pub use zero_copy::ZeroCopyAvailability;

@@ -112,6 +112,7 @@ fn populate_telemetry(state: &mut SharedState) {
     state.selected_cue_id = Some(Decimal::new(11, 1));
     state.active_cues = vec![
         ActiveCueInfo {
+            instance_id: 1,
             qid: Decimal::new(11, 1),
             name: "Lobby Ambience".into(),
             paused: false,
@@ -120,6 +121,7 @@ fn populate_telemetry(state: &mut SharedState) {
             state: CueState::PlayingLooped,
         },
         ActiveCueInfo {
+            instance_id: 2,
             qid: Decimal::new(12, 1),
             name: "Projection Intro".into(),
             paused: true,
@@ -128,6 +130,7 @@ fn populate_telemetry(state: &mut SharedState) {
             state: CueState::Paused,
         },
         ActiveCueInfo {
+            instance_id: 3,
             qid: Decimal::from(2),
             name: "House Lights Half".into(),
             paused: false,
@@ -177,6 +180,8 @@ fn populate_telemetry(state: &mut SharedState) {
         }],
         presented_per_sec: 60.0,
         starved_per_sec: 0.0,
+        uploads_per_sec: 50.0,
+        dropped_per_sec: 0.0,
         event_loop_per_sec: 240.0,
         consumer_error: None,
         video: Some(VideoDiagnostics {
@@ -184,7 +189,14 @@ fn populate_telemetry(state: &mut SharedState) {
             width: 1920,
             height: 1080,
             decode_path: "hardware (VideoToolbox)".into(),
-            decode_ms_per_frame: crate::DecodeTiming::from_ms(4.2),
+            fallback_reason: None,
+            timings: crate::VideoTimings {
+                decode: crate::DecodeTiming::from_ms(4.2),
+                hw_transfer: crate::DecodeTiming::from_ms(0.8),
+                plane_copy: crate::DecodeTiming::from_ms(0.4),
+                upload: crate::DecodeTiming::from_ms(0.5),
+                conversion_submit: crate::DecodeTiming::from_ms(0.2),
+            },
         }),
     };
     state.recorder_status = RecorderStatus {

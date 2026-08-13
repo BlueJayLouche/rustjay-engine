@@ -136,6 +136,8 @@ pub enum CueState {
 /// Lightweight info about a cue currently playing, synced from the audio engine.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCueInfo {
+    /// Unique runtime playback instance; QIDs may be retriggered concurrently.
+    pub instance_id: u64,
     pub qid: Decimal,
     pub name: String,
     /// True if the cue is currently paused.
@@ -194,6 +196,15 @@ impl DecodeTiming {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct VideoTimings {
+    pub decode: DecodeTiming,
+    pub hw_transfer: DecodeTiming,
+    pub plane_copy: DecodeTiming,
+    pub upload: DecodeTiming,
+    pub conversion_submit: DecodeTiming,
+}
+
 /// The currently-decoding video source, published by the decode thread.
 #[derive(Debug, Clone)]
 pub struct VideoDiagnostics {
@@ -202,7 +213,8 @@ pub struct VideoDiagnostics {
     pub height: u32,
     /// `hardware (<api>)` or `software`, from `VideoSource::decode_path()`.
     pub decode_path: String,
-    pub decode_ms_per_frame: DecodeTiming,
+    pub fallback_reason: Option<String>,
+    pub timings: VideoTimings,
 }
 
 /// Plain-data snapshot behind the Status window (Help → Status…): what a
@@ -225,6 +237,8 @@ pub struct Diagnostics {
     /// Sum of all outputs' presented/s.
     pub presented_per_sec: f64,
     pub starved_per_sec: f64,
+    pub uploads_per_sec: f64,
+    pub dropped_per_sec: f64,
     /// Main event-loop iterations per second. The field diagnostic for a
     /// GPU-stalled winit loop (healthy ≈ 250, the Windows WSI stall showed 10).
     pub event_loop_per_sec: f64,
@@ -273,16 +287,23 @@ impl Diagnostics {
                 ("File".into(), v.path.clone()),
                 ("Source Size".into(), format!("{}x{}", v.width, v.height)),
                 ("Decode Path".into(), v.decode_path.clone()),
-                ("Decode ms/frame".into(), format!("{:.2}", v.decode_ms_per_frame.get_ms())),
+                ("Fallback Reason".into(), v.fallback_reason.clone().unwrap_or_else(|| "none".into())),
+                ("Decode ms/frame".into(), format!("{:.2}", v.timings.decode.get_ms())),
+                ("HW transfer ms/frame".into(), format!("{:.2}", v.timings.hw_transfer.get_ms())),
+                ("Plane copy ms/frame".into(), format!("{:.2}", v.timings.plane_copy.get_ms())),
+                ("Upload ms/frame".into(), format!("{:.2}", v.timings.upload.get_ms())),
+                ("Conversion submit ms/frame".into(), format!("{:.2}", v.timings.conversion_submit.get_ms())),
             ],
             None => vec![("Status".into(), "no video playing".into())],
         };
         sections.push(("Video Decode", video));
 
-        sections.push(("Render Loop", vec![
+        sections.push(("Pacing", vec![
             ("Output Count".into(), self.outputs.len().to_string()),
             ("Event Loop/s".into(), format!("{:.0}", self.event_loop_per_sec)),
             ("Presented/s (all outputs)".into(), format!("{:.0}", self.presented_per_sec)),
+            ("Uploads/s".into(), format!("{:.0}", self.uploads_per_sec)),
+            ("Dropped/s".into(), format!("{:.0}", self.dropped_per_sec)),
             ("Starved/s".into(), format!("{:.0}", self.starved_per_sec)),
             ("Video Consumer".into(), self.consumer_error.clone().unwrap_or_else(|| "running".into())),
         ]));
@@ -599,7 +620,7 @@ pub enum AppCommand {
     /// Seek an active Sound or Video cue in the `ActiveCueInfo` timeline.
     /// Looped cues use seconds relative to the loop region; targets outside
     /// that region clamp to its final frame.
-    SeekCue { qid: Decimal, secs: f32 },
+    SeekCue { instance_id: u64, secs: f32 },
 }
 
 #[derive(Clone, Copy)]
@@ -1182,7 +1203,15 @@ impl CuePoolApp {
                         ui.label("Select a Sound or Video cue to view its waveform.");
                     } else if let Some(waveform) = peaks {
                         ui.label(std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path).to_string());
-                        let response = crate::waveform::draw(ui, &waveform, zoom, scroll, 200.0, None);
+                        let response = crate::waveform::draw(
+                            ui,
+                            &waveform,
+                            zoom,
+                            scroll,
+                            200.0,
+                            crate::waveform::Interaction::Pan,
+                            None,
+                        );
                         if let Ok(mut state) = self.state.lock() {
                             state.waveform_window_zoom = response.zoom;
                             state.waveform_window_scroll = response.scroll_offset;

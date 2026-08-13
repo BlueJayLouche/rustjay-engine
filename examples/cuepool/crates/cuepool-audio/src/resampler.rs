@@ -171,8 +171,12 @@ impl SampleProvider for ResamplerProcessor {
     }
 
     fn seek(&self, sample: usize) {
-        self.source.seek(sample);
         let inner = self.inner_mut();
+        let channels = inner.channels.max(1) as usize;
+        let target_frame = sample / channels;
+        let source_frame = (target_frame as f64 * inner.source_rate as f64
+            / inner.target_rate as f64) as usize;
+        self.source.seek(source_frame.saturating_mul(channels));
         inner.ring_read = 0;
         inner.ring_write = 0;
         // Re-create resampler to reset state
@@ -220,6 +224,35 @@ unsafe impl Sync for ResamplerProcessor {}
 mod tests {
     use super::*;
     use crate::FnSource;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SeekProbe {
+        sought_sample: Arc<AtomicUsize>,
+    }
+
+    impl SampleProvider for SeekProbe {
+        fn read(&self, _buffer: &mut [f32]) -> usize { 0 }
+        fn seek(&self, sample: usize) { self.sought_sample.store(sample, Ordering::Relaxed); }
+        fn position(&self) -> usize { 0 }
+        fn length(&self) -> Option<usize> { Some(44_100 * 2) }
+        fn sample_rate(&self) -> u32 { 44_100 }
+        fn channels(&self) -> u16 { 2 }
+    }
+
+    #[test]
+    fn seek_converts_target_rate_samples_to_source_rate() {
+        let sought_sample = Arc::new(AtomicUsize::new(usize::MAX));
+        let resampler = ResamplerProcessor::new(
+            Box::new(SeekProbe { sought_sample: Arc::clone(&sought_sample) }),
+            48_000,
+        )
+        .unwrap();
+
+        resampler.seek(48_000 * 2);
+
+        assert_eq!(sought_sample.load(Ordering::Relaxed), 44_100 * 2);
+    }
 
     #[test]
     fn test_resampler_44100_to_48000() {

@@ -42,6 +42,8 @@ struct Nv12Binding {
 enum ActiveBinding {
     Planar(PlanarBinding),
     Nv12(Nv12Binding),
+    #[cfg(windows)]
+    D3d11Nv12(wgpu::BindGroup),
 }
 
 pub struct YuvConverter {
@@ -240,6 +242,55 @@ impl YuvConverter {
                     }),
                 );
             }
+            #[cfg(windows)]
+            FramePixels::D3d11Nv12(direct) => {
+                let (y, uv) = direct
+                    .pool()
+                    .plane_views(direct.layer())
+                    .expect("validated D3D11VA array slice");
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("d3d11va-nv12-bg"),
+                    layout: &self.nv12_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(y),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(uv),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.uniform.as_entire_binding(),
+                        },
+                    ],
+                });
+                self.active = Some(ActiveBinding::D3d11Nv12(bind_group));
+                let (allocated_width, allocated_height) = direct.allocated_size();
+                let scale = [
+                    frame.width as f32 / allocated_width as f32,
+                    frame.height as f32 / allocated_height as f32,
+                ];
+                queue.write_buffer(
+                    &self.uniform,
+                    0,
+                    bytemuck::bytes_of(&Uniforms {
+                        dst_min,
+                        dst_max,
+                        src_min: [src_min[0] * scale[0], src_min[1] * scale[1]],
+                        src_max: [src_max[0] * scale[0], src_max[1] * scale[1]],
+                        full_range: if direct.full_range() { 1.0 } else { 0.0 },
+                        bt709: if direct.bt709() { 1.0 } else { 0.0 },
+                        bit_depth_scale: 1.0,
+                        _pad: 0.0,
+                    }),
+                );
+            }
             FramePixels::Rgba(_) => {} // caller shouldn't reach here, but safe no-op
         }
     }
@@ -276,9 +327,205 @@ impl YuvConverter {
                 pass.set_bind_group(0, &binding.bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
+            #[cfg(windows)]
+            Some(ActiveBinding::D3d11Nv12(bind_group)) => {
+                pass.set_pipeline(&self.nv12_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
             None => {}
         }
     }
+
+    #[cfg(windows)]
+    pub fn run_d3d11_canary(
+        device: &Device,
+        queue: &Queue,
+        direct_frame: &VideoFrame,
+        readback_frame: &VideoFrame,
+        canvas_size: [u32; 2],
+        fit: CanvasFit,
+    ) -> Result<(), String> {
+        let FramePixels::D3d11Nv12(direct) = &direct_frame.pixels else {
+            return Err("canary direct frame is not D3D11 NV12".into());
+        };
+        if canvas_size[0] == 0 || canvas_size[1] == 0 {
+            return Err("canary canvas has zero dimensions".into());
+        }
+
+        let direct_texture = canary_texture(device, "d3d11va-canary-direct", canvas_size);
+        let readback_texture = canary_texture(device, "d3d11va-canary-readback", canvas_size);
+        let mut direct_converter = Self::new(device, TextureFormat::Rgba8Unorm);
+        let mut readback_converter = Self::new(device, TextureFormat::Rgba8Unorm);
+        direct_converter.upload(device, queue, direct_frame, canvas_size, fit);
+        readback_converter.upload(device, queue, readback_frame, canvas_size, fit);
+
+        let bytes_per_row = (canvas_size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer_size = u64::from(bytes_per_row) * u64::from(canvas_size[1]);
+        let direct_buffer = canary_buffer(device, "d3d11va-canary-direct-readback", buffer_size);
+        let readback_buffer = canary_buffer(device, "d3d11va-canary-cpu-readback", buffer_size);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("d3d11va-canary"),
+        });
+        unsafe { direct.record_vulkan_acquire(&mut encoder) }?;
+        direct_converter.encode(&mut encoder, &direct_texture.create_view(&Default::default()));
+        readback_converter.encode(
+            &mut encoder,
+            &readback_texture.create_view(&Default::default()),
+        );
+        copy_canary_texture(
+            &mut encoder,
+            &direct_texture,
+            &direct_buffer,
+            canvas_size,
+            bytes_per_row,
+        );
+        copy_canary_texture(
+            &mut encoder,
+            &readback_texture,
+            &readback_buffer,
+            canvas_size,
+            bytes_per_row,
+        );
+        unsafe { direct.record_vulkan_release(&mut encoder) }?;
+        unsafe { direct.attach_keyed_mutex(&mut encoder) }?;
+        direct.release_to_vulkan()?;
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+
+        let (direct_tx, direct_rx) = std::sync::mpsc::sync_channel(1);
+        direct_buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = direct_tx.send(result);
+            });
+        let (readback_tx, readback_rx) = std::sync::mpsc::sync_channel(1);
+        readback_buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = readback_tx.send(result);
+            });
+        let wait_result = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(2)),
+        });
+        if let Err(error) = wait_result {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            direct.acquire_for_decoder()?;
+            return Err(format!("first-frame canary GPU wait failed: {error}"));
+        }
+        let direct_map = direct_rx
+            .recv()
+            .map_err(|_| "first-frame direct map callback was lost".to_string())
+            .and_then(|result| {
+                result.map_err(|error| format!("first-frame direct map failed: {error}"))
+            });
+        let readback_map = readback_rx
+            .recv()
+            .map_err(|_| "first-frame readback map callback was lost".to_string())
+            .and_then(|result| {
+                result.map_err(|error| format!("first-frame readback map failed: {error}"))
+            });
+        let reacquired = direct.acquire_for_decoder();
+        direct_map?;
+        readback_map?;
+        reacquired?;
+
+        let direct_data = direct_buffer.slice(..).get_mapped_range();
+        let readback_data = readback_buffer.slice(..).get_mapped_range();
+        let matches = canary_pixels_match(
+            &direct_data,
+            &readback_data,
+            canvas_size[0],
+            canvas_size[1],
+            bytes_per_row,
+        );
+        drop(direct_data);
+        drop(readback_data);
+        direct_buffer.unmap();
+        readback_buffer.unmap();
+        if !matches {
+            return Err("first-frame direct/readback canary mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn canary_texture(device: &Device, label: &str, size: [u32; 2]) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
+#[cfg(windows)]
+fn canary_buffer(device: &Device, label: &str, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
+}
+
+#[cfg(windows)]
+fn copy_canary_texture(
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    buffer: &wgpu::Buffer,
+    size: [u32; 2],
+    bytes_per_row: u32,
+) {
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(size[1]),
+            },
+        },
+        wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+#[cfg(any(windows, test))]
+fn canary_pixels_match(
+    direct: &[u8],
+    readback: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+) -> bool {
+    let row_len = width as usize * 4;
+    let stride = bytes_per_row as usize;
+    (0..height as usize).all(|row| {
+        let start = row * stride;
+        direct[start..start + row_len]
+            .iter()
+            .zip(&readback[start..start + row_len])
+            .all(|(&left, &right)| left.abs_diff(right) <= 2)
+    })
 }
 
 fn create_pipeline(
@@ -643,5 +890,16 @@ mod tests {
             true,
         );
         conv.upload(&device, &queue, &frame, [8, 8], CanvasFit::Fit);
+    }
+
+    #[test]
+    fn canary_comparison_ignores_padding_and_allows_rounding() {
+        let mut direct = vec![0u8; 16];
+        let mut readback = vec![99u8; 16];
+        direct[..8].copy_from_slice(&[1, 2, 3, 4, 10, 20, 30, 40]);
+        readback[..8].copy_from_slice(&[3, 1, 4, 2, 12, 18, 30, 42]);
+        assert!(canary_pixels_match(&direct, &readback, 2, 1, 16));
+        readback[3] = 7;
+        assert!(!canary_pixels_match(&direct, &readback, 2, 1, 16));
     }
 }

@@ -116,7 +116,13 @@ pub(crate) struct Playhead {
     pub(crate) position_secs: f32,
     pub(crate) region_start_secs: f32,
     pub(crate) seek_length_secs: f32,
-    pub(crate) kind: Option<crate::scrub::SeekKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interaction {
+    Disabled,
+    Pan,
+    Scrub(crate::scrub::SeekKind),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -175,6 +181,14 @@ fn clamp_scroll_offset(scroll_offset: f32, peak_count: usize, zoom: f32) -> f32 
     scroll_offset.clamp(0.0, max_scroll)
 }
 
+fn panning_button(interaction: Interaction, primary: bool, secondary: bool) -> bool {
+    match interaction {
+        Interaction::Disabled => false,
+        Interaction::Pan => primary || secondary,
+        Interaction::Scrub(_) => secondary,
+    }
+}
+
 /// Draw a waveform from pre-computed whole-media data with zoom and pan support.
 /// Primary-drag pans unless an editable playhead is supplied; secondary-drag
 /// remains available for panning while scrubbing is enabled.
@@ -184,6 +198,7 @@ pub(crate) fn draw(
     zoom: f32,
     scroll_offset: f32,
     height: f32,
+    interaction: Interaction,
     playhead: Option<Playhead>,
 ) -> DrawResponse {
     let desired_size = egui::vec2(ui.available_width(), height);
@@ -205,15 +220,16 @@ pub(crate) fn draw(
         }
     }
 
-    let editable = playhead.is_some_and(|playhead| playhead.kind.is_some());
-    let panning = if editable {
-        response.dragged_by(egui::PointerButton::Secondary)
-    } else {
-        response.dragged_by(egui::PointerButton::Primary)
-            || response.dragged_by(egui::PointerButton::Secondary)
-    };
+    let panning = panning_button(
+        interaction,
+        response.dragged_by(egui::PointerButton::Primary),
+        response.dragged_by(egui::PointerButton::Secondary),
+    );
     if panning {
-        let drag_delta = response.drag_delta().x;
+        // `Response::drag_delta` is cumulative for the whole gesture. The
+        // persisted scroll value needs only this frame's pointer movement,
+        // otherwise a long drag accelerates until the waveform disappears.
+        let drag_delta = ui.input(|input| input.pointer.delta().x);
         let bar_width = rect.width() / waveform.peaks.len() as f32;
         new_scroll = (new_scroll - drag_delta / bar_width.max(1.0) / new_zoom).max(0.0);
     }
@@ -230,20 +246,27 @@ pub(crate) fn draw(
         )
     });
     let drag_update = playhead
-        .and_then(|playhead| playhead.kind.map(|kind| {
-            let pointer_target = pointer_media_secs.map(|media_secs| {
-                media_to_seek_secs(media_secs, playhead.region_start_secs, playhead.seek_length_secs)
-            });
-            crate::scrub::update_drag(
-                ui,
-                response.id.with("scrub"),
-                &response,
-                pointer_target,
-                kind,
-            )
-        }))
+        .and_then(|playhead| match interaction {
+            Interaction::Scrub(kind) => Some({
+                let pointer_target = pointer_media_secs.map(|media_secs| {
+                    media_to_seek_secs(
+                        media_secs,
+                        playhead.region_start_secs,
+                        playhead.seek_length_secs,
+                    )
+                });
+                crate::scrub::update_drag(
+                    ui,
+                    response.id.with("scrub"),
+                    &response,
+                    pointer_target,
+                    kind,
+                )
+            }),
+            Interaction::Disabled | Interaction::Pan => None,
+        })
         .unwrap_or_default();
-    if editable {
+    if matches!(interaction, Interaction::Scrub(_)) {
         let _ = response.clone().on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal);
         response.widget_info(|| {
             egui::WidgetInfo::slider(true, 0.0, "Scrub selected cue waveform")
@@ -334,5 +357,17 @@ mod tests {
         assert_eq!(clamp_scroll_offset(-10.0, 200, 2.0), 0.0);
         assert_eq!(clamp_scroll_offset(250.0, 200, 2.0), 100.0);
         assert_eq!(clamp_scroll_offset(50.0, 200, 1.0), 0.0);
+    }
+
+    #[test]
+    fn disabled_waveform_rejects_both_drag_buttons() {
+        assert!(!panning_button(Interaction::Disabled, true, false));
+        assert!(!panning_button(Interaction::Disabled, false, true));
+        assert!(panning_button(Interaction::Pan, true, false));
+        assert!(panning_button(
+            Interaction::Scrub(crate::scrub::SeekKind::Sound),
+            false,
+            true,
+        ));
     }
 }

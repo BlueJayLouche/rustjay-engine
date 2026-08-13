@@ -91,14 +91,14 @@ fn active_progress_scrubs_only_in_edit_mode() {
 
     drag(&mut harness);
     let commands: Vec<_> = state.lock().unwrap().command_queue.drain(..).collect();
-    let Some(AppCommand::SeekCue { qid, secs }) = commands
+    let Some(AppCommand::SeekCue { instance_id, secs }) = commands
         .iter()
         .rev()
         .find(|command| matches!(command, AppCommand::SeekCue { .. }))
     else {
         panic!("edit-mode drag should queue SeekCue");
     };
-    assert_eq!(*qid, Decimal::new(11, 1));
+    assert_eq!(*instance_id, 1);
     assert!((*secs - 135.0).abs() < 0.01, "unexpected seek target: {secs}");
 
     harness.get_by_label("Edit Mode").click();

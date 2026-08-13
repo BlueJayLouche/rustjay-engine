@@ -45,6 +45,8 @@ pub enum FramePixels {
         full_range: bool,
         bt709: bool,
     },
+    #[cfg(windows)]
+    D3d11Nv12(crate::D3d11Frame),
 }
 
 /// A decoded video frame ready for GPU upload.
@@ -96,6 +98,29 @@ impl VideoFrame {
         bt709: bool,
     ) -> Self {
         Self { width, height, pts, pixels: FramePixels::Nv12 { y, uv, full_range, bt709 } }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn d3d11_nv12(
+        width: u32,
+        height: u32,
+        pts: f64,
+        frame: crate::D3d11Frame,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pts,
+            pixels: FramePixels::D3d11Nv12(frame),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn d3d11_handoff(&self) -> Option<crate::D3d11Handoff> {
+        match &self.pixels {
+            FramePixels::D3d11Nv12(frame) => Some(frame.handoff()),
+            _ => None,
+        }
     }
 
     /// RGBA bytes if this is an RGBA frame (the CPU canvas-compose path).

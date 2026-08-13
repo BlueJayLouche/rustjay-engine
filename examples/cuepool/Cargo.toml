@@ -68,3 +68,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+[patch.crates-io]
+wgpu = { git = "https://github.com/scroix/wgpu", rev = "a0b9d5718c2ab2edfce2f156792b0f4359f25460" }
+wgpu-core = { git = "https://github.com/scroix/wgpu", rev = "a0b9d5718c2ab2edfce2f156792b0f4359f25460" }
+wgpu-hal = { git = "https://github.com/scroix/wgpu", rev = "a0b9d5718c2ab2edfce2f156792b0f4359f25460" }
+wgpu-types = { git = "https://github.com/scroix/wgpu", rev = "a0b9d5718c2ab2edfce2f156792b0f4359f25460" }

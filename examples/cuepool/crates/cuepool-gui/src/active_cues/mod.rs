@@ -84,7 +84,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                                 None
                             };
                             if let Some(secs) = draw_progress_bar(ui, cue, length, fill, kind) {
-                                pending_commands.push(AppCommand::SeekCue { qid: cue.qid, secs });
+                                pending_commands.push(AppCommand::SeekCue {
+                                    instance_id: cue.instance_id,
+                                    secs,
+                                });
                             }
                         }
                     });

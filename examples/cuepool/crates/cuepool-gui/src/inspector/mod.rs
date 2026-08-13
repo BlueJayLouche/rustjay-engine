@@ -64,17 +64,23 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         };
         let waveform = state.waveform_cache.get(&path).cloned();
         let pending = state.pending_waveforms.contains(&path);
-        let playhead = state.active_cues.iter().find(|active| active.qid == qid).map(|active| {
+        let active = state.active_cues.iter().rev().find(|active| active.qid == qid);
+        let playhead = active.map(|active| {
             let seek_length_secs = active.length_secs.unwrap_or_default();
             crate::waveform::Playhead {
                 position_secs: active.position_secs,
                 region_start_secs,
                 seek_length_secs,
-                kind: (state.show_mode == crate::app::ShowMode::Edit && seek_length_secs > 0.0)
-                    .then_some(kind),
             }
         });
-        Some((qid, waveform, pending, playhead))
+        let interaction = if state.show_mode == crate::app::ShowMode::Show {
+            crate::waveform::Interaction::Disabled
+        } else if active.and_then(|active| active.length_secs).is_some_and(|length| length > 0.0) {
+            crate::waveform::Interaction::Scrub(kind)
+        } else {
+            crate::waveform::Interaction::Pan
+        };
+        Some((active.map_or(0, |active| active.instance_id), qid, waveform, pending, interaction, playhead))
     });
     let (mut waveform_zoom, mut waveform_scroll) = (state.waveform_zoom, state.waveform_scroll);
 
@@ -241,14 +247,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         changed = true;
                     }
             });
-            if let Some((qid, Some(ref waveform), _, playhead)) = waveform_data {
-                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, playhead);
+            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) = waveform_data {
+                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, interaction, playhead);
                 waveform_zoom = response.zoom;
                 waveform_scroll = response.scroll_offset;
                 if let Some(secs) = response.seek_target {
-                    pending_commands.push(crate::app::AppCommand::SeekCue { qid, secs });
+                    pending_commands.push(crate::app::AppCommand::SeekCue { instance_id, secs });
                 }
-            } else if let Some((_, None, true, _)) = waveform_data {
+            } else if let Some((_, _, None, true, _, _)) = waveform_data {
                 ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
             }
             ui.horizontal(|ui| {
@@ -306,14 +312,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         changed = true;
                     }
             });
-            if let Some((qid, Some(ref waveform), _, playhead)) = waveform_data {
-                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, playhead);
+            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) = waveform_data {
+                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, interaction, playhead);
                 waveform_zoom = response.zoom;
                 waveform_scroll = response.scroll_offset;
                 if let Some(secs) = response.seek_target {
-                    pending_commands.push(crate::app::AppCommand::SeekCue { qid, secs });
+                    pending_commands.push(crate::app::AppCommand::SeekCue { instance_id, secs });
                 }
-            } else if let Some((_, None, true, _)) = waveform_data {
+            } else if let Some((_, _, None, true, _, _)) = waveform_data {
                 ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
             }
             ui.horizontal(|ui| {

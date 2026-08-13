@@ -6,7 +6,7 @@
 use crate::SampleProvider;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 
 /// Default ring buffer size: 3 seconds at 48 kHz stereo.
@@ -15,6 +15,7 @@ const DEFAULT_RING_SECONDS: f32 = 3.0;
 struct Inner {
     sample_rate: u32,
     channels: u16,
+    length: Option<usize>,
     // Ring buffer — written only by BG thread, read only by audio thread.
     ring: UnsafeCell<Vec<f32>>,
     /// Write position (only advanced by background thread).
@@ -25,8 +26,13 @@ struct Inner {
     eof: AtomicBool,
     /// Set on Drop so the background thread exits instead of looping forever.
     shutdown: AtomicBool,
-    /// Seek target sample (set by the control thread, consumed by BG thread).
+    /// Latest seek target sample (set by the control thread, consumed by BG thread).
     seek_target: AtomicUsize,
+    /// Requested/applied generations distinguish repeated seeks to the same sample.
+    seek_generation: AtomicUsize,
+    applied_seek_generation: AtomicUsize,
+    /// Excludes the callback only while the background thread resets ring cursors.
+    seek_reset: RwLock<()>,
     /// Absolute sample corresponding to ring-buffer read position zero.
     position_base: AtomicUsize,
     /// Source is behind a Mutex — only the BG thread ever locks it.
@@ -43,17 +49,22 @@ impl BufferedSource {
     pub fn new(source: Box<dyn SampleProvider>) -> Self {
         let sr = source.sample_rate();
         let ch = source.channels();
+        let length = source.length();
         let ring_samples = (sr as f32 * DEFAULT_RING_SECONDS * ch as f32).ceil() as usize;
 
         let inner = Arc::new(Inner {
             sample_rate: sr,
             channels: ch,
+            length,
             ring: UnsafeCell::new(vec![0.0f32; ring_samples]),
             write_pos: AtomicUsize::new(0),
             read_pos: AtomicUsize::new(0),
             eof: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
-            seek_target: AtomicUsize::new(usize::MAX), // MAX = no seek pending
+            seek_target: AtomicUsize::new(0),
+            seek_generation: AtomicUsize::new(0),
+            applied_seek_generation: AtomicUsize::new(0),
+            seek_reset: RwLock::new(()),
             position_base: AtomicUsize::new(0),
             source: Mutex::new(source),
         });
@@ -78,23 +89,18 @@ impl BufferedSource {
             }
 
             // Check for pending seek
-            let seek = inner.seek_target.load(Ordering::Acquire);
-            if seek != usize::MAX {
-                inner.position_base.store(seek, Ordering::Release);
+            let seek_generation = inner.seek_generation.load(Ordering::Acquire);
+            if seek_generation != inner.applied_seek_generation.load(Ordering::Acquire) {
+                let seek = inner.seek_target.load(Ordering::Acquire);
+                let _reset = inner.seek_reset.write().unwrap_or_else(|e| e.into_inner());
                 if let Ok(src) = inner.source.lock() {
                     src.seek(seek);
                 }
-                // Reset ring
+                inner.position_base.store(seek, Ordering::Release);
                 inner.read_pos.store(0, Ordering::Release);
                 inner.write_pos.store(0, Ordering::Release);
                 inner.eof.store(false, Ordering::Relaxed);
-                // Do not erase a newer target posted while this seek ran.
-                let _ = inner.seek_target.compare_exchange(
-                    seek,
-                    usize::MAX,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                );
+                inner.applied_seek_generation.store(seek_generation, Ordering::Release);
             }
 
             if inner.eof.load(Ordering::Relaxed) {
@@ -143,6 +149,22 @@ impl BufferedSource {
 
 impl SampleProvider for BufferedSource {
     fn read(&self, buffer: &mut [f32]) -> usize {
+        if self.inner.seek_generation.load(Ordering::Acquire)
+            != self.inner.applied_seek_generation.load(Ordering::Acquire)
+        {
+            buffer.fill(0.0);
+            return buffer.len();
+        }
+        let Ok(_reset) = self.inner.seek_reset.try_read() else {
+            buffer.fill(0.0);
+            return buffer.len();
+        };
+        if self.inner.seek_generation.load(Ordering::Acquire)
+            != self.inner.applied_seek_generation.load(Ordering::Acquire)
+        {
+            buffer.fill(0.0);
+            return buffer.len();
+        }
         let ring_size = unsafe { (*self.inner.ring.get()).len() };
         let rp = self.inner.read_pos.load(Ordering::Relaxed);
         let wp = self.inner.write_pos.load(Ordering::Acquire);
@@ -176,19 +198,14 @@ impl SampleProvider for BufferedSource {
 
     fn seek(&self, sample: usize) {
         self.inner.seek_target.store(sample, Ordering::Release);
-        // Wait briefly for the BG thread to seek and reset the ring.
-        for _ in 0..100 {
-            if self.inner.seek_target.load(Ordering::Acquire) == usize::MAX {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_micros(100));
-        }
+        self.inner.seek_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     fn position(&self) -> usize {
-        let pending = self.inner.seek_target.load(Ordering::Acquire);
-        if pending != usize::MAX {
-            pending
+        if self.inner.seek_generation.load(Ordering::Acquire)
+            != self.inner.applied_seek_generation.load(Ordering::Acquire)
+        {
+            self.inner.seek_target.load(Ordering::Acquire)
         } else {
             self.inner
                 .position_base
@@ -198,11 +215,7 @@ impl SampleProvider for BufferedSource {
     }
 
     fn length(&self) -> Option<usize> {
-        if let Ok(src) = self.inner.source.lock() {
-            src.length()
-        } else {
-            None
-        }
+        self.inner.length
     }
 
     fn sample_rate(&self) -> u32 {

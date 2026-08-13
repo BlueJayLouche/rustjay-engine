@@ -160,6 +160,26 @@ impl MixerInput {
         self.finished.store(false, Ordering::Relaxed);
     }
 
+    /// Seek in this input's own timeline, clamped to `length_samples`.
+    pub fn seek_seconds(&self, secs: f64, length_samples: usize) -> Option<f64> {
+        if length_samples == 0 {
+            return None;
+        }
+        let channels = self.input_channels.max(1);
+        let sample_rate = self.source.sample_rate().max(1);
+        let final_frame = length_samples.saturating_sub(1) / channels;
+        let requested = if secs.is_finite() && secs > 0.0 {
+            (secs * f64::from(sample_rate)) as usize
+        } else if secs.is_infinite() && secs.is_sign_positive() {
+            usize::MAX
+        } else {
+            0
+        };
+        let frame = requested.min(final_frame);
+        self.seek(frame.saturating_mul(channels));
+        Some(frame as f64 / f64::from(sample_rate))
+    }
+
     /// Current playback position in interleaved source samples.
     #[inline]
     pub fn position(&self) -> usize {
@@ -170,6 +190,16 @@ impl MixerInput {
     #[inline]
     pub fn length(&self) -> Option<usize> {
         self.source.length()
+    }
+
+    #[inline]
+    pub fn channels(&self) -> usize {
+        self.input_channels
+    }
+
+    #[inline]
+    pub fn sample_rate(&self) -> u32 {
+        self.source.sample_rate()
     }
 
     /// Start a real-time volume fade. Call from the main thread.

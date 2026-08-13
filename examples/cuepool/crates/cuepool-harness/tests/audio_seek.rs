@@ -56,6 +56,35 @@ impl SampleProvider for BlockingSource {
     }
 }
 
+struct SlowSeekSource {
+    pos: std::sync::atomic::AtomicUsize,
+    seek_gate: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl SampleProvider for SlowSeekSource {
+    fn read(&self, buffer: &mut [f32]) -> usize {
+        let start = self.pos.fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
+        for (offset, sample) in buffer.iter_mut().enumerate() {
+            *sample = ramp_value(start + offset);
+        }
+        buffer.len()
+    }
+
+    fn seek(&self, sample: usize) {
+        let (lock, cvar) = &*self.seek_gate;
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = cvar.wait(released).unwrap();
+        }
+        self.pos.store(sample, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn position(&self) -> usize { self.pos.load(std::sync::atomic::Ordering::Relaxed) }
+    fn length(&self) -> Option<usize> { Some(10_000) }
+    fn sample_rate(&self) -> u32 { MIXER_SAMPLE_RATE }
+    fn channels(&self) -> u16 { MIXER_CHANNELS }
+}
+
 #[test]
 fn playing_input_seeks_forward_to_new_samples() {
     let (input, mut sink, mut clock) = seek_harness(200);
@@ -185,6 +214,35 @@ fn transient_buffer_refill_does_not_finish_the_input() {
 }
 
 #[test]
+fn slow_seek_silences_the_old_ring_until_the_new_position_is_ready() {
+    let seek_gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let buffered = BufferedSource::new(Box::new(SlowSeekSource {
+        pos: std::sync::atomic::AtomicUsize::new(0),
+        seek_gate: Arc::clone(&seek_gate),
+    }));
+    let mixer = Arc::new(Mixer::new(MIXER_CHANNELS, MIXER_SAMPLE_RATE));
+    let input = Arc::new(MixerInput::new(Box::new(buffered), BLOCK_FRAMES * 2));
+    mixer.add_input(Arc::clone(&input));
+    mixer.refresh_snapshot();
+    let mut sink = NullSink::new(Arc::clone(&mixer), BLOCK_FRAMES);
+
+    for _ in 0..100 {
+        if input.position() > 0 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    input.seek(4_000);
+
+    assert!(
+        sink.render_block().iter().all(|sample| *sample == 0.0),
+        "a pending seek must not replay samples buffered before the target"
+    );
+
+    let (lock, cvar) = &*seek_gate;
+    *lock.lock().unwrap() = true;
+    cvar.notify_all();
+}
+
+#[test]
 fn clamped_endpoint_targets_render_the_final_and_first_frames() {
     let (input, mut sink, _) = seek_harness(20);
 
@@ -196,4 +254,17 @@ fn clamped_endpoint_targets_render_the_final_and_first_frames() {
     // Negative and NaN command targets clamp to zero.
     input.seek(0);
     assert_eq!(sink.render_block()[0], ramp_value(0));
+}
+
+#[test]
+fn time_seek_uses_native_channel_count_and_clamps_to_complete_frames() {
+    let source = RampSource::new(10, 6, 120);
+    let input = MixerInput::new(Box::new(source), 60);
+
+    assert_eq!(input.seek_seconds(0.5, 120), Some(0.5));
+    assert_eq!(input.position(), 30);
+    assert_eq!(input.seek_seconds(f64::INFINITY, 120), Some(1.9));
+    assert_eq!(input.position(), 114);
+    assert_eq!(input.seek_seconds(f64::NAN, 120), Some(0.0));
+    assert_eq!(input.position(), 0);
 }

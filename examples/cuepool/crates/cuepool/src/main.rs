@@ -5,26 +5,27 @@
 //!   own display's vsync (Fifo) — ungenlocked outputs never serialize.
 //! - Audio engine: cpal output with master clock for A/V sync
 //! - Video decode: background thread feeding a bounded channel; a consume
-//!   thread picks the frame due against the wall-clock video clock and uploads
-//!   it to the shared canvas texture the render threads sample. All non-egui
-//!   GPU work lives on the consume thread (Windows/NVIDIA WSI stalls any
-//!   thread that submits behind vsync-blocked swapchains).
+//!   thread quantizes uploads to reference-output presents while ticks are
+//!   healthy, selecting one refresh ahead against the wall-clock video clock.
+//!   Timeout wakes retain wall-clock pacing when ticks stop. All non-egui GPU
+//!   work lives on the consume thread (Windows/NVIDIA WSI stalls any thread
+//!   that submits behind vsync-blocked swapchains).
 
 use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
 };
-use cuepool_gui::{AppCommand, CuePoolApp, DecodeTiming, OutputDiagnostics, SharedStateHandle, VideoDiagnostics};
+use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, SharedStateHandle, VideoDiagnostics, VideoTimings};
 use cuepool_gui::app::CueState;
 use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
 use cuepool_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use cuepool_protocols::osc::{OscEvent, OscManager};
-use cuepool_video::{FramePool, VideoFrame, VideoSource};
+use cuepool_video::{FramePool, VideoFrame, VideoSource, ZeroCopyAvailability, ZeroCopyPreference};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -112,6 +113,7 @@ struct WindowIds {
 
 #[derive(Clone)]
 struct ActiveCue {
+    instance_id: u64,
     qid: rust_decimal::Decimal,
     name: String,
     input: std::sync::Arc<cuepool_audio::MixerInput>,
@@ -134,7 +136,9 @@ struct ActiveCue {
 fn active_cue_length_samples(cue: &ActiveCue) -> Option<usize> {
     let region_frames = cue.loop_end_frame.saturating_sub(cue.loop_start_frame);
     if region_frames > 0 {
-        usize::try_from(region_frames).ok()?.checked_mul(2)
+        usize::try_from(region_frames)
+            .ok()?
+            .checked_mul(cue.input.channels())
     } else {
         cue.input.length()
     }
@@ -254,6 +258,33 @@ struct VideoSeekFrameRequest {
     adjust_show_clock: bool,
 }
 
+struct VideoDecodeRequest {
+    path: String,
+    start_before: Option<f64>,
+    seek_frame: Option<VideoSeekFrameRequest>,
+    clamp_to_media: bool,
+}
+
+fn take_ready_video_decode(
+    join: &mut Option<std::thread::JoinHandle<()>>,
+    pending: &mut Option<VideoDecodeRequest>,
+) -> Option<VideoDecodeRequest> {
+    if join.as_ref().is_some_and(|join| !join.is_finished()) {
+        return None;
+    }
+    if let Some(join) = join.take() {
+        let _ = join.join();
+    }
+    pending.take()
+}
+
+fn queue_latest_video_decode(
+    pending: &mut Option<VideoDecodeRequest>,
+    request: VideoDecodeRequest,
+) {
+    *pending = Some(request);
+}
+
 /// Video playback control shared between the winit thread and the video
 /// consume thread. The winit thread owns user-driven mutations (play, stop,
 /// pause, seek, step, MTC nudges); the consume thread owns the decode-channel
@@ -272,6 +303,7 @@ struct VideoControl {
     /// the winit thread and taken out by the consume thread. A new receiver
     /// means a new stream: the consume thread drops its peeked frame.
     frame_rx: Option<std::sync::mpsc::Receiver<VideoMessage>>,
+    timings: VideoTimings,
     /// Wall-clock playback anchor (real time = A/V sync reference).
     clock: Option<Instant>,
     /// Set while paused, to freeze `clock` across the pause.
@@ -315,6 +347,10 @@ struct VideoControl {
     outputs_gen: u64,
     /// Decode-starvation counter (consume → winit diagnostics; swapped out ~1 Hz).
     starved: u32,
+    /// Video-frame upload counter (consume → winit diagnostics; swapped out ~1 Hz).
+    uploads: u32,
+    /// Due-frame drop counter (consume → winit diagnostics; swapped out ~1 Hz).
+    dropped: u32,
 }
 
 
@@ -377,13 +413,6 @@ fn sanitized_seek_secs(secs: f32) -> f64 {
     } else {
         f64::from(secs)
     }
-}
-
-fn audio_seek_target(secs: f32, length_samples: usize, sample_rate: u32, channels: usize) -> usize {
-    let channels = channels.max(1);
-    let final_frame = length_samples.saturating_sub(1) / channels * channels;
-    let target_frame = (sanitized_seek_secs(secs) * f64::from(sample_rate)) as usize;
-    target_frame.saturating_mul(channels).min(final_frame)
 }
 
 fn clamp_video_seek_secs(target: f64, length_secs: Option<f64>) -> f64 {
@@ -527,6 +556,8 @@ struct App {
     frame_state: Arc<Mutex<OutputFrameState>>,
     /// Playback control shared with the consume thread (see `VideoControl`).
     video_control: Arc<Mutex<VideoControl>>,
+    /// Monotonic present counter + wakeup from reference output 0.
+    vsync_tick: Arc<(Mutex<u64>, Condvar)>,
     /// Cue-driven canvas/overlay work for the consume thread (rare).
     canvas_cmd_tx: std::sync::mpsc::Sender<CanvasCommand>,
     /// Stop signal + handle for the consume thread (joined on graceful exit).
@@ -553,6 +584,7 @@ struct App {
     /// fail-closed boundary: no old/default stream survives a requested ASIO failure.
     audio_engine: Option<AudioEngine>,
     active_cues: Vec<ActiveCue>,
+    next_active_cue_instance_id: u64,
     delayed_cues: Vec<DelayedCue>,
     paused: bool,
     show_start_time: Option<Instant>,
@@ -575,10 +607,14 @@ struct App {
     /// canvas upload + convert + publish path). The decode thread is a bounded
     /// producer; backpressure keeps decode a few frames ahead of the clock.
     video_stop_flag: Arc<AtomicBool>,
+    video_decode_join: Option<std::thread::JoinHandle<()>>,
+    pending_video_decode: Option<VideoDecodeRequest>,
     video_pause_flag: Arc<AtomicBool>,
     frame_pool: Arc<FramePool>,
+    zero_copy: ZeroCopyAvailability,
     /// QID of the cue whose video is currently playing (for loop sync).
     current_video_qid: Option<rust_decimal::Decimal>,
+    current_video_instance_id: Option<u64>,
     /// Last `SharedState.project_generation` we acted on. A change means a project
     /// was loaded, so the output windows must rebuild for its projection settings.
     last_project_generation: u64,
@@ -651,6 +687,7 @@ impl App {
         device: wgpu::Device,
         queue: wgpu::Queue,
         proxy: winit::event_loop::EventLoopProxy<AppEvent>,
+        zero_copy: ZeroCopyAvailability,
     ) -> Self {
         let cuepool = CuePoolApp::new();
 
@@ -765,7 +802,7 @@ impl App {
                 (ffmpeg >> 8) & 0xff,
                 ffmpeg & 0xff,
             );
-            for var in ["QPLAYER_PRESENT_MODE", "QPLAYER_FPS_DEBUG", "QPLAYER_NO_HWACCEL"] {
+            for var in ["QPLAYER_PRESENT_MODE", "QPLAYER_FPS_DEBUG", "QPLAYER_NO_HWACCEL", "QPLAYER_ZEROCOPY"] {
                 if let Ok(value) = std::env::var(var) {
                     d.env_overrides.push((var.into(), value));
                 }
@@ -778,6 +815,7 @@ impl App {
         // the Windows/NVIDIA WSI stall behind the vsync-blocked render threads.
         let video_control = Arc::new(Mutex::new(VideoControl::default()));
         let frame_state = Arc::new(Mutex::new(OutputFrameState::default()));
+        let vsync_tick = Arc::new((Mutex::new(0u64), Condvar::new()));
         let configure_gate = Arc::new(RwLock::new(()));
         let (canvas_cmd_tx, canvas_cmd_rx) = std::sync::mpsc::channel::<CanvasCommand>();
         let consume_stop = Arc::new(AtomicBool::new(false));
@@ -787,6 +825,7 @@ impl App {
             let queue = queue.clone();
             let control = Arc::clone(&video_control);
             let frame = Arc::clone(&frame_state);
+            let vsync_tick = Arc::clone(&vsync_tick);
             let configure_gate = Arc::clone(&configure_gate);
             let stop = Arc::clone(&consume_stop);
             let frame_pool = Arc::clone(&frame_pool);
@@ -800,6 +839,7 @@ impl App {
                         configure_gate,
                         control,
                         frame,
+                        vsync_tick,
                         canvas_cmd_rx,
                         proxy,
                         stop,
@@ -831,15 +871,20 @@ impl App {
             output_windows_built_from: None,
             frame_state,
             video_control,
+            vsync_tick,
             canvas_cmd_tx,
             consume_stop,
             consume_join: Some(consume_join),
             consume_failure_reported: false,
             published_outputs: Vec::new(),
             video_stop_flag: Arc::new(AtomicBool::new(false)),
+            video_decode_join: None,
+            pending_video_decode: None,
             video_pause_flag: Arc::new(AtomicBool::new(false)),
             frame_pool,
+            zero_copy,
             current_video_qid: None,
+            current_video_instance_id: None,
             last_project_generation: 0,
             last_control_redraw: std::time::Instant::now(),
             last_monitor_set: Vec::new(),
@@ -861,6 +906,7 @@ impl App {
             last_window_title: String::new(),
             autosave_running,
             active_cues: Vec::new(),
+            next_active_cue_instance_id: 1,
             delayed_cues: Vec::new(),
             paused: false,
             show_start_time: None,
@@ -1180,6 +1226,7 @@ impl App {
         {
             let video_id = window.id();
             let frame_state = Arc::clone(&self.frame_state);
+            let vsync_tick = Arc::clone(&self.vsync_tick);
             let configure_gate = Arc::clone(&self.configure_gate);
             let thread_size = Arc::clone(&size_atomic);
             let thread_stop = Arc::clone(&stop);
@@ -1200,6 +1247,7 @@ impl App {
                         configure_gate,
                         event_loop_proxy,
                         frame_state,
+                        vsync_tick,
                         thread_size,
                         thread_stop,
                         thread_presented,
@@ -1426,11 +1474,12 @@ impl App {
             }
             cuepool_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start, .. } => {
                 log::info!("Go VideoCue: {}", path);
+                let video_instance_id = self.allocate_active_cue_instance_id();
                 if *follow_mtc {
                     // MTC follow: the video plays silent (audio comes from the
                     // MTC master, e.g. Pro Tools), loads, and HOLDS on frame 0
                     // until MTC plays. GO on the same cue re-arms a fresh hold.
-                    self.play_video(path, qid, event_loop);
+                    self.play_video(path, qid, video_instance_id, *start_time, *duration, event_loop);
                     self.mtc_follow = Some(MtcFollowState {
                         qid,
                         path: path.clone(),
@@ -1443,8 +1492,11 @@ impl App {
                 } else {
                     // A plain video cue takes over the output — drop any MTC follow.
                     self.mtc_follow = None;
+                    let active_count = self.active_cues.len();
                     self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
-                    self.play_video(path, qid, event_loop);
+                    let audio_instance_id = self.active_cues.get(active_count).filter(|cue| cue.qid == qid)
+                        .map_or(video_instance_id, |cue| cue.instance_id);
+                    self.play_video(path, qid, audio_instance_id, *start_time, *duration, event_loop);
                 }
             }
             cuepool_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, stop_all, .. } => {
@@ -1568,6 +1620,8 @@ impl App {
                 // consume thread stops PTS-matching against stale frames (its
                 // receiver drop also retires the decode thread). Cleared BEFORE
                 // sending the upload command so no late video frame lands over it.
+                self.video_stop_flag.store(true, Ordering::Relaxed);
+                self.pending_video_decode = None;
                 {
                     let mut ctl = self.video_control.lock_unpoisoned();
                     ctl.stream_epoch += 1;
@@ -1782,7 +1836,17 @@ impl App {
     /// (drives the published `has_content`).
     fn set_current_video_qid(&mut self, qid: Option<rust_decimal::Decimal>) {
         self.current_video_qid = qid;
+        // The caller that starts a video assigns its new instance immediately
+        // afterwards. Clearing here prevents an Image cue (which shares this
+        // content slot) from inheriting a seekable video's runtime identity.
+        self.current_video_instance_id = None;
         self.video_control.lock_unpoisoned().video_active = qid.is_some();
+    }
+
+    fn allocate_active_cue_instance_id(&mut self) -> u64 {
+        let id = self.next_active_cue_instance_id;
+        self.next_active_cue_instance_id = self.next_active_cue_instance_id.wrapping_add(1).max(1);
+        id
     }
 
     /// Set the current Text cue and mirror its presence to the consume thread.
@@ -2120,7 +2184,9 @@ impl App {
                 } else {
                     CueState::Playing
                 };
+                let instance_id = self.allocate_active_cue_instance_id();
                 self.active_cues.push(ActiveCue {
+                    instance_id,
                     qid,
                     name: name.to_string(),
                     input,
@@ -2379,12 +2445,11 @@ impl App {
 
     fn seek_active_audio_cue(
         &mut self,
-        qid: rust_decimal::Decimal,
+        instance_id: u64,
         secs: f32,
     ) -> Option<f64> {
-        let sample_rate = self.audio_sample_rate();
         let cue = self.active_cues.iter_mut().find(|cue| {
-            cue.qid == qid
+            cue.instance_id == instance_id
                 && matches!(
                     cue.state,
                     CueState::Playing | CueState::PlayingLooped | CueState::Paused
@@ -2395,11 +2460,11 @@ impl App {
             return None;
         }
 
-        let target_samples = audio_seek_target(secs, length_samples, sample_rate, 2);
-        cue.input.seek(target_samples);
+        let target_secs = cue.input.seek_seconds(sanitized_seek_secs(secs), length_samples)?;
+        let target_samples = cue.input.position();
 
-        let fade_frames = (cue.fade_out.max(0.0) * sample_rate as f32) as u32;
-        let fade_samples = fade_frames as usize * 2;
+        let fade_frames = (cue.fade_out.max(0.0) * cue.input.sample_rate() as f32) as u32;
+        let fade_samples = fade_frames as usize * cue.input.channels();
         if fade_frames > 0 && cue.loop_counter.is_none() {
             match tail_fade_seek_action(
                 cue.fade_out_started,
@@ -2423,7 +2488,7 @@ impl App {
             }
         }
 
-        Some(target_samples as f64 / 2.0 / f64::from(sample_rate))
+        Some(target_secs)
     }
 
     fn seek_video_cue(
@@ -2468,7 +2533,17 @@ impl App {
         );
     }
 
-    fn seek_cue(&mut self, qid: rust_decimal::Decimal, secs: f32) {
+    fn seek_cue(&mut self, instance_id: u64, secs: f32) {
+        let qid = self.active_cues.iter()
+            .find(|cue| cue.instance_id == instance_id)
+            .map(|cue| cue.qid)
+            .or_else(|| (self.current_video_instance_id == Some(instance_id))
+                .then_some(self.current_video_qid)
+                .flatten());
+        let Some(qid) = qid else {
+            log::debug!("SeekCue instance {instance_id}: inactive; ignoring");
+            return;
+        };
         let cue = {
             let state = self.cuepool.state().lock_unpoisoned();
             state.show_file.cues.iter().find(|cue| cue.base().qid == qid).cloned()
@@ -2480,7 +2555,7 @@ impl App {
 
         match cue {
             cuepool_core::Cue::Sound { .. } => {
-                if self.seek_active_audio_cue(qid, secs).is_none() {
+                if self.seek_active_audio_cue(instance_id, secs).is_none() {
                     log::debug!("SeekCue Q{qid}: cue is inactive or has no known length; ignoring");
                 }
             }
@@ -2490,11 +2565,13 @@ impl App {
                 duration,
                 ..
             } => {
-                if self.current_video_qid != Some(qid) {
+                if self.current_video_qid != Some(qid)
+                    || self.current_video_instance_id != Some(instance_id)
+                {
                     log::debug!("SeekCue Q{qid}: video cue is inactive; ignoring");
                     return;
                 }
-                let audio_target = self.seek_active_audio_cue(qid, secs);
+                let audio_target = self.seek_active_audio_cue(instance_id, secs);
                 let media_offset = start_time.as_secs_f64();
                 let configured_length =
                     (duration.as_secs_f64() > 0.0).then(|| duration.as_secs_f64());
@@ -2538,7 +2615,7 @@ impl App {
                 continue; // unknown length — can't schedule a tail fade
             };
             let fade_frames = (ac.fade_out * sr as f32) as u32;
-            let trigger = end_samples.saturating_sub(fade_frames as usize * 2);
+            let trigger = end_samples.saturating_sub(fade_frames as usize * ac.input.channels());
             if ac.input.position() >= trigger {
                 ac.input.start_fade(0.0, fade_frames.max(1), ac.fade_type);
                 ac.fade_out_started = true;
@@ -2551,19 +2628,19 @@ impl App {
     fn check_finished_cues(&mut self, event_loop: &ActiveEventLoop) {
         // Mark finished cues as Done and collect their QIDs.
         // Cues explicitly set to Done (e.g. immediate StopCue) are also removed here.
-        let finished_qids: Vec<rust_decimal::Decimal> = {
-            let mut qids = Vec::new();
+        let finished_instances: Vec<(u64, rust_decimal::Decimal)> = {
+            let mut instances = Vec::new();
             for ac in &mut self.active_cues {
                 if ac.input.is_finished() || ac.state == CueState::Done {
                     ac.state = CueState::Done;
-                    qids.push(ac.qid);
+                    instances.push((ac.instance_id, ac.qid));
                 }
             }
-            qids
+            instances
         };
 
-        for qid in finished_qids {
-            self.active_cues.retain(|ac| ac.qid != qid);
+        for (instance_id, qid) in finished_instances {
+            self.active_cues.retain(|ac| ac.instance_id != instance_id);
             log::info!("Cue Q{} finished — checking AfterLast chain", qid);
             self.play_after_last_chain(qid, event_loop);
         }
@@ -2606,7 +2683,7 @@ impl App {
                 continue; // unknown length — can't schedule a loop-end stop
             };
             let fade_frames = (pending.fade_out_time * sr as f32) as u32;
-            let trigger = end_samples.saturating_sub(fade_frames as usize * 2);
+            let trigger = end_samples.saturating_sub(fade_frames as usize * ac.input.channels());
             if ac.input.position() >= trigger {
                 if pending.fade_out_time > 0.0 {
                     ac.input.start_fade(0.0, fade_frames.max(1), pending.fade_type);
@@ -2638,7 +2715,15 @@ impl App {
         }
     }
 
-    fn play_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
+    fn play_video(
+        &mut self,
+        path: &str,
+        qid: rust_decimal::Decimal,
+        instance_id: u64,
+        start_time: cuepool_core::Timespan,
+        duration: cuepool_core::Timespan,
+        event_loop: &ActiveEventLoop,
+    ) {
         // Only open output windows on the first video; looping should not respawn them.
         if self.output_windows.is_empty() {
             self.create_output_windows(event_loop);
@@ -2656,13 +2741,15 @@ impl App {
             // Start the playback clock now; PTS are matched against it (and frames
             // late vs the clock are skipped, so video catches up to audio even if
             // decode open / first-frame took a while).
-            ctl.clock = Some(std::time::Instant::now());
+            let media_offset = start_time.as_secs_f64().max(0.0);
+            ctl.clock = video_seek_clock(Instant::now(), media_offset, false).map(|(clock, _)| clock);
             ctl.pause_started = None;
             ctl.peek_pts = None;
             ctl.last_pts = None;
             ctl.canvas_has_frame = false;
-            ctl.media_length_secs = None;
-            ctl.timeline_offset_secs = 0.0;
+            ctl.media_length_secs = (duration.as_secs_f64() > 0.0)
+                .then(|| media_offset + duration.as_secs_f64());
+            ctl.timeline_offset_secs = media_offset;
             // A new video always starts at full brightness, cancelling any
             // Stop-cue fade still in flight.
             ctl.fade = None;
@@ -2672,6 +2759,7 @@ impl App {
             ctl.fit = projection.fit;
         }
         self.set_current_video_qid(Some(qid));
+        self.current_video_instance_id = Some(instance_id);
         // (Re)create the consume thread's canvas at the projection size; `force`
         // clears the previous clip's last frame even when the dims match.
         let _ = self.canvas_cmd_tx.send(CanvasCommand::Resize {
@@ -2680,7 +2768,13 @@ impl App {
             force: true,
         });
 
-        self.spawn_video_decode(path, None, None, false);
+        let media_offset = start_time.as_secs_f64().max(0.0);
+        self.spawn_video_decode(
+            path,
+            (media_offset > 0.0).then_some(media_offset),
+            None,
+            false,
+        );
     }
 
     /// (Re)spawn the video decode thread. `start_before`: seek so the first
@@ -2695,16 +2789,35 @@ impl App {
         seek_frame: Option<VideoSeekFrameRequest>,
         clamp_to_media: bool,
     ) {
-        // Kill any previous decode thread by signalling its own stop flag, then
-        // install a fresh one for the new thread. Per-thread flags (vs. a shared flag
-        // reset to false) guarantee the old thread exits — resetting a shared flag
-        // could revive a still-sleeping old thread and leak it across every loop.
-        self.video_stop_flag.store(true, Ordering::Relaxed);
-        self.video_stop_flag = Arc::new(AtomicBool::new(false));
-        // Resolve the path relative to the project dir first (same as
-        // play_audio) so a packed project's "Media/<file>" relative path
-        // opens instead of failing — audio resolved but video didn't.
         let path = self.resolve_path(path).unwrap_or_else(|| path.to_string());
+        queue_latest_video_decode(&mut self.pending_video_decode, VideoDecodeRequest {
+            path,
+            start_before,
+            seek_frame,
+            clamp_to_media,
+        });
+        self.video_stop_flag.store(true, Ordering::Relaxed);
+        // Retire the old receiver immediately. If its FFmpeg open is slow to
+        // cancel, the last picture stays held instead of old queued frames
+        // being presented against the newly-seeked clock.
+        {
+            let mut ctl = self.video_control.lock_unpoisoned();
+            ctl.stream_epoch += 1;
+            ctl.frame_rx = None;
+            ctl.peek_pts = None;
+        }
+        self.start_pending_video_decode();
+    }
+
+    fn start_pending_video_decode(&mut self) {
+        let Some(request) = take_ready_video_decode(
+            &mut self.video_decode_join,
+            &mut self.pending_video_decode,
+        ) else {
+            return;
+        };
+        self.video_stop_flag = Arc::new(AtomicBool::new(false));
+        let VideoDecodeRequest { path, start_before, seek_frame, clamp_to_media } = request;
         // Bounded channel = backpressure: the decode thread can't outrun the consumer
         // (the consume thread matching PTS against the wall-clock video clock), so
         // decode runs at real-time rate — no free-running decoder to drift against
@@ -2712,6 +2825,7 @@ impl App {
         // clock, not the audio clock, so it can't freeze if the audio device sleeps.
         let (frame_tx, frame_rx) =
             std::sync::mpsc::sync_channel::<VideoMessage>(VIDEO_QUEUE_CAP);
+        let timings = VideoTimings::default();
         // Installing a new receiver also tells the consume thread to drop its
         // peeked frame and invalidates EOF already queued by the old decoder.
         let stream_epoch = {
@@ -2719,6 +2833,7 @@ impl App {
             ctl.stream_epoch += 1;
             ctl.frame_rx = Some(frame_rx);
             ctl.seek_frame = seek_frame;
+            ctl.timings = timings.clone();
             ctl.stream_epoch
         };
         let stop_flag = Arc::clone(&self.video_stop_flag);
@@ -2726,8 +2841,9 @@ impl App {
         let frame_pool = Arc::clone(&self.frame_pool);
         let diag_state = Arc::clone(self.cuepool.state());
         let video_control = Arc::clone(&self.video_control);
+        let zero_copy = self.zero_copy.clone();
 
-        if let Err(e) = std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
                 video_decode_thread(
@@ -2741,14 +2857,15 @@ impl App {
                     stream_epoch,
                     clamp_to_media,
                     frame_pool,
+                    timings,
+                    zero_copy,
                 );
-            })
-        {
-            // Uninstall the receiver so the consume thread isn't left waiting
-            // on a stream that never starts. The epoch bump above stands — it
-            // correctly invalidates anything queued by the previous decoder.
-            self.video_control.lock_unpoisoned().frame_rx = None;
-            log::error!("Video cue degraded: could not spawn decode thread: {e}");
+            }) {
+            Ok(join) => self.video_decode_join = Some(join),
+            Err(e) => {
+                self.video_control.lock_unpoisoned().frame_rx = None;
+                log::error!("Video cue degraded: could not spawn decode thread: {e}");
+            }
         }
     }
 
@@ -2756,7 +2873,18 @@ impl App {
     fn restart_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
         // play_video already signals the old thread's stop flag and installs a fresh
         // one, so there's no manual stop/sleep dance (and no shared-flag revival race).
-        self.play_video(path, qid, event_loop);
+        let (start_time, duration) = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            state.show_file.cues.iter().find_map(|cue| match cue {
+                cuepool_core::Cue::Video { base, start_time, duration, .. } if base.qid == qid => {
+                    Some((*start_time, *duration))
+                }
+                _ => None,
+            }).unwrap_or((cuepool_core::Timespan::ZERO, cuepool_core::Timespan::ZERO))
+        };
+        let instance_id = self.current_video_instance_id
+            .unwrap_or_else(|| self.allocate_active_cue_instance_id());
+        self.play_video(path, qid, instance_id, start_time, duration, event_loop);
         log::info!("Restarted video for Q{qid} on loop");
     }
 
@@ -2785,6 +2913,7 @@ impl App {
     /// clear presentation state so the next published frame goes black.
     fn stop_video_playback(&mut self) {
         self.video_stop_flag.store(true, Ordering::Relaxed);
+        self.pending_video_decode = None;
         {
             let mut ctl = self.video_control.lock_unpoisoned();
             ctl.stream_epoch += 1;
@@ -3332,7 +3461,7 @@ impl App {
                 AppCommand::RecorderScrub { frame } => self.recorder.set_scrub(frame),
                 AppCommand::FrameStep => self.frame_step(),
                 AppCommand::FrameStepBack => self.frame_step_back(),
-                AppCommand::SeekCue { qid, secs } => self.seek_cue(qid, secs),
+                AppCommand::SeekCue { instance_id, secs } => self.seek_cue(instance_id, secs),
                 _ => {}
             }
         }
@@ -3817,6 +3946,7 @@ impl App {
     /// their last frame with the GUI hidden because the loop-restart poll
     /// below never ran until the GUI was focused again.
     fn tick_engine(&mut self, event_loop: &ActiveEventLoop) {
+        self.start_pending_video_decode();
         self.check_fade_outs();
         self.check_pending_stops();
         self.check_finished_cues(event_loop);
@@ -3922,8 +4052,6 @@ impl App {
 
     fn render_control(&mut self) {
         self.update_window_title();
-        // Read before egui_state's mutable borrow below (E0502 otherwise).
-        let sample_rate = (self.audio_sample_rate() as f64).max(1.0);
 
         // Acquire (under the shared gate) BEFORE running the egui pass: bailing
         // out after `run` would discard its texture deltas and desync the atlas.
@@ -3981,21 +4109,24 @@ impl App {
         let raw_input = egui_state.take_egui_input(window);
         // Sync active cue state into the GUI shared state
         {
-            let sr = sample_rate;
-            // Interleaved stereo samples → seconds.
-            let secs = |samples: usize| (samples as f64 / 2.0 / sr) as f32;
             let mut gui_active: Vec<cuepool_gui::ActiveCueInfo> = self.active_cues.iter().map(|ac| {
                 // For looping cues with explicit loop boundaries, show loop-relative
                 // position so the progress bar resets to 0 on each loop iteration.
                 let loop_length_frames = ac.loop_end_frame.saturating_sub(ac.loop_start_frame) as usize;
                 let (position, length) = if ac.loop_counter.is_some() && loop_length_frames > 0 {
-                    let total_frames = ac.input.position() / 2; // mixer is stereo
+                    let channels = ac.input.channels().max(1);
+                    let total_frames = ac.input.position() / channels;
                     let rel_frames = total_frames % loop_length_frames;
-                    (rel_frames * 2, Some(loop_length_frames * 2))
+                    (rel_frames * channels, Some(loop_length_frames * channels))
                 } else {
                     (ac.input.position(), ac.input.length())
                 };
+                let secs = |samples: usize| {
+                    (samples as f64 / ac.input.channels().max(1) as f64
+                        / f64::from(ac.input.sample_rate().max(1))) as f32
+                };
                 cuepool_gui::ActiveCueInfo {
+                    instance_id: ac.instance_id,
                     qid: ac.qid,
                     name: ac.name.clone(),
                     paused: !ac.input.is_active(),
@@ -4039,6 +4170,7 @@ impl App {
                                 .then_some(configured_duration)
                                 .or(video_length_secs);
                             gui_active.push(cuepool_gui::ActiveCueInfo {
+                                instance_id: self.current_video_instance_id.unwrap_or(0),
                                 qid: vqid,
                                 name: cue.base().name.clone(),
                                 paused,
@@ -4565,8 +4697,14 @@ impl ApplicationHandler<AppEvent> for App {
 
         if self.dbg_last_log.elapsed() >= std::time::Duration::from_secs(1) {
             let secs = self.dbg_last_log.elapsed().as_secs_f64();
-            let starved_per_sec =
-                std::mem::replace(&mut self.video_control.lock_unpoisoned().starved, 0) as f64 / secs;
+            let (starved_per_sec, uploads_per_sec, dropped_per_sec) = {
+                let mut ctl = self.video_control.lock_unpoisoned();
+                (
+                    std::mem::replace(&mut ctl.starved, 0) as f64 / secs,
+                    std::mem::replace(&mut ctl.uploads, 0) as f64 / secs,
+                    std::mem::replace(&mut ctl.dropped, 0) as f64 / secs,
+                )
+            };
             let ticks_per_sec = self.dbg_ticks as f64 / secs;
             // Publish the counters (plus a fresh output snapshot) to the Status
             // window. The output list is rebuilt here rather than patched on
@@ -4612,6 +4750,8 @@ impl ApplicationHandler<AppEvent> for App {
             let d = &mut state.diagnostics;
             d.presented_per_sec = total_presented;
             d.starved_per_sec = starved_per_sec;
+            d.uploads_per_sec = uploads_per_sec;
+            d.dropped_per_sec = dropped_per_sec;
             d.event_loop_per_sec = ticks_per_sec;
             d.outputs = outputs;
             drop(state);
@@ -4705,16 +4845,66 @@ fn resolve_goto_target(
     }
 }
 
+const VSYNC_INTERVAL_MIN: Duration = Duration::from_millis(4);
+const VSYNC_INTERVAL_MAX: Duration = Duration::from_millis(40);
+const VSYNC_STALE_MAX: Duration = Duration::from_millis(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FramePacingDecision {
+    target: Option<Duration>,
+    tick_paced: bool,
+}
+
+fn frame_pacing_decision(
+    position: Option<Duration>,
+    stepping: bool,
+    woke_on_tick: bool,
+    last_tick_age: Option<Duration>,
+    tick_interval: Option<Duration>,
+) -> FramePacingDecision {
+    let Some(position) = position else {
+        return FramePacingDecision { target: None, tick_paced: false };
+    };
+    let healthy_interval = tick_interval
+        .map(|interval| interval.clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX))
+        .filter(|interval| {
+            last_tick_age.is_some_and(|age| {
+                age < interval.saturating_mul(3).min(VSYNC_STALE_MAX)
+            })
+        });
+    if !stepping
+        && let Some(interval) = healthy_interval {
+            return FramePacingDecision {
+                target: woke_on_tick.then(|| position.saturating_add(interval)),
+                tick_paced: true,
+            };
+        }
+    FramePacingDecision { target: Some(position), tick_paced: false }
+}
+
+fn update_vsync_interval(
+    interval: Option<Duration>,
+    elapsed: Duration,
+    tick_count: u64,
+) -> Duration {
+    let sample = Duration::from_secs_f64(elapsed.as_secs_f64() / tick_count as f64)
+        .clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX);
+    interval
+        .map(|previous| previous.mul_f64(0.8) + sample.mul_f64(0.2))
+        .unwrap_or(sample)
+        .clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX)
+}
+
 /// Video consume thread: owns the canvas/overlay textures, the YUV converter,
 /// the decode-channel drain and the frame-state publish — every non-egui GPU
 /// call. Moving this off the winit thread is the Windows fix: NVIDIA's Vulkan
 /// WSI serializes a thread's GPU calls behind the vsync-blocked render
 /// threads (20-60 ms per call), which dragged the whole event loop to ~10 Hz.
 ///
-/// The loop is paced by the video clock: compute the next due frame's PTS
-/// against the clock, sleep until due, drain due frames, upload the newest,
-/// submit the YUV convert, publish. Paused/idle: a light 2 ms poll so
-/// frame-step/stop stay responsive without busy-spinning.
+/// While output 0 presents regularly, only its ticks consume frames and a
+/// one-interval lookahead selects what the next scanout should show. Timeout
+/// wakes still handle control and publishing. Missing/stale ticks and stepping
+/// use the original wall-clock selection and sleep behavior unchanged.
 ///
 /// Lock order: `control` and `frame_state` are both leaf locks, never held
 /// together across GPU calls and never held while sleeping or blocking on
@@ -4727,6 +4917,7 @@ fn video_consume_thread(
     configure_gate: Arc<RwLock<()>>,
     control: Arc<Mutex<VideoControl>>,
     frame_state: Arc<Mutex<OutputFrameState>>,
+    vsync_tick: Arc<(Mutex<u64>, Condvar)>,
     cmd_rx: std::sync::mpsc::Receiver<CanvasCommand>,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     stop: Arc<AtomicBool>,
@@ -4744,8 +4935,26 @@ fn video_consume_thread(
     // Live outputs copy (re-cloned only when `outputs_gen` advances).
     let mut outputs: Vec<cuepool_core::ProjectorOutput> = Vec::new();
     let mut outputs_gen = 0u64;
+    let mut timings = VideoTimings::default();
+    let mut upload_timing = TimingWindow::default();
+    let mut conversion_submit_timing = TimingWindow::default();
+    #[cfg(windows)]
+    let mut direct_retirement = cuepool_video::SubmissionRetirement::default();
+    #[cfg(windows)]
+    let (retirement_tx, retirement_rx) = std::sync::mpsc::channel::<()>();
+    let mut last_vsync_tick = *vsync_tick.0.lock_unpoisoned();
+    let mut woke_on_vsync = false;
+    let mut last_vsync_at: Option<Instant> = None;
+    let mut vsync_interval: Option<Duration> = None;
 
     while !stop.load(Ordering::Relaxed) {
+        #[cfg(windows)]
+        {
+            let _ = device.poll(wgpu::PollType::Poll);
+            if retirement_rx.try_iter().next().is_some() {
+                direct_retirement.drain_completed();
+            }
+        }
         // ── Cue-driven canvas/overlay commands (rare) ──
         let mut views_dirty = false;
         for cmd in coalesce_canvas_commands(cmd_rx.try_iter()) {
@@ -4831,6 +5040,9 @@ fn video_consume_thread(
             if let Some(new_rx) = ctl.frame_rx.take() {
                 rx = Some(new_rx);
                 rx_epoch = Some(ctl.stream_epoch);
+                timings = ctl.timings.clone();
+                upload_timing = TimingWindow::default();
+                conversion_submit_timing = TimingWindow::default();
                 peek = None;
                 ctl.peek_pts = None;
             }
@@ -4885,11 +5097,11 @@ fn video_consume_thread(
         }
 
         // ── Due-frame selection against the video clock ──
-        let (target, fit) = {
+        let (position, fit, stepping) = {
             let mut ctl = control.lock_unpoisoned();
             let stream_current = rx_epoch == Some(ctl.stream_epoch);
             let stepping = stream_current && std::mem::take(&mut ctl.step_pending);
-            let target = if stream_current && (!ctl.paused || stepping) {
+            let position = if stream_current && (!ctl.paused || stepping) {
                 // While paused-and-stepping, the target is the frozen position —
                 // clock.elapsed() keeps growing through the pause and would drain
                 // every buffered frame. +1µs absorbs the f64→Duration rounding of
@@ -4906,8 +5118,17 @@ fn video_consume_thread(
             } else {
                 None
             };
-            (target, ctl.fit)
+            (position, ctl.fit, stepping)
         };
+        let pacing = frame_pacing_decision(
+            position,
+            stepping,
+            woke_on_vsync,
+            last_vsync_at.map(|tick| tick.elapsed()),
+            vsync_interval,
+        );
+        let target = pacing.target;
+        woke_on_vsync = false;
 
         // Keep one frame peeked while paused, and notice an immediately-following
         // EOF even without a running target clock. A future frame still holds EOF
@@ -4925,6 +5146,7 @@ fn video_consume_thread(
         }
 
         let mut consumed: Option<VideoFrame> = None;
+        let mut dropped = 0u32;
         if let Some(target) = target {
             loop {
                 if peek.is_none() {
@@ -4941,12 +5163,16 @@ fn video_consume_thread(
                 match peek.as_ref() {
                     Some(f) if Duration::from_secs_f64(f.pts.max(0.0)) <= target => {
                         if let Some(discarded) = consumed.replace(peek.take().unwrap()) {
+                            dropped += 1;
                             frame_pool.recycle_frame(discarded);
                         }
                     }
                     _ => break, // next frame not due yet, or channel empty
                 }
             }
+        }
+        if dropped != 0 {
+            control.lock_unpoisoned().dropped += dropped;
         }
 
         // Check immediately before GPU work without holding the control lock
@@ -4967,12 +5193,114 @@ fn video_consume_thread(
 
         // ── Upload the newest due frame to the canvas (GPU work) ──
         if let Some(frame) = consumed {
+            #[cfg(windows)]
+            let mut frame_presented = true;
+            #[cfg(not(windows))]
+            let frame_presented = true;
+            #[cfg(windows)]
+            let mut direct_submitted = false;
+            let mut uploaded = false;
             match &frame.pixels {
                 cuepool_video::FramePixels::Rgba(_) => {
                     if let Some(c) = canvas.as_ref() {
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        let upload_started = Instant::now();
                         c.upload_frame(&queue, &frame, fit);
+                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        uploaded = true;
+                    }
+                }
+                #[cfg(windows)]
+                cuepool_video::FramePixels::D3d11Nv12(direct) => {
+                    if yuv_converter.is_none() {
+                        yuv_converter = Some(cuepool_video::YuvConverter::new(
+                            &device,
+                            wgpu::TextureFormat::Rgba8Unorm,
+                        ));
+                    }
+                    if let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut()) {
+                        let _configure_guard =
+                            configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        if let Some(readback) = direct.take_canary_readback() {
+                            let canary_result = cuepool_video::YuvConverter::run_d3d11_canary(
+                                &device,
+                                &queue,
+                                &frame,
+                                &readback,
+                                [c.width, c.height],
+                                fit,
+                            );
+                            frame_pool.recycle_frame(readback);
+                            if let Err(reason) = canary_result {
+                                let reason = format!("zero-copy canary failed: {reason}");
+                                direct.complete(Err(reason));
+                                frame_presented = false;
+                            }
+                        }
+
+                        if frame_presented {
+                            let upload_started = Instant::now();
+                            conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
+                            timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                            let conversion_started = Instant::now();
+                            let mut encoder =
+                                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                    label: Some("canvas-d3d11va-convert"),
+                                });
+                            let prepared = unsafe { direct.record_vulkan_acquire(&mut encoder) }
+                                .and_then(|()| {
+                                    conv.encode(&mut encoder, &c.render_view());
+                                    unsafe { direct.record_vulkan_release(&mut encoder) }
+                                })
+                                .and_then(|()| unsafe { direct.attach_keyed_mutex(&mut encoder) });
+                            let epoch = rx_epoch.unwrap_or_default();
+                            let retired = direct_retirement.submit(epoch, direct.clone());
+                            match (prepared, retired) {
+                                (Ok(()), Ok(completed)) => {
+                                    if let Err(reason) = direct.release_to_vulkan() {
+                                        completed.store(true, Ordering::Release);
+                                        direct_retirement.drain_completed();
+                                        direct.complete(Err(reason));
+                                        frame_presented = false;
+                                    } else {
+                                        queue.submit(std::iter::once(encoder.finish()));
+                                        let completion = direct.clone();
+                                        let retirement_tx = retirement_tx.clone();
+                                        queue.on_submitted_work_done(move || {
+                                            completed.store(true, Ordering::Release);
+                                            completion.complete(Ok(()));
+                                            let _ = retirement_tx.send(());
+                                        });
+                                        direct_submitted = true;
+                                        uploaded = true;
+                                        timings.conversion_submit.set_ms(
+                                            conversion_submit_timing
+                                                .record(conversion_started.elapsed()),
+                                        );
+                                    }
+                                }
+                                (Err(reason), Ok(completed)) => {
+                                    completed.store(true, Ordering::Release);
+                                    direct_retirement.drain_completed();
+                                    direct.complete(Err(reason));
+                                    frame_presented = false;
+                                }
+                                (Ok(()), Err(_)) => {
+                                    direct.complete(Err(
+                                        "zero-copy submission retirement budget exhausted".into(),
+                                    ));
+                                    frame_presented = false;
+                                }
+                                (Err(reason), Err(_)) => {
+                                    direct.complete(Err(reason));
+                                    frame_presented = false;
+                                }
+                            }
+                        }
+                    } else {
+                        direct.complete(Err("zero-copy canvas is unavailable".into()));
+                        frame_presented = false;
                     }
                 }
                 _ => {
@@ -4988,20 +5316,32 @@ fn video_consume_thread(
                     if let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut()) {
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        let upload_started = Instant::now();
                         conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
+                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        let conversion_started = Instant::now();
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("canvas-yuv-convert"),
                             });
                         conv.encode(&mut encoder, &c.render_view());
                         queue.submit(std::iter::once(encoder.finish()));
+                        timings.conversion_submit.set_ms(
+                            conversion_submit_timing.record(conversion_started.elapsed()),
+                        );
+                        uploaded = true;
                     }
                 }
             }
             let mut ctl = control.lock_unpoisoned();
+            if uploaded {
+                ctl.uploads += 1;
+            }
             if rx_epoch == Some(ctl.stream_epoch) {
-                ctl.last_pts = Some(frame.pts);
-                ctl.canvas_has_frame = true;
+                if frame_presented {
+                    ctl.last_pts = Some(frame.pts);
+                    ctl.canvas_has_frame = true;
+                }
                 ctl.peek_pts = peek.as_ref().map(|f| f.pts);
             } else {
                 drop(ctl);
@@ -5010,6 +5350,13 @@ fn video_consume_thread(
                 peek = None;
                 eof_epoch = None;
             }
+            #[cfg(windows)]
+            if direct_submitted {
+                drop(frame);
+            } else {
+                frame_pool.recycle_frame(frame);
+            }
+            #[cfg(not(windows))]
             frame_pool.recycle_frame(frame);
         } else if let Some(epoch) = rx_epoch {
             let mut ctl = control.lock_unpoisoned();
@@ -5100,8 +5447,8 @@ fn video_consume_thread(
             }
         }
 
-        // ── Pace: sleep until the next frame is due, or a light idle poll ──
-        let sleep_for = match target {
+        // ── Pace: wake after reference present, with the old poll as fallback ──
+        let sleep_for = match position {
             None => Duration::from_millis(2), // paused/idle: watch for step/stop
             Some(pos) => match peek.as_ref() {
                 Some(f) => {
@@ -5122,9 +5469,51 @@ fn video_consume_thread(
                 }
             },
         };
+        // A frame held for the next healthy tick would otherwise leave the old
+        // due-now calculation at zero and spin instead of returning to the wait.
+        let sleep_for = if pacing.tick_paced {
+            sleep_for.max(Duration::from_millis(1))
+        } else {
+            sleep_for
+        };
         if !sleep_for.is_zero() {
-            std::thread::sleep(sleep_for);
+            let tick = vsync_tick.0.lock_unpoisoned();
+            let (tick, _) = vsync_tick
+                .1
+                .wait_timeout_while(tick, sleep_for, |tick| *tick == last_vsync_tick)
+                .unwrap_or_else(|e| e.into_inner());
+            let next_vsync_tick = *tick;
+            drop(tick);
+            let tick_count = next_vsync_tick.wrapping_sub(last_vsync_tick);
+            woke_on_vsync = tick_count != 0;
+            if woke_on_vsync {
+                let now = Instant::now();
+                if let Some(previous) = last_vsync_at {
+                    vsync_interval = Some(update_vsync_interval(
+                        vsync_interval,
+                        now.saturating_duration_since(previous),
+                        tick_count,
+                    ));
+                }
+                last_vsync_at = Some(now);
+            }
+            last_vsync_tick = next_vsync_tick;
         }
+    }
+
+    #[cfg(windows)]
+    while !direct_retirement.is_empty() {
+        if device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(2)),
+            })
+            .is_err()
+        {
+            log::error!("Video zero-copy teardown timed out; waiting to preserve submitted leases");
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }
+        direct_retirement.drain_completed();
     }
 }
 
@@ -5145,6 +5534,7 @@ fn output_render_thread(
     configure_gate: Arc<RwLock<()>>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     frame_state: Arc<Mutex<OutputFrameState>>,
+    vsync_tick: Arc<(Mutex<u64>, Condvar)>,
     size: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     presented: Arc<AtomicU32>,
@@ -5330,6 +5720,13 @@ fn output_render_thread(
 
         queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
+        if out_index == 0 {
+            {
+                let mut tick = vsync_tick.0.lock_unpoisoned();
+                *tick = tick.wrapping_add(1);
+            }
+            vsync_tick.1.notify_all();
+        }
         drop(submit_guard);
         presented.fetch_add(1, Ordering::Relaxed);
         if !matches!(
@@ -5382,23 +5779,40 @@ fn video_decode_thread(
     stream_epoch: u64,
     clamp_to_media: bool,
     frame_pool: Arc<FramePool>,
+    timings: VideoTimings,
+    zero_copy: ZeroCopyAvailability,
 ) {
-    let mut source = match VideoSource::open_with_pool(path, Arc::clone(&frame_pool)) {
+    if stop_flag.load(Ordering::Acquire) {
+        return;
+    }
+    let zero_copy = if start_before.is_some() {
+        ZeroCopyAvailability::declined("seek/frame-step-back uses D3D11VA readback")
+    } else {
+        zero_copy
+    };
+    let mut source = match VideoSource::open_with_zero_copy(
+        path,
+        Arc::clone(&frame_pool),
+        zero_copy,
+    ) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Failed to open video source {}: {e}", path);
             return;
         }
     };
+    if stop_flag.load(Ordering::Acquire) {
+        return;
+    }
 
     // Publish what's decoding to the Status window (Help → Status…).
-    let decode_timing = DecodeTiming::default();
     diag_state.lock_unpoisoned().diagnostics.video = Some(VideoDiagnostics {
         path: path.to_string(),
         width: source.width(),
         height: source.height(),
         decode_path: source.decode_path().to_string(),
-        decode_ms_per_frame: decode_timing.clone(),
+        fallback_reason: source.fallback_reason().map(str::to_owned),
+        timings: timings.clone(),
     });
     let media_length_secs = source.duration_secs();
     let seek_target = if clamp_to_media {
@@ -5426,7 +5840,7 @@ fn video_decode_thread(
         }
     }
 
-    let mut timing_window = DecodeTimingWindow::default();
+    let mut timing_windows = VideoTimingWindows::default();
 
     if let Some(t) = seek_target {
         // Seek to the keyframe at/before t, then scan forward for the frame
@@ -5440,7 +5854,7 @@ fn video_decode_thread(
             if stop_flag.load(Ordering::Relaxed) {
                 return;
             }
-            match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
+            match timed_read_frame(&mut source, &mut timing_windows, &timings) {
                 Some(f) if f.pts + 1e-4 < t => {
                     if let Some(discarded) = prev.replace(f) {
                         frame_pool.recycle_frame(discarded);
@@ -5477,14 +5891,36 @@ fn video_decode_thread(
     // tentative (hw device created ≠ hw decode engaged — e.g. Hap has none).
     let mut diag_path_pending = true;
     while !stop_flag.load(Ordering::Relaxed) {
-        match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
+        match timed_read_frame(&mut source, &mut timing_windows, &timings) {
             Some(frame) => {
+                #[cfg(windows)]
+                let handoff = frame.d3d11_handoff();
                 if std::mem::take(&mut diag_path_pending)
                     && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
                         v.decode_path = source.decode_path().to_string();
+                        v.fallback_reason = source.fallback_reason().map(str::to_owned);
                     }
                 if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(frame)) {
                     return;
+                }
+                #[cfg(windows)]
+                if let Some(handoff) = handoff {
+                    if let Err(reason) = handoff.wait(&stop_flag) {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if !source.fallback_zero_copy(format!(
+                            "serialized keyed-mutex handoff failed: {reason}"
+                        )) {
+                            return;
+                        }
+                    } else if !stop_flag.load(Ordering::Relaxed) {
+                        source.mark_zero_copy_engaged();
+                    }
+                    if let Some(video) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
+                        video.decode_path = source.decode_path().to_string();
+                        video.fallback_reason = source.fallback_reason().map(str::to_owned);
+                    }
                 }
             }
             None => {
@@ -5498,11 +5934,11 @@ fn video_decode_thread(
 const DECODE_TIMING_WINDOW: usize = 50;
 
 #[derive(Default)]
-struct DecodeTimingWindow {
+struct TimingWindow {
     samples_ms: std::collections::VecDeque<f64>,
 }
 
-impl DecodeTimingWindow {
+impl TimingWindow {
     fn record(&mut self, elapsed: Duration) -> f64 {
         if self.samples_ms.len() == DECODE_TIMING_WINDOW {
             self.samples_ms.pop_front();
@@ -5512,14 +5948,25 @@ impl DecodeTimingWindow {
     }
 }
 
+#[derive(Default)]
+struct VideoTimingWindows {
+    decode: TimingWindow,
+    hw_transfer: TimingWindow,
+    plane_copy: TimingWindow,
+}
+
 fn timed_read_frame(
     source: &mut VideoSource,
-    timing_window: &mut DecodeTimingWindow,
-    decode_timing: &DecodeTiming,
+    timing_windows: &mut VideoTimingWindows,
+    timings: &VideoTimings,
 ) -> Option<VideoFrame> {
-    let start = Instant::now();
     let frame = source.read_frame();
-    decode_timing.set_ms(timing_window.record(start.elapsed()));
+    let frame_timings = source.last_timings();
+    timings.decode.set_ms(timing_windows.decode.record(frame_timings.decode));
+    timings.hw_transfer.set_ms(
+        timing_windows.hw_transfer.record(frame_timings.hw_transfer),
+    );
+    timings.plane_copy.set_ms(timing_windows.plane_copy.record(frame_timings.plane_copy));
     frame
 }
 
@@ -5857,15 +6304,46 @@ fn main() -> anyhow::Result<()> {
     }))
     .map_err(|e| anyhow::anyhow!("no wgpu adapter: {e}"))?;
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
+    let zero_copy_preference = ZeroCopyPreference::from_env();
+    let zero_copy_features =
+        ZeroCopyAvailability::required_features(&adapter, zero_copy_preference);
+    let request_device = |features| {
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("cuepool-device"),
             // Required for the 10-bit planar (p10le) GPU path.
-            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | features,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
+        }))
+    };
+    let (device, queue, device_fallback) = match request_device(zero_copy_features) {
+        Ok((device, queue)) => (device, queue, None),
+        Err(error) if !zero_copy_features.is_empty() => {
+            let reason = format!("zero-copy device feature request failed: {error}");
+            log::warn!("Video zero-copy fallback: {reason}; retrying the stock device");
+            let (device, queue) = request_device(wgpu::Features::empty())?;
+            (device, queue, Some(reason))
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let device_fallback_logged = device_fallback.is_some();
+    let zero_copy = device_fallback.map_or_else(
+        || {
+            ZeroCopyAvailability::finish(
+                &adapter,
+                &device,
+                &queue,
+                zero_copy_preference,
+            )
         },
-    ))?;
+        ZeroCopyAvailability::declined,
+    );
+    if zero_copy_preference.enabled()
+        && !device_fallback_logged
+        && let Some(reason) = zero_copy.fallback_reason()
+    {
+        log::warn!("Video zero-copy fallback: {reason}; using the stock readback path");
+    }
     let device_lost_proxy = proxy.clone();
     device.set_device_lost_callback(move |reason, message| {
         log::error!("GPU device lost ({reason:?}): {message}");
@@ -5874,7 +6352,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut app = App::new(instance, adapter, device, queue, proxy);
+    let mut app = App::new(instance, adapter, device, queue, proxy, zero_copy);
 
     // Load app-level settings. Project audio settings live in the show file
     // and are applied when its project generation changes.
@@ -5935,6 +6413,11 @@ fn main() -> anyhow::Result<()> {
 
     // Graceful exit (never reached via hard_exit, which process::exit()s):
     // stop and join the consume thread like the render threads.
+    app.video_stop_flag.store(true, Ordering::Relaxed);
+    app.pending_video_decode = None;
+    if let Some(join) = app.video_decode_join.take() {
+        let _ = join.join();
+    }
     app.consume_stop.store(true, Ordering::Relaxed);
     if let Some(join) = app.consume_join.take() {
         let _ = join.join();
@@ -5953,12 +6436,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_timing_averages_the_last_fifty_samples() {
-        let mut timing = DecodeTimingWindow::default();
+    fn timing_averages_the_last_fifty_samples() {
+        let mut timing = TimingWindow::default();
         for ms in 1..=50 {
             timing.record(Duration::from_millis(ms));
         }
         assert!((timing.record(Duration::from_millis(51)) - 26.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn frame_pacing_quantizes_healthy_ticks_and_preserves_fallbacks() {
+        let position = Duration::from_secs(10);
+        let interval = Duration::from_millis(20);
+        let decide = |stepping, woke_on_tick, age, interval| {
+            frame_pacing_decision(Some(position), stepping, woke_on_tick, age, interval)
+        };
+
+        let tick = decide(false, true, Some(Duration::from_millis(1)), Some(interval));
+        assert_eq!(tick.target, Some(position + interval));
+        assert!(tick.tick_paced);
+
+        let timeout = decide(false, false, Some(Duration::from_millis(5)), Some(interval));
+        assert_eq!(timeout.target, None);
+        assert!(timeout.tick_paced);
+
+        let absent = decide(false, false, None, None);
+        assert_eq!(absent.target, Some(position));
+        assert!(!absent.tick_paced);
+
+        let stale = decide(false, false, Some(Duration::from_millis(61)), Some(interval));
+        assert_eq!(stale.target, Some(position));
+        assert!(!stale.tick_paced);
+
+        let stepping = decide(true, false, Some(Duration::from_millis(1)), Some(interval));
+        assert_eq!(stepping.target, Some(position));
+        assert!(!stepping.tick_paced);
+
+        assert_eq!(
+            update_vsync_interval(None, Duration::from_millis(2), 1),
+            VSYNC_INTERVAL_MIN
+        );
+        assert_eq!(
+            update_vsync_interval(None, Duration::from_millis(100), 2),
+            VSYNC_INTERVAL_MAX
+        );
     }
 
     fn cli_project_test_dir() -> PathBuf {
@@ -6043,16 +6564,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_seek_target_clamps_to_complete_stereo_frames() {
-        let len = 20;
-        assert_eq!(audio_seek_target(f32::NAN, len, 10, 2), 0);
-        assert_eq!(audio_seek_target(-1.0, len, 10, 2), 0);
-        assert_eq!(audio_seek_target(0.5, len, 10, 2), 10);
-        assert_eq!(audio_seek_target(1.0, len, 10, 2), 18);
-        assert_eq!(audio_seek_target(f32::INFINITY, len, 10, 2), 18);
-    }
-
-    #[test]
     fn video_seek_target_stays_strictly_before_the_end() {
         assert_eq!(video_seek_target(f32::NAN, Some(10.0)), 0.0);
         assert_eq!(video_seek_target(-1.0, Some(10.0)), 0.0);
@@ -6083,6 +6594,39 @@ mod tests {
         assert_eq!(video_media_secs(3.25, 10.0), 13.25);
         assert_eq!(video_timeline_secs(13.25, 10.0), 3.25);
         assert_eq!(video_timeline_secs(5.0, 10.0), 0.0);
+        assert_eq!(video_timeline_secs(40.0, 10.0), 30.0);
+    }
+
+    #[test]
+    fn video_decode_gate_keeps_only_the_latest_request_and_one_worker() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut join = Some(std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        }));
+        let mut pending = None;
+        queue_latest_video_decode(&mut pending, VideoDecodeRequest {
+            path: "first.mp4".into(),
+            start_before: Some(1.0),
+            seek_frame: None,
+            clamp_to_media: true,
+        });
+        queue_latest_video_decode(&mut pending, VideoDecodeRequest {
+            path: "latest.mp4".into(),
+            start_before: Some(2.0),
+            seek_frame: None,
+            clamp_to_media: true,
+        });
+
+        assert!(take_ready_video_decode(&mut join, &mut pending).is_none());
+        assert_eq!(pending.as_ref().unwrap().path, "latest.mp4");
+
+        release_tx.send(()).unwrap();
+        while !join.as_ref().unwrap().is_finished() {
+            std::thread::yield_now();
+        }
+        let request = take_ready_video_decode(&mut join, &mut pending).unwrap();
+        assert_eq!(request.path, "latest.mp4");
+        assert!(join.is_none());
     }
 
     #[test]
