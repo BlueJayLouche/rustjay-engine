@@ -1211,6 +1211,8 @@ mod tests {
             fallback.message,
             "Projector \"Varda Projector 2 - Stage Right\" requested monitor 3, but it was not found (available monitor count: 2); falling back to windowed mode"
         );
+    }
+
     use winit::{
         event::ElementState,
         keyboard::{Key, NamedKey},
