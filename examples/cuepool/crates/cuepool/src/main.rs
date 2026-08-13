@@ -294,6 +294,10 @@ struct VideoControl {
     outputs_gen: u64,
     /// Decode-starvation counter (consume → winit diagnostics; swapped out ~1 Hz).
     starved: u32,
+    /// Video-frame upload counter (consume → winit diagnostics; swapped out ~1 Hz).
+    uploads: u32,
+    /// Due-frame drop counter (consume → winit diagnostics; swapped out ~1 Hz).
+    dropped: u32,
 }
 
 
@@ -4306,8 +4310,14 @@ impl ApplicationHandler<AppEvent> for App {
 
         if self.dbg_last_log.elapsed() >= std::time::Duration::from_secs(1) {
             let secs = self.dbg_last_log.elapsed().as_secs_f64();
-            let starved_per_sec =
-                std::mem::replace(&mut self.video_control.lock_unpoisoned().starved, 0) as f64 / secs;
+            let (starved_per_sec, uploads_per_sec, dropped_per_sec) = {
+                let mut ctl = self.video_control.lock_unpoisoned();
+                (
+                    std::mem::replace(&mut ctl.starved, 0) as f64 / secs,
+                    std::mem::replace(&mut ctl.uploads, 0) as f64 / secs,
+                    std::mem::replace(&mut ctl.dropped, 0) as f64 / secs,
+                )
+            };
             let ticks_per_sec = self.dbg_ticks as f64 / secs;
             // Publish the counters (plus a fresh output snapshot) to the Status
             // window. The output list is rebuilt here rather than patched on
@@ -4353,6 +4363,8 @@ impl ApplicationHandler<AppEvent> for App {
             let d = &mut state.diagnostics;
             d.presented_per_sec = total_presented;
             d.starved_per_sec = starved_per_sec;
+            d.uploads_per_sec = uploads_per_sec;
+            d.dropped_per_sec = dropped_per_sec;
             d.event_loop_per_sec = ticks_per_sec;
             d.outputs = outputs;
             drop(state);
@@ -4685,6 +4697,7 @@ fn video_consume_thread(
         }
 
         let mut consumed: Option<VideoFrame> = None;
+        let mut dropped = 0u32;
         if let Some(target) = target {
             loop {
                 if peek.is_none() {
@@ -4701,12 +4714,16 @@ fn video_consume_thread(
                 match peek.as_ref() {
                     Some(f) if Duration::from_secs_f64(f.pts.max(0.0)) <= target => {
                         if let Some(discarded) = consumed.replace(peek.take().unwrap()) {
+                            dropped += 1;
                             frame_pool.recycle_frame(discarded);
                         }
                     }
                     _ => break, // next frame not due yet, or channel empty
                 }
             }
+        }
+        if dropped != 0 {
+            control.lock_unpoisoned().dropped += dropped;
         }
 
         // Check immediately before GPU work without holding the control lock
@@ -4733,6 +4750,7 @@ fn video_consume_thread(
             let frame_presented = true;
             #[cfg(windows)]
             let mut direct_submitted = false;
+            let mut uploaded = false;
             match &frame.pixels {
                 cuepool_video::FramePixels::Rgba(_) => {
                     if let Some(c) = canvas.as_ref() {
@@ -4741,6 +4759,7 @@ fn video_consume_thread(
                         let upload_started = Instant::now();
                         c.upload_frame(&queue, &frame, fit);
                         timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        uploaded = true;
                     }
                 }
                 #[cfg(windows)]
@@ -4805,6 +4824,7 @@ fn video_consume_thread(
                                             let _ = retirement_tx.send(());
                                         });
                                         direct_submitted = true;
+                                        uploaded = true;
                                         timings.conversion_submit.set_ms(
                                             conversion_submit_timing
                                                 .record(conversion_started.elapsed()),
@@ -4860,10 +4880,14 @@ fn video_consume_thread(
                         timings.conversion_submit.set_ms(
                             conversion_submit_timing.record(conversion_started.elapsed()),
                         );
+                        uploaded = true;
                     }
                 }
             }
             let mut ctl = control.lock_unpoisoned();
+            if uploaded {
+                ctl.uploads += 1;
+            }
             if rx_epoch == Some(ctl.stream_epoch) {
                 if frame_presented {
                     ctl.last_pts = Some(frame.pts);

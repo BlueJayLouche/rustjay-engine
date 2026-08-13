@@ -168,6 +168,8 @@ fn populate_telemetry(state: &mut SharedState) {
         }],
         presented_per_sec: 60.0,
         starved_per_sec: 0.0,
+        uploads_per_sec: 50.0,
+        dropped_per_sec: 0.0,
         event_loop_per_sec: 240.0,
         consumer_error: None,
         video: Some(VideoDiagnostics {
