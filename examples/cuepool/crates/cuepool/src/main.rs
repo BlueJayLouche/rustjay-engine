@@ -11,7 +11,7 @@
 //!   work lives on the consume thread (Windows/NVIDIA WSI stalls any thread
 //!   that submits behind vsync-blocked swapchains).
 
-use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
+use cuepool_audio::{AudioEngine, CueChainParams, FileDecoder, SampleProvider};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
 };
@@ -1979,51 +1979,26 @@ impl App {
                     0 // auto-detect from source length
                 };
 
-                // Create a shared loop counter so the main thread can detect loop boundaries
-                // and synchronise video restarts + progress-bar resets.
-                let is_looped = loop_mode == cuepool_core::LoopMode::Looped
-                    || loop_mode == cuepool_core::LoopMode::LoopedInfinite;
-                let loop_counter: Option<std::sync::Arc<std::sync::atomic::AtomicU32>> = if is_looped {
-                    Some(std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)))
-                } else {
-                    None
-                };
-
-                let loop_proc = {
-                    let proc = cuepool_audio::LoopProcessor::new(Box::new(decoder));
-                    proc.set_loop(start_frame, end_frame, loop_mode, loop_count as u32);
-                    if let Some(ref counter) = loop_counter {
-                        proc.with_loop_counter(std::sync::Arc::clone(counter))
-                    } else {
-                        proc
-                    }
-                };
-
-                let mut source: Box<dyn SampleProvider> = Box::new(loop_proc);
-
-                // Per-cue EQ (4-band + HPF/LPF), applied before fade. `Some` means the user
-                // enabled EQ in the inspector; the inner `enabled` flag is redundant with the
-                // Option, so force it on (also covers show-files saved before this fix).
-                if let Some(mut eq_settings) = eq {
-                    eq_settings.enabled = true;
-                    source = Box::new(cuepool_audio::EqProcessor::new(source, eq_settings));
-                }
-
-                // Wire fade processor for fade-in
-                if fade_in > 0.0 {
-                    let fade_proc = cuepool_audio::FadeProcessor::new(source, 0.0);
-                    let fade_in_frames = (fade_in * sample_rate as f32) as u32;
-                    fade_proc.start_fade(1.0, fade_in_frames, fade_type);
-                    source = Box::new(fade_proc);
-                }
-
-                let input = match audio_engine.play(source) {
-                    Ok(input) => input,
+                let playback = match audio_engine.play_cue(
+                    Box::new(decoder),
+                    CueChainParams {
+                        start_frame,
+                        end_frame,
+                        loop_mode,
+                        loop_count: loop_count as u32,
+                        eq,
+                        fade_in_secs: fade_in,
+                        fade_type,
+                    },
+                ) {
+                    Ok(playback) => playback,
                     Err(e) => {
                         log::error!("Cannot play audio cue Q{qid}: {e}");
                         return;
                     }
                 };
+                let input = playback.input;
+                let loop_counter = playback.loop_counter;
                 input.set_volume(volume);
                 input.set_pan(pan);
                 input.set_routing(routing.out_pair, routing.send, routing.crosspoints);
@@ -2034,7 +2009,7 @@ impl App {
 
                 let state = if preload_only {
                     CueState::Ready
-                } else if is_looped {
+                } else if loop_counter.is_some() {
                     CueState::PlayingLooped
                 } else {
                     CueState::Playing

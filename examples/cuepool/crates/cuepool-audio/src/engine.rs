@@ -5,14 +5,18 @@
 
 use crate::buffered_source::BufferedSource;
 use crate::channel_converter::MonoToStereo;
+use crate::eq_processor::EqProcessor;
+use crate::fade_processor::FadeProcessor;
 use crate::limiter_processor::Limiter;
+use crate::loop_processor::LoopProcessor;
 use crate::metering_processor::{MeterData, MeteringProcessor};
 use crate::mixer::{Mixer, MixerInput};
 use crate::resampler::ResamplerProcessor;
 use crate::SampleProvider;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample, SupportedBufferSize};
-use cuepool_core::AudioOutputDriver;
+use cuepool_core::{AudioOutputDriver, EQSettings, FadeType, LoopMode};
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,6 +127,23 @@ pub struct AudioEngine {
     format_mismatch: Arc<std::sync::atomic::AtomicBool>,
     /// Ensures the control thread reports the callback format mismatch only once.
     format_mismatch_logged: std::sync::atomic::AtomicBool,
+}
+
+/// Source-rate settings for one cue's processor chain.
+pub struct CueChainParams {
+    pub start_frame: u64,
+    pub end_frame: u64,
+    pub loop_mode: LoopMode,
+    pub loop_count: u32,
+    pub eq: Option<EQSettings>,
+    pub fade_in_secs: f32,
+    pub fade_type: FadeType,
+}
+
+/// Handles needed by the caller after a cue starts playing.
+pub struct CuePlayback {
+    pub input: Arc<MixerInput>,
+    pub loop_counter: Option<Arc<AtomicU32>>,
 }
 
 /// Simple atomic f32 using `to_bits`/`from_bits`.
@@ -465,6 +486,53 @@ impl AudioEngine {
         Ok(input)
     }
 
+    /// Play a cue through Loop → EQ → FadeIn at source rate, then resample,
+    /// upmix, buffer, and add it to the mixer.
+    pub fn play_cue(
+        &self,
+        source: Box<dyn SampleProvider>,
+        params: CueChainParams,
+    ) -> Result<CuePlayback, AudioError> {
+        let source_rate = source.sample_rate();
+        let loop_counter = matches!(params.loop_mode, LoopMode::Looped | LoopMode::LoopedInfinite)
+            .then(|| Arc::new(AtomicU32::new(0)));
+
+        let loop_processor = LoopProcessor::new(source);
+        loop_processor.set_loop(
+            params.start_frame,
+            params.end_frame,
+            params.loop_mode,
+            params.loop_count,
+        );
+        let loop_processor = if let Some(counter) = &loop_counter {
+            loop_processor.with_loop_counter(Arc::clone(counter))
+        } else {
+            loop_processor
+        };
+        let mut source: Box<dyn SampleProvider> = Box::new(loop_processor);
+
+        if let Some(mut settings) = params.eq {
+            // `Some` means EQ is enabled; forcing this also covers older show files.
+            settings.enabled = true;
+            source = Box::new(EqProcessor::new(source, settings));
+        }
+
+        if params.fade_in_secs > 0.0 {
+            let fade = FadeProcessor::new(source, 0.0);
+            fade.start_fade(
+                1.0,
+                (params.fade_in_secs * source_rate as f32) as u32,
+                params.fade_type,
+            );
+            source = Box::new(fade);
+        }
+
+        Ok(CuePlayback {
+            input: self.play(source)?,
+            loop_counter,
+        })
+    }
+
     /// Refresh the mixer snapshot. Call from the main thread each frame.
     pub fn refresh(&self) {
         self.mixer.refresh_snapshot();
@@ -478,40 +546,6 @@ impl AudioEngine {
     /// Stop all active audio inputs.
     pub fn stop_all(&self) {
         self.mixer.stop_all();
-    }
-
-    /// Build a full per-cue processor chain from a decoder.
-    ///
-    /// Chain: Source → Loop → Resampler → Mono→Stereo → EQ → Fade → Pan → Mixer
-    pub fn build_cue_chain(
-        &self,
-        source: Box<dyn SampleProvider>,
-        _eq_settings: cuepool_core::EQSettings,
-        _initial_volume: f32,
-    ) -> Result<Box<dyn SampleProvider>, AudioError> {
-        // TODO: wire LoopProcessor, EqProcessor, FadeProcessor, PanProcessor
-        // when the binary crate provides cue parameters.
-        // For now, resample and upmix only.
-        let mut chain = source;
-
-        if chain.sample_rate() != self.sample_rate {
-            let source_rate = chain.sample_rate();
-            chain = Box::new(
-                ResamplerProcessor::new(chain, self.sample_rate).map_err(|e| {
-                    AudioError::Resampler {
-                        source_rate,
-                        target_rate: self.sample_rate,
-                        source: e,
-                    }
-                })?,
-            );
-        }
-
-        if chain.channels() == 1 {
-            chain = Box::new(MonoToStereo::new(chain));
-        }
-
-        Ok(chain)
     }
 
     /// List output devices from exactly the configured driver host.
