@@ -150,7 +150,14 @@ impl SampleProvider for BufferedSource {
         let to_copy = buffer.len().min(available);
 
         if to_copy == 0 {
-            return 0;
+            if self.inner.eof.load(Ordering::Acquire) {
+                return 0;
+            }
+            // An empty ring while the background thread opens or re-seeks the
+            // source is a temporary underflow, not EOF. Keep the mixer input
+            // alive and render silence until decoded samples arrive.
+            buffer.fill(0.0);
+            return buffer.len();
         }
 
         let ring = unsafe { &*self.inner.ring.get() };

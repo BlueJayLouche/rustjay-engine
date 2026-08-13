@@ -166,6 +166,15 @@ fn media_secs_to_x(
     rect.min.x + (bar - scroll_offset) * bar_width
 }
 
+fn clamp_scroll_offset(scroll_offset: f32, peak_count: usize, zoom: f32) -> f32 {
+    if !scroll_offset.is_finite() || peak_count == 0 {
+        return 0.0;
+    }
+    let zoom = zoom.max(1.0);
+    let max_scroll = peak_count as f32 * (1.0 - 1.0 / zoom);
+    scroll_offset.clamp(0.0, max_scroll)
+}
+
 /// Draw a waveform from pre-computed whole-media data with zoom and pan support.
 /// Primary-drag pans unless an editable playhead is supplied; secondary-drag
 /// remains available for panning while scrubbing is enabled.
@@ -208,6 +217,7 @@ pub(crate) fn draw(
         let bar_width = rect.width() / waveform.peaks.len() as f32;
         new_scroll = (new_scroll - drag_delta / bar_width.max(1.0) / new_zoom).max(0.0);
     }
+    new_scroll = clamp_scroll_offset(new_scroll, waveform.peaks.len(), new_zoom);
 
     let pointer_media_secs = response.interact_pointer_pos().map(|pointer| {
         pointer_x_to_media_secs(
@@ -317,5 +327,12 @@ mod tests {
         assert_eq!(media_to_seek_secs(25.0, 30.0, 20.0), 0.0);
         assert_eq!(media_to_seek_secs(37.5, 30.0, 20.0), 7.5);
         assert_eq!(media_to_seek_secs(55.0, 30.0, 20.0), 20.0);
+    }
+
+    #[test]
+    fn waveform_pan_stays_within_the_visible_peak_range() {
+        assert_eq!(clamp_scroll_offset(-10.0, 200, 2.0), 0.0);
+        assert_eq!(clamp_scroll_offset(250.0, 200, 2.0), 100.0);
+        assert_eq!(clamp_scroll_offset(50.0, 200, 1.0), 0.0);
     }
 }

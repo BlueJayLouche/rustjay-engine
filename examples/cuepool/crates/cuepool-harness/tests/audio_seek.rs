@@ -1,10 +1,11 @@
 use cuepool_audio::{
     BufferedSource, LoopProcessor, MIXER_CHANNELS, MIXER_SAMPLE_RATE, Mixer, MixerInput,
+    SampleProvider,
 };
 use cuepool_core::{FadeType, LoopMode};
 use cuepool_harness::clock::VirtualClock;
 use cuepool_harness::sink::{NullSink, RampSource};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 const BLOCK_FRAMES: usize = 4;
 
@@ -23,6 +24,36 @@ fn seek_harness(len_samples: usize) -> (Arc<MixerInput>, NullSink, VirtualClock)
 
 fn ramp_value(sample: usize) -> f32 {
     (sample % 1000) as f32 / 1000.0 - 0.5
+}
+
+struct BlockingSource {
+    gate: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl SampleProvider for BlockingSource {
+    fn read(&self, buffer: &mut [f32]) -> usize {
+        let (lock, cvar) = &*self.gate;
+        let mut ready = lock.lock().unwrap();
+        while !*ready {
+            ready = cvar.wait(ready).unwrap();
+        }
+        buffer.fill(0.25);
+        buffer.len()
+    }
+
+    fn seek(&self, _sample: usize) {}
+    fn position(&self) -> usize {
+        0
+    }
+    fn length(&self) -> Option<usize> {
+        Some(200)
+    }
+    fn sample_rate(&self) -> u32 {
+        MIXER_SAMPLE_RATE
+    }
+    fn channels(&self) -> u16 {
+        MIXER_CHANNELS
+    }
 }
 
 #[test]
@@ -130,6 +161,27 @@ fn buffered_source_reports_the_absolute_sought_position() {
     input.seek(40);
 
     assert_eq!(input.position(), 40);
+}
+
+#[test]
+fn transient_buffer_refill_does_not_finish_the_input() {
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let buffered = BufferedSource::new(Box::new(BlockingSource {
+        gate: Arc::clone(&gate),
+    }));
+    let mixer = Arc::new(Mixer::new(MIXER_CHANNELS, MIXER_SAMPLE_RATE));
+    let input = Arc::new(MixerInput::new(Box::new(buffered), BLOCK_FRAMES * 2));
+    mixer.add_input(Arc::clone(&input));
+    mixer.refresh_snapshot();
+
+    let mut sink = NullSink::new(mixer, BLOCK_FRAMES);
+    let samples = sink.render_block();
+    let (lock, cvar) = &*gate;
+    *lock.lock().unwrap() = true;
+    cvar.notify_all();
+
+    assert!(samples.iter().all(|sample| *sample == 0.0));
+    assert!(!input.is_finished(), "a temporary empty ring is not EOF");
 }
 
 #[test]
