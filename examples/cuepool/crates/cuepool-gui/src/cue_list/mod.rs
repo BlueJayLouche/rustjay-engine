@@ -398,7 +398,12 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     egui::StrokeKind::Inside,
                 );
                 if selection_changed {
-                    drop_response.response.scroll_to_me(None);
+                    // Instant, not egui's default 0.1–0.3s animated scroll: arrow-key
+                    // navigation repeats faster than the animation, so the viewport
+                    // would permanently chase the playhead.
+                    drop_response
+                        .response
+                        .scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
                 }
             }
 
