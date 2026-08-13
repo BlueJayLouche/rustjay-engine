@@ -361,8 +361,8 @@ pub struct SharedState {
     pub waveform_zoom: f32,
     /// Waveform scroll offset in bars.
     pub waveform_scroll: f32,
-    /// Available audio output device names (populated at startup).
-    pub audio_devices: Vec<String>,
+    /// Available audio output devices (populated at startup).
+    pub audio_devices: Vec<cuepool_audio::AudioDeviceInfo>,
     /// Whether the log window is open.
     pub show_log_window: bool,
     /// Whether the About window is open.
@@ -1007,9 +1007,30 @@ impl CuePoolApp {
                                     .selected_text(&current_device)
                                     .width(200.0)
                                     .show_ui(ui, |ui| {
-                                        for name in &devices {
-                                            if ui.selectable_label(name == &current_device, name).clicked() {
-                                                audio_device_cmd = Some(AppCommand::SetAudioDevice(name.clone()));
+                                        for device in &devices {
+                                            let label = if device.is_available() {
+                                                device.name.clone()
+                                            } else {
+                                                format!("{} (unavailable)", device.name)
+                                            };
+                                            let response = ui.add_enabled(
+                                                device.is_available(),
+                                                egui::Button::selectable(
+                                                    device.name == current_device,
+                                                    label,
+                                                ),
+                                            );
+                                            let response = if let Some(error) = &device.probe_error {
+                                                response.on_hover_text(format!(
+                                                    "Configuration probe failed: {error}"
+                                                ))
+                                            } else {
+                                                response
+                                            };
+                                            if response.clicked() {
+                                                audio_device_cmd = Some(AppCommand::SetAudioDevice(
+                                                    device.name.clone(),
+                                                ));
                                             }
                                         }
                                     });

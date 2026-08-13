@@ -232,7 +232,16 @@ fn populate_telemetry(state: &mut SharedState) {
             pos_y: 0,
         },
     ];
-    state.audio_devices = vec!["Built-in Output".into(), "Dante Virtual Soundcard".into()];
+    state.audio_devices = vec![
+        cuepool_audio::AudioDeviceInfo {
+            name: "Built-in Output".into(),
+            probe_error: None,
+        },
+        cuepool_audio::AudioDeviceInfo {
+            name: "Dante Virtual Soundcard".into(),
+            probe_error: None,
+        },
+    ];
     state.audio_device_name = "Dante Virtual Soundcard".into();
 }
 

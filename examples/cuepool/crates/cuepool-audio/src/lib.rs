@@ -21,7 +21,7 @@ pub use biquad::Biquad;
 pub use buffered_source::BufferedSource;
 pub use channel_converter::MonoToStereo;
 pub use decoder::{DecodeError, FileDecoder};
-pub use engine::{AudioEngine, AudioError, CueChainParams, CuePlayback};
+pub use engine::{AudioDeviceInfo, AudioEngine, AudioError, CueChainParams, CuePlayback};
 pub use eq_processor::EqProcessor;
 pub use fade_processor::FadeProcessor;
 pub use limiter_processor::LimiterProcessor;

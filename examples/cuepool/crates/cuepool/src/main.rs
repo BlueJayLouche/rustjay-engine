@@ -2367,7 +2367,7 @@ impl App {
         if let Some(error) = setup.device_list_error {
             log::error!("Could not list {driver} output devices: {error}");
         }
-        let devices = setup.device_names;
+        let devices = setup.devices;
 
         match setup.engine {
             Ok(engine) => {

@@ -72,7 +72,10 @@ fn asio_host() -> Result<cpal::Host, AudioError> {
 fn named_output_devices(
     driver: AudioOutputDriver,
     host: &cpal::Host,
-) -> Result<Vec<(String, cpal::Device)>, AudioError> {
+) -> Result<Vec<OutputDevice>, AudioError> {
+    // ponytail: CPAL can omit a device before yielding it here. Recovering
+    // those devices requires a backend-specific enumeration fork; only devices
+    // CPAL yields can retain their configuration-probe failure below.
     host.output_devices()
         .map_err(|source| AudioError::EnumerateDevices {
             driver: driver.name(),
@@ -87,25 +90,75 @@ fn named_output_devices(
                 })?
                 .name()
                 .to_string();
-            Ok((name, device))
+            let configs = device
+                .supported_output_configs()
+                .map(|configs| configs.collect());
+            let info = classify_device(name, &configs);
+            Ok(OutputDevice {
+                info,
+                device,
+                configs,
+            })
         })
         .collect()
+}
+
+/// A CPAL output device and any failure encountered while probing its formats.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioDeviceInfo {
+    pub name: String,
+    pub probe_error: Option<String>,
+}
+
+impl AudioDeviceInfo {
+    pub fn is_available(&self) -> bool {
+        self.probe_error.is_none()
+    }
+}
+
+struct OutputDevice {
+    info: AudioDeviceInfo,
+    device: cpal::Device,
+    configs: Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error>,
+}
+
+fn classify_device(
+    name: String,
+    configs: &Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error>,
+) -> AudioDeviceInfo {
+    AudioDeviceInfo {
+        name,
+        probe_error: configs.as_ref().err().map(ToString::to_string),
+    }
 }
 
 /// Result of one host-scoped output configuration attempt.
 pub struct AudioEngineSetup {
     pub engine: Result<AudioEngine, AudioError>,
-    pub device_names: Vec<String>,
+    pub devices: Vec<AudioDeviceInfo>,
     /// Enumeration is best-effort only for the legacy unnamed/default path.
     pub device_list_error: Option<AudioError>,
 }
 
-fn available_devices(names: &[String]) -> String {
-    if names.is_empty() {
+const DEVICE_TROUBLESHOOTING: &str = "check driver sample-format settings (e.g. ASIO drivers set to packed 24-bit: set the driver to 16- or 32-bit) and exclusive-mode conflicts";
+
+fn available_devices(devices: &[AudioDeviceInfo]) -> String {
+    if devices.is_empty() {
         "none".to_string()
     } else {
-        names.join(", ")
+        devices
+            .iter()
+            .map(|device| match &device.probe_error {
+                Some(error) => format!("{} (probe failed: {error})", device.name),
+                None => device.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
+}
+
+fn device_diagnostics(devices: &[AudioDeviceInfo]) -> String {
+    format!("{}; {DEVICE_TROUBLESHOOTING}", available_devices(devices))
 }
 
 /// Central audio engine.
@@ -216,14 +269,14 @@ impl AudioEngine {
         engine
     }
 
-    /// Build the selected host once, returning both its device names and engine result.
+    /// Build the selected host once, returning both its device diagnostics and engine result.
     pub fn configure(driver: AudioOutputDriver, configured_device: &str) -> AudioEngineSetup {
         let host = match host_for_driver(driver) {
             Ok(host) => host,
             Err(error) => {
                 return AudioEngineSetup {
                     engine: Err(error),
-                    device_names: Vec::new(),
+                    devices: Vec::new(),
                     device_list_error: None,
                 };
             }
@@ -234,14 +287,17 @@ impl AudioEngine {
         // enumeration succeeding. ASIO has no CPAL default device, so it is
         // deliberately handled by the strict enumeration path below.
         if configured_device.is_empty() && host_choice(driver) == HostChoice::Default {
-            let (device_names, device_list_error) = match named_output_devices(driver, &host) {
-                Ok(devices) => (devices.into_iter().map(|(name, _)| name).collect(), None),
+            let (devices, device_list_error) = match named_output_devices(driver, &host) {
+                Ok(devices) => (
+                    devices.into_iter().map(|device| device.info).collect(),
+                    None,
+                ),
                 Err(error) => (Vec::new(), Some(error)),
             };
             let available = if device_list_error.is_some() {
-                "not enumerated (default host)".to_string()
+                format!("not enumerated (default host); {DEVICE_TROUBLESHOOTING}")
             } else {
-                available_devices(&device_names)
+                device_diagnostics(&devices)
             };
             let engine = match host.default_output_device() {
                 Some(device) => {
@@ -266,7 +322,7 @@ impl AudioEngine {
             };
             return AudioEngineSetup {
                 engine,
-                device_names,
+                devices,
                 device_list_error,
             };
         }
@@ -276,18 +332,18 @@ impl AudioEngine {
             Err(error) => {
                 return AudioEngineSetup {
                     engine: Err(error),
-                    device_names: Vec::new(),
+                    devices: Vec::new(),
                     device_list_error: None,
                 };
             }
         };
-        let names: Vec<_> = devices.iter().map(|(name, _)| name.clone()).collect();
-        let alternatives = available_devices(&names);
+        let device_infos: Vec<_> = devices.iter().map(|device| device.info.clone()).collect();
+        let alternatives = device_diagnostics(&device_infos);
 
         let selected = if configured_device.is_empty() {
             devices
                 .into_iter()
-                .next()
+                .find(|device| device.info.is_available())
                 .ok_or_else(|| AudioError::NoOutputDevice {
                     driver: driver.name(),
                     available: alternatives.clone(),
@@ -295,7 +351,7 @@ impl AudioEngine {
         } else {
             devices
                 .into_iter()
-                .find(|(name, _)| name == configured_device)
+                .find(|device| device.info.name == configured_device)
                 .ok_or_else(|| AudioError::DeviceNotFound {
                     driver: driver.name(),
                     device: configured_device.to_string(),
@@ -304,20 +360,31 @@ impl AudioEngine {
         };
 
         let engine = match selected {
-            Ok((device_name, device)) => Self::open(driver, &device, device_name.clone()).map_err(
-                |source| AudioError::OpenDevice {
+            Ok(OutputDevice {
+                info,
+                device,
+                configs,
+            }) => match configs {
+                Ok(configs) => Self::open_with_configs(driver, &device, info.name.clone(), configs)
+                    .map_err(|source| AudioError::OpenDevice {
+                        driver: driver.name(),
+                        device: info.name,
+                        available: alternatives,
+                        reason: source.to_string(),
+                    }),
+                Err(source) => Err(AudioError::OpenDevice {
                     driver: driver.name(),
-                    device: device_name,
+                    device: info.name,
                     available: alternatives,
-                    reason: source.to_string(),
-                },
-            ),
+                    reason: format!("configuration probe failed: {source}"),
+                }),
+            },
             Err(error) => Err(error),
         };
 
         AudioEngineSetup {
             engine,
-            device_names: names,
+            devices: device_infos,
             device_list_error: None,
         }
     }
@@ -331,6 +398,15 @@ impl AudioEngine {
             .supported_output_configs()
             .map_err(AudioError::SupportedConfigs)?
             .collect();
+        Self::open_with_configs(driver, device, device_name, all_configs)
+    }
+
+    fn open_with_configs(
+        driver: AudioOutputDriver,
+        device: &cpal::Device,
+        device_name: String,
+        all_configs: Vec<cpal::SupportedStreamConfigRange>,
+    ) -> Result<Self, AudioError> {
         // Prefer F32, then the integer formats exposed by CPAL's ASIO backend.
         // Within that format choose eight channels, then a larger configuration
         // before falling back below eight, and 48 kHz. Dante can expose
@@ -578,9 +654,10 @@ impl AudioEngine {
     /// List output devices from exactly the configured driver host.
     pub fn list_devices(
         driver: AudioOutputDriver,
-    ) -> Result<Vec<(String, cpal::Device)>, AudioError> {
+    ) -> Result<Vec<AudioDeviceInfo>, AudioError> {
         let host = host_for_driver(driver)?;
         named_output_devices(driver, &host)
+            .map(|devices| devices.into_iter().map(|device| device.info).collect())
     }
 }
 
@@ -936,8 +1013,8 @@ mod tests {
         match AudioEngine::list_devices(AudioOutputDriver::default()) {
             Ok(devices) => {
                 println!("Found {} output devices", devices.len());
-                for (name, _) in devices {
-                    println!("  - {name}");
+                for device in devices {
+                    println!("  - {}", device.name);
                 }
             }
             Err(error) => println!("Could not enumerate output devices: {error}"),
@@ -954,18 +1031,68 @@ mod tests {
 
     #[test]
     fn missing_device_error_names_driver_device_and_alternatives() {
+        let devices = [
+            AudioDeviceInfo {
+                name: "ASIO4ALL v2".to_string(),
+                probe_error: None,
+            },
+            AudioDeviceInfo {
+                name: "Focusrite USB ASIO".to_string(),
+                probe_error: None,
+            },
+        ];
         let error = AudioError::DeviceNotFound {
             driver: AudioOutputDriver::ASIO.name(),
             device: "Dante Virtual Soundcard (x64)".to_string(),
-            available: available_devices(&[
-                "ASIO4ALL v2".to_string(),
-                "Focusrite USB ASIO".to_string(),
-            ]),
+            available: device_diagnostics(&devices),
         };
         let message = error.to_string();
         assert!(message.contains("ASIO"));
         assert!(message.contains("Dante Virtual Soundcard (x64)"));
         assert!(message.contains("ASIO4ALL v2, Focusrite USB ASIO"));
+        assert!(message.contains("packed 24-bit"));
+        assert!(message.contains("16- or 32-bit"));
+        assert!(message.contains("exclusive-mode conflicts"));
+    }
+
+    #[test]
+    fn probe_failure_is_classified_and_formatted_for_empty_selection() {
+        let configs: Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error> = Err(
+            cpal::Error::with_message(
+                cpal::ErrorKind::UnsupportedConfig,
+                "driver rejected its packed sample format",
+            ),
+        );
+        let failed = classify_device("Dante Virtual Soundcard".to_string(), &configs);
+        let available = classify_device("Built-in Output".to_string(), &Ok(Vec::new()));
+
+        assert_eq!(
+            failed.probe_error.as_deref(),
+            Some("driver rejected its packed sample format")
+        );
+        assert!(!failed.is_available());
+        assert!(available.is_available());
+
+        let all_failed_error = AudioError::NoOutputDevice {
+            driver: AudioOutputDriver::ASIO.name(),
+            available: device_diagnostics(&[failed]),
+        };
+        let all_failed_message = all_failed_error.to_string();
+        assert!(all_failed_message.contains(
+            "Dante Virtual Soundcard (probe failed: driver rejected its packed sample format)"
+        ));
+        let empty_message = AudioError::NoOutputDevice {
+            driver: AudioOutputDriver::ASIO.name(),
+            available: device_diagnostics(&[]),
+        }
+        .to_string();
+        assert!(empty_message.contains("available devices: none"));
+
+        for message in [all_failed_message, empty_message] {
+            assert!(message.contains("packed 24-bit"));
+            assert!(message.contains("16- or 32-bit"));
+            assert!(message.contains("exclusive-mode conflicts"));
+        }
     }
 
     #[test]
