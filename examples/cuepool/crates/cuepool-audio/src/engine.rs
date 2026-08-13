@@ -111,7 +111,7 @@ fn available_devices(names: &[String]) -> String {
 /// Central audio engine.
 pub struct AudioEngine {
     mixer: Arc<Mixer>,
-    _stream: cpal::Stream,
+    _stream: Option<cpal::Stream>,
     driver: AudioOutputDriver,
     device_name: String,
     sample_rate: u32,
@@ -167,6 +167,33 @@ impl AudioEngine {
     /// Create an audio engine using the default output device.
     pub fn new_default() -> Result<Self, AudioError> {
         Self::new_configured(AudioOutputDriver::default(), "")
+    }
+
+    /// Create an audio-device-free engine for `cuepool-harness`.
+    #[cfg(feature = "test-harness")]
+    #[doc(hidden)]
+    pub fn new_headless(channels: u16, sample_rate: u32) -> Self {
+        let mixer = Arc::new(Mixer::new(channels, sample_rate));
+        Self {
+            mixer,
+            _stream: None,
+            driver: AudioOutputDriver::default(),
+            device_name: "headless".to_string(),
+            sample_rate,
+            channels,
+            limiter_threshold: Arc::new(AtomicF32::new(0.95)),
+            metering: Arc::new(MeteringProcessor::new(Box::new(NullSource {
+                sample_rate,
+                channels,
+            }))),
+            limiter: Arc::new(std::sync::Mutex::new(Limiter::new(
+                0.95,
+                sample_rate,
+                channels,
+            ))),
+            format_mismatch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            format_mismatch_logged: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     /// Create an engine using exactly the configured driver and device.
@@ -389,7 +416,7 @@ impl AudioEngine {
 
         Ok(Self {
             mixer,
-            _stream: stream,
+            _stream: Some(stream),
             driver,
             device_name,
             sample_rate,

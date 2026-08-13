@@ -10,7 +10,7 @@ publish = false
 # cuepool-gui: those need FFmpeg/wgpu and cannot link on a headless box.
 [dependencies]
 cuepool-core.workspace = true
-cuepool-audio.workspace = true
+cuepool-audio = { workspace = true, features = ["test-harness"] }
 cuepool-protocols.workspace = true
 rosc.workspace = true
 serde_json.workspace = true
