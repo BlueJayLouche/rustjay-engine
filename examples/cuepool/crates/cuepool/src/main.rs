@@ -5,10 +5,11 @@
 //!   own display's vsync (Fifo) — ungenlocked outputs never serialize.
 //! - Audio engine: cpal output with master clock for A/V sync
 //! - Video decode: background thread feeding a bounded channel; a consume
-//!   thread picks the frame due against the wall-clock video clock and uploads
-//!   it to the shared canvas texture after the reference output presents. All
-//!   non-egui GPU work lives on the consume thread (Windows/NVIDIA WSI stalls
-//!   any thread that submits behind vsync-blocked swapchains).
+//!   thread quantizes uploads to reference-output presents while ticks are
+//!   healthy, selecting one refresh ahead against the wall-clock video clock.
+//!   Timeout wakes retain wall-clock pacing when ticks stop. All non-egui GPU
+//!   work lives on the consume thread (Windows/NVIDIA WSI stalls any thread
+//!   that submits behind vsync-blocked swapchains).
 
 use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
 use cuepool_core::{
@@ -4466,15 +4467,66 @@ fn resolve_goto_target(
     }
 }
 
+const VSYNC_INTERVAL_MIN: Duration = Duration::from_millis(4);
+const VSYNC_INTERVAL_MAX: Duration = Duration::from_millis(40);
+const VSYNC_STALE_MAX: Duration = Duration::from_millis(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FramePacingDecision {
+    target: Option<Duration>,
+    tick_paced: bool,
+}
+
+fn frame_pacing_decision(
+    position: Option<Duration>,
+    stepping: bool,
+    woke_on_tick: bool,
+    last_tick_age: Option<Duration>,
+    tick_interval: Option<Duration>,
+) -> FramePacingDecision {
+    let Some(position) = position else {
+        return FramePacingDecision { target: None, tick_paced: false };
+    };
+    let healthy_interval = tick_interval
+        .map(|interval| interval.clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX))
+        .filter(|interval| {
+            last_tick_age.is_some_and(|age| {
+                age < interval.saturating_mul(3).min(VSYNC_STALE_MAX)
+            })
+        });
+    if !stepping
+        && let Some(interval) = healthy_interval {
+            return FramePacingDecision {
+                target: woke_on_tick.then(|| position.saturating_add(interval)),
+                tick_paced: true,
+            };
+        }
+    FramePacingDecision { target: Some(position), tick_paced: false }
+}
+
+fn update_vsync_interval(
+    interval: Option<Duration>,
+    elapsed: Duration,
+    tick_count: u64,
+) -> Duration {
+    let sample = Duration::from_secs_f64(elapsed.as_secs_f64() / tick_count as f64)
+        .clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX);
+    interval
+        .map(|previous| previous.mul_f64(0.8) + sample.mul_f64(0.2))
+        .unwrap_or(sample)
+        .clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX)
+}
+
 /// Video consume thread: owns the canvas/overlay textures, the YUV converter,
 /// the decode-channel drain and the frame-state publish — every non-egui GPU
 /// call. Moving this off the winit thread is the Windows fix: NVIDIA's Vulkan
 /// WSI serializes a thread's GPU calls behind the vsync-blocked render
 /// threads (20-60 ms per call), which dragged the whole event loop to ~10 Hz.
 ///
-/// Frame selection stays against the video clock, but output 0's successful
-/// presents wake the loop so uploads land just after its scanout. The existing
-/// clock-derived sleeps remain as timeout fallbacks when no output is ticking.
+/// While output 0 presents regularly, only its ticks consume frames and a
+/// one-interval lookahead selects what the next scanout should show. Timeout
+/// wakes still handle control and publishing. Missing/stale ticks and stepping
+/// use the original wall-clock selection and sleep behavior unchanged.
 ///
 /// Lock order: `control` and `frame_state` are both leaf locks, never held
 /// together across GPU calls and never held while sleeping or blocking on
@@ -4513,6 +4565,9 @@ fn video_consume_thread(
     #[cfg(windows)]
     let (retirement_tx, retirement_rx) = std::sync::mpsc::channel::<()>();
     let mut last_vsync_tick = *vsync_tick.0.lock_unpoisoned();
+    let mut woke_on_vsync = false;
+    let mut last_vsync_at: Option<Instant> = None;
+    let mut vsync_interval: Option<Duration> = None;
 
     while !stop.load(Ordering::Relaxed) {
         #[cfg(windows)]
@@ -4666,11 +4721,11 @@ fn video_consume_thread(
         }
 
         // ── Due-frame selection against the video clock ──
-        let (target, fit) = {
+        let (position, fit, stepping) = {
             let mut ctl = control.lock_unpoisoned();
             let stream_current = rx_epoch == Some(ctl.stream_epoch);
             let stepping = stream_current && std::mem::take(&mut ctl.step_pending);
-            let target = if stream_current && (!ctl.paused || stepping) {
+            let position = if stream_current && (!ctl.paused || stepping) {
                 // While paused-and-stepping, the target is the frozen position —
                 // clock.elapsed() keeps growing through the pause and would drain
                 // every buffered frame. +1µs absorbs the f64→Duration rounding of
@@ -4687,8 +4742,17 @@ fn video_consume_thread(
             } else {
                 None
             };
-            (target, ctl.fit)
+            (position, ctl.fit, stepping)
         };
+        let pacing = frame_pacing_decision(
+            position,
+            stepping,
+            woke_on_vsync,
+            last_vsync_at.map(|tick| tick.elapsed()),
+            vsync_interval,
+        );
+        let target = pacing.target;
+        woke_on_vsync = false;
 
         // Keep one frame peeked while paused, and notice an immediately-following
         // EOF even without a running target clock. A future frame still holds EOF
@@ -5008,7 +5072,7 @@ fn video_consume_thread(
         }
 
         // ── Pace: wake after reference present, with the old poll as fallback ──
-        let sleep_for = match target {
+        let sleep_for = match position {
             None => Duration::from_millis(2), // paused/idle: watch for step/stop
             Some(pos) => match peek.as_ref() {
                 Some(f) => {
@@ -5029,13 +5093,35 @@ fn video_consume_thread(
                 }
             },
         };
+        // A frame held for the next healthy tick would otherwise leave the old
+        // due-now calculation at zero and spin instead of returning to the wait.
+        let sleep_for = if pacing.tick_paced {
+            sleep_for.max(Duration::from_millis(1))
+        } else {
+            sleep_for
+        };
         if !sleep_for.is_zero() {
             let tick = vsync_tick.0.lock_unpoisoned();
             let (tick, _) = vsync_tick
                 .1
                 .wait_timeout_while(tick, sleep_for, |tick| *tick == last_vsync_tick)
                 .unwrap_or_else(|e| e.into_inner());
-            last_vsync_tick = *tick;
+            let next_vsync_tick = *tick;
+            drop(tick);
+            let tick_count = next_vsync_tick.wrapping_sub(last_vsync_tick);
+            woke_on_vsync = tick_count != 0;
+            if woke_on_vsync {
+                let now = Instant::now();
+                if let Some(previous) = last_vsync_at {
+                    vsync_interval = Some(update_vsync_interval(
+                        vsync_interval,
+                        now.saturating_duration_since(previous),
+                        tick_count,
+                    ));
+                }
+                last_vsync_at = Some(now);
+            }
+            last_vsync_tick = next_vsync_tick;
         }
     }
 
@@ -5941,6 +6027,44 @@ mod tests {
             timing.record(Duration::from_millis(ms));
         }
         assert!((timing.record(Duration::from_millis(51)) - 26.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn frame_pacing_quantizes_healthy_ticks_and_preserves_fallbacks() {
+        let position = Duration::from_secs(10);
+        let interval = Duration::from_millis(20);
+        let decide = |stepping, woke_on_tick, age, interval| {
+            frame_pacing_decision(Some(position), stepping, woke_on_tick, age, interval)
+        };
+
+        let tick = decide(false, true, Some(Duration::from_millis(1)), Some(interval));
+        assert_eq!(tick.target, Some(position + interval));
+        assert!(tick.tick_paced);
+
+        let timeout = decide(false, false, Some(Duration::from_millis(5)), Some(interval));
+        assert_eq!(timeout.target, None);
+        assert!(timeout.tick_paced);
+
+        let absent = decide(false, false, None, None);
+        assert_eq!(absent.target, Some(position));
+        assert!(!absent.tick_paced);
+
+        let stale = decide(false, false, Some(Duration::from_millis(61)), Some(interval));
+        assert_eq!(stale.target, Some(position));
+        assert!(!stale.tick_paced);
+
+        let stepping = decide(true, false, Some(Duration::from_millis(1)), Some(interval));
+        assert_eq!(stepping.target, Some(position));
+        assert!(!stepping.tick_paced);
+
+        assert_eq!(
+            update_vsync_interval(None, Duration::from_millis(2), 1),
+            VSYNC_INTERVAL_MIN
+        );
+        assert_eq!(
+            update_vsync_interval(None, Duration::from_millis(100), 2),
+            VSYNC_INTERVAL_MAX
+        );
     }
 
     fn cli_project_test_dir() -> PathBuf {
