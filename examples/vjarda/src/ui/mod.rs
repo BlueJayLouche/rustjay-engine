@@ -32,6 +32,7 @@ impl Default for MixerTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddSourceTab {
     File,
+    Stream,
     Camera,
     #[cfg(feature = "ndi")]
     Ndi,
@@ -47,6 +48,10 @@ pub struct DeckTab {
     selected_channel_uuid: String,
     add_tab: AddSourceTab,
     file_path: String,
+    #[cfg(feature = "ffmpeg")]
+    stream_url: String,
+    #[cfg(feature = "ffmpeg")]
+    stream_name: String,
     selected_camera_index: usize,
     #[cfg(feature = "ndi")]
     selected_ndi_index: usize,
@@ -66,6 +71,10 @@ impl Default for DeckTab {
             selected_channel_uuid: String::new(),
             add_tab: AddSourceTab::File,
             file_path: String::new(),
+            #[cfg(feature = "ffmpeg")]
+            stream_url: String::new(),
+            #[cfg(feature = "ffmpeg")]
+            stream_name: String::new(),
             selected_camera_index: 0,
             #[cfg(feature = "ndi")]
             selected_ndi_index: 0,
@@ -85,8 +94,6 @@ pub struct EffectsTab {
     stream_url: String,
     /// Manual stream name input.
     stream_name: String,
-    /// Manual stream kind (srt / hls / dash / rtmp).
-    stream_kind: String,
     /// Async result from the native file picker (effect shaders).
     pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
 }
@@ -97,7 +104,6 @@ impl Default for EffectsTab {
             selected_channel_uuid: String::new(),
             stream_url: String::new(),
             stream_name: String::new(),
-            stream_kind: "rtmp".to_string(),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -445,6 +451,38 @@ mod egui_impl {
         });
     }
 
+    /// Validate and queue a stream deck for either UI entry point.
+    fn queue_stream_deck(
+        state: &mut VardaAppState,
+        engine: &mut EngineState,
+        channel_uuid: &str,
+        display_name: &str,
+        url: &str,
+    ) -> Result<(), &'static str> {
+        let url = url.trim();
+        let kind = crate::sources::classify_stream_url(url)?;
+        let name = match display_name.trim() {
+            "" => url,
+            name => name,
+        };
+        state.pending_decks.push(crate::PendingDeck {
+            channel_uuid: channel_uuid.to_string(),
+            source: crate::sources::SourceEntry {
+                id: name.to_lowercase().replace(' ', "_"),
+                name: name.to_string(),
+                kind,
+                path: Some(std::path::PathBuf::from(url)),
+                device_index: 0,
+            },
+        });
+        engine.notify(
+            format!("Queued stream '{}' for creation", name),
+            rustjay_core::NotificationLevel::Info,
+            std::time::Duration::from_secs(3),
+        );
+        Ok(())
+    }
+
     /// Helper: render an FX chain as an enable-checkbox + remove-button list,
     /// applying removals in place. Returns `true` if a slot was removed — a
     /// structural edit the caller should surface via `params_dirty_request` so
@@ -718,6 +756,12 @@ mod egui_impl {
 
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::File, "📁 File");
+                #[cfg(feature = "ffmpeg")]
+                ui.selectable_value(&mut self.add_tab, AddSourceTab::Stream, "📡 Stream");
+                #[cfg(not(feature = "ffmpeg"))]
+                let _ = ui
+                    .add_enabled(false, egui::Button::selectable(false, "📡 Stream"))
+                    .on_disabled_hover_text("Stream sources require the ffmpeg feature.");
                 #[cfg(target_os = "linux")]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera / V4L2");
                 #[cfg(not(target_os = "linux"))]
@@ -728,7 +772,7 @@ mod egui_impl {
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Syphon, "🖥 Syphon");
                 #[cfg(target_os = "windows")]
                 ui.selectable_value(&mut self.add_tab, AddSourceTab::Spout, "🖥 Spout");
-                if self.add_tab != AddSourceTab::File {
+                if self.add_tab != AddSourceTab::File && self.add_tab != AddSourceTab::Stream {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("⟳ Refresh").clicked() {
                             state.registry.refresh_builtins();
@@ -809,6 +853,46 @@ mod egui_impl {
                         });
                         self.file_path.clear();
                     }
+                }
+                AddSourceTab::Stream => {
+                    #[cfg(feature = "ffmpeg")]
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label("URL:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.stream_url)
+                                    .hint_text("https://… / rtsp://… / srt://…"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Name (optional):");
+                            ui.text_edit_singleline(&mut self.stream_name);
+                        });
+
+                        let url_error = if self.stream_url.trim().is_empty() {
+                            None
+                        } else {
+                            crate::sources::classify_stream_url(&self.stream_url).err()
+                        };
+                        if let Some(error) = url_error {
+                            ui.colored_label(ui.visuals().error_fg_color, error);
+                        }
+
+                        let can_add = !self.stream_url.trim().is_empty() && url_error.is_none();
+                        if ui.add_enabled(can_add, egui::Button::new("Add Stream")).clicked()
+                            && queue_stream_deck(
+                                state,
+                                engine,
+                                &target_uuid,
+                                &self.stream_name,
+                                &self.stream_url,
+                            ).is_ok() {
+                                self.stream_url.clear();
+                                self.stream_name.clear();
+                            }
+                    }
+                    #[cfg(not(feature = "ffmpeg"))]
+                    ui.label("Stream sources require the ffmpeg feature.");
                 }
                 AddSourceTab::Camera => {
                     let cameras: Vec<&crate::sources::SourceEntry> = state
@@ -1032,6 +1116,8 @@ mod egui_impl {
                                 crate::sources::SourceKind::Hls => "📡",
                                 crate::sources::SourceKind::Dash => "📡",
                                 crate::sources::SourceKind::Rtmp => "📡",
+                                crate::sources::SourceKind::Http => "📡",
+                                crate::sources::SourceKind::Rtsp => "📡",
                                 _ => "📁",
                             };
                             ui.label(format!("{} {}", icon, entry.name));
@@ -1062,43 +1148,35 @@ mod egui_impl {
             // Manual stream input
             ui.collapsing("Add Stream URL", |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    ui.text_edit_singleline(&mut self.stream_name);
+                    ui.label("URL:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.stream_url)
+                            .hint_text("https://… / rtsp://… / srt://…"),
+                    );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("URL:");
-                    ui.text_edit_singleline(&mut self.stream_url);
-                    egui::ComboBox::from_id_salt("stream_kind")
-                        .selected_text(&self.stream_kind)
-                        .show_ui(ui, |ui| {
-                            for kind in &["rtmp", "srt", "hls", "dash"] {
-                                ui.selectable_value(&mut self.stream_kind, kind.to_string(), *kind);
-                            }
-                        });
+                    ui.label("Name (optional):");
+                    ui.text_edit_singleline(&mut self.stream_name);
                 });
-                if ui.button("Add Stream").clicked() && !self.stream_url.is_empty() && !self.stream_name.is_empty() && !target_uuid.is_empty() {
-                    let kind = match self.stream_kind.as_str() {
-                        "srt" => crate::sources::SourceKind::Srt,
-                        "hls" => crate::sources::SourceKind::Hls,
-                        "dash" => crate::sources::SourceKind::Dash,
-                        _ => crate::sources::SourceKind::Rtmp,
-                    };
-                    let entry = crate::sources::SourceEntry {
-                        id: self.stream_name.to_lowercase().replace(' ', "_"),
-                        name: self.stream_name.clone(),
-                        kind,
-                        path: Some(std::path::PathBuf::from(&self.stream_url)),
-                        device_index: 0,
-                    };
-                    state.pending_decks.push(crate::PendingDeck {
-                        channel_uuid: target_uuid.clone(),
-                        source: entry,
-                    });
-                    engine.notify(
-                        format!("Queued stream '{}' for creation", self.stream_name),
-                        rustjay_core::NotificationLevel::Info,
-                        std::time::Duration::from_secs(3),
-                    );
+                let url_error = if self.stream_url.trim().is_empty() {
+                    None
+                } else {
+                    crate::sources::classify_stream_url(&self.stream_url).err()
+                };
+                if let Some(error) = url_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                let can_add = !target_uuid.is_empty()
+                    && !self.stream_url.trim().is_empty()
+                    && url_error.is_none();
+                if ui.add_enabled(can_add, egui::Button::new("Add Stream")).clicked()
+                    && queue_stream_deck(
+                        state,
+                        engine,
+                        &target_uuid,
+                        &self.stream_name,
+                        &self.stream_url,
+                    ).is_ok() {
                     self.stream_url.clear();
                     self.stream_name.clear();
                 }

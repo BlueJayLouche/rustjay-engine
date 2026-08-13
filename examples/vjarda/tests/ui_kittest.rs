@@ -3,9 +3,9 @@
 //! Update projection baselines with
 //! `UPDATE_SNAPSHOTS=1 cargo test -p vjarda --features projection --test ui_kittest`.
 
-#[cfg(feature = "projection")]
+#[cfg(any(feature = "projection", feature = "ffmpeg"))]
 use egui::accesskit::Role;
-#[cfg(feature = "projection")]
+#[cfg(any(feature = "projection", feature = "ffmpeg"))]
 use egui_kittest::kittest::By;
 use egui_kittest::{Harness, kittest::Queryable};
 use rustjay_core::EngineState;
@@ -17,8 +17,15 @@ use vjarda::{
     ui::{DeckTab, OutputsTab},
 };
 
-fn tab_harness<T: AnyEguiTab + 'static>(mut tab: T, size: [f32; 2]) -> Harness<'static> {
-    let mut app = VardaAppState::default();
+fn tab_harness<T: AnyEguiTab + 'static>(tab: T, size: [f32; 2]) -> Harness<'static> {
+    tab_harness_with_app(tab, size, VardaAppState::default())
+}
+
+fn tab_harness_with_app<T: AnyEguiTab + 'static>(
+    mut tab: T,
+    size: [f32; 2],
+    mut app: VardaAppState,
+) -> Harness<'static> {
     let mut engine = EngineState::default();
     assert!(engine.stage_preview_texture_id.is_none());
 
@@ -47,8 +54,42 @@ fn deck_add_source_snapshot() {
 
     harness.get_by_label("Add Source");
     harness.get_by_label("📁 File");
+    harness.get_by_label("📡 Stream");
     harness.get_by_label("📷 Camera / V4L2");
     harness.snapshot("deck_add_source");
+}
+
+#[cfg(feature = "ffmpeg")]
+#[test]
+fn deck_stream_paints_invalid_url_error() {
+    let app = VardaAppState::default();
+    app.mixer
+        .lock()
+        .unwrap()
+        .add_channel(rustjay_mixer::Channel::new(
+            "test",
+            "Test",
+            Box::new(vjarda::graph::DeckCompositor::new()),
+        ))
+        .unwrap();
+    let mut harness = tab_harness_with_app(DeckTab::default(), [700.0, 500.0], app);
+
+    harness.get_by_label("📡 Stream").click();
+    harness.run();
+    harness
+        .get_all(By::new().role(Role::TextInput))
+        .next()
+        .expect("stream URL field")
+        .click();
+    harness.run();
+    harness
+        .get_all(By::new().role(Role::TextInput))
+        .next()
+        .expect("stream URL field")
+        .type_text("ftp://stream.example/live");
+    harness.run();
+
+    harness.get_by_label("Unsupported stream URL scheme.");
 }
 
 #[cfg(not(feature = "projection"))]

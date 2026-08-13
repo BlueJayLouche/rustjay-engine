@@ -47,6 +47,48 @@ pub enum SourceKind {
     Dash,
     /// RTMP stream.
     Rtmp,
+    /// HTTP(S) stream.
+    Http,
+    /// RTSP stream.
+    Rtsp,
+}
+
+/// Infer a stream source kind from a supported URL and require a host.
+pub fn classify_stream_url(url: &str) -> Result<SourceKind, &'static str> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Stream URL is required.");
+    }
+
+    let Some((scheme, remainder)) = url.split_once("://") else {
+        return Err("Stream URL must include a scheme.");
+    };
+    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_and_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = if let Some(bracketed) = host_and_port.strip_prefix('[') {
+        bracketed.split_once(']').map(|(host, _)| host).unwrap_or_default()
+    } else {
+        host_and_port.split(':').next().unwrap_or_default()
+    };
+    if host.trim().is_empty() {
+        return Err("Stream URL must include a host.");
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    let path = remainder
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(remainder)
+        .to_ascii_lowercase();
+    match scheme.as_str() {
+        "srt" => Ok(SourceKind::Srt),
+        "rtmp" | "rtmps" => Ok(SourceKind::Rtmp),
+        "rtsp" => Ok(SourceKind::Rtsp),
+        "http" | "https" if path.ends_with(".m3u8") => Ok(SourceKind::Hls),
+        "http" | "https" if path.ends_with(".mpd") => Ok(SourceKind::Dash),
+        "http" | "https" => Ok(SourceKind::Http),
+        _ => Err("Unsupported stream URL scheme."),
+    }
 }
 
 /// Registry of available sources and effects.
@@ -144,30 +186,21 @@ impl Registry {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // Format: name|url|kind  (kind = srt, hls, dash, rtmp)
+                // Format: name|url (a legacy third kind field is ignored).
                 let parts: Vec<&str> = line.split('|').collect();
                 if parts.len() >= 2 {
                     let name = parts[0].trim().to_string();
                     let url = parts[1].trim().to_string();
-                    let kind_str = parts.get(2).map(|s| s.trim()).unwrap_or("");
-                    let kind = match kind_str.to_lowercase().as_str() {
-                        "srt" => SourceKind::Srt,
-                        "hls" => SourceKind::Hls,
-                        "dash" => SourceKind::Dash,
-                        "rtmp" | "rtmps" => SourceKind::Rtmp,
-                        _ => {
-                            // Auto-detect from URL prefix.
-                            if url.starts_with("srt://") {
-                                SourceKind::Srt
-                            } else if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
-                                SourceKind::Rtmp
-                            } else if url.contains(".m3u8") || url.contains("/hls") {
-                                SourceKind::Hls
-                            } else if url.contains(".mpd") || url.contains("/dash") {
-                                SourceKind::Dash
-                            } else {
-                                SourceKind::Rtmp
-                            }
+                    let kind = match classify_stream_url(&url) {
+                        Ok(kind) => kind,
+                        Err(error) => {
+                            log::warn!(
+                                "Skipping stream '{}' from {}: {}",
+                                name,
+                                streams_path.display(),
+                                error
+                            );
+                            continue;
                         }
                     };
                     let id = name.to_lowercase().replace(' ', "_");
@@ -327,5 +360,41 @@ impl Registry {
             .chain(&self.streams)
             .chain(&self.builtins)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SourceKind, classify_stream_url};
+
+    #[test]
+    fn classifies_supported_stream_urls() {
+        for (url, expected) in [
+            ("srt://stream.example/live", SourceKind::Srt),
+            ("rtmp://stream.example/live", SourceKind::Rtmp),
+            ("rtmps://stream.example/live", SourceKind::Rtmp),
+            ("http://stream.example/live.mp4", SourceKind::Http),
+            ("HTTPS://stream.example/live", SourceKind::Http),
+            ("https://stream.example/live.m3u8?token=1", SourceKind::Hls),
+            ("https://stream.example/live.MPD#manifest", SourceKind::Dash),
+            ("rtsp://stream.example/live", SourceKind::Rtsp),
+            ("rtsp://[::1]:8554/live", SourceKind::Rtsp),
+        ] {
+            assert_eq!(classify_stream_url(url), Ok(expected), "{url}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_stream_urls() {
+        for url in [
+            "",
+            "stream.example/live",
+            "ftp://stream.example/live",
+            "http:///live",
+            "rtsp://:8554/live",
+            "srt://user@/live",
+        ] {
+            assert!(classify_stream_url(url).is_err(), "accepted {url}");
+        }
     }
 }

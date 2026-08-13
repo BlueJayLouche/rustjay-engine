@@ -36,7 +36,7 @@ pub use hap_source::HapSource;
 pub use image_source::ImageSource;
 #[cfg(feature = "ndi")]
 pub use ndi_source::NdiSource;
-pub use registry::{Registry, SourceEntry, SourceKind};
+pub use registry::{Registry, SourceEntry, SourceKind, classify_stream_url};
 pub use solid_color_source::SolidColorSource;
 #[cfg(all(target_os = "windows", feature = "mixer"))]
 pub use spout_source::SpoutSource;

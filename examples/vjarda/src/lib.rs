@@ -495,7 +495,12 @@ fn instantiate_source(
                 ));
             }
         }
-        SourceKind::Srt | SourceKind::Hls | SourceKind::Dash | SourceKind::Rtmp => {
+        SourceKind::Srt
+        | SourceKind::Hls
+        | SourceKind::Dash
+        | SourceKind::Rtmp
+        | SourceKind::Http
+        | SourceKind::Rtsp => {
             #[cfg(feature = "ffmpeg")]
             {
                 let url = entry
@@ -2571,6 +2576,8 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
             SourceKind::Hls => "hls",
             SourceKind::Dash => "dash",
             SourceKind::Rtmp => "rtmp",
+            SourceKind::Http => "http",
+            SourceKind::Rtsp => "rtsp",
         }
         .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
