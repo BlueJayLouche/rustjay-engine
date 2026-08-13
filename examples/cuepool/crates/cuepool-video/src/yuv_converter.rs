@@ -808,24 +808,6 @@ mod tests {
     use super::*;
     use crate::frame::{BitDepth, ChromaSubsample, YuvPlane};
 
-    fn fake_device_queue() -> (Device, Queue) {
-        pollster::block_on(async {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions::default())
-                .await
-                .expect("adapter");
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM,
-                    ..Default::default()
-                })
-                .await
-                .expect("device");
-            (device, queue)
-        })
-    }
-
     fn plane(data: Vec<u8>, width: u32, height: u32) -> YuvPlane {
         let stride = data.len() as u32 / height.max(1);
         YuvPlane { data, stride, width, height }
@@ -833,7 +815,11 @@ mod tests {
 
     #[test]
     fn planar_converter_compiles_and_uploads() {
-        let (device, queue) = fake_device_queue();
+        let Some((device, queue)) =
+            crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        else {
+            return;
+        };
         let mut conv = YuvConverter::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let frame = VideoFrame::yuv_planar(
             4,
@@ -852,7 +838,11 @@ mod tests {
 
     #[test]
     fn nv12_converter_compiles_and_uploads() {
-        let (device, queue) = fake_device_queue();
+        let Some((device, queue)) =
+            crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        else {
+            return;
+        };
         let mut conv = YuvConverter::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let frame = VideoFrame::nv12(
             4,
@@ -868,7 +858,11 @@ mod tests {
 
     #[test]
     fn p10_converter_compiles_and_uploads() {
-        let (device, queue) = fake_device_queue();
+        let Some((device, queue)) =
+            crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
+        else {
+            return;
+        };
         let mut conv = YuvConverter::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         // 10-bit samples stored as little-endian u16 (two bytes each).
         let y = (0..(4 * 4))
