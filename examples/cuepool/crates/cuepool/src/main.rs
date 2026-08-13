@@ -14,7 +14,7 @@ use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
 };
-use cuepool_gui::{AppCommand, CuePoolApp, DecodeTiming, OutputDiagnostics, SharedStateHandle, VideoDiagnostics};
+use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, SharedStateHandle, VideoDiagnostics, VideoTimings};
 use cuepool_gui::app::CueState;
 use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
@@ -254,6 +254,7 @@ struct VideoControl {
     /// the winit thread and taken out by the consume thread. A new receiver
     /// means a new stream: the consume thread drops its peeked frame.
     frame_rx: Option<std::sync::mpsc::Receiver<VideoMessage>>,
+    timings: VideoTimings,
     /// Wall-clock playback anchor (real time = A/V sync reference).
     clock: Option<Instant>,
     /// Set while paused, to freeze `clock` across the pause.
@@ -676,7 +677,7 @@ impl App {
                 (ffmpeg >> 8) & 0xff,
                 ffmpeg & 0xff,
             );
-            for var in ["QPLAYER_PRESENT_MODE", "QPLAYER_FPS_DEBUG", "QPLAYER_NO_HWACCEL"] {
+            for var in ["QPLAYER_PRESENT_MODE", "QPLAYER_FPS_DEBUG", "QPLAYER_NO_HWACCEL", "QPLAYER_ZEROCOPY"] {
                 if let Ok(value) = std::env::var(var) {
                     d.env_overrides.push((var.into(), value));
                 }
@@ -2466,12 +2467,14 @@ impl App {
         // clock, not the audio clock, so it can't freeze if the audio device sleeps.
         let (frame_tx, frame_rx) =
             std::sync::mpsc::sync_channel::<VideoMessage>(VIDEO_QUEUE_CAP);
+        let timings = VideoTimings::default();
         // Installing a new receiver also tells the consume thread to drop its
         // peeked frame and invalidates EOF already queued by the old decoder.
         {
             let mut ctl = self.video_control.lock_unpoisoned();
             ctl.stream_epoch += 1;
             ctl.frame_rx = Some(frame_rx);
+            ctl.timings = timings.clone();
         }
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
@@ -2489,6 +2492,7 @@ impl App {
                     frame_tx,
                     diag_state,
                     frame_pool,
+                    timings,
                 );
             })
         {
@@ -4476,6 +4480,9 @@ fn video_consume_thread(
     // Live outputs copy (re-cloned only when `outputs_gen` advances).
     let mut outputs: Vec<cuepool_core::ProjectorOutput> = Vec::new();
     let mut outputs_gen = 0u64;
+    let mut timings = VideoTimings::default();
+    let mut upload_timing = TimingWindow::default();
+    let mut conversion_submit_timing = TimingWindow::default();
 
     while !stop.load(Ordering::Relaxed) {
         // ── Cue-driven canvas/overlay commands (rare) ──
@@ -4563,6 +4570,9 @@ fn video_consume_thread(
             if let Some(new_rx) = ctl.frame_rx.take() {
                 rx = Some(new_rx);
                 rx_epoch = Some(ctl.stream_epoch);
+                timings = ctl.timings.clone();
+                upload_timing = TimingWindow::default();
+                conversion_submit_timing = TimingWindow::default();
                 peek = None;
                 ctl.peek_pts = None;
             }
@@ -4706,7 +4716,9 @@ fn video_consume_thread(
                     if let Some(c) = canvas.as_ref() {
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        let upload_started = Instant::now();
                         c.upload_frame(&queue, &frame, fit);
+                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
                     }
                 }
                 _ => {
@@ -4722,13 +4734,19 @@ fn video_consume_thread(
                     if let (Some(c), Some(conv)) = (canvas.as_ref(), yuv_converter.as_mut()) {
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
+                        let upload_started = Instant::now();
                         conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
+                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        let conversion_started = Instant::now();
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("canvas-yuv-convert"),
                             });
                         conv.encode(&mut encoder, &c.render_view());
                         queue.submit(std::iter::once(encoder.finish()));
+                        timings.conversion_submit.set_ms(
+                            conversion_submit_timing.record(conversion_started.elapsed()),
+                        );
                     }
                 }
             }
@@ -5103,6 +5121,8 @@ fn send_video_message(
 /// Video decode thread: sends frames and EOF through the bounded consumer channel.
 /// `start_before`: deliver first the last frame with PTS strictly below this
 /// timestamp (frame-step-back), then continue with the frames after it.
+// ponytail: Keep thread resources explicit until the Windows interop context lands in this API.
+#[allow(clippy::too_many_arguments)]
 fn video_decode_thread(
     path: &str,
     start_before: Option<f64>,
@@ -5111,6 +5131,7 @@ fn video_decode_thread(
     frame_tx: std::sync::mpsc::SyncSender<VideoMessage>,
     diag_state: SharedStateHandle,
     frame_pool: Arc<FramePool>,
+    timings: VideoTimings,
 ) {
     let mut source = match VideoSource::open_with_pool(path, Arc::clone(&frame_pool)) {
         Ok(s) => s,
@@ -5121,16 +5142,29 @@ fn video_decode_thread(
     };
 
     // Publish what's decoding to the Status window (Help → Status…).
-    let decode_timing = DecodeTiming::default();
+    let preference = cuepool_video::ZeroCopyPreference::from_env();
+    let fallback_reason = if preference.enabled() {
+        #[cfg(windows)]
+        {
+            Some("interop probe pending".into())
+        }
+        #[cfg(not(windows))]
+        {
+            Some("zero-copy requires Windows".into())
+        }
+    } else {
+        Some("disabled; set QPLAYER_ZEROCOPY=1 to probe".into())
+    };
     diag_state.lock_unpoisoned().diagnostics.video = Some(VideoDiagnostics {
         path: path.to_string(),
         width: source.width(),
         height: source.height(),
         decode_path: source.decode_path().to_string(),
-        decode_ms_per_frame: decode_timing.clone(),
+        fallback_reason,
+        timings: timings.clone(),
     });
 
-    let mut timing_window = DecodeTimingWindow::default();
+    let mut timing_windows = VideoTimingWindows::default();
 
     if let Some(t) = start_before {
         // Seek to the keyframe at/before t, then scan forward for the frame
@@ -5144,7 +5178,7 @@ fn video_decode_thread(
             if stop_flag.load(Ordering::Relaxed) {
                 return;
             }
-            match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
+            match timed_read_frame(&mut source, &mut timing_windows, &timings) {
                 Some(f) if f.pts + 1e-4 < t => {
                     if let Some(discarded) = prev.replace(f) {
                         frame_pool.recycle_frame(discarded);
@@ -5181,7 +5215,7 @@ fn video_decode_thread(
     // tentative (hw device created ≠ hw decode engaged — e.g. Hap has none).
     let mut diag_path_pending = true;
     while !stop_flag.load(Ordering::Relaxed) {
-        match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
+        match timed_read_frame(&mut source, &mut timing_windows, &timings) {
             Some(frame) => {
                 if std::mem::take(&mut diag_path_pending)
                     && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
@@ -5202,11 +5236,11 @@ fn video_decode_thread(
 const DECODE_TIMING_WINDOW: usize = 50;
 
 #[derive(Default)]
-struct DecodeTimingWindow {
+struct TimingWindow {
     samples_ms: std::collections::VecDeque<f64>,
 }
 
-impl DecodeTimingWindow {
+impl TimingWindow {
     fn record(&mut self, elapsed: Duration) -> f64 {
         if self.samples_ms.len() == DECODE_TIMING_WINDOW {
             self.samples_ms.pop_front();
@@ -5216,14 +5250,25 @@ impl DecodeTimingWindow {
     }
 }
 
+#[derive(Default)]
+struct VideoTimingWindows {
+    decode: TimingWindow,
+    hw_transfer: TimingWindow,
+    plane_copy: TimingWindow,
+}
+
 fn timed_read_frame(
     source: &mut VideoSource,
-    timing_window: &mut DecodeTimingWindow,
-    decode_timing: &DecodeTiming,
+    timing_windows: &mut VideoTimingWindows,
+    timings: &VideoTimings,
 ) -> Option<VideoFrame> {
-    let start = Instant::now();
     let frame = source.read_frame();
-    decode_timing.set_ms(timing_window.record(start.elapsed()));
+    let frame_timings = source.last_timings();
+    timings.decode.set_ms(timing_windows.decode.record(frame_timings.decode));
+    timings.hw_transfer.set_ms(
+        timing_windows.hw_transfer.record(frame_timings.hw_transfer),
+    );
+    timings.plane_copy.set_ms(timing_windows.plane_copy.record(frame_timings.plane_copy));
     frame
 }
 
@@ -5657,8 +5702,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_timing_averages_the_last_fifty_samples() {
-        let mut timing = DecodeTimingWindow::default();
+    fn timing_averages_the_last_fifty_samples() {
+        let mut timing = TimingWindow::default();
         for ms in 1..=50 {
             timing.record(Duration::from_millis(ms));
         }

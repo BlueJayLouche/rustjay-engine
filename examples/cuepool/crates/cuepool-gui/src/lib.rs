@@ -17,7 +17,7 @@ pub mod projection_panel;
 pub mod transport;
 pub mod waveform;
 
-pub use app::{ActiveCueInfo, AppCommand, CuePoolApp, DecodeTiming, Diagnostics, GuiMeterData, OutputDiagnostics, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics};
+pub use app::{ActiveCueInfo, AppCommand, CuePoolApp, DecodeTiming, Diagnostics, GuiMeterData, OutputDiagnostics, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics, VideoTimings};
 
 pub(crate) fn cue_type_label(cue: &cuepool_core::Cue) -> &'static str {
     use cuepool_core::Cue;

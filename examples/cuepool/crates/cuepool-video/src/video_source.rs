@@ -2,6 +2,34 @@ use crate::frame::{BitDepth, ChromaSubsample, VideoFrame, YuvPlane};
 use crate::FramePool;
 use ffmpeg_next::{codec, color, ffi, format, frame, media::Type, software::scaling, threading};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZeroCopyPreference {
+    Disabled,
+    Enabled,
+}
+
+impl ZeroCopyPreference {
+    pub fn from_value(value: Option<&str>) -> Self {
+        if value == Some("1") { Self::Enabled } else { Self::Disabled }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_value(std::env::var("QPLAYER_ZEROCOPY").ok().as_deref())
+    }
+
+    pub fn enabled(self) -> bool {
+        self == Self::Enabled
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VideoFrameTimings {
+    pub decode: Duration,
+    pub hw_transfer: Duration,
+    pub plane_copy: Duration,
+}
 
 /// A hardware decode candidate: device type, the hw pixel format its frames
 /// arrive in, and a log label.
@@ -72,6 +100,7 @@ pub struct VideoSource {
     /// `send_eof` has been issued; remaining calls just drain delayed frames.
     eof_sent: bool,
     frame_pool: Arc<FramePool>,
+    last_timings: VideoFrameTimings,
 }
 
 /// Formats that upload straight to the GPU and convert in-shader.
@@ -366,6 +395,7 @@ impl VideoSource {
             eof: false,
             eof_sent: false,
             frame_pool,
+            last_timings: VideoFrameTimings::default(),
         })
     }
 
@@ -380,12 +410,14 @@ impl VideoSource {
                 // which `is_full_range` / `is_bt709` read off the frame.
                 unsafe {
                     ffi::av_frame_unref(self.sw_frame.as_mut_ptr());
-                    if ffi::av_hwframe_transfer_data(
+                    let transfer_started = Instant::now();
+                    let transfer_result = ffi::av_hwframe_transfer_data(
                         self.sw_frame.as_mut_ptr(),
                         self.decoded_frame.as_ptr(),
                         0,
-                    ) < 0
-                    {
+                    );
+                    self.last_timings.hw_transfer += transfer_started.elapsed();
+                    if transfer_result < 0 {
                         if self.hw_checked {
                             log::warn!("Video decode: hw download failed, skipping frame");
                             return Decoded::Skip;
@@ -401,7 +433,8 @@ impl VideoSource {
                     log::info!("Video decode: {} engaged", self.hw_label);
                 }
                 self.hw_checked = true;
-                return convert_frame(
+                let plane_copy_started = Instant::now();
+                let converted = convert_frame(
                     &self.sw_frame,
                     &mut self.scaler,
                     &mut self.rgb_frame,
@@ -409,10 +442,12 @@ impl VideoSource {
                     self.dst_height,
                     self.time_base,
                     &self.frame_pool,
-                )
-                .map_or(Decoded::Skip, Decoded::Frame);
+                );
+                self.last_timings.plane_copy += plane_copy_started.elapsed();
+                return converted.map_or(Decoded::Skip, Decoded::Frame);
             }
-        convert_frame(
+        let plane_copy_started = Instant::now();
+        let converted = convert_frame(
             &self.decoded_frame,
             &mut self.scaler,
             &mut self.rgb_frame,
@@ -420,8 +455,9 @@ impl VideoSource {
             self.dst_height,
             self.time_base,
             &self.frame_pool,
-        )
-        .map_or(Decoded::End, Decoded::Frame)
+        );
+        self.last_timings.plane_copy += plane_copy_started.elapsed();
+        converted.map_or(Decoded::End, Decoded::Frame)
     }
 
     /// Pull the next decoded frame into `self.decoded_frame`. `false` at EOF.
@@ -481,8 +517,12 @@ impl VideoSource {
 
     /// Read the next frame and return it with PTS in seconds. `None` at EOF.
     pub fn read_frame(&mut self) -> Option<VideoFrame> {
+        self.last_timings = VideoFrameTimings::default();
         loop {
-            if !self.next_raw_frame() {
+            let decode_started = Instant::now();
+            let decoded = self.next_raw_frame();
+            self.last_timings.decode += decode_started.elapsed();
+            if !decoded {
                 return None;
             }
             match self.handle_decoded() {
@@ -520,11 +560,20 @@ impl VideoSource {
     pub fn height(&self) -> u32 { self.height }
     pub fn dst_width(&self) -> u32 { self.dst_width }
     pub fn dst_height(&self) -> u32 { self.dst_height }
+    pub fn last_timings(&self) -> VideoFrameTimings { self.last_timings }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_copy_is_enabled_only_by_exact_opt_in() {
+        assert_eq!(ZeroCopyPreference::from_value(Some("1")), ZeroCopyPreference::Enabled);
+        for value in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some(" 1")] {
+            assert_eq!(ZeroCopyPreference::from_value(value), ZeroCopyPreference::Disabled);
+        }
+    }
 
     #[test]
     fn gpu_format_class_maps_native_and_fallback_formats() {

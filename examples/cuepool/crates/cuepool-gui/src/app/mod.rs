@@ -196,6 +196,15 @@ impl DecodeTiming {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct VideoTimings {
+    pub decode: DecodeTiming,
+    pub hw_transfer: DecodeTiming,
+    pub plane_copy: DecodeTiming,
+    pub upload: DecodeTiming,
+    pub conversion_submit: DecodeTiming,
+}
+
 /// The currently-decoding video source, published by the decode thread.
 #[derive(Debug, Clone)]
 pub struct VideoDiagnostics {
@@ -204,7 +213,8 @@ pub struct VideoDiagnostics {
     pub height: u32,
     /// `hardware (<api>)` or `software`, from `VideoSource::decode_path()`.
     pub decode_path: String,
-    pub decode_ms_per_frame: DecodeTiming,
+    pub fallback_reason: Option<String>,
+    pub timings: VideoTimings,
 }
 
 /// Plain-data snapshot behind the Status window (Help → Status…): what a
@@ -275,7 +285,12 @@ impl Diagnostics {
                 ("File".into(), v.path.clone()),
                 ("Source Size".into(), format!("{}x{}", v.width, v.height)),
                 ("Decode Path".into(), v.decode_path.clone()),
-                ("Decode ms/frame".into(), format!("{:.2}", v.decode_ms_per_frame.get_ms())),
+                ("Fallback Reason".into(), v.fallback_reason.clone().unwrap_or_else(|| "none".into())),
+                ("Decode ms/frame".into(), format!("{:.2}", v.timings.decode.get_ms())),
+                ("HW transfer ms/frame".into(), format!("{:.2}", v.timings.hw_transfer.get_ms())),
+                ("Plane copy ms/frame".into(), format!("{:.2}", v.timings.plane_copy.get_ms())),
+                ("Upload ms/frame".into(), format!("{:.2}", v.timings.upload.get_ms())),
+                ("Conversion submit ms/frame".into(), format!("{:.2}", v.timings.conversion_submit.get_ms())),
             ],
             None => vec![("Status".into(), "no video playing".into())],
         };
