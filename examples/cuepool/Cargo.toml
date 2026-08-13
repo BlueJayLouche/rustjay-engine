@@ -67,7 +67,7 @@ cuepool-protocols = { path = "crates/cuepool-protocols" }
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "unwind"
+panic = "abort"
 
 [patch.crates-io]
 wgpu = { git = "https://github.com/scroix/wgpu", rev = "a0b9d5718c2ab2edfce2f156792b0f4359f25460" }

@@ -21,6 +21,12 @@ pub struct ZeroCopyAvailability {
 }
 
 impl ZeroCopyAvailability {
+    /// Containment only engages where the panic strategy unwinds (dev/test
+    /// builds). The release profile keeps `panic = "abort"` deliberately: on
+    /// the venue machine a process exit is RECOVERABLE (the site watchdog
+    /// relaunches CuePool in seconds), while a silently dead worker thread
+    /// under `unwind` would freeze the wall with no external signal. Do not
+    /// flip the release profile to `unwind` for this mechanism.
     #[cfg(any(windows, test))]
     pub fn catch_direct_path_panic<T>(operation: impl FnOnce() -> T) -> Result<T, String> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).map_err(|payload| {
