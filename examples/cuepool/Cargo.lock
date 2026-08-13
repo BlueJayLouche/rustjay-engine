@@ -4151,12 +4151,14 @@ dependencies = [
 [[package]]
 name = "rustjay-lighting"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3dd7e63b7587e0a7457607a8ad40c2f74ce4d879cb6694a2a9dcddcb68d8b55"
 dependencies = [
  "crossbeam",
  "flate2",
  "log",
  "serde",
- "socket2",
+ "socket2 0.5.10",
 ]
 
 [[package]]
@@ -4444,6 +4446,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4915,7 +4927,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "windows-sys 0.61.2",
 ]
 

@@ -53,8 +53,10 @@ rfd = "0.15"
 brotli = "7.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
-# Engine crates (pure CPU+net, no wgpu — safe across the nested-workspace seam)
-rustjay-lighting = { path = "../../crates/rustjay-lighting" }
+# Engine crates, consumed from crates.io — CuePool's last code tie to the
+# engine tree. Local edits to crates/rustjay-lighting no longer reach CuePool
+# until published; bump the version here to pick them up.
+rustjay-lighting = "0.1.0"
 
 # Internal crates (path deps managed by cargo workspace)
 cuepool-core = { path = "crates/cuepool-core" }
