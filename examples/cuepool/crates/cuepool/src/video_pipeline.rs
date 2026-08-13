@@ -54,6 +54,15 @@ impl Default for OutputFrameState {
     }
 }
 
+/// A paused-seek frame request: the media position whose first decoded frame
+/// the consume thread should display; frame-step-back also snaps the show
+/// clock to it.
+#[derive(Clone, Copy)]
+pub(crate) struct VideoSeekFrameRequest {
+    pub(crate) position: f64,
+    pub(crate) adjust_show_clock: bool,
+}
+
 /// Video playback control shared between the winit thread and the video
 /// consume thread. The winit thread owns user-driven mutations (play, stop,
 /// pause, seek, step, MTC nudges); the consume thread owns the decode-channel
@@ -86,17 +95,21 @@ pub(crate) struct VideoControl {
     pub(crate) peek_pts: Option<f64>,
     /// PTS of the most recently consumed frame (frame-step-back anchor).
     pub(crate) last_pts: Option<f64>,
-    /// Frame-step-back request: the frozen position to snap to once the
-    /// re-seeked decode thread delivers its first frame.
-    pub(crate) step_back: Option<f64>,
-    /// The clock delta a completed step-back applied; the winit thread folds
-    /// it into the show clock (`show_paused_offset`) on its next tick.
-    pub(crate) step_back_delta: Option<f64>,
+    /// Paused seek request: display the first frame from the re-seeked decoder;
+    /// frame-step-back additionally snaps the frozen clock to that frame.
+    pub(crate) seek_frame: Option<VideoSeekFrameRequest>,
+    /// Clock delta from a frame-step-back; the winit thread folds it into the
+    /// show clock (`show_paused_offset`) on its next tick.
+    pub(crate) seek_show_delta: Option<f64>,
     /// Stop-cue picture fade: (start, duration_secs). The winit thread stops
     /// playback when it completes; the consume thread only reads it for opacity.
     pub(crate) fade: Option<(Instant, f32)>,
     /// MTC-hold position mirror (the MTC master owns the position).
     pub(crate) hold_position: Option<f64>,
+    /// Full media duration reported by the active decoder.
+    pub(crate) media_length_secs: Option<f64>,
+    /// Media timestamp corresponding to position zero in `ActiveCueInfo`.
+    pub(crate) timeline_offset_secs: f64,
     /// Mirrors of `App::current_video_qid.is_some()` / `current_text_qid.is_some()`.
     pub(crate) video_active: bool,
     pub(crate) text_active: bool,
@@ -374,7 +387,7 @@ pub(crate) fn video_consume_thread(
 
         let mut eof_epoch = None;
 
-        // ── Control handshake: new stream, stop, step-back ──
+        // ── Control handshake: new stream, stop, paused seek ──
         {
             let mut ctl = control.lock_unpoisoned();
             if rx_epoch.is_some_and(|epoch| epoch != ctl.stream_epoch) {
@@ -403,17 +416,15 @@ pub(crate) fn video_consume_thread(
                 ctl.peek_pts = None;
             }
         }
-        // Frame-step-back: wait (blocking, but on THIS thread, so the GUI never
-        // freezes) for the sought frame, snap the frozen clock to its exact
-        // PTS, and report the delta back for the show clock. Taken AFTER the
-        // channel refresh above so we wait on the NEW (re-seeked) receiver.
-        let step_back = {
+        // A paused seek waits here, off the GUI thread, for the new decoder's
+        // first frame. Frame-step-back also snaps both clocks to that frame.
+        let seek_frame = {
             let mut ctl = control.lock_unpoisoned();
             (rx_epoch == Some(ctl.stream_epoch))
-                .then(|| ctl.step_back.take())
+                .then(|| ctl.seek_frame.take())
                 .flatten()
         };
-        if let Some(pos) = step_back {
+        if let Some(request) = seek_frame {
             peek = None;
             let delivered = rx.as_ref().map(|r| r.recv_timeout(Duration::from_millis(1000)));
             let mut ctl = control.lock_unpoisoned();
@@ -423,13 +434,13 @@ pub(crate) fn video_consume_thread(
             } else {
                 match delivered {
                     Some(Ok(VideoMessage::Frame(f))) => {
-                        let delta = pos - f.pts;
-                        if delta > 0.0 {
+                        let delta = request.position - f.pts;
+                        if delta > 0.0 && request.adjust_show_clock {
                             if let Some(c) = ctl.clock {
                                 // Moving the epoch forward rewinds the paused position.
                                 ctl.clock = Some(c + Duration::from_secs_f64(delta));
                             }
-                            ctl.step_back_delta = Some(delta);
+                            ctl.seek_show_delta = Some(delta);
                         }
                         ctl.peek_pts = Some(f.pts);
                         peek = Some(f);
@@ -440,7 +451,7 @@ pub(crate) fn video_consume_thread(
                         eof_epoch = rx_epoch;
                         ctl.peek_pts = None;
                     }
-                    Some(Err(_)) => log::warn!("Frame step back: no frame delivered after seek"),
+                    Some(Err(_)) => log::warn!("Video seek: no frame delivered after seek"),
                     None => {}
                 }
             }
@@ -1115,8 +1126,8 @@ fn send_video_message(
 
 /// Video decode thread: sends frames and EOF through the bounded consumer channel.
 /// `start_before`: deliver first the last frame with PTS strictly below this
-/// timestamp (frame-step-back), then continue with the frames after it.
-// ponytail: Keep thread resources explicit until the Windows interop context lands in this API.
+/// timestamp (seeking and frame-step-back), then continue with the frames after it.
+// ponytail: Keep the one-thread entry point flat; introduce a context struct if it grows again.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn video_decode_thread(
     path: &str,
@@ -1125,10 +1136,16 @@ pub(crate) fn video_decode_thread(
     pause_flag: Arc<AtomicBool>,
     frame_tx: std::sync::mpsc::SyncSender<VideoMessage>,
     diag_state: SharedStateHandle,
+    video_control: Arc<Mutex<VideoControl>>,
+    stream_epoch: u64,
+    clamp_to_media: bool,
     frame_pool: Arc<FramePool>,
     timings: VideoTimings,
     zero_copy: ZeroCopyAvailability,
 ) {
+    if stop_flag.load(Ordering::Acquire) {
+        return;
+    }
     let zero_copy = if start_before.is_some() {
         ZeroCopyAvailability::declined("seek/frame-step-back uses D3D11VA readback")
     } else {
@@ -1145,6 +1162,9 @@ pub(crate) fn video_decode_thread(
             return;
         }
     };
+    if stop_flag.load(Ordering::Acquire) {
+        return;
+    }
 
     // Publish what's decoding to the Status window (Help → Status…).
     diag_state.lock_unpoisoned().diagnostics.video = Some(VideoDiagnostics {
@@ -1155,10 +1175,37 @@ pub(crate) fn video_decode_thread(
         fallback_reason: source.fallback_reason().map(str::to_owned),
         timings: timings.clone(),
     });
+    let media_length_secs = source.duration_secs();
+    let seek_target = if clamp_to_media {
+        start_before.map(|target| crate::clamp_video_seek_secs(target, media_length_secs))
+    } else {
+        start_before
+    };
+    {
+        let mut ctl = video_control.lock_unpoisoned();
+        if ctl.stream_epoch == stream_epoch {
+            ctl.media_length_secs = media_length_secs;
+            if let (Some(requested), Some(actual)) = (start_before, seek_target)
+                && requested != actual
+            {
+                let now = Instant::now();
+                if let Some((clock, pause_started)) =
+                    crate::video_seek_clock(now, actual, ctl.paused)
+                {
+                    ctl.clock = Some(clock);
+                    ctl.pause_started = pause_started;
+                    if ctl.hold_position.is_some() {
+                        ctl.hold_position =
+                            Some(crate::video_timeline_secs(actual, ctl.timeline_offset_secs));
+                    }
+                }
+            }
+        }
+    }
 
     let mut timing_windows = VideoTimingWindows::default();
 
-    if let Some(t) = start_before {
+    if let Some(t) = seek_target {
         // Seek to the keyframe at/before t, then scan forward for the frame
         // pair straddling t. On seek failure the scan decodes from the start —
         // slower, but still lands on the right frame.

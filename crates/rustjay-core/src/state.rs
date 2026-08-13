@@ -865,8 +865,7 @@ pub struct EngineState {
     pub output_width: u32,
     /// Output window height in pixels.
     pub output_height: u32,
-    /// When true, skip creating the primary output window.  Useful when the
-    /// app only wants projector/headless outputs (e.g. vjarda with projection).
+    /// When true, hide the primary output window while retaining its render surface.
     pub no_primary_output: bool,
 
     /// Current video input state (slot 1).

@@ -1037,6 +1037,10 @@ impl EffectPlugin for VardaRootPlugin {
         "Varda"
     }
 
+    fn hide_main_output_by_default(&self) -> bool {
+        cfg!(feature = "projection")
+    }
+
     fn shader_source(&self) -> &'static str {
         r#"
         @vertex
@@ -2133,13 +2137,6 @@ impl EffectPlugin for VardaRootPlugin {
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn on_engine_ready(&mut self, engine: &mut EngineState) {
-        // When projection is enabled we don't need the primary output window —
-        // projectors are the sole visible outputs.
-        #[cfg(feature = "projection")]
-        {
-            engine.no_primary_output = true;
-        }
-
         #[cfg(feature = "mixer")]
         {
             let mut router = ParamRouter::new();

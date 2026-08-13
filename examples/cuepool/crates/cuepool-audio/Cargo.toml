@@ -9,6 +9,7 @@ description = "Real-time audio engine (cpal + symphonia + custom DSP)"
 
 [features]
 asio = ["cpal/asio"]
+test-harness = []
 
 [dependencies]
 cuepool-core = { workspace = true }

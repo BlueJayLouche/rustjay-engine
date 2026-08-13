@@ -330,24 +330,11 @@ mod tests {
     use crate::{CanvasTexture, VideoFrame};
     use cuepool_core::CanvasFit;
 
-    fn device_queue() -> (Device, Queue) {
-        pollster::block_on(async {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions::default())
-                .await
-                .expect("adapter");
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor::default())
-                .await
-                .expect("device");
-            (device, queue)
-        })
-    }
-
     #[test]
     fn test_projection_renderer_renders_frame() {
-        let (device, queue) = device_queue();
+        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
+            return;
+        };
 
         let canvas = CanvasTexture::new(&device, 64, 4);
         let frame = VideoFrame::new(
@@ -457,7 +444,9 @@ mod tests {
     /// catching black output that the tiny stretch test above can miss.
     #[test]
     fn test_projection_default_single_fit_center_nonblack() {
-        let (device, queue) = device_queue();
+        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
+            return;
+        };
 
         let (cw, ch) = (1920u32, 1080u32);
         let canvas = CanvasTexture::new(&device, cw, ch);

@@ -2,6 +2,7 @@
 //!
 //! Only compiled when the `projection` feature is enabled.
 
+use rustjay_core::NotificationLevel;
 use rustjay_projection::stage::ProjectionStage;
 use rustjay_projection::{AtlasLayout, HeadlessOutput, PixelSampler, SamplerId};
 use rustjay_io::{OutputManager, RecorderCodec};
@@ -528,6 +529,33 @@ struct PendingProjector {
     fullscreen_monitor: Option<usize>,
 }
 
+/// A projector-creation outcome that should be shown to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionNotification {
+    /// Human-readable projector identity, failed step, and reason.
+    pub message: String,
+    /// Toast severity for this outcome.
+    pub level: NotificationLevel,
+}
+
+impl ProjectionNotification {
+    fn error(projector: &str, step: &str, reason: impl std::fmt::Display) -> Self {
+        Self {
+            message: format!("Projector {projector:?} {step} failed: {reason}"),
+            level: NotificationLevel::Error,
+        }
+    }
+
+    fn monitor_fallback(projector: &str, requested: usize, available: usize) -> Self {
+        Self {
+            message: format!(
+                "Projector {projector:?} requested monitor {requested}, but it was not found (available monitor count: {available}); falling back to windowed mode"
+            ),
+            level: NotificationLevel::Warning,
+        }
+    }
+}
+
 impl Default for ProjectionSubsystem {
     fn default() -> Self {
         Self::new()
@@ -584,15 +612,20 @@ impl ProjectionSubsystem {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         adapter: &wgpu::Adapter,
-    ) {
+    ) -> Vec<ProjectionNotification> {
         self.device = Some(Arc::clone(&device));
         self.queue = Some(queue);
+        let mut notifications = Vec::new();
 
         for pending in self.pending.drain(..) {
+            let projector = pending.window_attrs.title.clone();
             let window = match event_loop.create_window(pending.window_attrs) {
                 Ok(w) => Arc::new(w),
                 Err(e) => {
-                    log::error!("Failed to create projector window: {e}");
+                    let notification =
+                        ProjectionNotification::error(&projector, "window creation", e);
+                    log::error!("{}", notification.message);
+                    notifications.push(notification);
                     continue;
                 }
             };
@@ -607,11 +640,10 @@ impl ProjectionSubsystem {
                     fullscreen = true;
                     log::info!("Projector fullscreen on monitor {}", idx);
                 } else {
-                    log::warn!(
-                        "Projector requested fullscreen on monitor {} but only {} available",
-                        idx,
-                        monitors.len()
-                    );
+                    let notification =
+                        ProjectionNotification::monitor_fallback(&projector, idx, monitors.len());
+                    log::warn!("{}", notification.message);
+                    notifications.push(notification);
                 }
             }
             window.set_cursor_visible(false);
@@ -620,7 +652,10 @@ impl ProjectionSubsystem {
             let temp_surface = match instance.create_surface(Arc::clone(&window)) {
                 Ok(s) => s,
                 Err(e) => {
-                    log::error!("Failed to create projector surface: {e}");
+                    let notification =
+                        ProjectionNotification::error(&projector, "surface creation", e);
+                    log::error!("{}", notification.message);
+                    notifications.push(notification);
                     continue;
                 }
             };
@@ -636,10 +671,15 @@ impl ProjectionSubsystem {
                     self.projectors.push(proj);
                 }
                 Err(e) => {
-                    log::error!("Failed to initialise projector output: {e}");
+                    let notification =
+                        ProjectionNotification::error(&projector, "renderer initialization", e);
+                    log::error!("{}", notification.message);
+                    notifications.push(notification);
                 }
             }
         }
+
+        notifications
     }
 
     pub fn handle_window_event(
@@ -1105,5 +1145,35 @@ impl ProjectionSubsystem {
     /// Remove a projector output by its window ID, dropping the surface and window.
     pub fn remove_output(&mut self, window_id: winit::window::WindowId) {
         self.projectors.retain(|p| p.window_id != window_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projector_notifications_include_context_and_severity() {
+        let error = ProjectionNotification::error(
+            "Varda Projector 2 - Stage Right",
+            "surface creation",
+            "adapter unavailable",
+        );
+        assert_eq!(error.level, NotificationLevel::Error);
+        assert_eq!(
+            error.message,
+            "Projector \"Varda Projector 2 - Stage Right\" surface creation failed: adapter unavailable"
+        );
+
+        let fallback = ProjectionNotification::monitor_fallback(
+            "Varda Projector 2 - Stage Right",
+            3,
+            2,
+        );
+        assert_eq!(fallback.level, NotificationLevel::Warning);
+        assert_eq!(
+            fallback.message,
+            "Projector \"Varda Projector 2 - Stage Right\" requested monitor 3, but it was not found (available monitor count: 2); falling back to windowed mode"
+        );
     }
 }

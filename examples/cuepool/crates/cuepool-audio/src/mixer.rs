@@ -153,7 +153,34 @@ impl MixerInput {
         self.finished.load(Ordering::Relaxed)
     }
 
-    /// Current playback position in samples (mono count).
+    /// Seek to an interleaved source sample and make the input playable after EOF.
+    #[inline]
+    pub fn seek(&self, sample: usize) {
+        self.source.seek(sample);
+        self.finished.store(false, Ordering::Relaxed);
+    }
+
+    /// Seek in this input's own timeline, clamped to `length_samples`.
+    pub fn seek_seconds(&self, secs: f64, length_samples: usize) -> Option<f64> {
+        if length_samples == 0 {
+            return None;
+        }
+        let channels = self.input_channels.max(1);
+        let sample_rate = self.source.sample_rate().max(1);
+        let final_frame = length_samples.saturating_sub(1) / channels;
+        let requested = if secs.is_finite() && secs > 0.0 {
+            (secs * f64::from(sample_rate)) as usize
+        } else if secs.is_infinite() && secs.is_sign_positive() {
+            usize::MAX
+        } else {
+            0
+        };
+        let frame = requested.min(final_frame);
+        self.seek(frame.saturating_mul(channels));
+        Some(frame as f64 / f64::from(sample_rate))
+    }
+
+    /// Current playback position in interleaved source samples.
     #[inline]
     pub fn position(&self) -> usize {
         self.source.position()
@@ -163,6 +190,16 @@ impl MixerInput {
     #[inline]
     pub fn length(&self) -> Option<usize> {
         self.source.length()
+    }
+
+    #[inline]
+    pub fn channels(&self) -> usize {
+        self.input_channels
+    }
+
+    #[inline]
+    pub fn sample_rate(&self) -> u32 {
+        self.source.sample_rate()
     }
 
     /// Start a real-time volume fade. Call from the main thread.
@@ -179,6 +216,16 @@ impl MixerInput {
     /// Is a fade currently active?
     pub fn is_fading(&self) -> bool {
         self.fade_active.load(Ordering::Acquire)
+    }
+
+    /// Cancel a real-time fade and restore the volume it started from.
+    /// The callback uses `try_lock`, so taking this guard cannot block it.
+    pub fn cancel_fade(&self) {
+        let _buffer = self.temp_buffer.lock_unpoisoned();
+        self.fade_active.store(false, Ordering::Release);
+        self.fade_remaining.store(0, Ordering::Relaxed);
+        self.volume
+            .store(self.fade_start.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 }
 

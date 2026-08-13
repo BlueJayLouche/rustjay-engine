@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub(crate) struct ActiveCue {
+    pub(crate) instance_id: u64,
     pub(crate) qid: rust_decimal::Decimal,
     pub(crate) name: String,
     pub(crate) input: std::sync::Arc<cuepool_audio::MixerInput>,
@@ -20,6 +21,17 @@ pub(crate) struct ActiveCue {
     pub(crate) fade_out_started: bool,
     /// Stop action scheduled by a StopCue targeting this cue.
     pub(crate) pending_stop: Option<PendingStop>,
+}
+
+pub(crate) fn active_cue_length_samples(cue: &ActiveCue) -> Option<usize> {
+    let region_frames = cue.loop_end_frame.saturating_sub(cue.loop_start_frame);
+    if region_frames > 0 {
+        usize::try_from(region_frames)
+            .ok()?
+            .checked_mul(cue.input.channels())
+    } else {
+        cue.input.length()
+    }
 }
 
 /// A cue that is waiting for its delay timer to expire before playing.

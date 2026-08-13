@@ -18,6 +18,19 @@ impl ControlGui {
             state.ui_scale = ui_scale;
         }
 
+        let mut hide_main_output = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.no_primary_output
+        };
+        if ui.checkbox("Hide main output window", &mut hide_main_output) {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.no_primary_output = hide_main_output;
+            state.save_settings_requested = true;
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text("Projector, headless, and control outputs keep running.");
+        }
+
         ui.separator();
         ui.spacing();
 

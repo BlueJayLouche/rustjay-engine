@@ -38,3 +38,24 @@ pub use projection_renderer::ProjectionRenderer;
 pub use video_source::{VideoFrameTimings, VideoSource, ZeroCopyPreference};
 pub use yuv_converter::YuvConverter;
 pub use zero_copy::ZeroCopyAvailability;
+
+#[cfg(test)]
+pub(crate) fn test_device_queue(
+    required_features: wgpu::Features,
+) -> Option<(wgpu::Device, wgpu::Queue)> {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .ok()?;
+        let device_queue = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features,
+                ..Default::default()
+            })
+            .await
+            .expect("device");
+        Some(device_queue)
+    })
+}

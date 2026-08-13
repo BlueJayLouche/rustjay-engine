@@ -823,7 +823,8 @@ impl VideoSource {
     }
 
     /// Seek to the keyframe at or before `secs` and reset decoder state, so the
-    /// next `read_frame` calls decode forward from there. Used for frame-step-back.
+    /// next `read_frame` calls decode forward from there. Used for cue seeking
+    /// and frame-step-back.
     pub fn seek_before(&mut self, secs: f64) -> anyhow::Result<()> {
         let ts = (secs.max(0.0) * f64::from(ffmpeg_next::ffi::AV_TIME_BASE)) as i64;
         self.ictx.seek(ts, ..ts)?;
@@ -831,6 +832,12 @@ impl VideoSource {
         self.eof = false;
         self.eof_sent = false;
         Ok(())
+    }
+
+    /// Container duration in seconds, when FFmpeg reports one.
+    pub fn duration_secs(&self) -> Option<f64> {
+        let duration = self.ictx.duration();
+        (duration > 0).then(|| duration as f64 / f64::from(ffi::AV_TIME_BASE))
     }
 
     /// Which decode path was chosen at open: `hardware (<api>)` or `software`.

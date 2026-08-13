@@ -136,10 +136,10 @@ pub enum CueState {
 /// Lightweight info about a cue currently playing, synced from the audio engine.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCueInfo {
+    /// Unique runtime playback instance; QIDs may be retriggered concurrently.
+    pub instance_id: u64,
     pub qid: Decimal,
     pub name: String,
-    /// Linear volume (0.0 – 1.0+).
-    pub volume: f32,
     /// True if the cue is currently paused.
     pub paused: bool,
     /// Current playback position in seconds.
@@ -353,16 +353,16 @@ pub struct SharedState {
     pub audio_device_name: String,
     /// Why audio playback is disabled, if output configuration failed.
     pub audio_error: Option<String>,
-    /// Cached waveform peaks: path → Vec<(min, max)>.
-    pub waveform_cache: std::collections::HashMap<String, Vec<(f32, f32)>>,
+    /// Cached whole-media waveform data by path.
+    pub waveform_cache: std::collections::HashMap<String, crate::waveform::WaveformData>,
     /// Paths currently being processed for waveform generation.
     pub pending_waveforms: std::collections::HashSet<String>,
     /// Waveform zoom level (1.0 = fit to width, >1.0 = zoomed in).
     pub waveform_zoom: f32,
     /// Waveform scroll offset in bars.
     pub waveform_scroll: f32,
-    /// Available audio output device names (populated at startup).
-    pub audio_devices: Vec<String>,
+    /// Available audio output devices (populated at startup).
+    pub audio_devices: Vec<cuepool_audio::AudioDeviceInfo>,
     /// Whether the log window is open.
     pub show_log_window: bool,
     /// Whether the About window is open.
@@ -617,6 +617,10 @@ pub enum AppCommand {
     FrameStep,
     /// Step one video frame back while paused (show clock follows).
     FrameStepBack,
+    /// Seek an active Sound or Video cue in the `ActiveCueInfo` timeline.
+    /// Looped cues use seconds relative to the loop region; targets outside
+    /// that region clamp to its final frame.
+    SeekCue { instance_id: u64, secs: f32 },
 }
 
 #[derive(Clone, Copy)]
@@ -1003,9 +1007,30 @@ impl CuePoolApp {
                                     .selected_text(&current_device)
                                     .width(200.0)
                                     .show_ui(ui, |ui| {
-                                        for name in &devices {
-                                            if ui.selectable_label(name == &current_device, name).clicked() {
-                                                audio_device_cmd = Some(AppCommand::SetAudioDevice(name.clone()));
+                                        for device in &devices {
+                                            let label = if device.is_available() {
+                                                device.name.clone()
+                                            } else {
+                                                format!("{} (unavailable)", device.name)
+                                            };
+                                            let response = ui.add_enabled(
+                                                device.is_available(),
+                                                egui::Button::selectable(
+                                                    device.name == current_device,
+                                                    label,
+                                                ),
+                                            );
+                                            let response = if let Some(error) = &device.probe_error {
+                                                response.on_hover_text(format!(
+                                                    "Configuration probe failed: {error}"
+                                                ))
+                                            } else {
+                                                response
+                                            };
+                                            if response.clicked() {
+                                                audio_device_cmd = Some(AppCommand::SetAudioDevice(
+                                                    device.name.clone(),
+                                                ));
                                             }
                                         }
                                     });
@@ -1197,12 +1222,20 @@ impl CuePoolApp {
                 .show(ctx, |ui| {
                     if selected_path.is_empty() {
                         ui.label("Select a Sound or Video cue to view its waveform.");
-                    } else if let Some(peaks) = peaks {
+                    } else if let Some(waveform) = peaks {
                         ui.label(std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path).to_string());
-                        let (new_zoom, new_scroll) = crate::waveform::draw(ui, &peaks, zoom, scroll, 200.0);
+                        let response = crate::waveform::draw(
+                            ui,
+                            &waveform,
+                            zoom,
+                            scroll,
+                            200.0,
+                            crate::waveform::Interaction::Pan,
+                            None,
+                        );
                         if let Ok(mut state) = self.state.lock() {
-                            state.waveform_window_zoom = new_zoom;
-                            state.waveform_window_scroll = new_scroll;
+                            state.waveform_window_zoom = response.zoom;
+                            state.waveform_window_scroll = response.scroll_offset;
                         }
                     } else {
                         ui.label("Generating waveform…");

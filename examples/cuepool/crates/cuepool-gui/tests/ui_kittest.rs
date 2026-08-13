@@ -8,6 +8,13 @@ use egui_kittest::{
 };
 use rust_decimal::Decimal;
 
+fn has_wgpu_adapter() -> bool {
+    let instance = egui_wgpu::wgpu::Instance::new(
+        egui_wgpu::wgpu::InstanceDescriptor::new_without_display_handle(),
+    );
+    !pollster::block_on(instance.enumerate_adapters(egui_wgpu::wgpu::Backends::all())).is_empty()
+}
+
 fn demo_harness() -> (Harness<'static>, SharedStateHandle) {
     let mut app = preview::demo_app();
     let state = app.state().clone();
@@ -75,7 +82,52 @@ fn go_button_queues_transport_command() {
 }
 
 #[test]
+fn active_progress_scrubs_only_in_edit_mode() {
+    let (mut harness, state) = demo_harness();
+    let bar = harness.get_by_label("Scrub active cue Q1.1").rect();
+    let drag = |harness: &mut Harness<'static>| {
+        let from = egui::pos2(bar.left() + bar.width() * 0.2, bar.center().y);
+        let to = egui::pos2(bar.left() + bar.width() * 0.75, bar.center().y);
+        harness.drag_at(from);
+        harness.step();
+        harness.hover_at(to);
+        harness.step();
+        harness.drop_at(to);
+        harness.run();
+    };
+
+    drag(&mut harness);
+    let commands: Vec<_> = state.lock().unwrap().command_queue.drain(..).collect();
+    let Some(AppCommand::SeekCue { instance_id, secs }) = commands
+        .iter()
+        .rev()
+        .find(|command| matches!(command, AppCommand::SeekCue { .. }))
+    else {
+        panic!("edit-mode drag should queue SeekCue");
+    };
+    assert_eq!(*instance_id, 1);
+    assert!((*secs - 135.0).abs() < 0.01, "unexpected seek target: {secs}");
+
+    harness.get_by_label("Edit Mode").click();
+    harness.run();
+    drag(&mut harness);
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .command_queue
+            .iter()
+            .all(|command| !matches!(command, AppCommand::SeekCue { .. })),
+        "show-mode drag must not queue SeekCue"
+    );
+}
+
+#[test]
 fn edit_and_show_mode_snapshots() {
+    if !has_wgpu_adapter() {
+        eprintln!("skipping UI snapshots: no WGPU adapter available");
+        return;
+    }
     let (mut harness, _) = demo_harness();
 
     harness.run();

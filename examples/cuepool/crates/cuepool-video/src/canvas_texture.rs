@@ -200,24 +200,11 @@ fn blit_resampled(frame: &VideoFrame, src: Rect, dst: &mut [u8], dst_stride: u32
 mod tests {
     use super::*;
 
-    fn fake_device_queue() -> (Device, Queue) {
-        pollster::block_on(async {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions::default())
-                .await
-                .expect("adapter");
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor::default())
-                .await
-                .expect("device");
-            (device, queue)
-        })
-    }
-
     #[test]
     fn test_canvas_stretch() {
-        let (device, queue) = fake_device_queue();
+        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
+            return;
+        };
         let canvas = CanvasTexture::new(&device, 4, 2);
         let frame = VideoFrame::new(
             2,
@@ -236,7 +223,9 @@ mod tests {
 
     #[test]
     fn test_canvas_fit() {
-        let (device, queue) = fake_device_queue();
+        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
+            return;
+        };
         let canvas = CanvasTexture::new(&device, 8, 4);
         let frame = VideoFrame::new(
             2,

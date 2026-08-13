@@ -2626,7 +2626,18 @@ mod egui_impl {
                             let mut monitor =
                                 proj.fullscreen_monitor.map(|m| m as i32).unwrap_or(-1);
                             if ui
-                                .add(egui::DragValue::new(&mut monitor).speed(1).range(-1..=16))
+                                .add(
+                                    egui::DragValue::new(&mut monitor)
+                                        .speed(1)
+                                        .range(-1..=16)
+                                        .custom_formatter(|value, _| {
+                                            if value < 0.0 {
+                                                "None".to_owned()
+                                            } else {
+                                                (value as i32).to_string()
+                                            }
+                                        }),
+                                )
                                 .changed()
                             {
                                 proj.fullscreen_monitor = if monitor < 0 {

@@ -39,7 +39,7 @@ pub fn demo_show() -> ShowFile {
         },
         Cue::Sound {
             base: cue_base(sound, "Lobby Ambience", Some(group)),
-            path: String::new(),
+            path: "lobby-ambience.wav".into(),
             start_time: Timespan::ZERO,
             duration: Timespan::from_secs_f64(180.0),
             volume: 0.8,
@@ -109,36 +109,48 @@ pub fn demo_show() -> ShowFile {
 }
 
 fn populate_telemetry(state: &mut SharedState) {
-    state.selected_cue_id = Some(Decimal::new(13, 1));
+    state.selected_cue_id = Some(Decimal::new(11, 1));
     state.active_cues = vec![
         ActiveCueInfo {
+            instance_id: 1,
             qid: Decimal::new(11, 1),
             name: "Lobby Ambience".into(),
-            volume: 0.8,
             paused: false,
             position_secs: 64.5,
             length_secs: Some(180.0),
             state: CueState::PlayingLooped,
         },
         ActiveCueInfo {
+            instance_id: 2,
             qid: Decimal::new(12, 1),
             name: "Projection Intro".into(),
-            volume: 0.7,
             paused: true,
             position_secs: 18.0,
             length_secs: Some(42.0),
             state: CueState::Paused,
         },
         ActiveCueInfo {
+            instance_id: 3,
             qid: Decimal::from(2),
             name: "House Lights Half".into(),
-            volume: 1.0,
             paused: false,
             position_secs: 1.2,
             length_secs: Some(2.5),
             state: CueState::Playing,
         },
     ];
+    state.waveform_cache.insert(
+        "lobby-ambience.wav".into(),
+        crate::waveform::WaveformData {
+            peaks: (0..200)
+                .map(|index| {
+                    let amplitude = 0.2 + (index * 37 % 70) as f32 / 100.0;
+                    (-amplitude, amplitude)
+                })
+                .collect(),
+            duration_secs: 180.0,
+        },
+    );
     state.meter_data = GuiMeterData {
         peak_l_db: -12.0,
         peak_r_db: -14.0,
@@ -220,7 +232,16 @@ fn populate_telemetry(state: &mut SharedState) {
             pos_y: 0,
         },
     ];
-    state.audio_devices = vec!["Built-in Output".into(), "Dante Virtual Soundcard".into()];
+    state.audio_devices = vec![
+        cuepool_audio::AudioDeviceInfo {
+            name: "Built-in Output".into(),
+            probe_error: None,
+        },
+        cuepool_audio::AudioDeviceInfo {
+            name: "Dante Virtual Soundcard".into(),
+            probe_error: None,
+        },
+    ];
     state.audio_device_name = "Dante Virtual Soundcard".into();
 }
 

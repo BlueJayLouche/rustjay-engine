@@ -1,10 +1,11 @@
-use super::{App, WindowAction};
-use rustjay_core::EffectPlugin;
+use super::{App, AppSettings, WindowAction};
+use rustjay_core::{EffectPlugin, EngineState};
 use rustjay_gui::{ControlGui, ImGuiRenderer};
 #[cfg(feature = "egui")]
 use rustjay_gui::{EguiControlGui, EguiRenderer};
 use rustjay_render::WgpuEngine;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex, MutexGuard};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
@@ -14,6 +15,124 @@ use winit::window::WindowAttributes;
 /// the output `target_fps`: the output keeps rendering at full rate, only the
 /// imgui/egui control window is throttled to cut per-frame buffer allocations.
 const UI_RENDER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+/// Minimum time between audio stream reconnection attempts. Without this,
+/// a broken device causes CPAL to enumerate + re-init every frame (~16 ms),
+/// spawning threads and hammering CoreAudio.
+const AUDIO_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(debug_assertions)]
+std::thread_local! {
+    static FRAME_STATE_LOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(debug_assertions)]
+struct FrameLockMarker;
+
+#[cfg(debug_assertions)]
+impl FrameLockMarker {
+    fn enter() -> Self {
+        FRAME_STATE_LOCKED.with(|locked| {
+            assert!(
+                !locked.replace(true),
+                "nested EngineState frame lock acquisition"
+            );
+        });
+        Self
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for FrameLockMarker {
+    fn drop(&mut self) {
+        FRAME_STATE_LOCKED.with(|locked| locked.set(false));
+    }
+}
+
+struct FrameStateGuard<'a> {
+    state: MutexGuard<'a, EngineState>,
+    #[cfg(debug_assertions)]
+    _marker: FrameLockMarker,
+}
+
+impl<'a> FrameStateGuard<'a> {
+    fn lock(state: &'a Mutex<EngineState>) -> Self {
+        #[cfg(debug_assertions)]
+        let marker = FrameLockMarker::enter();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            state,
+            #[cfg(debug_assertions)]
+            _marker: marker,
+        }
+    }
+}
+
+impl Deref for FrameStateGuard<'_> {
+    type Target = EngineState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for FrameStateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl<P: EffectPlugin> App<P> {
+    fn reconnect_audio_if_needed(&mut self) {
+        let Some(analyzer) = self.audio_analyzer.as_ref() else { return };
+        if !analyzer.take_stream_error()
+            || self
+                .last_audio_reconnect_attempt
+                .is_some_and(|t| t.elapsed() < AUDIO_RECONNECT_INTERVAL)
+        {
+            return;
+        }
+
+        self.last_audio_reconnect_attempt = Some(std::time::Instant::now());
+        let device = self
+            .shared_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .audio
+            .selected_device
+            .clone();
+        log::warn!(
+            "[Audio] Stream error — attempting reconnect (device: {:?})",
+            device
+        );
+        if let Some(ref mut analyzer) = self.audio_analyzer {
+            match analyzer.start_with_device(device.as_deref()) {
+                Ok(actual_name) => {
+                    self.shared_state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .audio
+                        .selected_device = Some(actual_name);
+                }
+                Err(e) => log::error!("[Audio] Reconnect failed: {}", e),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "projection")]
+fn post_projector_notifications(
+    shared_state: &std::sync::Mutex<rustjay_core::EngineState>,
+    notifications: Vec<super::projection::ProjectionNotification>,
+) {
+    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    for notification in notifications {
+        state.notify(
+            notification.message,
+            notification.level,
+            std::time::Duration::from_secs(5),
+        );
+    }
+}
 
 impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -105,7 +224,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             return;
         };
 
-        let no_primary = {
+        let hide_main_output = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.no_primary_output
         };
@@ -125,7 +244,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 .with_inner_size(winit::dpi::LogicalSize::new(output_width, output_height))
                 .with_resizable(true)
                 .with_decorations(true)
-                .with_visible(!no_primary);
+                .with_visible(!hide_main_output);
 
             let window = match event_loop.create_window(window_attrs) {
                 Ok(w) => Arc::new(w),
@@ -139,11 +258,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             if fullscreen {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             }
-            if !no_primary {
+            if !hide_main_output {
                 window.set_cursor_visible(false);
             }
             self.output_window = Some(Arc::clone(&window));
-            if no_primary {
+            self.primary_output_hidden = hide_main_output;
+            if hide_main_output {
                 self.output_occluded = true;
             }
 
@@ -281,7 +401,15 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     (self.projection_subsystem.as_ref(), inst, device, queue, adapter)
                 {
                     let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
-                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
+                    let notifications = sub.create_pending(
+                        event_loop,
+                        inst,
+                        Arc::clone(device),
+                        Arc::clone(queue),
+                        adapter,
+                    );
+                    drop(sub);
+                    post_projector_notifications(self.shared_state.as_ref(), notifications);
                 }
             }
         }
@@ -392,17 +520,24 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         match event {
             WindowAction::RecreateWindows => {
                 if let Some(ref window) = self.output_window {
-                    window.set_visible(true);
-                    self.output_occluded = false;
-                    let fullscreen = {
+                    let (hide_main_output, fullscreen) = {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.output_fullscreen
+                        (state.no_primary_output, state.output_fullscreen)
                     };
-                    if fullscreen {
-                        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                    if hide_main_output {
+                        window.set_visible(false);
+                        self.output_occluded = true;
+                        self.primary_output_hidden = true;
+                    } else {
+                        window.set_visible(true);
+                        self.output_occluded = false;
+                        self.primary_output_hidden = false;
+                        if fullscreen {
+                            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        }
+                        window.set_cursor_visible(false);
+                        log::info!("Output window shown");
                     }
-                    window.set_cursor_visible(false);
-                    log::info!("Output window shown");
                 }
                 if let Some(ref window) = self.control_window {
                     window.set_visible(true);
@@ -656,17 +791,69 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         self.last_frame_time = now;
 
         self.dispatch_commands();
-        self.poll_device_discovery();
-        self.update_input();
-        self.update_audio();
-        #[cfg(feature = "link")]
-        self.update_link();
-        #[cfg(feature = "prodj")]
-        self.update_prodj();
-        self.update_lfo();
-        self.update_midi();
-        self.update_osc();
-        self.update_web();
+        // CPAL may enumerate devices and recreate callback threads here. Keep
+        // that rare work outside the ordinary frame guard.
+        self.reconnect_audio_if_needed();
+
+        let shared_state = Arc::clone(&self.shared_state);
+        let lfo_frame = {
+            let mut state = FrameStateGuard::lock(&shared_state);
+            self.poll_device_discovery(&mut state);
+            self.update_input(&mut state);
+            self.update_audio(&mut state);
+            #[cfg(feature = "link")]
+            self.update_link(&mut state);
+            #[cfg(feature = "prodj")]
+            self.update_prodj(&mut state);
+            (state.no_primary_output, self.prepare_lfo(&state))
+        };
+        let (hide_main_output, lfo_frame) = lfo_frame;
+        // Live main-output visibility toggle; winit calls need no state lock.
+        if hide_main_output != self.primary_output_hidden
+            && let Some(ref window) = self.output_window
+        {
+            window.set_visible(!hide_main_output);
+            if !hide_main_output {
+                window.set_cursor_visible(false);
+            }
+            self.output_occluded = hide_main_output;
+            self.primary_output_hidden = hide_main_output;
+            log::info!(
+                "Output window {}",
+                if hide_main_output { "hidden" } else { "shown" }
+            );
+        }
+
+        // `9b0be46b` fixed a deadlock caused by holding EngineState while the
+        // modulation engine re-entered it. This drop-before-modulation boundary
+        // is load-bearing; only reacquire to commit the resulting offsets and
+        // continue the post-LFO state updates.
+        let offsets = self.update_lfo(lfo_frame);
+        let midi_disconnected = self.poll_midi_device();
+        #[cfg(feature = "mtc")]
+        let mtc = self.poll_mtc();
+
+        let (web_modulation, settings_to_save) = {
+            let mut state = FrameStateGuard::lock(&shared_state);
+            state.modulation_offsets = offsets;
+            self.update_midi(&mut state, midi_disconnected);
+            #[cfg(feature = "mtc")]
+            if let Some(mtc) = mtc {
+                state.mtc = mtc;
+            }
+            self.update_osc(&mut state);
+            let web_modulation = self.update_web(&state);
+            let settings = if state.save_settings_requested {
+                state.save_settings_requested = false;
+                Some(AppSettings::from_state(&state))
+            } else {
+                None
+            };
+            (web_modulation, settings)
+        };
+        // Web modulation publication takes the same modulation mutex as the
+        // tick above, so it also belongs outside the EngineState guard.
+        self.finish_web_update(web_modulation);
 
         #[cfg(feature = "projection")]
         {
@@ -679,22 +866,21 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             {
                 let mut sub = sub.lock().unwrap_or_else(|e| e.into_inner());
                 if sub.pending_len() > 0 {
-                    sub.create_pending(event_loop, inst, Arc::clone(device), Arc::clone(queue), adapter);
+                    let notifications = sub.create_pending(
+                        event_loop,
+                        inst,
+                        Arc::clone(device),
+                        Arc::clone(queue),
+                        adapter,
+                    );
+                    drop(sub);
+                    post_projector_notifications(self.shared_state.as_ref(), notifications);
                 }
             }
         }
 
-        let should_save = {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.save_settings_requested {
-                state.save_settings_requested = false;
-                true
-            } else {
-                false
-            }
-        };
-        if should_save {
-            self.save_settings();
+        if let Some(settings) = settings_to_save {
+            self.save_settings_snapshot(settings);
         }
 
         #[cfg(feature = "gles2")]
@@ -855,5 +1041,20 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         }
 
         log::info!("Shutdown complete");
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use super::FrameStateGuard;
+    use rustjay_core::EngineState;
+    use std::sync::Mutex;
+
+    #[test]
+    #[should_panic(expected = "nested EngineState frame lock acquisition")]
+    fn frame_state_guard_rejects_nested_acquisition() {
+        let state = Mutex::new(EngineState::new());
+        let _outer = FrameStateGuard::lock(&state);
+        let _nested = FrameStateGuard::lock(&state);
     }
 }
