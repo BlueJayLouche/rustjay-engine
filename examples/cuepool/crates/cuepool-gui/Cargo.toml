@@ -27,3 +27,4 @@ rfd = { workspace = true }
 [dev-dependencies]
 eframe = { workspace = true }
 egui_kittest = { version = "0.34", features = ["snapshot", "wgpu"] }
+pollster = { workspace = true }

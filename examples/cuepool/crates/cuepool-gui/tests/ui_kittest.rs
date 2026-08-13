@@ -8,6 +8,13 @@ use egui_kittest::{
 };
 use rust_decimal::Decimal;
 
+fn has_wgpu_adapter() -> bool {
+    let instance = egui_wgpu::wgpu::Instance::new(
+        egui_wgpu::wgpu::InstanceDescriptor::new_without_display_handle(),
+    );
+    !pollster::block_on(instance.enumerate_adapters(egui_wgpu::wgpu::Backends::all())).is_empty()
+}
+
 fn demo_harness() -> (Harness<'static>, SharedStateHandle) {
     let mut app = preview::demo_app();
     let state = app.state().clone();
@@ -76,6 +83,10 @@ fn go_button_queues_transport_command() {
 
 #[test]
 fn edit_and_show_mode_snapshots() {
+    if !has_wgpu_adapter() {
+        eprintln!("skipping UI snapshots: no WGPU adapter available");
+        return;
+    }
     let (mut harness, _) = demo_harness();
 
     harness.run();

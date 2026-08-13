@@ -1271,6 +1271,7 @@ dependencies = [
  "env_logger",
  "log",
  "pathdiff",
+ "pollster 0.3.0",
  "rfd",
  "rust_decimal",
  "rustjay-lighting",
