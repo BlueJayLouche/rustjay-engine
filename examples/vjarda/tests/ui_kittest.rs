@@ -28,6 +28,7 @@ fn tab_harness_with_app<T: AnyEguiTab + 'static>(
 ) -> Harness<'static> {
     let mut engine = EngineState::default();
     assert!(engine.stage_preview_texture_id.is_none());
+    assert!(engine.show_stage_preview);
 
     let mut harness = Harness::builder()
         .with_size(size)
@@ -104,10 +105,14 @@ fn default_outputs_recording_snapshot() {
 
 #[cfg(feature = "projection")]
 #[test]
-fn stage_without_preview_texture_snapshot() {
+fn stage_preview_disabled_snapshot() {
     let mut harness = tab_harness(StageTab::default(), [900.0, 700.0]);
 
+    harness.get_by_label("Live preview").click();
+    harness.run();
     harness.get_by_label("Stage");
+    harness.get_by_label("Canvas: 1920×1080 px");
+    harness.get_by_label("Edit mode");
     harness.snapshot("stage_without_preview");
 }
 

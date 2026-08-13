@@ -1308,6 +1308,7 @@ mod egui_impl {
                 ];
                 let preview_tex = _engine
                     .stage_preview_texture_id
+                    .filter(|_| _engine.show_stage_preview)
                     .map(egui::TextureId::User);
 
                 let state = _app_state
@@ -1319,7 +1320,13 @@ mod egui_impl {
                 state.stage.canvas_size = master_res;
 
                 // Surface list + 2D editor canvas (live master-output preview).
-                self.draw_stage_tab(ui, state, master_res, preview_tex);
+                self.draw_stage_tab(
+                    ui,
+                    state,
+                    master_res,
+                    preview_tex,
+                    &mut _engine.show_stage_preview,
+                );
 
                 // Drive the LED surface through the existing sACN LedOutput
                 // backend: StartLed/StopLed on the enable edge, SetLedPlacement
@@ -1381,6 +1388,7 @@ mod egui_impl {
             state: &mut VardaAppState,
             master_res: [u32; 2],
             preview_tex: Option<egui::TextureId>,
+            show_stage_preview: &mut bool,
         ) {
             use crate::stage::{ContentMapping, SurfaceSource, VardaSurface};
             use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
@@ -1570,6 +1578,7 @@ mod egui_impl {
                             .strong(),
                         );
                         ui.separator();
+                        ui.checkbox(show_stage_preview, "Live preview");
                         ui.checkbox(edit_mode, "Edit mode");
                         ui.checkbox(lighting_regions_active, "Lighting regions");
                         if *edit_mode {
@@ -1586,12 +1595,9 @@ mod egui_impl {
                             // Preview mode always fits the panel.
                             *canvas_zoom = 1.0;
                         }
-                        if preview_tex.is_none() {
+                        if *show_stage_preview && preview_tex.is_none() {
                             ui.label(
-                                egui::RichText::new(
-                                    "(no live preview — enable Preview in Settings)",
-                                )
-                                .weak(),
+                                egui::RichText::new("(live preview unavailable)").weak(),
                             );
                         }
                     });
