@@ -175,6 +175,7 @@ fn populate_telemetry(state: &mut SharedState) {
             width: 1920,
             height: 1080,
             decode_path: "hardware (VideoToolbox)".into(),
+            decode_ms_per_frame: crate::DecodeTiming::from_ms(4.2),
         }),
     };
     state.recorder_status = RecorderStatus {

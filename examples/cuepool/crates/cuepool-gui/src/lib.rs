@@ -17,4 +17,4 @@ pub mod projection_panel;
 pub mod transport;
 pub mod waveform;
 
-pub use app::{ActiveCueInfo, AppCommand, GuiMeterData, CuePoolApp, Diagnostics, OutputDiagnostics, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics};
+pub use app::{ActiveCueInfo, AppCommand, CuePoolApp, DecodeTiming, Diagnostics, GuiMeterData, OutputDiagnostics, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics};

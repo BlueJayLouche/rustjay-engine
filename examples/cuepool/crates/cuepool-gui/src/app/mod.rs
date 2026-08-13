@@ -178,6 +178,24 @@ pub struct OutputDiagnostics {
     pub presented_per_sec: f64,
 }
 
+/// Per-stream decode timing updated without taking the shared GUI/project lock.
+#[derive(Debug, Clone, Default)]
+pub struct DecodeTiming(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl DecodeTiming {
+    pub fn from_ms(ms: f64) -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(ms.to_bits())))
+    }
+
+    pub fn set_ms(&self, ms: f64) {
+        self.0.store(ms.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn get_ms(&self) -> f64 {
+        f64::from_bits(self.0.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 /// The currently-decoding video source, published by the decode thread.
 #[derive(Debug, Clone)]
 pub struct VideoDiagnostics {
@@ -186,6 +204,7 @@ pub struct VideoDiagnostics {
     pub height: u32,
     /// `hardware (<api>)` or `software`, from `VideoSource::decode_path()`.
     pub decode_path: String,
+    pub decode_ms_per_frame: DecodeTiming,
 }
 
 /// Plain-data snapshot behind the Status window (Help → Status…): what a
@@ -256,6 +275,7 @@ impl Diagnostics {
                 ("File".into(), v.path.clone()),
                 ("Source Size".into(), format!("{}x{}", v.width, v.height)),
                 ("Decode Path".into(), v.decode_path.clone()),
+                ("Decode ms/frame".into(), format!("{:.2}", v.decode_ms_per_frame.get_ms())),
             ],
             None => vec![("Status".into(), "no video playing".into())],
         };
@@ -2167,6 +2187,15 @@ fn common_path_prefix(paths: &[std::path::PathBuf]) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use cuepool_core::CueBase;
+
+    #[test]
+    fn decode_timing_clones_share_the_latest_sample() {
+        let timing = DecodeTiming::default();
+        let snapshot = timing.clone();
+        timing.set_ms(4.2);
+
+        assert_eq!(snapshot.get_ms(), 4.2);
+    }
 
     #[test]
     fn test_shared_state_default() {

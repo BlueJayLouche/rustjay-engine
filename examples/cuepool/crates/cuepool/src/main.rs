@@ -14,7 +14,7 @@ use cuepool_audio::{AudioEngine, FileDecoder, SampleProvider};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
 };
-use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, SharedStateHandle, VideoDiagnostics};
+use cuepool_gui::{AppCommand, CuePoolApp, DecodeTiming, OutputDiagnostics, SharedStateHandle, VideoDiagnostics};
 use cuepool_gui::app::CueState;
 use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
@@ -5117,12 +5117,16 @@ fn video_decode_thread(
     };
 
     // Publish what's decoding to the Status window (Help → Status…).
+    let decode_timing = DecodeTiming::default();
     diag_state.lock_unpoisoned().diagnostics.video = Some(VideoDiagnostics {
         path: path.to_string(),
         width: source.width(),
         height: source.height(),
         decode_path: source.decode_path().to_string(),
+        decode_ms_per_frame: decode_timing.clone(),
     });
+
+    let mut timing_window = DecodeTimingWindow::default();
 
     if let Some(t) = start_before {
         // Seek to the keyframe at/before t, then scan forward for the frame
@@ -5136,7 +5140,7 @@ fn video_decode_thread(
             if stop_flag.load(Ordering::Relaxed) {
                 return;
             }
-            match source.read_frame() {
+            match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
                 Some(f) if f.pts + 1e-4 < t => {
                     if let Some(discarded) = prev.replace(f) {
                         frame_pool.recycle_frame(discarded);
@@ -5173,7 +5177,7 @@ fn video_decode_thread(
     // tentative (hw device created ≠ hw decode engaged — e.g. Hap has none).
     let mut diag_path_pending = true;
     while !stop_flag.load(Ordering::Relaxed) {
-        match source.read_frame() {
+        match timed_read_frame(&mut source, &mut timing_window, &decode_timing) {
             Some(frame) => {
                 if std::mem::take(&mut diag_path_pending)
                     && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
@@ -5189,6 +5193,34 @@ fn video_decode_thread(
             }
         }
     }
+}
+
+const DECODE_TIMING_WINDOW: usize = 50;
+
+#[derive(Default)]
+struct DecodeTimingWindow {
+    samples_ms: std::collections::VecDeque<f64>,
+}
+
+impl DecodeTimingWindow {
+    fn record(&mut self, elapsed: Duration) -> f64 {
+        if self.samples_ms.len() == DECODE_TIMING_WINDOW {
+            self.samples_ms.pop_front();
+        }
+        self.samples_ms.push_back(elapsed.as_secs_f64() * 1000.0);
+        self.samples_ms.iter().sum::<f64>() / self.samples_ms.len() as f64
+    }
+}
+
+fn timed_read_frame(
+    source: &mut VideoSource,
+    timing_window: &mut DecodeTimingWindow,
+    decode_timing: &DecodeTiming,
+) -> Option<VideoFrame> {
+    let start = Instant::now();
+    let frame = source.read_frame();
+    decode_timing.set_ms(timing_window.record(start.elapsed()));
+    frame
 }
 
 /// Pixel-map decode thread: self-paced by wall-clock PTS (no vsync consumer),
@@ -5619,6 +5651,15 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_timing_averages_the_last_fifty_samples() {
+        let mut timing = DecodeTimingWindow::default();
+        for ms in 1..=50 {
+            timing.record(Duration::from_millis(ms));
+        }
+        assert!((timing.record(Duration::from_millis(51)) - 26.5).abs() < 1e-9);
+    }
 
     fn cli_project_test_dir() -> PathBuf {
         let unique = std::time::SystemTime::now()
