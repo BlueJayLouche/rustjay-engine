@@ -1381,6 +1381,166 @@ mod egui_impl {
     }
 
     #[cfg(feature = "projection")]
+    #[derive(Clone, Copy)]
+    enum CanvasEdge {
+        Left,
+        Right,
+        Top,
+        Bottom,
+    }
+
+    #[cfg(feature = "projection")]
+    fn canvas_normalized_point(pos: egui::Pos2, canvas_rect: egui::Rect) -> [f32; 2] {
+        [
+            ((pos.x - canvas_rect.min.x) / canvas_rect.width()).clamp(0.0, 1.0),
+            ((pos.y - canvas_rect.min.y) / canvas_rect.height()).clamp(0.0, 1.0),
+        ]
+    }
+
+    #[cfg(feature = "projection")]
+    fn blend_band_rect(canvas_rect: egui::Rect, edge: CanvasEdge, width: f32) -> egui::Rect {
+        let width = width.clamp(0.0, 1.0);
+        match edge {
+            CanvasEdge::Left => egui::Rect::from_min_max(
+                canvas_rect.min,
+                egui::Pos2::new(
+                    canvas_rect.min.x + canvas_rect.width() * width,
+                    canvas_rect.max.y,
+                ),
+            ),
+            CanvasEdge::Right => egui::Rect::from_min_max(
+                egui::Pos2::new(
+                    canvas_rect.max.x - canvas_rect.width() * width,
+                    canvas_rect.min.y,
+                ),
+                canvas_rect.max,
+            ),
+            CanvasEdge::Top => egui::Rect::from_min_max(
+                canvas_rect.min,
+                egui::Pos2::new(
+                    canvas_rect.max.x,
+                    canvas_rect.min.y + canvas_rect.height() * width,
+                ),
+            ),
+            CanvasEdge::Bottom => egui::Rect::from_min_max(
+                egui::Pos2::new(
+                    canvas_rect.min.x,
+                    canvas_rect.max.y - canvas_rect.height() * width,
+                ),
+                canvas_rect.max,
+            ),
+        }
+    }
+
+    #[cfg(feature = "projection")]
+    fn paint_blend_band(
+        painter: &egui::Painter,
+        canvas_rect: egui::Rect,
+        edge: CanvasEdge,
+        width: f32,
+        gamma: f32,
+    ) {
+        let band = blend_band_rect(canvas_rect, edge, width);
+        if band.width() <= 0.0 || band.height() <= 0.0 {
+            return;
+        }
+
+        const STEPS: u32 = 12;
+        let mut mesh = egui::Mesh::default();
+        for step in 0..=STEPS {
+            let t = step as f32 / STEPS as f32;
+            let alpha = ((1.0 - rustjay_projection::blend_alpha(t, gamma.max(0.01))) * 150.0)
+                .round() as u8;
+            let color = egui::Color32::from_rgba_unmultiplied(255, 120, 40, alpha);
+            let [a, b] = match edge {
+                CanvasEdge::Left => {
+                    let x = band.min.x + band.width() * t;
+                    [egui::Pos2::new(x, band.min.y), egui::Pos2::new(x, band.max.y)]
+                }
+                CanvasEdge::Right => {
+                    let x = band.max.x - band.width() * t;
+                    [egui::Pos2::new(x, band.min.y), egui::Pos2::new(x, band.max.y)]
+                }
+                CanvasEdge::Top => {
+                    let y = band.min.y + band.height() * t;
+                    [egui::Pos2::new(band.min.x, y), egui::Pos2::new(band.max.x, y)]
+                }
+                CanvasEdge::Bottom => {
+                    let y = band.max.y - band.height() * t;
+                    [egui::Pos2::new(band.min.x, y), egui::Pos2::new(band.max.x, y)]
+                }
+            };
+            mesh.colored_vertex(a, color);
+            mesh.colored_vertex(b, color);
+            if step > 0 {
+                let base = step * 2;
+                mesh.add_triangle(base - 2, base - 1, base + 1);
+                mesh.add_triangle(base - 2, base + 1, base);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    #[cfg(all(test, feature = "projection"))]
+    mod stage_canvas_tests {
+        use super::*;
+
+        #[test]
+        fn canvas_point_maps_to_normalized_pin_position_and_clamps() {
+            let canvas = egui::Rect::from_min_max(
+                egui::Pos2::new(10.0, 20.0),
+                egui::Pos2::new(210.0, 120.0),
+            );
+
+            assert_eq!(
+                canvas_normalized_point(egui::Pos2::new(60.0, 95.0), canvas),
+                [0.25, 0.75]
+            );
+            assert_eq!(
+                canvas_normalized_point(egui::Pos2::new(-10.0, 140.0), canvas),
+                [0.0, 1.0]
+            );
+        }
+
+        #[test]
+        fn blend_band_rect_uses_edge_direction_and_normalized_width() {
+            let canvas = egui::Rect::from_min_max(
+                egui::Pos2::new(10.0, 20.0),
+                egui::Pos2::new(210.0, 120.0),
+            );
+
+            assert_eq!(
+                blend_band_rect(canvas, CanvasEdge::Left, 0.25),
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(10.0, 20.0),
+                    egui::Pos2::new(60.0, 120.0),
+                )
+            );
+            assert_eq!(
+                blend_band_rect(canvas, CanvasEdge::Right, 0.25),
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(160.0, 20.0),
+                    egui::Pos2::new(210.0, 120.0),
+                )
+            );
+            assert_eq!(
+                blend_band_rect(canvas, CanvasEdge::Top, 0.25),
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(10.0, 20.0),
+                    egui::Pos2::new(210.0, 45.0),
+                )
+            );
+            assert_eq!(
+                blend_band_rect(canvas, CanvasEdge::Bottom, 0.25),
+                egui::Rect::from_min_max(
+                    egui::Pos2::new(10.0, 95.0),
+                    egui::Pos2::new(210.0, 120.0),
+                )
+            );
+        }
+    }
+
+    #[cfg(feature = "projection")]
     impl StageTab {
         fn draw_stage_tab(
             &mut self,
@@ -1703,6 +1863,39 @@ mod egui_impl {
                     }
                 }
 
+                // Edge-blend preview follows the normalized projector-output
+                // edges. The warm ramp is intentionally an overlay aid: its
+                // width and gamma mirror the live config without changing the
+                // projection render path.
+                if state
+                    .stage
+                    .surfaces
+                    .get(state.stage.selected_surface_index)
+                    .is_some()
+                    && let Some(config) = state
+                        .stage
+                        .edge_blend_sync
+                        .as_ref()
+                        .and_then(|sync| sync.lock().ok().map(|guard| guard.config))
+                {
+                    for (edge, blend) in [
+                        (CanvasEdge::Left, config.left),
+                        (CanvasEdge::Right, config.right),
+                        (CanvasEdge::Top, config.top),
+                        (CanvasEdge::Bottom, config.bottom),
+                    ] {
+                        if blend.enabled {
+                            paint_blend_band(
+                                &painter,
+                                canvas_rect,
+                                edge,
+                                blend.width,
+                                blend.gamma,
+                            );
+                        }
+                    }
+                }
+
                 // Draw surfaces
                 for (i, surf) in state.stage.surfaces.iter().enumerate() {
                     let is_selected = i == state.stage.selected_surface_index;
@@ -1829,7 +2022,7 @@ mod egui_impl {
                 // ── UV crop drag handles ───────────────────────────────────
                 // Corner handles on the stage canvas now control the UV sampling
                 // region (which part of the source texture is shown), not the
-                // output warp. Output warp remains editable on the Geometry tab.
+                // output warp. Warp modes draw their own distinct handles below.
                 let mut handle_dragged = false;
 
                 let uv_handles: Option<[[f32; 2]; 4]> = state.stage.surfaces
@@ -1844,14 +2037,9 @@ mod egui_impl {
                         ]
                     });
 
-                let mesh_handle_positions: Option<Vec<[f32; 2]>> = state.stage.surfaces
+                let selected_warp = state.stage.surfaces
                     .get(state.stage.selected_surface_index)
-                    .and_then(|s| match &s.warp {
-                        rustjay_projection::WarpMode::Mesh(mesh) => {
-                            Some(mesh.points.iter().map(|p| p.position).collect())
-                        }
-                        _ => None,
-                    });
+                    .map(|surface| surface.warp.clone());
 
                 // Draw UV crop handles and connecting rectangle
                 if let Some(corners) = uv_handles {
@@ -1863,7 +2051,7 @@ mod egui_impl {
                             canvas_rect.min.y + corner[1] * canvas_rect.height(),
                         );
                         positions[i] = pos;
-                        let handle_rect = Rect::from_center_size(pos, Vec2::splat(12.0));
+                        let handle_rect = Rect::from_center_size(pos, Vec2::splat(18.0));
                         let handle_id = ui.id().with(("uv_crop_handle", i));
                         let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
 
@@ -1872,9 +2060,10 @@ mod egui_impl {
                         } else if handle_response.hovered() {
                             Color32::WHITE
                         } else {
-                            Color32::from_rgb(180, 180, 180)
+                            Color32::from_rgb(220, 160, 20)
                         };
-                        painter.circle_filled(pos, 5.0, handle_color);
+                        painter.circle_filled(pos, 7.0, Color32::from_black_alpha(140));
+                        painter.circle_stroke(pos, 7.0, Stroke::new(2.0_f32, handle_color));
 
                         // Label
                         painter.text(
@@ -1936,39 +2125,169 @@ mod egui_impl {
                     }
                 }
 
-                // Draw mesh handles
-                if let Some(positions) = mesh_handle_positions {
-                    for (i, pos_norm) in positions.iter().enumerate() {
-                        let pos = Pos2::new(
-                            canvas_rect.min.x + pos_norm[0] * canvas_rect.width(),
-                            canvas_rect.min.y + pos_norm[1] * canvas_rect.height(),
-                        );
-                        let handle_rect = Rect::from_center_size(pos, Vec2::splat(8.0));
-                        let handle_id = ui.id().with(("mesh_handle", i));
-                        let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
+                // Draw the selected warp topology and its draggable handles.
+                match selected_warp {
+                    Some(rustjay_projection::WarpMode::CornerPin { corners }) => {
+                        let positions = corners.map(|corner| {
+                            Pos2::new(
+                                canvas_rect.min.x + corner[0] * canvas_rect.width(),
+                                canvas_rect.min.y + corner[1] * canvas_rect.height(),
+                            )
+                        });
+                        let line_color = Color32::from_rgba_unmultiplied(40, 220, 255, 150);
+                        for i in 0..4 {
+                            painter.line_segment(
+                                [positions[i], positions[(i + 1) % 4]],
+                                Stroke::new(1.25_f32, line_color),
+                            );
+                        }
 
-                        let handle_color = if handle_response.dragged() {
-                            Color32::YELLOW
-                        } else if handle_response.hovered() {
-                            Color32::WHITE
-                        } else {
-                            Color32::from_rgb(200, 200, 200)
-                        };
-                        painter.circle_filled(pos, 3.0, handle_color);
+                        let label_alignments = [
+                            (Vec2::new(8.0, 8.0), egui::Align2::LEFT_TOP),
+                            (Vec2::new(-8.0, 8.0), egui::Align2::RIGHT_TOP),
+                            (Vec2::new(-8.0, -8.0), egui::Align2::RIGHT_BOTTOM),
+                            (Vec2::new(8.0, -8.0), egui::Align2::LEFT_BOTTOM),
+                        ];
+                        for (i, pos) in positions.into_iter().enumerate() {
+                            let handle_response = ui.interact(
+                                Rect::from_center_size(pos, Vec2::splat(10.0)),
+                                ui.id().with(("corner_pin_handle", i)),
+                                egui::Sense::drag(),
+                            );
+                            let handle_color = if handle_response.dragged() {
+                                Color32::YELLOW
+                            } else if handle_response.hovered() {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(40, 220, 255)
+                            };
+                            painter.add(egui::Shape::convex_polygon(
+                                vec![
+                                    pos + Vec2::new(0.0, -6.0),
+                                    pos + Vec2::new(6.0, 0.0),
+                                    pos + Vec2::new(0.0, 6.0),
+                                    pos + Vec2::new(-6.0, 0.0),
+                                ],
+                                handle_color,
+                                Stroke::new(1.0_f32, Color32::from_black_alpha(180)),
+                            ));
+                            let (label_offset, label_alignment) = label_alignments[i];
+                            painter.text(
+                                pos + label_offset,
+                                label_alignment,
+                                ["TL", "TR", "BR", "BL"][i],
+                                egui::FontId::proportional(9.0),
+                                handle_color,
+                            );
 
-                        if handle_response.dragged() {
-                            handle_dragged = true;
-                            let dx = handle_response.drag_delta().x / canvas_rect.width();
-                            let dy = handle_response.drag_delta().y / canvas_rect.height();
-                            if let Some(surf) = state.stage.surfaces.get_mut(state.stage.selected_surface_index) {
-                                if let rustjay_projection::WarpMode::Mesh(mesh) = &mut surf.warp {
-                                    mesh.points[i].position[0] = (mesh.points[i].position[0] + dx).clamp(0.0, 1.0);
-                                    mesh.points[i].position[1] = (mesh.points[i].position[1] + dy).clamp(0.0, 1.0);
-                                }
+                            if handle_response.dragged()
+                                && let Some(pointer_pos) = handle_response.interact_pointer_pos()
+                                && let Some(surf) = state
+                                    .stage
+                                    .surfaces
+                                    .get_mut(state.stage.selected_surface_index)
+                                && let rustjay_projection::WarpMode::CornerPin { corners } =
+                                    &mut surf.warp
+                            {
+                                handle_dragged = true;
+                                corners[i] = canvas_normalized_point(pointer_pos, canvas_rect);
+                                warp_dirty = true;
                             }
-                            warp_dirty = true;
                         }
                     }
+                    Some(rustjay_projection::WarpMode::Mesh(mesh)) => {
+                        let cols = mesh.cols as usize;
+                        let rows = mesh.rows as usize;
+                        let mesh_stroke = Stroke::new(
+                            1.0_f32,
+                            Color32::from_rgba_unmultiplied(200, 200, 200, 100),
+                        );
+                        for row in 0..rows {
+                            for col in 0..cols.saturating_sub(1) {
+                                let left = mesh.points.get(row * cols + col);
+                                let right = mesh.points.get(row * cols + col + 1);
+                                if let (Some(left), Some(right)) = (left, right) {
+                                    painter.line_segment(
+                                        [
+                                            Pos2::new(
+                                                canvas_rect.min.x
+                                                    + left.position[0] * canvas_rect.width(),
+                                                canvas_rect.min.y
+                                                    + left.position[1] * canvas_rect.height(),
+                                            ),
+                                            Pos2::new(
+                                                canvas_rect.min.x
+                                                    + right.position[0] * canvas_rect.width(),
+                                                canvas_rect.min.y
+                                                    + right.position[1] * canvas_rect.height(),
+                                            ),
+                                        ],
+                                        mesh_stroke,
+                                    );
+                                }
+                            }
+                        }
+                        for col in 0..cols {
+                            for row in 0..rows.saturating_sub(1) {
+                                let top = mesh.points.get(row * cols + col);
+                                let bottom = mesh.points.get((row + 1) * cols + col);
+                                if let (Some(top), Some(bottom)) = (top, bottom) {
+                                    painter.line_segment(
+                                        [
+                                            Pos2::new(
+                                                canvas_rect.min.x
+                                                    + top.position[0] * canvas_rect.width(),
+                                                canvas_rect.min.y
+                                                    + top.position[1] * canvas_rect.height(),
+                                            ),
+                                            Pos2::new(
+                                                canvas_rect.min.x
+                                                    + bottom.position[0] * canvas_rect.width(),
+                                                canvas_rect.min.y
+                                                    + bottom.position[1] * canvas_rect.height(),
+                                            ),
+                                        ],
+                                        mesh_stroke,
+                                    );
+                                }
+                            }
+                        }
+
+                        for (i, point) in mesh.points.iter().enumerate() {
+                            let pos_norm = point.position;
+                            let pos = Pos2::new(
+                                canvas_rect.min.x + pos_norm[0] * canvas_rect.width(),
+                                canvas_rect.min.y + pos_norm[1] * canvas_rect.height(),
+                            );
+                            let handle_rect = Rect::from_center_size(pos, Vec2::splat(8.0));
+                            let handle_id = ui.id().with(("mesh_handle", i));
+                            let handle_response = ui.interact(handle_rect, handle_id, egui::Sense::drag());
+
+                            let handle_color = if handle_response.dragged() {
+                                Color32::YELLOW
+                            } else if handle_response.hovered() {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(200, 200, 200)
+                            };
+                            painter.circle_filled(pos, 3.0, handle_color);
+
+                            if handle_response.dragged()
+                                && let Some(pointer_pos) = handle_response.interact_pointer_pos()
+                                && let Some(surf) = state
+                                    .stage
+                                    .surfaces
+                                    .get_mut(state.stage.selected_surface_index)
+                                && let rustjay_projection::WarpMode::Mesh(mesh) = &mut surf.warp
+                            {
+                                handle_dragged = true;
+                                mesh.points[i].position =
+                                    canvas_normalized_point(pointer_pos, canvas_rect);
+                                warp_dirty = true;
+                            }
+                        }
+                    }
+                    None => {}
                 }
 
                 // ── LED surface overlay: dots at placed positions + quad handles ──

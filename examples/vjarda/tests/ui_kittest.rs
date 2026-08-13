@@ -49,6 +49,18 @@ fn tab_harness_with_app<T: AnyEguiTab + 'static>(
     harness
 }
 
+#[cfg(feature = "projection")]
+fn pad_surface_list_for_full_canvas(app: &mut VardaAppState) {
+    for index in 1..=4 {
+        let mut surface = vjarda::stage::VardaSurface::full_frame(
+            format!("Unused {index}"),
+            format!("unused{index}"),
+        );
+        surface.vertices.clear();
+        app.stage.surfaces.push(surface);
+    }
+}
+
 #[test]
 fn deck_add_source_snapshot() {
     let mut harness = tab_harness(DeckTab::default(), [700.0, 500.0]);
@@ -114,6 +126,42 @@ fn stage_preview_disabled_snapshot() {
     harness.get_by_label("Canvas: 1920×1080 px");
     harness.get_by_label("Edit mode");
     harness.snapshot("stage_without_preview");
+}
+
+#[cfg(feature = "projection")]
+#[test]
+fn stage_corner_pin_warp_snapshot() {
+    let mut app = VardaAppState::default();
+    pad_surface_list_for_full_canvas(&mut app);
+    app.stage.surfaces[0].warp = rustjay_projection::WarpMode::corner_pin([
+        [0.08, 0.14],
+        [0.92, 0.08],
+        [0.86, 0.88],
+        [0.14, 0.94],
+    ]);
+    let mut harness = tab_harness_with_app(StageTab::default(), [900.0, 700.0], app);
+
+    harness.get_by_label("Stage");
+    harness.snapshot("stage_corner_pin_warp");
+}
+
+#[cfg(feature = "projection")]
+#[test]
+fn stage_edge_blend_preview_snapshot() {
+    let mut app = VardaAppState::default();
+    pad_surface_list_for_full_canvas(&mut app);
+    let mut config = rustjay_projection::EdgeBlendConfig::default();
+    config.left.enabled = true;
+    config.left.width = 0.22;
+    config.top.enabled = true;
+    config.top.width = 0.16;
+    app.stage.edge_blend_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
+        vjarda::stage::EdgeBlendSync { config, version: 1 },
+    )));
+    let mut harness = tab_harness_with_app(StageTab::default(), [900.0, 700.0], app);
+
+    harness.get_by_label("Stage");
+    harness.snapshot("stage_edge_blend_preview");
 }
 
 #[cfg(feature = "projection")]
