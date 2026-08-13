@@ -46,3 +46,6 @@ egui           = { workspace = true, optional = true }
 winit          = { workspace = true }
 hap-wgpu       = { version = "0.2.0", optional = true }
 sysinfo        = { version = "0.34", optional = true, default-features = false, features = ["system"] }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.34.2", features = ["snapshot", "wgpu"] }

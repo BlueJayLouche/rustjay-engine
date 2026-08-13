@@ -6833,6 +6833,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "egui",
+ "egui_kittest",
  "env_logger",
  "hap-wgpu",
  "image",
