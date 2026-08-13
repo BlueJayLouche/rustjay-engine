@@ -228,6 +228,7 @@ pub(crate) struct App<P: EffectPlugin> {
 
     pub(crate) shift_pressed: bool,
     pub(crate) output_occluded: bool,
+    pub(crate) primary_output_hidden: bool,
     pub(crate) control_visible: bool,
     pub(crate) last_frame_time: std::time::Instant,
     pub(crate) frame_delta_time: f32,
@@ -300,10 +301,13 @@ impl<P: EffectPlugin> App<P> {
         nogui: bool,
     ) -> Self {
         let app_name = plugin.app_name().to_string();
+        let hide_main_output_by_default = plugin.hide_main_output_by_default();
         let initial_state = plugin.default_state();
         let config_manager = ConfigManager::new(&app_name);
         if let Ok(mut state) = shared_state.lock() {
-            config_manager.settings.apply_to_state(&mut state);
+            config_manager
+                .settings
+                .apply_to_state(&mut state, hide_main_output_by_default);
             log::info!("Applied saved settings to state");
         }
 
@@ -564,6 +568,7 @@ impl<P: EffectPlugin> App<P> {
             mtc_receiver: Some(MtcReceiver::new()),
             shift_pressed: false,
             output_occluded: false,
+            primary_output_hidden: false,
             control_visible: true,
             last_frame_time: std::time::Instant::now(),
             frame_delta_time: 1.0 / 60.0,

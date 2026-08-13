@@ -170,6 +170,12 @@ pub trait EffectPlugin: Send + Sync + 'static {
         "rustjay"
     }
 
+    /// Whether the main output window should start hidden when the user has no
+    /// saved preference. The engine still creates the window as its render surface.
+    fn hide_main_output_by_default(&self) -> bool {
+        false
+    }
+
     /// Number of input slots this effect actually samples (1 or 2).
     ///
     /// The engine uses this to skip the per-frame GPU upload of input slots the

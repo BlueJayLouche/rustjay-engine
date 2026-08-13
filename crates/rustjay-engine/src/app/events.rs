@@ -209,7 +209,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             return;
         };
 
-        let no_primary = {
+        let hide_main_output = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.no_primary_output
         };
@@ -229,7 +229,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 .with_inner_size(winit::dpi::LogicalSize::new(output_width, output_height))
                 .with_resizable(true)
                 .with_decorations(true)
-                .with_visible(!no_primary);
+                .with_visible(!hide_main_output);
 
             let window = match event_loop.create_window(window_attrs) {
                 Ok(w) => Arc::new(w),
@@ -243,11 +243,12 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             if fullscreen {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             }
-            if !no_primary {
+            if !hide_main_output {
                 window.set_cursor_visible(false);
             }
             self.output_window = Some(Arc::clone(&window));
-            if no_primary {
+            self.primary_output_hidden = hide_main_output;
+            if hide_main_output {
                 self.output_occluded = true;
             }
 
@@ -496,17 +497,24 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         match event {
             WindowAction::RecreateWindows => {
                 if let Some(ref window) = self.output_window {
-                    window.set_visible(true);
-                    self.output_occluded = false;
-                    let fullscreen = {
+                    let (hide_main_output, fullscreen) = {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.output_fullscreen
+                        (state.no_primary_output, state.output_fullscreen)
                     };
-                    if fullscreen {
-                        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                    if hide_main_output {
+                        window.set_visible(false);
+                        self.output_occluded = true;
+                        self.primary_output_hidden = true;
+                    } else {
+                        window.set_visible(true);
+                        self.output_occluded = false;
+                        self.primary_output_hidden = false;
+                        if fullscreen {
+                            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                        }
+                        window.set_cursor_visible(false);
+                        log::info!("Output window shown");
                     }
-                    window.set_cursor_visible(false);
-                    log::info!("Output window shown");
                 }
                 if let Some(ref window) = self.control_window {
                     window.set_visible(true);
@@ -774,8 +782,24 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             self.update_link(&mut state);
             #[cfg(feature = "prodj")]
             self.update_prodj(&mut state);
-            self.prepare_lfo(&state)
+            (state.no_primary_output, self.prepare_lfo(&state))
         };
+        let (hide_main_output, lfo_frame) = lfo_frame;
+        // Live main-output visibility toggle; winit calls need no state lock.
+        if hide_main_output != self.primary_output_hidden
+            && let Some(ref window) = self.output_window
+        {
+            window.set_visible(!hide_main_output);
+            if !hide_main_output {
+                window.set_cursor_visible(false);
+            }
+            self.output_occluded = hide_main_output;
+            self.primary_output_hidden = hide_main_output;
+            log::info!(
+                "Output window {}",
+                if hide_main_output { "hidden" } else { "shown" }
+            );
+        }
 
         // `9b0be46b` fixed a deadlock caused by holding EngineState while the
         // modulation engine re-entered it. This drop-before-modulation boundary

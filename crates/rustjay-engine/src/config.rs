@@ -19,6 +19,10 @@ fn default_midi_kind() -> rustjay_core::MidiMsgKind {
     rustjay_core::MidiMsgKind::Cc
 }
 
+fn resolve_hide_main_output(saved: Option<bool>, app_default: bool) -> bool {
+    saved.unwrap_or(app_default)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MidiMappingConfig {
     pub cc: u8,
@@ -101,6 +105,9 @@ pub(crate) struct AppSettings {
     pub web_lan_trust: bool,
     pub ui_scale: f32,
     pub show_preview: bool,
+    /// `None` lets an application supply its default until the user saves a choice.
+    #[serde(default)]
+    pub hide_main_output: Option<bool>,
     #[serde(default = "default_target_fps")]
     pub target_fps: u32,
     #[serde(default = "default_present_mode")]
@@ -151,6 +158,7 @@ impl Default for AppSettings {
             web_lan_trust: false,
             ui_scale: 1.0,
             show_preview: true,
+            hide_main_output: None,
             target_fps: 60,
             present_mode: rustjay_core::PresentMode::AutoVsync,
             custom_params: HashMap::new(),
@@ -252,9 +260,11 @@ impl AppSettings {
         Ok(dirs.join("rustjay").join(format!("{}.json", app_name)))
     }
 
-    pub fn apply_to_state(&self, state: &mut EngineState) {
+    pub fn apply_to_state(&self, state: &mut EngineState, hide_main_output_by_default: bool) {
         state.output_width = self.output_width;
         state.output_height = self.output_height;
+        state.no_primary_output =
+            resolve_hide_main_output(self.hide_main_output, hide_main_output_by_default);
         state.resolution.internal_width = self.internal_width;
         state.resolution.internal_height = self.internal_height;
         state.hsb_params = self.hsb_params;
@@ -395,6 +405,7 @@ impl AppSettings {
             web_lan_trust: state.web_lan_trust,
             ui_scale: state.ui_scale,
             show_preview: state.show_preview,
+            hide_main_output: Some(state.no_primary_output),
             target_fps: state.target_fps,
             present_mode: state.present_mode,
             custom_params: state
@@ -428,5 +439,18 @@ impl ConfigManager {
 
     pub fn save(&self) -> anyhow::Result<()> {
         self.settings.save(&self.app_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_hide_main_output;
+
+    #[test]
+    fn saved_main_output_preference_overrides_plugin_default() {
+        assert!(!resolve_hide_main_output(None, false));
+        assert!(resolve_hide_main_output(None, true));
+        assert!(!resolve_hide_main_output(Some(false), true));
+        assert!(resolve_hide_main_output(Some(true), false));
     }
 }

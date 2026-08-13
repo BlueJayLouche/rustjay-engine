@@ -522,12 +522,15 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
     }
 
     let app_name = plugin.app_name().to_string();
+    let hide_main_output_by_default = plugin.hide_main_output_by_default();
     let config_manager = ConfigManager::new(&app_name);
 
     // Apply saved config; cap fps for headless path (no vsync throttle from window system)
     {
         let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        config_manager.settings.apply_to_state(&mut state);
+        config_manager
+            .settings
+            .apply_to_state(&mut state, hide_main_output_by_default);
         state.output_fullscreen = true;
         if state.target_fps > 30 {
             state.target_fps = 30;
