@@ -20,7 +20,7 @@ use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
 use cuepool_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use cuepool_protocols::osc::{OscEvent, OscManager};
-use cuepool_video::{VideoFrame, VideoSource};
+use cuepool_video::{FramePool, VideoFrame, VideoSource};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -44,6 +44,8 @@ use recorder::Recorder;
 /// Decode-channel depth (frames). A small buffer absorbs decode jitter; the
 /// backpressure it provides paces decode to the display refresh.
 const VIDEO_QUEUE_CAP: usize = 3;
+/// Two streams × channel/peek slack × the largest decoded plane count.
+const FRAME_POOL_CAP: usize = 2 * (VIDEO_QUEUE_CAP + 2) * 3;
 
 /// Max squared position distance (px²) for recalling an output to a saved monitor.
 /// Positions are fixed for an installed wall, so this just allows minor slop while
@@ -485,6 +487,7 @@ struct App {
     /// producer; backpressure keeps decode a few frames ahead of the clock.
     video_stop_flag: Arc<AtomicBool>,
     video_pause_flag: Arc<AtomicBool>,
+    frame_pool: Arc<FramePool>,
     /// QID of the cue whose video is currently playing (for loop sync).
     current_video_qid: Option<rust_decimal::Decimal>,
     /// Last `SharedState.project_generation` we acted on. A change means a project
@@ -689,6 +692,7 @@ impl App {
         let configure_gate = Arc::new(RwLock::new(()));
         let (canvas_cmd_tx, canvas_cmd_rx) = std::sync::mpsc::channel::<CanvasCommand>();
         let consume_stop = Arc::new(AtomicBool::new(false));
+        let frame_pool = Arc::new(FramePool::new(FRAME_POOL_CAP));
         let consume_join = {
             let device = device.clone();
             let queue = queue.clone();
@@ -696,6 +700,7 @@ impl App {
             let frame = Arc::clone(&frame_state);
             let configure_gate = Arc::clone(&configure_gate);
             let stop = Arc::clone(&consume_stop);
+            let frame_pool = Arc::clone(&frame_pool);
             let proxy = proxy.clone();
             std::thread::Builder::new()
                 .name("video-consume".into())
@@ -709,6 +714,7 @@ impl App {
                         canvas_cmd_rx,
                         proxy,
                         stop,
+                        frame_pool,
                     )
                 })
                 .expect("spawn video consume thread")
@@ -743,6 +749,7 @@ impl App {
             published_outputs: Vec::new(),
             video_stop_flag: Arc::new(AtomicBool::new(false)),
             video_pause_flag: Arc::new(AtomicBool::new(false)),
+            frame_pool,
             current_video_qid: None,
             last_project_generation: 0,
             last_control_redraw: std::time::Instant::now(),
@@ -1600,9 +1607,10 @@ impl App {
         let (tx, rx) = std::sync::mpsc::sync_channel::<VideoFrame>(3);
         self.pixmap_frame_rx = Some(rx);
         let stop = Arc::clone(&self.pixmap_stop_flag);
+        let frame_pool = Arc::clone(&self.frame_pool);
         if let Err(e) = std::thread::Builder::new()
             .name("pixmap-decode".into())
-            .spawn(move || pixmap_decode_thread(&resolved, loop_mode, stop, tx))
+            .spawn(move || pixmap_decode_thread(&resolved, loop_mode, stop, tx, frame_pool))
         {
             // Drop the receiver again so the render tick sees "no stream"
             // instead of a channel that never fills; the cue degrades to a
@@ -1629,7 +1637,9 @@ impl App {
         let Some(rx) = &self.pixmap_frame_rx else { return };
         let mut latest: Option<VideoFrame> = None;
         while let Ok(f) = rx.try_recv() {
-            latest = Some(f);
+            if let Some(discarded) = latest.replace(f) {
+                self.frame_pool.recycle_frame(discarded);
+            }
         }
         let Some(frame) = latest else { return };
         let (w, h) = (frame.width, frame.height);
@@ -1657,6 +1667,7 @@ impl App {
             conv.encode(&mut encoder, &tex.render_view());
             self.queue.submit(Some(encoder.finish()));
         }
+        self.frame_pool.recycle_frame(frame);
     }
 
     /// Create output windows if none exist, and make sure the consume thread's
@@ -2464,12 +2475,21 @@ impl App {
         }
         let stop_flag = Arc::clone(&self.video_stop_flag);
         let pause_flag = Arc::clone(&self.video_pause_flag);
+        let frame_pool = Arc::clone(&self.frame_pool);
         let diag_state = Arc::clone(self.cuepool.state());
 
         if let Err(e) = std::thread::Builder::new()
             .name("video-decode".into())
             .spawn(move || {
-                video_decode_thread(&path, start_before, stop_flag, pause_flag, frame_tx, diag_state);
+                video_decode_thread(
+                    &path,
+                    start_before,
+                    stop_flag,
+                    pause_flag,
+                    frame_tx,
+                    diag_state,
+                    frame_pool,
+                );
             })
         {
             // Uninstall the receiver so the consume thread isn't left waiting
@@ -4442,6 +4462,7 @@ fn video_consume_thread(
     cmd_rx: std::sync::mpsc::Receiver<CanvasCommand>,
     proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     stop: Arc<AtomicBool>,
+    frame_pool: Arc<FramePool>,
 ) {
     let mut canvas: Option<cuepool_video::CanvasTexture> = None;
     let mut overlay: Option<cuepool_video::CanvasTexture> = None;
@@ -4653,7 +4674,9 @@ fn video_consume_thread(
                 }
                 match peek.as_ref() {
                     Some(f) if Duration::from_secs_f64(f.pts.max(0.0)) <= target => {
-                        consumed = peek.take();
+                        if let Some(discarded) = consumed.replace(peek.take().unwrap()) {
+                            frame_pool.recycle_frame(discarded);
+                        }
                     }
                     _ => break, // next frame not due yet, or channel empty
                 }
@@ -4674,7 +4697,7 @@ fn video_consume_thread(
 
         // ── Upload the newest due frame to the canvas (GPU work) ──
         if let Some(frame) = consumed {
-            match frame.pixels {
+            match &frame.pixels {
                 cuepool_video::FramePixels::Rgba(_) => {
                     if let Some(c) = canvas.as_ref() {
                         let _configure_guard =
@@ -4717,6 +4740,7 @@ fn video_consume_thread(
                 peek = None;
                 eof_epoch = None;
             }
+            frame_pool.recycle_frame(frame);
         } else if let Some(epoch) = rx_epoch {
             let mut ctl = control.lock_unpoisoned();
             if ctl.stream_epoch == epoch {
@@ -5082,8 +5106,9 @@ fn video_decode_thread(
     pause_flag: Arc<AtomicBool>,
     frame_tx: std::sync::mpsc::SyncSender<VideoMessage>,
     diag_state: SharedStateHandle,
+    frame_pool: Arc<FramePool>,
 ) {
-    let mut source = match VideoSource::open(path) {
+    let mut source = match VideoSource::open_with_pool(path, Arc::clone(&frame_pool)) {
         Ok(s) => s,
         Err(e) => {
             log::error!("Failed to open video source {}: {e}", path);
@@ -5112,7 +5137,11 @@ fn video_decode_thread(
                 return;
             }
             match source.read_frame() {
-                Some(f) if f.pts + 1e-4 < t => prev = Some(f),
+                Some(f) if f.pts + 1e-4 < t => {
+                    if let Some(discarded) = prev.replace(f) {
+                        frame_pool.recycle_frame(discarded);
+                    }
+                }
                 Some(f) => {
                     if let Some(p) = prev.take()
                         && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
@@ -5169,6 +5198,7 @@ fn pixmap_decode_thread(
     loop_mode: cuepool_core::LoopMode,
     stop_flag: Arc<AtomicBool>,
     frame_tx: std::sync::mpsc::SyncSender<VideoFrame>,
+    frame_pool: Arc<FramePool>,
 ) {
     let looping = matches!(
         loop_mode,
@@ -5176,7 +5206,7 @@ fn pixmap_decode_thread(
     );
     let mut last_dims = (0u32, 0u32);
     'outer: loop {
-        let mut source = match VideoSource::open(path) {
+        let mut source = match VideoSource::open_with_pool(path, Arc::clone(&frame_pool)) {
             Ok(s) => s,
             Err(e) => {
                 log::error!("PixelMap: failed to open {}: {e}", path);

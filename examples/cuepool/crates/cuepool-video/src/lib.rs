@@ -11,12 +11,14 @@
 
 mod canvas_texture;
 mod frame;
+mod frame_pool;
 mod pixel_sampler;
 mod projection_renderer;
 mod video_source;
 mod yuv_converter;
 
 pub use canvas_texture::CanvasTexture;
+pub use frame_pool::FramePool;
 
 /// FFmpeg library version (libavutil, encoded major<<16 | minor<<8 | micro),
 /// for the Status diagnostics window.

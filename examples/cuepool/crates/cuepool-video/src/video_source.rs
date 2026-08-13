@@ -1,5 +1,7 @@
-use ffmpeg_next::{codec, color, ffi, format, frame, media::Type, software::scaling, threading};
 use crate::frame::{BitDepth, ChromaSubsample, VideoFrame, YuvPlane};
+use crate::FramePool;
+use ffmpeg_next::{codec, color, ffi, format, frame, media::Type, software::scaling, threading};
+use std::sync::Arc;
 
 /// A hardware decode candidate: device type, the hw pixel format its frames
 /// arrive in, and a log label.
@@ -69,6 +71,7 @@ pub struct VideoSource {
     eof: bool,
     /// `send_eof` has been issued; remaining calls just drain delayed frames.
     eof_sent: bool,
+    frame_pool: Arc<FramePool>,
 }
 
 /// Formats that upload straight to the GPU and convert in-shader.
@@ -94,9 +97,9 @@ fn gpu_format_class(fmt: format::Pixel) -> Option<GpuYuvFormat> {
     }
 }
 
-fn plane(frame: &frame::Video, i: usize) -> YuvPlane {
+fn plane(frame: &frame::Video, i: usize, frame_pool: &FramePool) -> YuvPlane {
     YuvPlane {
-        data: frame.data(i).to_vec(),
+        data: frame_pool.copy_from_slice(frame.data(i)),
         stride: frame.stride(i) as u32,
         width: frame.plane_width(i),
         height: frame.plane_height(i),
@@ -130,6 +133,7 @@ fn convert_frame(
     dst_width: u32,
     dst_height: u32,
     time_base: f64,
+    frame_pool: &FramePool,
 ) -> Option<VideoFrame> {
     let pts = frame.timestamp().unwrap_or(0) as f64 * time_base;
 
@@ -141,8 +145,8 @@ fn convert_frame(
                 dst_width,
                 dst_height,
                 pts,
-                plane(frame, 0),
-                plane(frame, 1),
+                plane(frame, 0, frame_pool),
+                plane(frame, 1, frame_pool),
                 full_range,
                 bt709,
             ),
@@ -152,9 +156,9 @@ fn convert_frame(
                 pts,
                 ChromaSubsample::Cs420,
                 BitDepth::B10,
-                plane(frame, 0),
-                plane(frame, 1),
-                plane(frame, 2),
+                plane(frame, 0, frame_pool),
+                plane(frame, 1, frame_pool),
+                plane(frame, 2, frame_pool),
                 full_range,
                 bt709,
             ),
@@ -164,9 +168,9 @@ fn convert_frame(
                 pts,
                 ChromaSubsample::Cs420,
                 BitDepth::B8,
-                plane(frame, 0),
-                plane(frame, 1),
-                plane(frame, 2),
+                plane(frame, 0, frame_pool),
+                plane(frame, 1, frame_pool),
+                plane(frame, 2, frame_pool),
                 full_range,
                 bt709,
             ),
@@ -176,9 +180,9 @@ fn convert_frame(
                 pts,
                 ChromaSubsample::Cs422,
                 BitDepth::B8,
-                plane(frame, 0),
-                plane(frame, 1),
-                plane(frame, 2),
+                plane(frame, 0, frame_pool),
+                plane(frame, 1, frame_pool),
+                plane(frame, 2, frame_pool),
                 full_range,
                 bt709,
             ),
@@ -188,9 +192,9 @@ fn convert_frame(
                 pts,
                 ChromaSubsample::Cs444,
                 BitDepth::B8,
-                plane(frame, 0),
-                plane(frame, 1),
-                plane(frame, 2),
+                plane(frame, 0, frame_pool),
+                plane(frame, 1, frame_pool),
+                plane(frame, 2, frame_pool),
                 full_range,
                 bt709,
             ),
@@ -212,7 +216,7 @@ fn convert_frame(
         .ok();
     }
     scaler.as_mut()?.run(frame, rgb_frame).ok()?;
-    let data = rgb_frame.data(0).to_vec();
+    let data = frame_pool.copy_from_slice(rgb_frame.data(0));
     Some(VideoFrame::new(dst_width, dst_height, data, pts))
 }
 
@@ -235,20 +239,28 @@ impl VideoSource {
     /// fitting is the canvas's job, so forcing a fixed size here would pre-stretch
     /// non-matching sources.
     pub fn open(path: &str) -> anyhow::Result<Self> {
+        Self::open_with_pool(path, Arc::new(FramePool::new(0)))
+    }
+
+    pub fn open_with_pool(path: &str, frame_pool: Arc<FramePool>) -> anyhow::Result<Self> {
         // Escape hatch for A/B diagnosis on production machines.
         if std::env::var("QPLAYER_NO_HWACCEL").as_deref() == Ok("1") {
-            return Self::open_with(path, None);
+            return Self::open_with(path, None, frame_pool);
         }
         for &hw in HW_CANDIDATES {
-            match Self::open_with(path, Some(hw)) {
+            match Self::open_with(path, Some(hw), Arc::clone(&frame_pool)) {
                 Ok(src) => return Ok(src),
                 Err(e) => log::warn!("Video decode: {} unavailable ({e})", hw.2),
             }
         }
-        Self::open_with(path, None)
+        Self::open_with(path, None, frame_pool)
     }
 
-    fn open_with(path: &str, hw: Option<HwKind>) -> anyhow::Result<Self> {
+    fn open_with(
+        path: &str,
+        hw: Option<HwKind>,
+        frame_pool: Arc<FramePool>,
+    ) -> anyhow::Result<Self> {
         ffmpeg_next::init()?;
 
         let ictx = format::input(path)?;
@@ -353,6 +365,7 @@ impl VideoSource {
             hw_label,
             eof: false,
             eof_sent: false,
+            frame_pool,
         })
     }
 
@@ -395,6 +408,7 @@ impl VideoSource {
                     self.dst_width,
                     self.dst_height,
                     self.time_base,
+                    &self.frame_pool,
                 )
                 .map_or(Decoded::Skip, Decoded::Frame);
             }
@@ -405,6 +419,7 @@ impl VideoSource {
             self.dst_width,
             self.dst_height,
             self.time_base,
+            &self.frame_pool,
         )
         .map_or(Decoded::End, Decoded::Frame)
     }
@@ -450,7 +465,7 @@ impl VideoSource {
     /// escape hatch; playback position is lost, this is not a routine path).
     fn reopen_software(&mut self) -> bool {
         let path = self.path.clone();
-        match Self::open_with(&path, None) {
+        match Self::open_with(&path, None, Arc::clone(&self.frame_pool)) {
             Ok(src) => {
                 log::warn!("Video decode: hardware broke on first frame, reopened in software");
                 *self = src;
