@@ -3985,7 +3985,6 @@ impl App {
                 cuepool_gui::ActiveCueInfo {
                     qid: ac.qid,
                     name: ac.name.clone(),
-                    volume: ac.input.volume(),
                     paused: !ac.input.is_active(),
                     position_secs: secs(position),
                     length_secs: length.map(secs),
@@ -4029,7 +4028,6 @@ impl App {
                             gui_active.push(cuepool_gui::ActiveCueInfo {
                                 qid: vqid,
                                 name: cue.base().name.clone(),
-                                volume: 0.0,
                                 paused,
                                 position_secs,
                                 length_secs,

@@ -114,7 +114,6 @@ fn populate_telemetry(state: &mut SharedState) {
         ActiveCueInfo {
             qid: Decimal::new(11, 1),
             name: "Lobby Ambience".into(),
-            volume: 0.8,
             paused: false,
             position_secs: 64.5,
             length_secs: Some(180.0),
@@ -123,7 +122,6 @@ fn populate_telemetry(state: &mut SharedState) {
         ActiveCueInfo {
             qid: Decimal::new(12, 1),
             name: "Projection Intro".into(),
-            volume: 0.7,
             paused: true,
             position_secs: 18.0,
             length_secs: Some(42.0),
@@ -132,7 +130,6 @@ fn populate_telemetry(state: &mut SharedState) {
         ActiveCueInfo {
             qid: Decimal::from(2),
             name: "House Lights Half".into(),
-            volume: 1.0,
             paused: false,
             position_secs: 1.2,
             length_secs: Some(2.5),

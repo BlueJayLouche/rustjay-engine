@@ -138,8 +138,6 @@ pub enum CueState {
 pub struct ActiveCueInfo {
     pub qid: Decimal,
     pub name: String,
-    /// Linear volume (0.0 – 1.0+).
-    pub volume: f32,
     /// True if the cue is currently paused.
     pub paused: bool,
     /// Current playback position in seconds.
