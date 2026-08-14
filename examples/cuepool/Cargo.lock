@@ -1340,10 +1340,14 @@ dependencies = [
 name = "cuepool-harness"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
+ "cuepool",
  "cuepool-audio",
  "cuepool-core",
  "cuepool-protocols",
+ "cuepool-video",
  "rosc",
+ "rust_decimal",
  "serde_json",
 ]
 

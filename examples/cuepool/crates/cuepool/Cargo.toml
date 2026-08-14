@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "CuePool binary — event loop, state orchestration, main application"
+description = "CuePool show engine and desktop application"
 
 [features]
 asio = ["cuepool-audio/asio"]
+test-harness = ["cuepool-audio/test-harness"]
 
 [[bin]]
 name = "cuepool"

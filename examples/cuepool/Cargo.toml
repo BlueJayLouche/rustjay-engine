@@ -70,6 +70,7 @@ cuepool-audio = { path = "crates/cuepool-audio" }
 cuepool-gui = { path = "crates/cuepool-gui" }
 cuepool-video = { path = "crates/cuepool-video" }
 cuepool-protocols = { path = "crates/cuepool-protocols" }
+cuepool = { path = "crates/cuepool" }
 
 [profile.release]
 opt-level = 3

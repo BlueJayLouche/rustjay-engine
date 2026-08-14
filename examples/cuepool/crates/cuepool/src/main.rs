@@ -11,7 +11,8 @@
 //!   work lives on the consume thread (Windows/NVIDIA WSI stalls any thread
 //!   that submits behind vsync-blocked swapchains).
 
-use cuepool_audio::{AudioEngine, CueChainParams, FileDecoder, SampleProvider};
+use cuepool_audio::AudioEngine;
+use cuepool::{EngineAction, EngineCommand, EngineEvent, ShowEngine};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
 };
@@ -37,13 +38,6 @@ use human_panic::Metadata;
 
 mod api;
 use api::{ApiCommand, ApiCommandOutcome, ApiRuntime};
-mod cue_exec;
-use cue_exec::{
-    ActiveCue, DelayedCue, PendingStop, active_cue_length_samples, fade_elapsed,
-    shift_fade_start_after_pause,
-};
-mod cue_sequence;
-use cue_sequence::{next_after_last, next_standby_qid, resolve_goto_target};
 mod lighting_engine;
 use lighting_engine::LightingEngine;
 mod mtc_follow;
@@ -64,10 +58,12 @@ use remote_commands::{
 mod settings;
 use settings::{AppSettings, load_settings, save_settings};
 mod video_pipeline;
+mod video_timing;
 use video_pipeline::{
     CanvasCommand, OutputFrameState, VideoControl, VideoMessage, VideoSeekFrameRequest,
     pixmap_decode_thread, video_consume_thread, video_decode_thread,
 };
+use video_timing::{fade_elapsed, shift_fade_start_after_pause};
 #[cfg(windows)]
 use video_pipeline::win_timer;
 
@@ -149,24 +145,12 @@ fn queue_latest_video_decode(
 
 
 
-fn sanitized_seek_secs(secs: f32) -> f64 {
-    if secs.is_nan() || secs <= 0.0 {
-        0.0
-    } else {
-        f64::from(secs)
-    }
-}
-
 fn clamp_video_seek_secs(target: f64, length_secs: Option<f64>) -> f64 {
     match length_secs.filter(|length| length.is_finite() && *length > 0.0) {
         Some(length) => target.min(length.next_down()),
         None if target.is_finite() => target,
         None => 0.0,
     }
-}
-
-fn video_seek_target(secs: f32, length_secs: Option<f64>) -> f64 {
-    clamp_video_seek_secs(sanitized_seek_secs(secs), length_secs)
 }
 
 fn video_media_secs(timeline_secs: f64, media_offset_secs: f64) -> f64 {
@@ -186,30 +170,6 @@ fn video_seek_clock(
     let clock = now.checked_sub(target)?;
     Some((clock, paused.then_some(now)))
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TailFadeSeekAction {
-    Unchanged,
-    Rearm,
-    Restart,
-}
-
-fn tail_fade_seek_action(
-    fade_started: bool,
-    target_samples: usize,
-    end_samples: usize,
-    fade_samples: usize,
-) -> TailFadeSeekAction {
-    if target_samples >= end_samples.saturating_sub(fade_samples) {
-        TailFadeSeekAction::Restart
-    } else if fade_started {
-        TailFadeSeekAction::Rearm
-    } else {
-        TailFadeSeekAction::Unchanged
-    }
-}
-
-
 
 struct App {
     // ── wgpu core ──
@@ -262,26 +222,12 @@ struct App {
 
     // ── app state ──
     cuepool: CuePoolApp,
+    show_engine: ShowEngine,
+    engine_epoch: Instant,
     window_ids: Option<WindowIds>,
 
-    // ── audio ──
-    /// `None` means output configuration failed. Keeping this optional is the
-    /// fail-closed boundary: no old/default stream survives a requested ASIO failure.
-    audio_engine: Option<AudioEngine>,
-    active_cues: Vec<ActiveCue>,
-    next_active_cue_instance_id: u64,
-    delayed_cues: Vec<DelayedCue>,
+    // ── playback adapter state ──
     paused: bool,
-    show_start_time: Option<Instant>,
-    show_start_clock: Option<std::time::Duration>,
-    /// Audio-clock time when the show was paused — freezes the show clock.
-    show_pause_started: Option<std::time::Duration>,
-    /// Seconds subtracted from the raw show clock (accumulated pause time,
-    /// minus any frame-step advances made while paused).
-    show_paused_offset: f64,
-    triggered_timecodes: Vec<rust_decimal::Decimal>,
-    /// TimeCode cues with a duration currently occupying time.
-    active_timecodes: Vec<(rust_decimal::Decimal, std::time::Instant)>,
 
     // ── video playback ──
     /// Kept for render threads to request winit-side surface rebuilds; the
@@ -411,6 +357,7 @@ impl App {
         zero_copy: ZeroCopyAvailability,
         cuepool: CuePoolApp,
     ) -> Self {
+        let show_engine = ShowEngine::new(cuepool.state().clone(), None);
         // Protocol settings from project settings (fallback to defaults)
         let (nic, subnet, osc_rx_port, osc_tx_port, is_remote_host, enable_remote_control) = {
             match cuepool.state().lock() {
@@ -591,8 +538,9 @@ impl App {
             registered_fonts: std::collections::HashSet::new(),
             egui_renderer: None,
             cuepool,
+            show_engine,
+            engine_epoch: Instant::now(),
             window_ids: None,
-            audio_engine: None,
             event_loop_proxy: proxy,
             current_text_qid: None,
             output_windows: Vec::new(),
@@ -635,16 +583,7 @@ impl App {
             mtc_warned_fps: None,
             last_window_title: String::new(),
             autosave_running,
-            active_cues: Vec::new(),
-            next_active_cue_instance_id: 1,
-            delayed_cues: Vec::new(),
             paused: false,
-            show_start_time: None,
-            show_start_clock: None,
-            show_pause_started: None,
-            show_paused_offset: 0.0,
-            triggered_timecodes: Vec::new(),
-            active_timecodes: Vec::new(),
             modifiers: winit::keyboard::ModifiersState::empty(),
             lighting: LightingEngine::default(),
             recorder: Recorder::new(),
@@ -735,264 +674,173 @@ impl App {
 
 
 
-    /// Handle a `Go` command: start audio (and video if cue is VideoCue).
-    /// Also handles `WithLast` trigger mode for subsequent cues.
-    fn handle_go(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let (start_qid, start_idx) = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            let qid = state.selected_cue_id;
-            let idx = qid.and_then(|q| state.show_file.cues.iter().position(|c| c.base().qid == q));
-            (qid, idx)
-        };
+    fn engine_now(&self) -> Duration {
+        self.show_engine
+            .audio_engine()
+            .map(AudioEngine::playback_time)
+            .unwrap_or_else(|| self.engine_epoch.elapsed())
+    }
 
-        let Some(start_qid) = start_qid else {
-            log::info!("Go pressed but no cue selected");
-            return Err("no cue selected".into());
-        };
-        let Some(start_idx) = start_idx else {
-            log::warn!("Selected cue Q{} not found in cue list", start_qid);
-            return Err(format!("selected cue Q{start_qid} not found"));
-        };
+    fn run_engine_command(
+        &mut self,
+        command: EngineCommand,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), String> {
+        let actions = self.show_engine.command(command, self.engine_now());
+        self.apply_engine_actions(actions, event_loop)
+    }
 
-
-        // Play the selected cue and all consecutive WithLast followers
-        let cues_to_play = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            let mut result = Vec::new();
-            for i in start_idx..state.show_file.cues.len() {
-                let cue = &state.show_file.cues[i];
-                if !cue.enabled() {
-                    if i == start_idx {
-                        // The primary cue we wanted to play is disabled — stop here
-                        break;
+    fn apply_engine_actions(
+        &mut self,
+        actions: Vec<EngineAction>,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), String> {
+        for action in actions {
+            match action {
+                EngineAction::PlayVideo {
+                    qid,
+                    instance_id,
+                    path,
+                    start_time,
+                    duration,
+                    follow_mtc,
+                    mtc_start,
+                    ..
+                } => {
+                    self.play_video(
+                        &path,
+                        qid,
+                        instance_id,
+                        start_time,
+                        duration,
+                        event_loop,
+                    );
+                    if follow_mtc {
+                        self.mtc_follow = Some(MtcFollowState {
+                            qid,
+                            path,
+                            offset_secs: mtc_start.as_secs_f64(),
+                            hold_position: Some(0.0),
+                            last_tick: Instant::now(),
+                            last_mtc_secs: 0.0,
+                            last_mtc_at: Instant::now(),
+                        });
+                    } else {
+                        self.mtc_follow = None;
                     }
-                    // A WithLast follower is disabled — skip it but keep looking for more followers
-                    continue;
                 }
-                if i == start_idx || cue.base().trigger == cuepool_core::TriggerMode::WithLast {
-                    result.push(cue.clone());
-                } else {
-                    break;
+                EngineAction::SeekVideo {
+                    qid,
+                    path,
+                    target_secs,
+                    media_offset_secs,
+                    ..
+                } => self.seek_video_cue(qid, &path, target_secs, media_offset_secs)?,
+                EngineAction::StopVideo { fade_out_secs } => {
+                    if fade_out_secs > 0.0 {
+                        self.video_control.lock_unpoisoned().fade =
+                            Some((Instant::now(), fade_out_secs));
+                    } else {
+                        self.stop_video_playback();
+                        let _ = self.canvas_cmd_tx.send(CanvasCommand::BlankCanvas);
+                    }
                 }
+                EngineAction::SetVideoPaused(paused) => self.set_video_paused(paused),
+                EngineAction::FireExternal(cue) => self.apply_external_cue(&cue, event_loop)?,
+                EngineAction::StopExternal {
+                    qid,
+                    mode,
+                    fade_out_secs,
+                    fade_type,
+                } => {
+                    if self.lighting.stop_show(qid, fade_out_secs, fade_type) {
+                        log::info!("Stop DmxShow Q{qid} (fade {fade_out_secs:.2}s)");
+                    }
+                    if self.current_text_qid == Some(qid) {
+                        self.clear_text_overlay();
+                    }
+                    if self.current_video_qid == Some(qid)
+                        && self.show_engine.current_video_qid() != Some(qid)
+                        && mode != cuepool_core::StopMode::LoopEnd
+                    {
+                        if fade_out_secs > 0.0 {
+                            self.video_control.lock_unpoisoned().fade =
+                                Some((Instant::now(), fade_out_secs));
+                        } else {
+                            self.stop_video_playback();
+                        }
+                    }
+                }
+                EngineAction::StopAllExternal => self.stop_external_outputs(),
+                EngineAction::RemoteGo { node, qid } => {
+                    if let Some(osc) = &self.osc_manager {
+                        let _ = osc.send(rosc::OscMessage {
+                            addr: "/qplayer/remote/go".into(),
+                            args: vec![
+                                rosc::OscType::String(node),
+                                rosc::OscType::String(qid.to_string()),
+                            ],
+                        });
+                    }
+                }
+                EngineAction::Trace(event) => log::debug!("Engine: {event:?}"),
             }
-            result
-        };
-
-        if cues_to_play.is_empty() {
-            return Err(format!("selected cue Q{start_qid} is disabled"));
         }
-
-        // TimeCode cues use the show clock while they are applied. If the cue
-        // fails synchronously, restore the stopped state below.
-        let started_show_clock = self.show_start_time.is_none();
-        if self.show_start_time.is_none() {
-            self.show_start_time = Some(Instant::now());
-            self.show_start_clock = Some(self.audio_clock());
-            self.show_paused_offset = 0.0;
-            self.show_pause_started = self.paused.then(|| self.audio_clock());
-            self.triggered_timecodes.clear();
-            self.active_timecodes.clear();
-            self.timecode_fired.clear();
-        }
-
-        let mut cues_to_play = cues_to_play.into_iter();
-        let primary = cues_to_play.next().expect("non-empty cue list");
-        if let Err(error) = self.play_cue(&primary, event_loop) {
-            if started_show_clock {
-                self.reset_show_clock();
-            }
-            return Err(error);
-        }
-
-        for cue in cues_to_play {
-            if let Err(error) = self.play_cue(&cue, event_loop) {
-                log::error!("WithLast cue Q{} failed: {error}", cue.base().qid);
-            }
-        }
-
-        // Advance the playhead so the next Go fires the following cue (QLab-style
-        // stepping). Skip the cues that auto-fired alongside this one. A goto cue
-        // sets its own standby (the target), so don't override it here.
-        let next_qid = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            let fired_goto =
-                matches!(state.show_file.cues.get(start_idx), Some(cuepool_core::Cue::Goto { .. }));
-            if fired_goto {
-                None
-            } else {
-                next_standby_qid(&state.show_file.cues, start_idx)
-            }
-        };
-        if let Some(next_qid) = next_qid
-            && let Ok(mut state) = self.cuepool.state().lock() {
-                state.selected_cue_id = Some(next_qid);
-            }
         Ok(())
     }
 
-    /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
-    fn play_cue_by_qid(&mut self, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        let cue = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            state.show_file.cues.iter().find(|c| c.base().qid == qid).cloned()
-        };
-        if let Some(cue) = cue {
-            let _ = self.play_cue(&cue, event_loop);
-        } else {
-            log::warn!("Trigger referenced unknown cue Q{}", qid);
+    fn set_video_paused(&mut self, paused: bool) {
+        self.video_pause_flag.store(paused, Ordering::Relaxed);
+        self.paused = paused;
+        let mut ctl = self.video_control.lock_unpoisoned();
+        ctl.paused = paused;
+        if paused {
+            ctl.pause_started = Some(Instant::now());
+        } else if let Some(paused_at) = ctl.pause_started.take() {
+            let resumed_at = Instant::now();
+            if let Some(clock) = ctl.clock.as_mut() {
+                *clock += resumed_at.saturating_duration_since(paused_at);
+            }
+            if let Some((start, _)) = ctl.fade.as_mut() {
+                *start = shift_fade_start_after_pause(*start, paused_at, resumed_at);
+            }
         }
     }
 
-    /// Is this cue currently producing output? True while its audio is playing
-    /// (or paused) or while its video/still is the one on screen.
-    fn cue_is_active(&self, qid: rust_decimal::Decimal) -> bool {
-        self.current_video_qid == Some(qid)
-            || self.active_cues.iter().any(|ac| {
-                ac.qid == qid
-                    && matches!(
-                        ac.state,
-                        CueState::Playing | CueState::PlayingLooped | CueState::Paused
-                    )
-            })
+    fn stop_external_outputs(&mut self) {
+        self.mtc_follow = None;
+        self.lighting.stop_fade();
+        self.lighting.stop_all_shows();
+        self.pixmap_stop_flag.store(true, Ordering::Relaxed);
+        self.pixmap_frame_rx = None;
+        if let Some(texture) = self.pixmap_texture.as_ref() {
+            let blank = vec![0; (texture.width * texture.height * 4) as usize];
+            let _configure_guard = self
+                .configure_gate
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            texture.upload_rgba(&self.queue, &blank);
+        }
+        self.clear_text_overlay();
     }
 
-    fn play_cue(
+    fn apply_external_cue(
         &mut self,
         cue: &cuepool_core::Cue,
         event_loop: &ActiveEventLoop,
     ) -> Result<(), String> {
-        if !cue.enabled() {
-            log::info!("Skipping disabled cue Q{}", cue.base().qid);
-            return Err(format!("cue Q{} is disabled", cue.base().qid));
-        }
-
         let qid = cue.base().qid;
-        let name = cue.base().name.clone();
-        let delay = cue.base().delay;
-
-        // Re-trigger guard: a cue marked not-re-triggerable is ignored if it is
-        // already playing (stops stacked audio / flashing video from a double Go).
-        if !cue.base().retriggerable && self.cue_is_active(qid) {
-            log::info!("Ignoring re-trigger of Q{qid} (not re-triggerable, still playing)");
-            return Err(format!("cue Q{qid} is already active and not retriggerable"));
-        }
-
-        // Remote cue delegation: if remote_node is set and not local, send OSC instead
-        let remote_node = cue.base().remote_node.clone();
-        if !remote_node.is_empty() {
-            let (enable_remote, local_name) = {
-                let Ok(state) = self.cuepool.state().lock() else {
-                    return Err("project state lock poisoned".into());
-                };
-                (state.show_file.show_settings.enable_remote_control,
-                 state.show_file.show_settings.node_name.clone())
-            };
-            if enable_remote && remote_node != local_name {
-                if let Some(osc) = &self.osc_manager {
-                    let qid_str = qid.to_string();
-                    osc.send(rosc::OscMessage {
-                        addr: "/qplayer/remote/go".into(),
-                        args: vec![
-                            rosc::OscType::String(remote_node),
-                            rosc::OscType::String(qid_str),
-                        ],
-                    })
-                    .map_err(|error| format!("failed to delegate cue Q{qid}: {error}"))?;
-                    log::info!("Delegated Q{} to remote node {}", qid, cue.base().remote_node);
-                } else {
-                    return Err("OSC manager is unavailable for remote cue delegation".into());
-                }
-                return Ok(());
-            }
-        }
-
-        // If cue has a delay, schedule it instead of playing immediately.
-        // Store it with the delay stripped: the replay re-enters play_cue,
-        // which would otherwise reschedule it forever.
-        if delay.as_secs_f64() > 0.0 {
-            log::info!("Delaying cue Q{} by {:.2}s", qid, delay.as_secs_f64());
-            let mut cue = cue.clone();
-            cue.base_mut().delay = cuepool_core::Timespan::ZERO;
-            self.delayed_cues.push(DelayedCue {
-                cue,
-                start_at: std::time::Instant::now() + std::time::Duration::from_secs_f64(delay.as_secs_f64()),
-            });
-            return Ok(());
-        }
-
-        // Check if cue is already preloaded — if so, just activate it
-        if let Some(idx) = self.active_cues.iter().position(|ac| ac.qid == qid && ac.state == CueState::Ready) {
-            let ac = &mut self.active_cues[idx];
-            ac.input.set_active(true);
-            let new_state = if cue.base().loop_mode == cuepool_core::LoopMode::Looped || cue.base().loop_mode == cuepool_core::LoopMode::LoopedInfinite {
-                CueState::PlayingLooped
-            } else {
-                CueState::Playing
-            };
-            ac.state = new_state;
-            log::info!("Activated preloaded cue Q{}", qid);
-            return Ok(());
-        }
-
         match cue {
-            cuepool_core::Cue::Sound { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
-                log::info!("Go SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false)?;
-            }
-            cuepool_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start, .. } => {
-                log::info!("Go VideoCue: {}", path);
-                let video_instance_id = self.allocate_active_cue_instance_id();
-                if *follow_mtc {
-                    // MTC follow: the video plays silent (audio comes from the
-                    // MTC master, e.g. Pro Tools), loads, and HOLDS on frame 0
-                    // until MTC plays. GO on the same cue re-arms a fresh hold.
-                    self.play_video(path, qid, video_instance_id, *start_time, *duration, event_loop);
-                    self.mtc_follow = Some(MtcFollowState {
-                        qid,
-                        path: path.clone(),
-                        offset_secs: mtc_start.as_secs_f64(),
-                        hold_position: Some(0.0),
-                        last_tick: Instant::now(),
-                        last_mtc_secs: 0.0,
-                        last_mtc_at: Instant::now(),
-                    });
-                } else {
-                    // A plain video cue takes over the output — drop any MTC follow.
-                    self.mtc_follow = None;
-                    let active_count = self.active_cues.len();
-                    if let Err(error) = self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false) {
-                        log::warn!("Video cue Q{qid} is starting without audio: {error}");
-                    }
-                    let audio_instance_id = self.active_cues.get(active_count).filter(|cue| cue.qid == qid)
-                        .map_or(video_instance_id, |cue| cue.instance_id);
-                    self.play_video(path, qid, audio_instance_id, *start_time, *duration, event_loop);
-                }
-            }
-            cuepool_core::Cue::Stop { stop_qid, stop_mode, fade_out_time, fade_type, stop_all, .. } => {
-                if *stop_all {
-                    log::info!("Go StopCue -> stop all (transport Stop)");
-                    self.stop_all();
-                } else {
-                    log::info!("Go StopCue -> stop Q{}", stop_qid);
-                    self.handle_stop_cue(*stop_qid, *stop_mode, *fade_out_time, *fade_type);
-                }
-            }
-            cuepool_core::Cue::Volume { sound_qid, volume, fade_time, fade_type, .. } => {
-                log::info!("Go VolumeCue -> adjust Q{} to {:.1} dB", sound_qid, 20.0 * volume.log10());
-                self.handle_volume_cue(*sound_qid, *volume, *fade_time, *fade_type);
-            }
             cuepool_core::Cue::Osc { command, .. } => {
-                log::info!("Go OSCCue: {}", command);
                 if let Some(remainder) = strip_udp_prefix(command) {
-                    // Raw UDP command (e.g. BrightSign): `udp:payload` goes to
-                    // the default target, `udp:name:payload` or
-                    // `udp:10.0.0.5:payload` to a specific player. No OSC encoding.
                     let (host, port, payload) = {
-                        let Ok(state) = self.cuepool.state().lock() else {
-                            return Err("project state lock poisoned".into());
-                        };
+                        let state = self.cuepool.state().lock_unpoisoned();
                         let settings = &state.show_file.show_settings;
-                        let (host, payload) = resolve_udp_command(remainder, &settings.udp_targets, &settings.udp_tx_host);
+                        let (host, payload) = resolve_udp_command(
+                            remainder,
+                            &settings.udp_targets,
+                            &settings.udp_tx_host,
+                        );
                         (host, settings.udp_tx_port, payload.to_string())
                     };
                     send_udp_command(&payload, &host, port).map_err(|error| {
@@ -1007,190 +855,120 @@ impl App {
                     return Err("OSC manager is unavailable".into());
                 }
             }
-            cuepool_core::Cue::Group { .. } => {
-                // A group owns the cues whose `parent` points at it. Going the
-                // group fires that whole block (each via the normal play path, so
-                // per-cue delay and the enabled flag still apply).
-                let members: Vec<cuepool_core::Cue> = {
-                    let state = self.cuepool.state().lock_unpoisoned();
-                    state
-                        .show_file
-                        .cues
-                        .iter()
-                        // Exclude self: a group can never be its own member (guards
-                        // against stray self-referential data causing recursion).
-                        // AfterLast members don't fire at go — they chain off the
-                        // preceding member's completion like anywhere else.
-                        .filter(|c| {
-                            c.base().parent == Some(qid)
-                                && c.base().qid != qid
-                                && c.base().trigger != cuepool_core::TriggerMode::AfterLast
-                        })
-                        .cloned()
-                        .collect()
-                };
-                log::info!("Go GroupCue Q{} — firing {} member(s)", qid, members.len());
-                for member in members {
-                    if let Err(error) = self.play_cue(&member, event_loop) {
-                        log::error!("Group member Q{} failed: {error}", member.base().qid);
-                    }
-                }
-            }
-            cuepool_core::Cue::TimeCode { start_time, duration, .. } => {
-                log::info!("Go TimeCode cue Q{} at {:.2}s", qid, start_time.as_secs_f64());
-                let duration_secs = duration.as_secs_f64();
-                if duration_secs > 0.0 {
-                    if let Some(show_start) = self.show_start_time {
-                        let deadline = show_start + std::time::Duration::from_secs_f64(start_time.as_secs_f64() + duration_secs);
-                        self.active_timecodes.push((qid, deadline));
-                    }
-                } else {
-                    // Zero-duration TimeCode marker: trigger AfterLast chain immediately.
-                    self.play_after_last_chain(qid, event_loop);
-                }
-            }
-            cuepool_core::Cue::Text { text, font_size, font_colour, fit, font, .. } => {
-                log::info!("Go TextCue Q{}: '{}'", qid, text);
+            cuepool_core::Cue::Text {
+                text,
+                font_size,
+                font_colour,
+                fit,
+                font,
+                ..
+            } => {
                 self.ensure_outputs_and_canvas(event_loop);
                 let family = self.text_font_family(font);
-                // Text renders on the overlay layer, over whatever video/image
-                // is playing. With nothing underneath, blank the canvas so a
-                // stale last frame doesn't reappear behind the text.
                 let blank = self.current_video_qid.is_none()
                     && !self.video_control.lock_unpoisoned().canvas_has_frame;
                 if blank {
                     let _ = self.canvas_cmd_tx.send(CanvasCommand::BlankCanvas);
                 }
-                let (cw, ch) = {
+                let (width, height) = {
                     let state = self.cuepool.state().lock_unpoisoned();
-                    (state.show_file.projection.canvas_width, state.show_file.projection.canvas_height)
+                    (
+                        state.show_file.projection.canvas_width,
+                        state.show_file.projection.canvas_height,
+                    )
                 };
-                let mut shown = false;
-                match self.rasterize_text_block(
-                    text, *font_size, *font_colour, family, cw, ch, *fit,
+                let shown = if let Some(frame) = self.rasterize_text_block(
+                    text,
+                    *font_size,
+                    *font_colour,
+                    family,
+                    width,
+                    height,
+                    *fit,
                 ) {
-                    // Rasterizing is CPU/egui work; the texture upload rides the
-                    // consume thread (queued after the Resize above, so the
-                    // overlay exists by then).
-                    Some(frame) => {
-                        let _ = self
-                            .canvas_cmd_tx
-                            .send(CanvasCommand::Overlay(Some((frame, *fit))));
-                        shown = true;
-                    }
-                    // Empty text: clear the overlay.
-                    None => {
-                        let _ = self.canvas_cmd_tx.send(CanvasCommand::Overlay(None));
-                    }
-                }
+                    let _ = self
+                        .canvas_cmd_tx
+                        .send(CanvasCommand::Overlay(Some((frame, *fit))));
+                    true
+                } else {
+                    let _ = self.canvas_cmd_tx.send(CanvasCommand::Overlay(None));
+                    false
+                };
                 self.set_current_text_qid(shown.then_some(qid));
             }
             cuepool_core::Cue::Image { path, fit, .. } => {
-                log::info!("Go ImageCue Q{}: {}", qid, path);
                 self.ensure_outputs_and_canvas(event_loop);
-                // A still replaces video output: clear video playback state so the
-                // consume thread stops PTS-matching against stale frames (its
-                // receiver drop also retires the decode thread). Cleared BEFORE
-                // sending the upload command so no late video frame lands over it.
                 self.video_stop_flag.store(true, Ordering::Relaxed);
                 self.pending_video_decode = None;
                 {
-                    let mut ctl = self.video_control.lock_unpoisoned();
-                    ctl.stream_epoch += 1;
-                    ctl.clock = None;
-                    ctl.frame_rx = None;
-                    ctl.peek_pts = None;
-                    ctl.last_pts = None;
+                    let mut control = self.video_control.lock_unpoisoned();
+                    control.stream_epoch += 1;
+                    control.clock = None;
+                    control.frame_rx = None;
+                    control.peek_pts = None;
+                    control.last_pts = None;
                 }
                 self.set_current_video_qid(Some(qid));
-                let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
-                let _ = self
-                    .canvas_cmd_tx
-                    .send(CanvasCommand::Image(resolved, *fit));
-            }
-            cuepool_core::Cue::Goto { target_qid, .. } => {
-                log::info!("Go GotoCue Q{} -> arm Q{}", qid, target_qid);
-                // Resolve the goto chain to a non-goto cue, guarding against cycles
-                // (A->B->A) so we never recurse forever.
-                let final_target = {
-                    let state = self.cuepool.state().lock_unpoisoned();
-                    resolve_goto_target(&state.show_file.cues, qid, *target_qid)
-                };
-                let Some(target) = final_target else {
-                    log::warn!("Goto cue Q{}: cyclic or unknown target; ignoring", qid);
-                    return Err(format!("goto cue Q{qid} has a cyclic or unknown target"));
-                };
-                // A goto just moves the playhead: arm the target as the next
-                // standby cue (the following GO fires it). It does not fire it.
-                // handle_go skips its post-fire advance for goto cues so this
-                // arming stands.
-                if let Ok(mut state) = self.cuepool.state().lock() {
-                    state.selected_cue_id = Some(target);
-                }
+                let resolved = self.resolve_path(path).unwrap_or_else(|| path.clone());
+                let _ = self.canvas_cmd_tx.send(CanvasCommand::Image(resolved, *fit));
             }
             cuepool_core::Cue::PixelMap { path, .. } => {
-                log::info!("Go PixelMapCue Q{}: {}", qid, path);
-                self.play_pixmap(path, qid, cue.base().loop_mode);
+                self.play_pixmap(path, qid, cue.base().loop_mode)
             }
-            cuepool_core::Cue::Lighting { snapshot, fade_time, fade_type, .. } => {
-                log::info!(
-                    "Go LightingCue Q{} — {} fixture(s), fade {:.2}s",
-                    qid,
-                    snapshot.len(),
-                    fade_time
-                );
+            cuepool_core::Cue::Lighting {
+                snapshot,
+                fade_time,
+                fade_type,
+                ..
+            } => {
                 self.lighting.go(snapshot, *fade_time, *fade_type);
             }
-            cuepool_core::Cue::DmxShow { path, fade_in, fade_out, fade_type, priority, .. } => {
-                let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
+            cuepool_core::Cue::DmxShow {
+                path,
+                fade_in,
+                fade_out,
+                fade_type,
+                priority,
+                ..
+            } => {
+                let resolved = self.resolve_path(path).unwrap_or_else(|| path.clone());
                 match rustjay_lighting::read_rec(&resolved) {
-                    Ok(events) => {
-                        log::info!(
-                            "Go DmxShowCue Q{}: {} — {} event(s), {:.1}s, priority {}",
-                            qid,
-                            path,
-                            events.len(),
-                            rustjay_lighting::rec_duration_ms(&events) as f32 / 1000.0,
-                            priority
-                        );
-                        self.lighting.go_show(
-                            qid,
-                            events,
-                            *priority,
-                            *fade_in,
-                            *fade_out,
-                            *fade_type,
-                            cue.base().loop_mode,
-                            cue.base().loop_count,
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("DmxShow cue Q{qid} failed to load '{resolved}': {e}");
-                        return Err(format!("DmxShow cue Q{qid} failed to load: {e}"));
+                    Ok(events) => self.lighting.go_show(
+                        qid,
+                        events,
+                        *priority,
+                        *fade_in,
+                        *fade_out,
+                        *fade_type,
+                        cue.base().loop_mode,
+                        cue.base().loop_count,
+                    ),
+                    Err(error) => {
+                        log::error!("DmxShow cue Q{qid} failed to load '{resolved}': {error}");
+                        return Err(format!("DmxShow cue Q{qid} failed to load: {error}"));
                     }
                 }
             }
-            other => {
-                log::info!("Go on unsupported cue type: {:?}", std::mem::discriminant(other));
-            }
-        }
-
-        // Instant cue types complete the moment they execute — continue an
-        // AfterLast chain now. Sound/Video chain from check_finished_cues when
-        // playback ends, TimeCode from its marker/deadline, Group members chain
-        // individually, and a Goto only moves the playhead.
-        if !matches!(
-            cue,
-            cuepool_core::Cue::Sound { .. }
-                | cuepool_core::Cue::Video { .. }
-                | cuepool_core::Cue::TimeCode { .. }
-                | cuepool_core::Cue::Group { .. }
-                | cuepool_core::Cue::Goto { .. }
-                | cuepool_core::Cue::DmxShow { .. }
-        ) {
-            self.play_after_last_chain(qid, event_loop);
+            cuepool_core::Cue::Dummy { .. } => {}
+            _ => log::debug!("Engine emitted a non-external cue action for Q{qid}"),
         }
         Ok(())
+    }
+
+    /// Handle a `Go` command: start audio (and video if cue is VideoCue).
+    /// Also handles `WithLast` trigger mode for subsequent cues.
+    fn handle_go(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+        if self.cuepool.state().lock_unpoisoned().selected_cue().is_none() {
+            return Err("no cue is selected".into());
+        }
+        self.run_engine_command(EngineCommand::Go, event_loop)
+    }
+
+    /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
+    fn play_cue_by_qid(&mut self, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
+        if let Err(error) = self.run_engine_command(EngineCommand::Fire(qid), event_loop) {
+            log::error!("Cue Q{qid} failed: {error}");
+        }
     }
 
     /// Play media into the dedicated pixel-map texture. Stills upload once;
@@ -1333,12 +1111,6 @@ impl App {
         // content slot) from inheriting a seekable video's runtime identity.
         self.current_video_instance_id = None;
         self.video_control.lock_unpoisoned().video_active = qid.is_some();
-    }
-
-    fn allocate_active_cue_instance_id(&mut self) -> u64 {
-        let id = self.next_active_cue_instance_id;
-        self.next_active_cue_instance_id = self.next_active_cue_instance_id.wrapping_add(1).max(1);
-        id
     }
 
     /// Set the current Text cue and mirror its presence to the consume thread.
@@ -1547,216 +1319,6 @@ impl App {
 
     // ponytail: Preserve the cue-to-engine mapping; add a parameter object when this API changes.
     #[allow(clippy::too_many_arguments)]
-    fn play_audio(
-        &mut self,
-        path: &str,
-        qid: rust_decimal::Decimal,
-        name: &str,
-        loop_mode: cuepool_core::LoopMode,
-        loop_count: i32,
-        start_time: cuepool_core::Timespan,
-        duration: cuepool_core::Timespan,
-        volume: f32,
-        fade_in: f32,
-        fade_out: f32,
-        fade_type: cuepool_core::FadeType,
-        eq: Option<cuepool_core::EQSettings>,
-        pan: f32,
-        routing: cuepool_core::AudioRouting,
-        preload_only: bool,
-    ) -> Result<(), String> {
-        let (requested_driver, requested_device, configured_error) = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            (
-                state.show_file.show_settings.audio_output_driver,
-                state.show_file.show_settings.audio_output_device.clone(),
-                state.audio_error.clone(),
-            )
-        };
-        let Some(audio_engine) = self.audio_engine.as_ref().filter(|engine| {
-            engine.driver() == requested_driver
-                && (requested_device.is_empty() || requested_device == engine.device_name())
-        }) else {
-            let reason = configured_error.unwrap_or_else(|| {
-                format!(
-                    "configured {requested_driver} output device '{}' is not active",
-                    if requested_device.is_empty() {
-                        "<default>"
-                    } else {
-                        &requested_device
-                    }
-                )
-            });
-            log::error!("Cannot play audio cue Q{qid}: audio playback is disabled: {reason}");
-            return Err(format!("audio playback is disabled: {reason}"));
-        };
-        let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
-        if resolved != path {
-            log::info!("Resolved path '{}' -> '{}'", path, resolved);
-        }
-        match FileDecoder::open(&resolved) {
-            Ok(decoder) => {
-                let sample_rate = decoder.sample_rate();
-                let source_end_frame = decoder
-                    .length()
-                    .map(|samples| samples / decoder.channels().max(1) as usize)
-                    .and_then(|frames| u64::try_from(frames).ok());
-                // input.position()/length() are reported in device-rate samples (post-resample),
-                // so anything compared against them (loop bounds, fade trigger) must scale too.
-                let out_scale = audio_engine.sample_rate() as f64 / sample_rate as f64;
-                let start_frame = (start_time.as_secs_f64() * sample_rate as f64) as u64;
-                let end_frame = if duration.as_secs_f64() > 0.0 {
-                    start_frame + (duration.as_secs_f64() * sample_rate as f64) as u64
-                } else {
-                    0 // auto-detect from source length
-                };
-                let effective_end_frame = match (end_frame, source_end_frame) {
-                    (0, Some(source_end)) => source_end,
-                    (requested, Some(source_end)) => requested.min(source_end),
-                    (requested, None) => requested,
-                };
-
-                let playback = match audio_engine.play_cue(
-                    Box::new(decoder),
-                    CueChainParams {
-                        start_frame,
-                        end_frame,
-                        loop_mode,
-                        loop_count: loop_count as u32,
-                        eq,
-                        fade_in_secs: fade_in,
-                        fade_type,
-                    },
-                ) {
-                    Ok(playback) => playback,
-                    Err(e) => {
-                        log::error!("Cannot play audio cue Q{qid}: {e}");
-                        return Err(format!("cannot start audio cue Q{qid}: {e}"));
-                    }
-                };
-                let input = playback.input;
-                let loop_counter = playback.loop_counter;
-                input.set_volume(volume);
-                input.set_pan(pan);
-                input.set_routing(routing.out_pair, routing.send, routing.crosspoints);
-
-                if preload_only {
-                    input.set_active(false);
-                }
-
-                let state = if preload_only {
-                    CueState::Ready
-                } else if loop_counter.is_some() {
-                    CueState::PlayingLooped
-                } else {
-                    CueState::Playing
-                };
-                let instance_id = self.allocate_active_cue_instance_id();
-                self.active_cues.push(ActiveCue {
-                    instance_id,
-                    qid,
-                    name: name.to_string(),
-                    input,
-                    state,
-                    loop_counter,
-                    video_loop_count: 0,
-                    // Device-rate frames, to match input.position()/length() (post-resample).
-                    loop_start_frame: (start_frame as f64 * out_scale) as u64,
-                    loop_end_frame: (effective_end_frame as f64 * out_scale) as u64,
-                    fade_out,
-                    fade_type,
-                    fade_out_started: false,
-                    pending_stop: None,
-                });
-                Ok(())
-            }
-            Err(e) => {
-                if let cuepool_audio::DecodeError::NoAudioTrack = e {
-                    log::info!("No audio stream in {} — playing silent", path);
-                    Err(format!("cue Q{qid} has no audio stream"))
-                } else {
-                    log::error!("Failed to open audio for {}: {}", path, e);
-                    Err(format!("failed to open audio for cue Q{qid}: {e}"))
-                }
-            }
-        }
-    }
-
-    fn handle_stop_cue(&mut self, stop_qid: rust_decimal::Decimal, stop_mode: cuepool_core::StopMode, fade_out_time: f32, fade_type: cuepool_core::FadeType) {
-        let mut handled = false;
-
-        let idx = self.active_cues.iter().position(|ac| ac.qid == stop_qid);
-        if let Some(idx) = idx {
-            if stop_mode == cuepool_core::StopMode::LoopEnd {
-                self.active_cues[idx].pending_stop = Some(PendingStop {
-                    mode: stop_mode,
-                    fade_out_time,
-                    fade_type,
-                });
-                log::info!("LoopEnd stop scheduled for Q{}", stop_qid);
-                self.reset_show_clock();
-                return;
-            }
-
-            let input = &self.active_cues[idx].input;
-            if fade_out_time > 0.0 {
-                let sample_rate = self.audio_sample_rate();
-                let fade_frames = (fade_out_time * sample_rate as f32) as u32;
-                input.start_fade(0.0, fade_frames.max(1), fade_type);
-                log::info!("Fade-out Q{} over {} frames", stop_qid, fade_frames);
-            } else {
-                input.set_active(false);
-                input.set_volume(0.0);
-                self.active_cues[idx].state = CueState::Done;
-            }
-            handled = true;
-        } else if self.lighting.stop_show(stop_qid, fade_out_time, fade_type) {
-            // Recorded DMX shows live in the lighting engine, not active_cues.
-            log::info!("Stop DmxShow Q{} (fade {:.2}s)", stop_qid, fade_out_time);
-            handled = true;
-        } else if self.current_text_qid == Some(stop_qid) {
-            // Text cues live on the overlay, not in the audio-backed active list.
-            self.clear_text_overlay();
-            handled = true;
-        }
-
-        // The picture is tracked outside active_cues (a video file with no
-        // audio track never lands there), so check it separately — otherwise a
-        // Stop cue mutes the soundtrack but leaves the image running.
-        if self.current_video_qid == Some(stop_qid) {
-            if stop_mode != cuepool_core::StopMode::LoopEnd {
-                if fade_out_time > 0.0 {
-                    // Ramp the canvas to black over the fade time (matching the
-                    // audio fade); playback stops when the ramp reaches zero.
-                    // ponytail: picture ramp is always linear; fade_type only
-                    // shapes the audio.
-                    self.video_control.lock_unpoisoned().fade =
-                        Some((std::time::Instant::now(), fade_out_time));
-                } else {
-                    self.stop_video_playback();
-                }
-            }
-            handled = true;
-        }
-
-        if handled {
-            self.reset_show_clock();
-        } else {
-            log::warn!("StopCue target Q{} not found in active cues", stop_qid);
-        }
-    }
-
-    /// Stop and reset the show timecode: the display returns to --:--:--.--,
-    /// armed timecode triggers are cleared, and the next Go restarts the clock
-    /// from zero. Fired by both the transport Stop and Stop cues.
-    fn reset_show_clock(&mut self) {
-        self.show_start_time = None;
-        self.show_start_clock = None;
-        self.show_pause_started = None;
-        self.show_paused_offset = 0.0;
-        self.timecode_fired.clear();
-    }
-
     /// The panel's current take path (`/recorder/*` verbs operate on it).
     fn recorder_file(&self) -> String {
         self.cuepool
@@ -1797,45 +1359,6 @@ impl App {
         target == local_name || target == "*"
     }
 
-    /// Preload the selected cue: decode and add to mixer as inactive (Ready state).
-    fn handle_preload(&mut self, _event_loop: &ActiveEventLoop) -> Result<(), String> {
-        let cue = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            state.selected_cue().cloned()
-        };
-
-        let Some(cue) = cue else {
-            log::info!("Preload pressed but no cue selected");
-            return Err("no cue selected".into());
-        };
-
-        let qid = cue.base().qid;
-        let name = cue.base().name.clone();
-
-        // Skip if already preloaded or playing
-        if self.active_cues.iter().any(|ac| ac.qid == qid) {
-            log::info!("Cue Q{} is already loaded", qid);
-            return Err(format!("cue Q{qid} is already loaded"));
-        }
-
-        match cue {
-            cuepool_core::Cue::Sound { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
-                log::info!("Preload SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true)?;
-                Ok(())
-            }
-            cuepool_core::Cue::Video { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
-                log::info!("Preload VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true)?;
-                Ok(())
-            }
-            other => {
-                log::info!("Preload not supported for cue type: {:?}", std::mem::discriminant(&other));
-                Err(format!("preload is not supported for cue Q{qid}"))
-            }
-        }
-    }
-
     /// Apply the project's exact driver/device request. Any failure drops the
     /// previous stream before reporting the error, so ASIO can never fall back
     /// to WASAPI or continue through a stale device.
@@ -1850,7 +1373,7 @@ impl App {
         };
 
         if audio_ok
-            && self.audio_engine.as_ref().is_some_and(|engine| {
+            && self.show_engine.audio_engine().is_some_and(|engine| {
                 engine.driver() == driver
                     && (configured_device.is_empty() || configured_device == engine.device_name())
             })
@@ -1858,8 +1381,12 @@ impl App {
             return;
         }
 
-        self.stop_all();
-        self.audio_engine = None;
+        let now = self.engine_now();
+        let _ = self.show_engine.command(EngineCommand::Stop, now);
+        self.stop_video_playback();
+        self.set_video_paused(false);
+        self.stop_external_outputs();
+        self.show_engine.replace_audio_engine(None);
 
         let setup = AudioEngine::configure(driver, &configured_device);
         if let Some(error) = setup.device_list_error {
@@ -1870,7 +1397,7 @@ impl App {
         match setup.engine {
             Ok(engine) => {
                 let device_name = engine.device_name().to_string();
-                self.audio_engine = Some(engine);
+                self.show_engine.replace_audio_engine(Some(engine));
                 let mut state = self.cuepool.state().lock_unpoisoned();
                 state.audio_devices = devices;
                 state.audio_device_name = device_name.clone();
@@ -1899,69 +1426,6 @@ impl App {
                 state.show_settings_window = true;
             }
         }
-    }
-
-    fn audio_clock(&self) -> Duration {
-        self.audio_engine
-            .as_ref()
-            .map(AudioEngine::playback_time)
-            .or_else(|| self.show_start_time.map(|start| start.elapsed()))
-            .unwrap_or_default()
-    }
-
-    fn audio_sample_rate(&self) -> u32 {
-        self.audio_engine
-            .as_ref()
-            .map(AudioEngine::sample_rate)
-            .unwrap_or(48_000)
-    }
-
-    fn seek_active_audio_cue(
-        &mut self,
-        instance_id: u64,
-        secs: f32,
-    ) -> Option<f64> {
-        let cue = self.active_cues.iter_mut().find(|cue| {
-            cue.instance_id == instance_id
-                && matches!(
-                    cue.state,
-                    CueState::Playing | CueState::PlayingLooped | CueState::Paused
-                )
-        })?;
-        let length_samples = active_cue_length_samples(cue)?;
-        if length_samples == 0 {
-            return None;
-        }
-
-        let target_secs = cue.input.seek_seconds(sanitized_seek_secs(secs), length_samples)?;
-        let target_samples = cue.input.position();
-
-        let fade_frames = (cue.fade_out.max(0.0) * cue.input.sample_rate() as f32) as u32;
-        let fade_samples = fade_frames as usize * cue.input.channels();
-        if fade_frames > 0 && cue.loop_counter.is_none() {
-            match tail_fade_seek_action(
-                cue.fade_out_started,
-                target_samples,
-                length_samples,
-                fade_samples,
-            ) {
-                TailFadeSeekAction::Unchanged => {}
-                TailFadeSeekAction::Rearm => {
-                    cue.input.cancel_fade();
-                    cue.fade_out_started = false;
-                }
-                TailFadeSeekAction::Restart => {
-                    if cue.fade_out_started {
-                        cue.input.cancel_fade();
-                    }
-                    cue.input
-                        .start_fade(0.0, fade_frames.max(1), cue.fade_type);
-                    cue.fade_out_started = true;
-                }
-            }
-        }
-
-        Some(target_secs)
     }
 
     fn seek_video_cue(
@@ -2005,194 +1469,6 @@ impl App {
             true,
         );
         Ok(())
-    }
-
-    fn seek_cue(&mut self, instance_id: u64, secs: f32) -> Result<(), String> {
-        let qid = self.active_cues.iter()
-            .find(|cue| cue.instance_id == instance_id)
-            .map(|cue| cue.qid)
-            .or_else(|| (self.current_video_instance_id == Some(instance_id))
-                .then_some(self.current_video_qid)
-                .flatten());
-        let Some(qid) = qid else {
-            log::debug!("SeekCue instance {instance_id}: inactive; ignoring");
-            return Err(format!("active cue instance {instance_id} not found"));
-        };
-        let cue = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            state.show_file.cues.iter().find(|cue| cue.base().qid == qid).cloned()
-        };
-        let Some(cue) = cue else {
-            log::debug!("SeekCue Q{qid}: unknown cue; ignoring");
-            return Err(format!("cue Q{qid} not found"));
-        };
-
-        match cue {
-            cuepool_core::Cue::Sound { .. } => {
-                if self.seek_active_audio_cue(instance_id, secs).is_none() {
-                    log::debug!("SeekCue Q{qid}: cue is inactive or has no known length; ignoring");
-                    return Err(format!("cue Q{qid} is inactive or has no known length"));
-                }
-                Ok(())
-            }
-            cuepool_core::Cue::Video {
-                path,
-                start_time,
-                duration,
-                ..
-            } => {
-                if self.current_video_qid != Some(qid)
-                    || self.current_video_instance_id != Some(instance_id)
-                {
-                    log::debug!("SeekCue Q{qid}: video cue is inactive; ignoring");
-                    return Err(format!("video cue Q{qid} is inactive"));
-                }
-                let audio_target = self.seek_active_audio_cue(instance_id, secs);
-                let media_offset = start_time.as_secs_f64();
-                let configured_length =
-                    (duration.as_secs_f64() > 0.0).then(|| duration.as_secs_f64());
-                let media_length = self
-                    .video_control
-                    .lock_unpoisoned()
-                    .media_length_secs
-                    .map(|length| video_timeline_secs(length, media_offset));
-                let cue_length = match (configured_length, media_length) {
-                    (Some(configured), Some(media)) => Some(configured.min(media)),
-                    (configured, media) => configured.or(media),
-                };
-                if cue_length == Some(0.0) {
-                    log::debug!("SeekCue Q{qid}: video cue has no seekable region; ignoring");
-                    return Err(format!("video cue Q{qid} has no seekable region"));
-                }
-                let target = audio_target.map_or_else(
-                    || video_seek_target(secs, cue_length),
-                    |audio| clamp_video_seek_secs(audio, cue_length),
-                );
-                self.seek_video_cue(qid, &path, target, media_offset)?;
-                Ok(())
-            }
-            _ => {
-                log::debug!("SeekCue Q{qid}: cue type is not seekable; ignoring");
-                Err(format!("cue Q{qid} is not seekable"))
-            }
-        }
-    }
-
-    /// Start a cue's tail fade-out when playback reaches `fade_out` seconds before
-    /// its end. Mirrors C# SoundCue, where FadeOut begins (Duration - FadeOut)
-    /// before the natural end. Looping cues never run a tail fade.
-    fn check_fade_outs(&mut self) {
-        let sr = self.audio_sample_rate();
-        for ac in &mut self.active_cues {
-            if ac.fade_out <= 0.0
-                || ac.fade_out_started
-                || ac.loop_counter.is_some()
-                || ac.state != CueState::Playing
-            {
-                continue;
-            }
-            let Some(end_samples) = active_cue_length_samples(ac) else {
-                continue; // unknown length — can't schedule a tail fade
-            };
-            let fade_frames = (ac.fade_out * sr as f32) as u32;
-            let trigger = end_samples.saturating_sub(fade_frames as usize * ac.input.channels());
-            if ac.input.position() >= trigger {
-                ac.input.start_fade(0.0, fade_frames.max(1), ac.fade_type);
-                ac.fade_out_started = true;
-                log::info!("Tail fade-out Q{} over {} frames", ac.qid, fade_frames);
-            }
-        }
-    }
-
-    /// Check for cues that have finished playing naturally and trigger AfterLast chains.
-    fn check_finished_cues(&mut self, event_loop: &ActiveEventLoop) {
-        // Mark finished cues as Done and collect their QIDs.
-        // Cues explicitly set to Done (e.g. immediate StopCue) are also removed here.
-        let finished_instances: Vec<(u64, rust_decimal::Decimal)> = {
-            let mut instances = Vec::new();
-            for ac in &mut self.active_cues {
-                if ac.input.is_finished() || ac.state == CueState::Done {
-                    ac.state = CueState::Done;
-                    instances.push((ac.instance_id, ac.qid));
-                }
-            }
-            instances
-        };
-
-        for (instance_id, qid) in finished_instances {
-            self.active_cues.retain(|ac| ac.instance_id != instance_id);
-            log::info!("Cue Q{} finished — checking AfterLast chain", qid);
-            self.play_after_last_chain(qid, event_loop);
-        }
-
-        // Recorded DMX shows finish inside the lighting engine's tick.
-        // The panel preview plays on the sentinel qid -1 — never a cue.
-        for qid in self.lighting.take_finished_shows() {
-            if qid == rust_decimal::Decimal::NEGATIVE_ONE {
-                continue;
-            }
-            log::info!("DmxShow Q{} finished — checking AfterLast chain", qid);
-            self.play_after_last_chain(qid, event_loop);
-        }
-    }
-
-    /// Fire the next AfterLast cue following `finished_qid` in the cue list.
-    /// Only the first enabled follower fires here — every cue continues the
-    /// chain itself when it completes (instant cues from play_cue, audio/video
-    /// from check_finished_cues, timecode from its marker/deadline), so firing
-    /// more would double-trigger. Disabled followers are skipped over.
-    fn play_after_last_chain(&mut self, finished_qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        let next = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            next_after_last(&state.show_file.cues, finished_qid).cloned()
-        };
-        if let Some(cue) = next {
-            let _ = self.play_cue(&cue, event_loop);
-        }
-    }
-
-    /// Execute scheduled LoopEnd stops when their target reaches the loop boundary.
-    fn check_pending_stops(&mut self) {
-        let sr = self.audio_sample_rate();
-        for ac in &mut self.active_cues {
-            let Some(ref pending) = ac.pending_stop else { continue };
-            if pending.mode != cuepool_core::StopMode::LoopEnd {
-                continue;
-            }
-            let Some(end_samples) = active_cue_length_samples(ac) else {
-                continue; // unknown length — can't schedule a loop-end stop
-            };
-            let fade_frames = (pending.fade_out_time * sr as f32) as u32;
-            let trigger = end_samples.saturating_sub(fade_frames as usize * ac.input.channels());
-            if ac.input.position() >= trigger {
-                if pending.fade_out_time > 0.0 {
-                    ac.input.start_fade(0.0, fade_frames.max(1), pending.fade_type);
-                    log::info!("LoopEnd fade-out Q{} over {} frames", ac.qid, fade_frames);
-                } else {
-                    ac.input.set_active(false);
-                    ac.input.set_volume(0.0);
-                    ac.state = CueState::Done;
-                }
-                ac.pending_stop = None;
-            }
-        }
-    }
-
-    fn handle_volume_cue(&mut self, sound_qid: rust_decimal::Decimal, target_volume: f32, fade_time: f32, fade_type: cuepool_core::FadeType) {
-        let target = self.active_cues.iter().find(|ac| ac.qid == sound_qid);
-        if let Some(ac) = target {
-            let input = &ac.input;
-            if fade_time > 0.0 {
-                let sample_rate = self.audio_sample_rate();
-                let fade_frames = (fade_time * sample_rate as f32) as u32;
-                input.start_fade(target_volume.max(0.0), fade_frames.max(1), fade_type);
-                log::info!("Volume fade Q{} to {} over {} frames", sound_qid, target_volume, fade_frames);
-            } else {
-                input.set_volume(target_volume.max(0.0));
-            }
-        } else {
-            log::warn!("VolumeCue target Q{} not found in active cues", sound_qid);
-        }
     }
 
     fn play_video(
@@ -2349,31 +1625,15 @@ impl App {
         }
     }
 
-    /// Restart the current video decode thread (used when audio loops).
-    fn restart_video(&mut self, path: &str, qid: rust_decimal::Decimal, event_loop: &ActiveEventLoop) {
-        // play_video already signals the old thread's stop flag and installs a fresh
-        // one, so there's no manual stop/sleep dance (and no shared-flag revival race).
-        let (start_time, duration) = {
-            let state = self.cuepool.state().lock_unpoisoned();
-            state.show_file.cues.iter().find_map(|cue| match cue {
-                cuepool_core::Cue::Video { base, start_time, duration, .. } if base.qid == qid => {
-                    Some((*start_time, *duration))
-                }
-                _ => None,
-            }).unwrap_or((cuepool_core::Timespan::ZERO, cuepool_core::Timespan::ZERO))
-        };
-        let instance_id = self.current_video_instance_id
-            .unwrap_or_else(|| self.allocate_active_cue_instance_id());
-        self.play_video(path, qid, instance_id, start_time, duration, event_loop);
-        log::info!("Restarted video for Q{qid} on loop");
-    }
-
     /// A project was created or loaded — stop everything from the previous project
     /// and close its output windows (which would otherwise keep playing with the
     /// old projection geometry). The windows reopen with the new project's geometry
     /// when the next video/image/text cue plays, or via the projection-output menu.
-    fn reset_for_project_change(&mut self) {
-        self.stop_all();
+    fn reset_for_project_change(&mut self, event_loop: &ActiveEventLoop) {
+        let actions = self.show_engine.reset_for_project_change();
+        if let Err(error) = self.apply_engine_actions(actions, event_loop) {
+            log::error!("Project reset action failed: {error}");
+        }
         self.lighting.shutdown();
         self.pixmap_texture = None;
         self.pixmap_yuv = None;
@@ -2412,42 +1672,6 @@ impl App {
         self.cuepool.state().lock_unpoisoned().diagnostics.video = None;
     }
 
-    fn stop_all(&mut self) {
-        self.stop_video_playback();
-        self.video_pause_flag.store(false, Ordering::Relaxed);
-        // StopAll releases the MTC-follow cue too.
-        self.mtc_follow = None;
-        if let Some(engine) = &self.audio_engine {
-            engine.stop_all();
-        }
-        self.active_cues.clear();
-        self.delayed_cues.clear();
-        self.active_timecodes.clear();
-        self.reset_show_clock();
-        self.paused = false;
-        self.video_control.lock_unpoisoned().paused = false;
-        // Halt any in-flight lighting fade; levels hold (blackout is a cue's job).
-        self.lighting.stop_fade();
-        // Recorded DMX shows stop dead — their channels release to the looks.
-        self.lighting.stop_all_shows();
-        // Stop the pixmap stream and blank its texture so pixel-mapped LEDs go dark.
-        self.pixmap_stop_flag.store(true, Ordering::Relaxed);
-        self.pixmap_frame_rx = None;
-        self.current_pixmap_qid = None;
-        if let Some(tex) = self.pixmap_texture.as_ref() {
-            let (w, h) = (tex.width, tex.height);
-            let blank = vec![0u8; (w * h * 4) as usize];
-            let _configure_guard = self
-                .configure_gate
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            tex.upload_rgba(&self.queue, &blank);
-        }
-        self.clear_text_overlay();
-        // The render threads present every vsync, so the cleared/black state
-        // shows on the next publish without any explicit repaint request.
-    }
-
     /// Persist settings and hard-exit the process. A graceful `event_loop.exit()`
     /// returns through `run_app` and runs Rust drops (wgpu device/surfaces, threads)
     /// which can wedge the main thread on macOS (beachball); the OS reclaims
@@ -2465,67 +1689,10 @@ impl App {
         std::process::exit(0);
     }
 
-    fn pause_all(&mut self) {
-        for ac in &mut self.active_cues {
-            ac.input.set_active(false);
-            if ac.state == CueState::Playing || ac.state == CueState::PlayingLooped {
-                ac.state = CueState::Paused;
-            }
-        }
-        self.video_pause_flag.store(true, Ordering::Relaxed);
-        self.paused = true;
-        {
-            let mut ctl = self.video_control.lock_unpoisoned();
-            ctl.paused = true;
-            ctl.pause_started = Some(std::time::Instant::now());
-        }
-        // Freeze the show clock — timecode must not advance (or fire) mid-pause.
-        if self.show_pause_started.is_none() {
-            self.show_pause_started = Some(self.audio_clock());
-        }
-        log::info!("Paused {} cue(s)", self.active_cues.len());
-    }
-
-    fn resume_all(&mut self) {
-        for ac in &mut self.active_cues {
-            if ac.state == CueState::Paused {
-                ac.input.set_active(true);
-                ac.state = CueState::Playing;
-            }
-        }
-        self.video_pause_flag.store(false, Ordering::Relaxed);
-        self.paused = false;
-        // Advance the playback clock past the paused interval so video resumes where
-        // it left off instead of jumping forward.
-        {
-            let mut ctl = self.video_control.lock_unpoisoned();
-            ctl.paused = false;
-            if let Some(t) = ctl.pause_started.take() {
-                let resumed_at = std::time::Instant::now();
-                if let Some(c) = ctl.clock.as_mut() {
-                    *c += resumed_at.saturating_duration_since(t);
-                }
-                if let Some((start, _)) = ctl.fade.as_mut() {
-                    *start = shift_fade_start_after_pause(*start, t, resumed_at);
-                }
-            }
-        }
-        // Unfreeze the show clock: the paused interval joins the offset.
-        if let Some(p) = self.show_pause_started.take() {
-            self.show_paused_offset +=
-                (self.audio_clock().saturating_sub(p)).as_secs_f64();
-        }
-        log::info!("Resumed {} cue(s)", self.active_cues.len());
-    }
-
     /// Show-clock elapsed seconds — frozen while paused, adjusted for
     /// accumulated pause time and frame-step advances. None before the first Go.
     fn show_elapsed(&self) -> Option<f64> {
-        let start = self.show_start_clock?;
-        let now = self
-            .show_pause_started
-            .unwrap_or_else(|| self.audio_clock());
-        Some((now.as_secs_f64() - start.as_secs_f64() - self.show_paused_offset).max(0.0))
+        self.show_engine.snapshot().show_elapsed_secs
     }
 
     /// The frozen playback position while paused. `clock.elapsed()` keeps
@@ -2688,7 +1855,7 @@ impl App {
                     if let Some(c) = ctl.clock.and_then(|c| c.checked_sub(Duration::from_secs_f64(delta)))
                     {
                         ctl.clock = Some(c);
-                        self.show_paused_offset -= delta;
+                        self.show_engine.adjust_show_time(delta);
                     }
                 }
                 ctl.step_pending = true;
@@ -2703,7 +1870,7 @@ impl App {
             let Ok(state) = self.cuepool.state().lock() else { return };
             state.show_file.show_settings.timecode_fps.max(1.0)
         };
-        self.show_paused_offset -= 1.0 / fps as f64;
+        self.show_engine.adjust_show_time(1.0 / fps as f64);
     }
 
     /// Step one video frame back while paused. The decoder is forward-only,
@@ -2753,7 +1920,7 @@ impl App {
             let Ok(state) = self.cuepool.state().lock() else { return };
             state.show_file.show_settings.timecode_fps.max(1.0)
         };
-        self.show_paused_offset += 1.0 / fps as f64;
+        self.show_engine.adjust_show_time(-1.0 / fps as f64);
     }
 
     fn handle_dropped_file(&mut self, path: &Path) {
@@ -2900,7 +2067,7 @@ impl App {
                 }
                 let path = project.path.display().to_string();
                 self.cuepool.apply_unattended_project(*project)?;
-                self.reset_for_project_change();
+                self.reset_for_project_change(event_loop);
                 self.apply_audio_settings();
                 self.last_project_generation = self
                     .cuepool
@@ -2918,45 +2085,70 @@ impl App {
                 Ok("GO applied".into())
             }
             ShowControlCommand::Stop => {
-                self.stop_all();
+                self.run_engine_command(EngineCommand::Stop, event_loop)?;
                 Ok("all cues stopped".into())
             }
             ShowControlCommand::Pause => {
                 if self.paused {
                     return Err("playback is already paused".into());
                 }
-                if self.show_start_time.is_none() {
+                if self.show_engine.snapshot().show_elapsed_secs.is_none() {
                     return Err("playback is not running".into());
                 }
-                self.pause_all();
+                self.run_engine_command(EngineCommand::Pause, event_loop)?;
                 Ok("playback paused".into())
             }
             ShowControlCommand::Resume => {
                 if !self.paused {
                     return Err("playback is not paused".into());
                 }
-                self.resume_all();
+                self.run_engine_command(EngineCommand::Resume, event_loop)?;
                 Ok("playback resumed".into())
             }
             ShowControlCommand::Preload => {
-                self.handle_preload(event_loop)?;
+                let cue = self.cuepool.state().lock_unpoisoned().selected_cue().cloned();
+                let Some(cue) = cue else {
+                    return Err("no cue is selected".into());
+                };
+                if !matches!(cue, cuepool_core::Cue::Sound { .. } | cuepool_core::Cue::Video { .. }) {
+                    return Err(format!("preload is not supported for cue Q{}", cue.base().qid));
+                }
+                self.run_engine_command(EngineCommand::Preload, event_loop)?;
                 Ok("selected cue preloaded".into())
             }
             ShowControlCommand::Seek {
                 instance_id,
                 seconds,
             } => {
-                self.seek_cue(instance_id, seconds)?;
+                let snapshot = self.show_engine.snapshot();
+                let found = snapshot
+                    .active_cues
+                    .iter()
+                    .any(|cue| cue.instance_id == instance_id)
+                    || snapshot
+                        .video
+                        .as_ref()
+                        .is_some_and(|video| video.instance_id == instance_id);
+                if !found {
+                    return Err(format!("cue instance {instance_id} is not active"));
+                }
+                self.run_engine_command(
+                    EngineCommand::Seek {
+                        instance_id,
+                        secs: seconds,
+                    },
+                    event_loop,
+                )?;
                 Ok(format!("cue instance {instance_id} seeked to {seconds:.3}s"))
             }
         }
     }
 
     fn show_control_is_active(&self) -> bool {
-        !self.active_cues.is_empty()
-            || !self.delayed_cues.is_empty()
-            || !self.active_timecodes.is_empty()
-            || self.show_start_time.is_some()
+        let engine = self.show_engine.snapshot();
+        !engine.active_cues.is_empty()
+            || engine.show_elapsed_secs.is_some()
+            || engine.video.is_some()
             || self.current_video_qid.is_some()
             || self.current_text_qid.is_some()
             || self.pending_video_decode.is_some()
@@ -2992,8 +2184,8 @@ impl App {
                     let _ = self.execute_show_control(command, event_loop);
                 }
                 AppCommand::SetLimiterThreshold(threshold) => {
-                    if let Some(engine) = &self.audio_engine {
-                        engine.set_limiter_threshold(threshold);
+                    if let Some(audio) = self.show_engine.audio_engine() {
+                        audio.set_limiter_threshold(threshold);
                         log::info!("Set master limiter threshold to {:.2} dB", 20.0 * threshold.log10());
                     }
                 }
@@ -3572,106 +2764,22 @@ impl App {
     /// below never ran until the GUI was focused again.
     fn tick_engine(&mut self, event_loop: &ActiveEventLoop) {
         self.start_pending_video_decode();
-        self.check_fade_outs();
-        self.check_pending_stops();
-        self.check_finished_cues(event_loop);
-
-        // Check for video cues that have looped and restart their video threads.
-        // MTC-follow cues never loop on their own — the MTC master owns position.
-        if self.mtc_follow.is_none()
-        && let Some(video_qid) = self.current_video_qid
-            && let Some(ac) = self.active_cues.iter_mut().find(|ac| ac.qid == video_qid)
-                && let Some(ref counter) = ac.loop_counter {
-                    let current = counter.load(Ordering::Relaxed);
-                    if current > ac.video_loop_count {
-                        ac.video_loop_count = current;
-                        // Look up the cue's video path in the show file
-                        let path = {
-                            let Ok(state) = self.cuepool.state().lock() else { return };
-                            state.show_file.cues.iter()
-                                .find(|c| c.base().qid == video_qid)
-                                .and_then(|cue| match cue {
-                                    cuepool_core::Cue::Video { path, .. } => Some(path.clone()),
-                                    _ => None,
-                                })
-                        };
-                        if let Some(path) = path {
-                            self.restart_video(&path, video_qid, event_loop);
-                        }
-                    }
-                }
-
-        // Check for delayed cues whose timer has expired
-        {
-            let now = std::time::Instant::now();
-            let mut ready = Vec::new();
-            self.delayed_cues.retain(|dc| {
-                if dc.start_at <= now {
-                    ready.push(dc.cue.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-            for cue in ready {
-                let _ = self.play_cue(&cue, event_loop);
-            }
-        }
-
-        // Check for TimeCode cues whose start time has been reached
-        if let Some(start) = self.show_start_time {
-            let elapsed = start.elapsed().as_secs_f64();
-            let timecode_cues = {
-                let Ok(state) = self.cuepool.state().lock() else { return; };
-                state.show_file.cues.iter()
-                    .filter_map(|cue| match cue {
-                        cuepool_core::Cue::TimeCode { base, start_time, .. } => {
-                            if start_time.as_secs_f64() > 0.0
-                                && elapsed >= start_time.as_secs_f64()
-                                && !self.triggered_timecodes.contains(&base.qid)
-                                && cue.enabled()
-                            {
-                                Some(cue.clone())
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            };
-            for cue in timecode_cues {
-                let qid = cue.base().qid;
-                log::info!("TimeCode cue Q{} triggered at {:.2}s", qid, elapsed);
-                self.triggered_timecodes.push(qid);
-                let _ = self.play_cue(&cue, event_loop);
-            }
-        }
-
-        // Check for TimeCode cues whose duration has elapsed and fire their AfterLast chains.
-        {
-            let now = Instant::now();
-            let mut expired = Vec::new();
-            self.active_timecodes.retain(|(qid, deadline)| {
-                if now >= *deadline {
-                    expired.push(*qid);
-                    false
-                } else {
-                    true
-                }
-            });
-            for qid in expired {
-                log::info!("TimeCode cue Q{} duration elapsed", qid);
-                self.play_after_last_chain(qid, event_loop);
-            }
-        }
-
-        // Process commands queued by the GUI and OSC/remote handlers; refresh
-        // the mixer snapshot after, so any play() calls are reflected before
-        // the next audio callback fires.
         self.process_commands(event_loop);
-        if let Some(engine) = &self.audio_engine {
-            engine.refresh();
+        let now = self.engine_now();
+        let actions = self.show_engine.tick(now);
+        if let Err(error) = self.apply_engine_actions(actions, event_loop) {
+            log::error!("Engine tick action failed: {error}");
+        }
+        for qid in self.lighting.take_finished_shows() {
+            if qid != rust_decimal::Decimal::NEGATIVE_ONE {
+                let now = self.engine_now();
+                let actions = self
+                    .show_engine
+                    .event(EngineEvent::ExternalFinished { qid }, now);
+                if let Err(error) = self.apply_engine_actions(actions, event_loop) {
+                    log::error!("Engine completion action failed for Q{qid}: {error}");
+                }
+            }
         }
         self.publish_active_cues();
     }
@@ -3685,35 +2793,22 @@ impl App {
             return;
         }
         self.last_active_cue_publish = Instant::now();
-        let mut published: Vec<cuepool_gui::ActiveCueInfo> = self
+
+        let engine_snapshot = self.show_engine.snapshot();
+        let mut published: Vec<cuepool_gui::ActiveCueInfo> = engine_snapshot
             .active_cues
             .iter()
-            .map(|cue| {
-                let loop_length_frames =
-                    cue.loop_end_frame.saturating_sub(cue.loop_start_frame) as usize;
-                let (position, length) = if cue.loop_counter.is_some() && loop_length_frames > 0 {
-                    let channels = cue.input.channels().max(1);
-                    let total_frames = cue.input.position() / channels;
-                    let relative_frames = total_frames % loop_length_frames;
-                    (relative_frames * channels, Some(loop_length_frames * channels))
-                } else {
-                    (cue.input.position(), cue.input.length())
-                };
-                let seconds = |samples: usize| {
-                    (samples as f64 / cue.input.channels().max(1) as f64
-                        / f64::from(cue.input.sample_rate().max(1))) as f32
-                };
-                cuepool_gui::ActiveCueInfo {
-                    instance_id: cue.instance_id,
-                    qid: cue.qid,
-                    name: cue.name.clone(),
-                    paused: !cue.input.is_active(),
-                    position_secs: seconds(position),
-                    length_secs: length.map(seconds),
-                    state: cue.state,
-                }
+            .map(|cue| cuepool_gui::ActiveCueInfo {
+                instance_id: cue.instance_id,
+                qid: cue.qid,
+                name: cue.name.clone(),
+                paused: cue.state == CueState::Paused,
+                position_secs: cue.position_secs as f32,
+                length_secs: cue.length_secs.map(|length| length as f32),
+                state: cue.state,
             })
             .collect();
+
         let (video_paused, video_position, video_length) = {
             let control = self.video_control.lock_unpoisoned();
             let media_position = match (control.clock, control.pause_started) {
@@ -3729,8 +2824,13 @@ impl App {
                     .map(|length| video_timeline_secs(length, control.timeline_offset_secs) as f32),
             )
         };
+
         if let Ok(mut state) = self.cuepool.state().lock() {
-            if let Some(qid) = self.current_video_qid
+            if let Some(qid) = engine_snapshot
+                .video
+                .as_ref()
+                .map(|video| video.qid)
+                .or(self.current_video_qid)
                 && !published.iter().any(|cue| cue.qid == qid)
                 && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
             {
@@ -3739,7 +2839,11 @@ impl App {
                     _ => 0.0,
                 };
                 published.push(cuepool_gui::ActiveCueInfo {
-                    instance_id: self.current_video_instance_id.unwrap_or(0),
+                    instance_id: engine_snapshot
+                        .video
+                        .as_ref()
+                        .map(|video| video.instance_id)
+                        .unwrap_or_default(),
                     qid,
                     name: cue.base().name.clone(),
                     paused: video_paused,
@@ -3754,64 +2858,12 @@ impl App {
                     },
                 });
             }
-            for delayed in &self.delayed_cues {
-                if !published.iter().any(|cue| cue.qid == delayed.cue.base().qid) {
-                    published.push(cuepool_gui::ActiveCueInfo {
-                        qid: delayed.cue.base().qid,
-                        name: delayed.cue.base().name.clone(),
-                        state: CueState::Delay,
-                        ..Default::default()
-                    });
-                }
-            }
-            for (qid, deadline) in &self.active_timecodes {
-                if !published.iter().any(|cue| cue.qid == *qid)
-                    && let Some(cue) = state
-                        .show_file
-                        .cues
-                        .iter()
-                        .find(|cue| cue.base().qid == *qid)
-                {
-                    let duration = match cue {
-                        cuepool_core::Cue::TimeCode { duration, .. } => {
-                            duration.as_secs_f64() as f32
-                        }
-                        _ => 0.0,
-                    };
-                    let remaining = deadline.saturating_duration_since(Instant::now()).as_secs_f32();
-                    published.push(cuepool_gui::ActiveCueInfo {
-                        qid: *qid,
-                        name: cue.base().name.clone(),
-                        position_secs: (duration - remaining).max(0.0),
-                        length_secs: Some(duration),
-                        state: CueState::Playing,
-                        ..Default::default()
-                    });
-                }
-            }
-            if let Some(qid) = self.current_text_qid
-                && !published.iter().any(|cue| cue.qid == qid)
-                && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
+
+            for qid in [self.current_text_qid, self.current_pixmap_qid]
+                .into_iter()
+                .flatten()
+                .chain(self.lighting.active_show_qids())
             {
-                published.push(cuepool_gui::ActiveCueInfo {
-                    qid,
-                    name: cue.base().name.clone(),
-                    state: CueState::Playing,
-                    ..Default::default()
-                });
-            }
-            if let Some(qid) = self.current_pixmap_qid
-                && !published.iter().any(|cue| cue.qid == qid)
-                && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
-            {
-                published.push(cuepool_gui::ActiveCueInfo {
-                    qid,
-                    name: cue.base().name.clone(),
-                    state: CueState::Playing,
-                    ..Default::default()
-                });
-            }
-            for qid in self.lighting.active_show_qids() {
                 if !published.iter().any(|cue| cue.qid == qid)
                     && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
                 {
@@ -3826,7 +2878,6 @@ impl App {
             state.active_cues = published;
         }
     }
-
     fn render_control(&mut self) {
         self.update_window_title();
 
@@ -3884,8 +2935,9 @@ impl App {
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let raw_input = egui_state.take_egui_input(window);
+
         // Sync master meter data into the GUI shared state
-        if let Some(engine) = &self.audio_engine {
+        if let Some(engine) = self.show_engine.audio_engine() {
             let meters = engine.read_meters();
             let peak_l_db = if meters.peak_l > 0.0 { 20.0 * meters.peak_l.log10() } else { -f32::INFINITY };
             let peak_r_db = if meters.peak_r > 0.0 { 20.0 * meters.peak_r.log10() } else { -f32::INFINITY };
@@ -3973,50 +3025,17 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 log::info!("Video EOF");
-                // MTC follow: hold the last frame on the canvas past the end —
-                // looping, re-locating and blanking are all owned by the MTC
-                // master, not by the clip's EOF.
-                if self.mtc_follow.is_some() {
-                    return;
-                }
-                // What the output window shows after a clip ends:
-                //   Looped/LoopedInfinite -> restart (video-only here; audio-backed
-                //     clips restart via the audio loop_counter, so skip those),
-                //   HoldLast -> keep the final frame on screen,
-                //   OneShot (default) -> blank the window to black.
-                if let Some(qid) = self.current_video_qid {
-                    let has_audio_cue = self.active_cues.iter().any(|ac| ac.qid == qid);
-                    let cue_info = {
-                        let state = self.cuepool.state().lock_unpoisoned();
-                        state.show_file.cues.iter()
-                            .find(|c| c.base().qid == qid)
-                            .and_then(|c| match c {
-                                cuepool_core::Cue::Video { path, .. } => {
-                                    Some((c.base().loop_mode, path.clone()))
-                                }
-                                _ => None,
-                            })
-                    };
-                    match cue_info {
-                        Some((
-                            cuepool_core::LoopMode::Looped | cuepool_core::LoopMode::LoopedInfinite,
-                            path,
-                        )) => {
-                            if !has_audio_cue {
-                                self.restart_video(&path, qid, event_loop);
-                            }
-                        }
-                        Some((cuepool_core::LoopMode::HoldLast, _)) => {
-                            // Hold the last frame — leave the video state untouched.
-                        }
-                        _ => {
-                            // OneShot (or cue gone): blank the output to black.
-                            self.stop_video_playback();
-                            // Blank the canvas texture too: with a text overlay
-                            // active the canvas still renders, and the clip's
-                            // last frame must not linger behind the text.
-                            let _ = self.canvas_cmd_tx.send(CanvasCommand::BlankCanvas);
-                        }
+                if let Some(video) = self.show_engine.snapshot().video {
+                    let now = self.engine_now();
+                    let actions = self.show_engine.event(
+                        EngineEvent::VideoEof {
+                            instance_id: video.instance_id,
+                            epoch: video.epoch,
+                        },
+                        now,
+                    );
+                    if let Err(error) = self.apply_engine_actions(actions, event_loop) {
+                        log::error!("Video EOF action failed: {error}");
                     }
                 }
             }
@@ -4064,7 +3083,7 @@ impl ApplicationHandler<AppEvent> for App {
                     // Unsaved changes / running cues -> show the in-app quit-confirm
                     // modal (a native dialog deadlocks the loop). Otherwise quit now.
                     let dirty = self.cuepool.state().lock().map(|s| s.dirty).unwrap_or(false);
-                    if !self.active_cues.is_empty() || dirty {
+                    if !self.show_engine.snapshot().active_cues.is_empty() || dirty {
                         if let Ok(mut state) = self.cuepool.state().lock() {
                             state.pending_close_confirm = true;
                         }
@@ -4222,7 +3241,7 @@ impl ApplicationHandler<AppEvent> for App {
         let project_generation = self.cuepool.state().lock_unpoisoned().project_generation;
         if project_generation != self.last_project_generation {
             self.last_project_generation = project_generation;
-            self.reset_for_project_change();
+            self.reset_for_project_change(event_loop);
             self.apply_audio_settings();
         }
 
@@ -4395,7 +3414,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             ctl.identify = self.identify_until.is_some_and(|t| std::time::Instant::now() < t);
             if let Some(delta) = ctl.seek_show_delta.take() {
-                self.show_paused_offset += delta;
+                self.show_engine.adjust_show_time(-delta);
             }
             let fade_done = ctl
                 .fade
@@ -4945,18 +3964,6 @@ mod tests {
     }
 
     #[test]
-    fn video_seek_target_stays_strictly_before_the_end() {
-        assert_eq!(video_seek_target(f32::NAN, Some(10.0)), 0.0);
-        assert_eq!(video_seek_target(-1.0, Some(10.0)), 0.0);
-        assert_eq!(video_seek_target(4.5, Some(10.0)), 4.5);
-        let final_target = video_seek_target(10.0, Some(10.0));
-        assert!(final_target < 10.0);
-        assert_eq!(final_target, 10.0f64.next_down());
-        assert_eq!(video_seek_target(f32::INFINITY, Some(10.0)), final_target);
-        assert_eq!(clamp_video_seek_secs(12.0, Some(10.0)), final_target);
-    }
-
-    #[test]
     fn video_seek_clock_freezes_only_when_paused() {
         let now = Instant::now();
         let target = 3.25;
@@ -5010,23 +4017,4 @@ mod tests {
         assert!(join.is_none());
     }
 
-    #[test]
-    fn seeking_back_rearms_tail_fade_and_seeking_into_it_restarts() {
-        assert_eq!(
-            tail_fade_seek_action(true, 30, 100, 20),
-            TailFadeSeekAction::Rearm
-        );
-        assert_eq!(
-            tail_fade_seek_action(true, 80, 100, 20),
-            TailFadeSeekAction::Restart
-        );
-        assert_eq!(
-            tail_fade_seek_action(false, 80, 100, 20),
-            TailFadeSeekAction::Restart
-        );
-        assert_eq!(
-            tail_fade_seek_action(false, 30, 100, 20),
-            TailFadeSeekAction::Unchanged
-        );
-    }
 }

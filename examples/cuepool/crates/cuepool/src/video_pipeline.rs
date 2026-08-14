@@ -1,5 +1,5 @@
 use crate::output_window::unpack_size;
-use crate::cue_exec::fade_elapsed;
+use crate::video_timing::fade_elapsed;
 use crate::{AppEvent, IDENTIFY_COLORS};
 use cuepool_core::{CanvasFit, LockExt};
 use cuepool_gui::{SharedStateHandle, VideoDiagnostics, VideoTimings};
