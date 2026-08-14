@@ -1,0 +1,30 @@
+{
+  "name": "@rustjay/cuepool-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "STDIO MCP adapter for the CuePool automation API",
+  "type": "module",
+  "bin": {
+    "cuepool-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/index.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "20.19.43",
+    "typescript": "7.0.2"
+  }
+}

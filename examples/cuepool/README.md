@@ -21,6 +21,7 @@ CuePool starts a read-only HTTP API with the app at
 
 Read endpoints cover health, the loaded project, cues, active cues, the full
 Help > Status snapshot, one-second status history, and cursor-based logs.
+Log reads accept an optional `limit` from 1 to 1000 for bounded paging.
 `/v1/events` is an SSE stream of status samples, new logs, and command results.
 
 Set `CUEPOOL_API_CONTROL_TOKEN` before launch to enable commands. Send the token
@@ -50,6 +51,10 @@ of a dirty project or a project with active cues.
 non-loopback binds because the API is plain HTTP. For remote access, forward the
 loopback listener through an authenticated TLS tunnel or reverse proxy; never
 expose it directly to a network.
+
+MCP clients can use the TypeScript STDIO sidecar in [`mcp/`](mcp/). It maps a
+small set of agent-friendly tools onto this API and only advertises control
+tools when a token is configured.
 
 ## Window layout
 

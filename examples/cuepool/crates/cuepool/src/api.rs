@@ -24,6 +24,7 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 const DEFAULT_BIND: &str = "127.0.0.1:7133";
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 const COMMAND_HISTORY_CAPACITY: usize = 256;
+const MAX_QID_BYTES: usize = 64;
 const STATUS_HISTORY_CAPACITY: usize = 3600;
 const MAIN_LOOP_STALE_AFTER: Duration = Duration::from_secs(2);
 
@@ -394,7 +395,7 @@ async fn sample_state(state: ApiState) {
             state.emit("status", &sample);
         }
 
-        let logs = logs_after(last_log_cursor);
+        let logs = logs_after(last_log_cursor, None);
         if let Some(cursor) = logs.entries.last().map(|entry| entry.cursor) {
             last_log_cursor = cursor;
             state.emit("logs", &logs);
@@ -998,15 +999,17 @@ struct LogsResponse {
 struct LogsQuery {
     /// Return records with a cursor greater than this value.
     after: Option<u64>,
+    /// Return at most this many records, from 1 to 1000.
+    limit: Option<usize>,
 }
 
-fn logs_after(after: u64) -> LogsResponse {
+fn logs_after(after: u64, limit: Option<usize>) -> LogsResponse {
     let entries = cuepool_gui::logging::read_log_buffer();
-    let truncated = after > 0
+    let cursor_truncated = after > 0
         && entries
             .first()
             .is_some_and(|entry| entry.cursor > after.saturating_add(1));
-    let entries: Vec<_> = entries
+    let mut entries: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.cursor > after)
         .map(|entry| LogEntryResponse {
@@ -1017,11 +1020,16 @@ fn logs_after(after: u64) -> LogsResponse {
             message: entry.message,
         })
         .collect();
+    let limit = limit.map(|limit| limit.clamp(1, 1000));
+    let limit_truncated = limit.is_some_and(|limit| entries.len() > limit);
+    if let Some(limit) = limit {
+        entries.truncate(limit);
+    }
     let next_cursor = entries.last().map_or(after, |entry| entry.cursor);
     LogsResponse {
         entries,
         next_cursor,
-        truncated,
+        truncated: cursor_truncated || limit_truncated,
     }
 }
 
@@ -1033,7 +1041,7 @@ fn logs_after(after: u64) -> LogsResponse {
     tag = "Read"
 )]
 async fn logs(Query(query): Query<LogsQuery>) -> Json<LogsResponse> {
-    Json(logs_after(query.after.unwrap_or(0)))
+    Json(logs_after(query.after.unwrap_or(0), query.limit))
 }
 
 #[utoipa::path(
@@ -1098,8 +1106,20 @@ fn validate_command(command: &ApiCommand) -> Result<(), ApiError> {
                 return Err(ApiError::bad_request("project path must be absolute"));
             }
         }
-        ApiCommand::SelectCue { qid } if qid.trim().is_empty() => {
-            return Err(ApiError::bad_request("cue qid must not be empty"));
+        ApiCommand::SelectCue { qid } => {
+            if qid.is_empty() {
+                return Err(ApiError::bad_request("cue qid must not be empty"));
+            }
+            if qid.len() > MAX_QID_BYTES {
+                return Err(ApiError::bad_request(format!(
+                    "cue qid must be at most {MAX_QID_BYTES} bytes"
+                )));
+            }
+            if qid.parse::<rust_decimal::Decimal>().is_err() {
+                return Err(ApiError::bad_request(
+                    "cue qid must be a valid decimal number",
+                ));
+            }
         }
         ApiCommand::Seek { seconds, .. } if !seconds.is_finite() || *seconds < 0.0 => {
             return Err(ApiError::bad_request(
@@ -1296,7 +1316,7 @@ mod tests {
             "/v1/cues/active",
             "/v1/status",
             "/v1/status/history?seconds=300",
-            "/v1/logs?after=0",
+            "/v1/logs?after=0&limit=100",
         ] {
             let response = app
                 .clone()
@@ -1325,6 +1345,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let document = json(response).await;
         assert!(document["paths"]["/v1/status"].is_object());
+        assert!(
+            document["paths"]["/v1/logs"]["get"]["parameters"]
+                .as_array()
+                .is_some_and(|parameters| parameters
+                    .iter()
+                    .any(|parameter| parameter["name"] == "limit"))
+        );
         assert!(document["paths"]["/v1/commands"].is_object());
         assert_eq!(
             document["components"]["securitySchemes"]["bearer_token"]["scheme"],
@@ -1408,6 +1435,18 @@ mod tests {
         let completed = json(response).await;
         assert_eq!(completed["state"], "applied");
         assert_eq!(completed["message"], "cue selected");
+    }
+
+    #[test]
+    fn select_cue_qid_is_validated_before_queueing() {
+        assert!(validate_command(&ApiCommand::SelectCue { qid: "1.5".into() }).is_ok());
+        assert!(validate_command(&ApiCommand::SelectCue { qid: "nope".into() }).is_err());
+        assert!(
+            validate_command(&ApiCommand::SelectCue {
+                qid: "1".repeat(MAX_QID_BYTES + 1),
+            })
+            .is_err()
+        );
     }
 
     #[tokio::test]
