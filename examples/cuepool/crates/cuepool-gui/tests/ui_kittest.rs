@@ -53,9 +53,8 @@ fn launch_splash_shows_the_build_and_blocks_the_workspace() {
     harness.remove_cursor();
     harness.step();
     // GitHub's Linux WGPU backend differs from the macOS baseline by one edge pixel.
-    let snapshot_options = has_wgpu_adapter().then(|| {
-        SnapshotOptions::new().failed_pixel_count_threshold(OsThreshold::new(0).linux(1))
-    });
+    let snapshot_options = has_wgpu_adapter()
+        .then(|| SnapshotOptions::new().failed_pixel_count_threshold(OsThreshold::new(0).linux(1)));
     if let Some(options) = &snapshot_options {
         harness.snapshot_options("launch_splash", options);
     }
@@ -146,7 +145,10 @@ fn active_progress_scrubs_only_in_edit_mode() {
         panic!("edit-mode drag should queue SeekCue");
     };
     assert_eq!(*instance_id, 1);
-    assert!((*secs - 135.0).abs() < 0.01, "unexpected seek target: {secs}");
+    assert!(
+        (*secs - 135.0).abs() < 0.01,
+        "unexpected seek target: {secs}"
+    );
 
     harness.get_by_label("Edit Mode").click();
     harness.run();

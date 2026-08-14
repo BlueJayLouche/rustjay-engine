@@ -5,10 +5,22 @@ use wgpu::util::DeviceExt;
 use wgpu::{Device, Queue, RenderPipeline, Sampler, TextureFormat, TextureView};
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-1.0, -1.0], texcoord: [0.0, 1.0] },
-    Vertex { position: [ 1.0, -1.0], texcoord: [1.0, 1.0] },
-    Vertex { position: [-1.0,  1.0], texcoord: [0.0, 0.0] },
-    Vertex { position: [ 1.0,  1.0], texcoord: [1.0, 0.0] },
+    Vertex {
+        position: [-1.0, -1.0],
+        texcoord: [0.0, 1.0],
+    },
+    Vertex {
+        position: [1.0, -1.0],
+        texcoord: [1.0, 1.0],
+    },
+    Vertex {
+        position: [-1.0, 1.0],
+        texcoord: [0.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, 1.0],
+        texcoord: [1.0, 0.0],
+    },
 ];
 
 #[repr(C)]
@@ -30,14 +42,14 @@ struct Uniforms {
     _pad0: [f32; 2],         // pad to 32 so edge_left is 16-byte aligned
     edge_left: [f32; 3],     // offset 32
     _pad1: f32,
-    edge_right: [f32; 3],    // offset 48
+    edge_right: [f32; 3], // offset 48
     _pad2: f32,
-    edge_top: [f32; 3],      // offset 64
+    edge_top: [f32; 3], // offset 64
     _pad3: f32,
-    edge_bottom: [f32; 3],   // offset 80
+    edge_bottom: [f32; 3], // offset 80
     /// Global canvas opacity (Stop-cue picture fade). Rides the pad slot, so
     /// the uniform layout is unchanged.
-    opacity: f32,            // offset 92
+    opacity: f32, // offset 92
 }
 
 impl Uniforms {
@@ -268,7 +280,12 @@ impl ProjectionRenderer {
         opacity: f32,
     ) {
         let uniforms = Uniforms::new(
-            [output.source_x, output.source_y, output.source_width, output.source_height],
+            [
+                output.source_x,
+                output.source_y,
+                output.source_width,
+                output.source_height,
+            ],
             canvas_size,
             [output.output_width, output.output_height],
             &output.edge_blend,
@@ -341,8 +358,7 @@ mod tests {
             2,
             2,
             vec![
-                255, 0, 0, 255, 0, 255, 0, 255,
-                0, 0, 255, 255, 255, 255, 0, 255,
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
             ],
             0.0,
         );
@@ -465,7 +481,11 @@ mod tests {
 
         let output_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("test-output-fullres"),
-            size: wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: cw,
+                height: ch,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -482,7 +502,17 @@ mod tests {
             label: Some("test-encoder-fullres"),
         });
         let overlay = CanvasTexture::new(&device, cw, ch);
-        renderer.render(&device, &queue, &mut encoder, &canvas.view(), &overlay.view(), &output_view, &output, [cw, ch], 1.0);
+        renderer.render(
+            &device,
+            &queue,
+            &mut encoder,
+            &canvas.view(),
+            &overlay.view(),
+            &output_view,
+            &output,
+            [cw, ch],
+            1.0,
+        );
         queue.submit(std::iter::once(encoder.finish()));
 
         let bytes_per_row = cw * 4; // 7680, already 256-aligned
@@ -510,7 +540,11 @@ mod tests {
                     rows_per_image: Some(ch),
                 },
             },
-            wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: cw,
+                height: ch,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit(std::iter::once(encoder.finish()));
 

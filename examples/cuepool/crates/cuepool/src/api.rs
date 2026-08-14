@@ -601,9 +601,8 @@ async fn health(State(api): State<ApiState>) -> Result<Json<HealthResponse>, Api
     let response = read_shared(&api.shared, |state| {
         let started = api.ready.load(Ordering::Acquire);
         let responsive = api.main_loop_responsive();
-        let ready = responsive
-            && state.audio_error.is_none()
-            && state.diagnostics.consumer_error.is_none();
+        let ready =
+            responsive && state.audio_error.is_none() && state.diagnostics.consumer_error.is_none();
         HealthResponse {
             status: if ready {
                 "ok"
@@ -1247,11 +1246,9 @@ async fn post_command(
                     let _permit = permit;
                     cuepool_gui::prepare_unattended_project(&path)
                 })
-                    .await
-                    .map_err(|error| {
-                        ApiError::internal(format!("project validation failed: {error}"))
-                    })?
-                    .map_err(ApiError::bad_request)?,
+                .await
+                .map_err(|error| ApiError::internal(format!("project validation failed: {error}")))?
+                .map_err(ApiError::bad_request)?,
             )
         }
         _ => None,
@@ -1519,7 +1516,9 @@ mod tests {
             outcome: ApiCommandOutcome::Applied("done".into()),
         });
         for _ in 0..COMMAND_HISTORY_CAPACITY {
-            let command = state.register_command(ApiCommand::Stop, None, None).unwrap();
+            let command = state
+                .register_command(ApiCommand::Stop, None, None)
+                .unwrap();
             command_rx.try_recv().unwrap();
             state.complete_command(ApiCommandResult {
                 id: command.id,

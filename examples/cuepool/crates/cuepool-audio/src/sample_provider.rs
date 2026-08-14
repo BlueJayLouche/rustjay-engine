@@ -47,7 +47,11 @@ pub struct FnSource<F: Fn(&mut [f32]) -> usize + Send + Sync> {
 
 impl<F: Fn(&mut [f32]) -> usize + Send + Sync> FnSource<F> {
     pub fn new(f: F, sample_rate: u32, channels: u16) -> Self {
-        Self { f, sample_rate, channels }
+        Self {
+            f,
+            sample_rate,
+            channels,
+        }
     }
 }
 
@@ -56,8 +60,16 @@ impl<F: Fn(&mut [f32]) -> usize + Send + Sync> SampleProvider for FnSource<F> {
         (self.f)(buffer)
     }
     fn seek(&self, _sample: usize) {}
-    fn position(&self) -> usize { 0 }
-    fn length(&self) -> Option<usize> { None }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn channels(&self) -> u16 { self.channels }
+    fn position(&self) -> usize {
+        0
+    }
+    fn length(&self) -> Option<usize> {
+        None
+    }
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    fn channels(&self) -> u16 {
+        self.channels
+    }
 }

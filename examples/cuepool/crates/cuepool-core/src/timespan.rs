@@ -7,7 +7,7 @@
 //! flexibility) and serializes back to the same string format for byte-identical
 //! round-trips with C# CuePool show files.
 
-use serde::{de::Visitor, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor};
 use std::fmt;
 use std::time::Duration;
 
@@ -48,9 +48,24 @@ impl Timespan {
         let frac = nanos as f64 / 1_000_000_000.0;
         if frac > 0.0 {
             if days > 0 {
-                format!("{}{}.{:02}:{:02}:{:02}.{:07}", sign, days, hours, mins, secs, nanos / 100)
+                format!(
+                    "{}{}.{:02}:{:02}:{:02}.{:07}",
+                    sign,
+                    days,
+                    hours,
+                    mins,
+                    secs,
+                    nanos / 100
+                )
             } else {
-                format!("{}{:02}:{:02}:{:02}.{:07}", sign, hours, mins, secs, nanos / 100)
+                format!(
+                    "{}{:02}:{:02}:{:02}.{:07}",
+                    sign,
+                    hours,
+                    mins,
+                    secs,
+                    nanos / 100
+                )
             }
         } else if days > 0 {
             format!("{}{}.{:02}:{:02}:{:02}", sign, days, hours, mins, secs)
@@ -213,7 +228,11 @@ mod tests {
     fn test_serde_json_fractional() {
         let ts = Timespan::from_secs_f64(0.5);
         let json = serde_json::to_string(&ts).unwrap();
-        assert!(json.contains("."), "fractional seconds should appear: {}", json);
+        assert!(
+            json.contains("."),
+            "fractional seconds should appear: {}",
+            json
+        );
 
         let de: Timespan = serde_json::from_str(&json).unwrap();
         assert!((de.as_secs_f64() - 0.5).abs() < 0.001);

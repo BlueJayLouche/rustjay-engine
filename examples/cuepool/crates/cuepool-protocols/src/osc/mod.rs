@@ -13,27 +13,69 @@ use std::thread::JoinHandle;
 /// Events emitted by the OSC manager that the application should handle.
 #[derive(Debug, Clone)]
 pub enum OscEvent {
-    Go { qid: Option<String> },
-    Stop { qid: Option<String> },
-    Pause { qid: Option<String> },
-    Unpause { qid: Option<String> },
-    Preload { qid: Option<String>, time: Option<f32> },
-    Select { qid: String },
+    Go {
+        qid: Option<String>,
+    },
+    Stop {
+        qid: Option<String>,
+    },
+    Pause {
+        qid: Option<String>,
+    },
+    Unpause {
+        qid: Option<String>,
+    },
+    Preload {
+        qid: Option<String>,
+        time: Option<f32>,
+    },
+    Select {
+        qid: String,
+    },
     Up,
     Down,
     Save,
-    RemoteDiscovery { name: String, addr: Option<std::net::SocketAddr> },
-    RemoteGo { target: String, qid: String },
-    RemotePause { target: String, qid: String },
-    RemoteUnpause { target: String, qid: String },
-    RemoteStop { target: String, qid: String },
-    RemotePreload { target: String, qid: String, time: f32 },
+    RemoteDiscovery {
+        name: String,
+        addr: Option<std::net::SocketAddr>,
+    },
+    RemoteGo {
+        target: String,
+        qid: String,
+    },
+    RemotePause {
+        target: String,
+        qid: String,
+    },
+    RemoteUnpause {
+        target: String,
+        qid: String,
+    },
+    RemoteStop {
+        target: String,
+        qid: String,
+    },
+    RemotePreload {
+        target: String,
+        qid: String,
+        time: f32,
+    },
     RemotePing,
-    RemoteUpdateShowAck { name: String, block: i32 },
-    RemoteUpdateShowNack { name: String, block: i32 },
+    RemoteUpdateShowAck {
+        name: String,
+        block: i32,
+    },
+    RemoteUpdateShowNack {
+        name: String,
+        block: i32,
+    },
     /// `/dmx/{universe}/{channel} <0.0–1.0 | 0–255>` — literal DMX channel
     /// input (recorder live bridge). Channel is 1-based on the wire.
-    DmxChannel { universe: u16, channel: u16, value: u8 },
+    DmxChannel {
+        universe: u16,
+        channel: u16,
+        value: u8,
+    },
     /// `/recorder/record` — start a pass / stop-and-keep.
     RecorderRecord,
     /// `/recorder/stop` — stop pass (keep) or stop preview playback.
@@ -45,7 +87,9 @@ pub enum OscEvent {
     /// `/recorder/revert` — swap the take with its `.prev`.
     RecorderRevert,
     /// `/recorder/select <name>` — choose the target take.
-    RecorderSelect { name: String },
+    RecorderSelect {
+        name: String,
+    },
     RawMessage(OscMessage),
 }
 
@@ -59,7 +103,12 @@ pub struct OscDriver {
 
 impl OscDriver {
     /// Bind to a local port and prepare for RX/TX.
-    pub fn bind(nic: Ipv4Addr, rx_port: u16, tx_port: u16, subnet: Ipv4Addr) -> anyhow::Result<Self> {
+    pub fn bind(
+        nic: Ipv4Addr,
+        rx_port: u16,
+        tx_port: u16,
+        subnet: Ipv4Addr,
+    ) -> anyhow::Result<Self> {
         let broadcast = make_broadcast(nic, subnet);
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, rx_port);
         let socket = UdpSocket::bind(bind_addr)?;
@@ -80,25 +129,24 @@ impl OscDriver {
     where
         F: FnMut(OscMessage, std::net::SocketAddr) + Send + 'static,
     {
-        self.running.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let socket = Arc::clone(&self.socket);
         let running = Arc::clone(&self.running);
         self.rx_thread = Some(std::thread::spawn(move || {
             let mut buf = [0u8; 65536];
             while running.load(std::sync::atomic::Ordering::Relaxed) {
                 match socket.recv_from(&mut buf) {
-                    Ok((len, src)) => {
-                        match rosc::decoder::decode_udp(&buf[..len]) {
-                            Ok((_, packet)) => {
-                                if let OscPacket::Message(msg) = packet {
-                                    on_msg(msg, src);
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("OSC decode error from {src}: {e}");
+                    Ok((len, src)) => match rosc::decoder::decode_udp(&buf[..len]) {
+                        Ok((_, packet)) => {
+                            if let OscPacket::Message(msg) = packet {
+                                on_msg(msg, src);
                             }
                         }
-                    }
+                        Err(e) => {
+                            log::warn!("OSC decode error from {src}: {e}");
+                        }
+                    },
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
@@ -133,7 +181,8 @@ impl OscDriver {
 
 impl Drop for OscDriver {
     fn drop(&mut self) {
-        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(t) = self.rx_thread.take() {
             let _ = t.join();
         }
@@ -321,25 +370,37 @@ impl OscManager {
             });
             let tx = event_tx.clone();
             r.subscribe("/qplayer/remote/go", move |msg| {
-                if let (Some(t), Some(q)) = (msg.args.first().and_then(arg_to_string), msg.args.get(1).and_then(arg_to_string)) {
+                if let (Some(t), Some(q)) = (
+                    msg.args.first().and_then(arg_to_string),
+                    msg.args.get(1).and_then(arg_to_string),
+                ) {
                     let _ = tx.send(OscEvent::RemoteGo { target: t, qid: q });
                 }
             });
             let tx = event_tx.clone();
             r.subscribe("/qplayer/remote/pause", move |msg| {
-                if let (Some(t), Some(q)) = (msg.args.first().and_then(arg_to_string), msg.args.get(1).and_then(arg_to_string)) {
+                if let (Some(t), Some(q)) = (
+                    msg.args.first().and_then(arg_to_string),
+                    msg.args.get(1).and_then(arg_to_string),
+                ) {
                     let _ = tx.send(OscEvent::RemotePause { target: t, qid: q });
                 }
             });
             let tx = event_tx.clone();
             r.subscribe("/qplayer/remote/unpause", move |msg| {
-                if let (Some(t), Some(q)) = (msg.args.first().and_then(arg_to_string), msg.args.get(1).and_then(arg_to_string)) {
+                if let (Some(t), Some(q)) = (
+                    msg.args.first().and_then(arg_to_string),
+                    msg.args.get(1).and_then(arg_to_string),
+                ) {
                     let _ = tx.send(OscEvent::RemoteUnpause { target: t, qid: q });
                 }
             });
             let tx = event_tx.clone();
             r.subscribe("/qplayer/remote/stop", move |msg| {
-                if let (Some(t), Some(q)) = (msg.args.first().and_then(arg_to_string), msg.args.get(1).and_then(arg_to_string)) {
+                if let (Some(t), Some(q)) = (
+                    msg.args.first().and_then(arg_to_string),
+                    msg.args.get(1).and_then(arg_to_string),
+                ) {
                     let _ = tx.send(OscEvent::RemoteStop { target: t, qid: q });
                 }
             });
@@ -350,7 +411,11 @@ impl OscManager {
                     msg.args.get(1).and_then(arg_to_string),
                     msg.args.get(2).and_then(arg_to_f32),
                 ) {
-                    let _ = tx.send(OscEvent::RemotePreload { target: t, qid: q, time });
+                    let _ = tx.send(OscEvent::RemotePreload {
+                        target: t,
+                        qid: q,
+                        time,
+                    });
                 }
             });
             let tx = event_tx.clone();
@@ -380,9 +445,14 @@ impl OscManager {
             let tx = event_tx.clone();
             r.subscribe("/dmx/?/?", move |msg| {
                 if let Some((universe, channel)) = parse_dmx_addr(&msg.addr)
-                    && let Some(value) = msg.args.first().and_then(arg_to_dmx) {
-                        let _ = tx.send(OscEvent::DmxChannel { universe, channel, value });
-                    }
+                    && let Some(value) = msg.args.first().and_then(arg_to_dmx)
+                {
+                    let _ = tx.send(OscEvent::DmxChannel {
+                        universe,
+                        channel,
+                        value,
+                    });
+                }
             });
             for (verb, event) in [
                 ("record", OscEvent::RecorderRecord),
@@ -457,7 +527,10 @@ fn arg_to_f32(arg: &OscType) -> Option<f32> {
 /// Momentary-button press detection: a message with no args fires, a
 /// numeric first arg fires only when non-zero (TouchOSC push release = 0.0).
 fn is_press(msg: &OscMessage) -> bool {
-    msg.args.first().and_then(arg_to_f32).is_none_or(|v| v > 0.0)
+    msg.args
+        .first()
+        .and_then(arg_to_f32)
+        .is_none_or(|v| v > 0.0)
 }
 
 /// Parse `/dmx/{universe}/{channel}` (channel 1-based on the wire).
@@ -548,11 +621,20 @@ mod tests {
 
     #[test]
     fn test_is_press_ignores_button_release() {
-        let msg = |args: Vec<OscType>| OscMessage { addr: "/recorder/record".into(), args };
+        let msg = |args: Vec<OscType>| OscMessage {
+            addr: "/recorder/record".into(),
+            args,
+        };
         assert!(is_press(&msg(vec![])), "bare message fires");
         assert!(is_press(&msg(vec![OscType::Float(1.0)])), "press fires");
-        assert!(!is_press(&msg(vec![OscType::Float(0.0)])), "release must not fire");
-        assert!(is_press(&msg(vec![OscType::String("x".into())])), "non-numeric fires");
+        assert!(
+            !is_press(&msg(vec![OscType::Float(0.0)])),
+            "release must not fire"
+        );
+        assert!(
+            is_press(&msg(vec![OscType::String("x".into())])),
+            "non-numeric fires"
+        );
     }
 
     #[test]
@@ -561,7 +643,11 @@ mod tests {
         assert_eq!(arg_to_dmx(&OscType::Float(1.0)), Some(255));
         assert_eq!(arg_to_dmx(&OscType::Float(0.5)), Some(128));
         assert_eq!(arg_to_dmx(&OscType::Float(7.0)), Some(255), "clamped");
-        assert_eq!(arg_to_dmx(&OscType::Int(200)), Some(200), "ints are raw DMX");
+        assert_eq!(
+            arg_to_dmx(&OscType::Int(200)),
+            Some(200),
+            "ints are raw DMX"
+        );
         assert_eq!(arg_to_dmx(&OscType::Int(999)), Some(255));
         assert_eq!(arg_to_dmx(&OscType::Bool(true)), Some(255));
         assert_eq!(arg_to_dmx(&OscType::String("x".into())), None);

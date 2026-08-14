@@ -134,8 +134,10 @@ impl MeteringProcessor {
         let rms_l = (inner.sum_sq_l / frames as f64).sqrt() as f32;
         let rms_r = (inner.sum_sq_r / frames as f64).sqrt() as f32;
 
-        self.out_peak_l.store(inner.peak_l.to_bits(), Ordering::Relaxed);
-        self.out_peak_r.store(inner.peak_r.to_bits(), Ordering::Relaxed);
+        self.out_peak_l
+            .store(inner.peak_l.to_bits(), Ordering::Relaxed);
+        self.out_peak_r
+            .store(inner.peak_r.to_bits(), Ordering::Relaxed);
         self.out_rms_l.store(rms_l.to_bits(), Ordering::Relaxed);
         self.out_rms_r.store(rms_r.to_bits(), Ordering::Relaxed);
         self.out_frames.store(frames, Ordering::Relaxed);
@@ -215,7 +217,9 @@ mod tests {
     fn dc_source(val: f32) -> Box<dyn SampleProvider> {
         Box::new(FnSource::new(
             move |buf| {
-                for s in buf.iter_mut() { *s = val; }
+                for s in buf.iter_mut() {
+                    *s = val;
+                }
                 buf.len()
             },
             48000,

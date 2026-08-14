@@ -14,13 +14,13 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use cuepool_core::lighting::{
-    render_look, FixtureId, FixtureLook, LightingConfig, LightingProtocol,
+    FixtureId, FixtureLook, LightingConfig, LightingProtocol, render_look,
 };
 use cuepool_core::{FadeType, LoopMode};
 use rust_decimal::Decimal;
 use rustjay_lighting::{
-    color_pipeline, composite, demux_tile, ArtNetTransport, Dest, DmxSender, DmxTransport,
-    MaskedFrame, RecEvent, SacnTransport, ShowPlayer,
+    ArtNetTransport, Dest, DmxSender, DmxTransport, MaskedFrame, RecEvent, SacnTransport,
+    ShowPlayer, color_pipeline, composite, demux_tile,
 };
 
 struct ActiveFade {
@@ -85,10 +85,7 @@ impl ActiveShow {
 
         // HoldLast announces its natural end (AfterLast chains) but keeps
         // holding the last frame until stopped.
-        if self.loop_mode == LoopMode::HoldLast
-            && elapsed_ms >= dur_ms
-            && !self.finished_reported
-        {
+        if self.loop_mode == LoopMode::HoldLast && elapsed_ms >= dur_ms && !self.finished_reported {
             self.finished_reported = true;
             finished.push(self.qid);
         }
@@ -291,8 +288,7 @@ impl LightingEngine {
                     1.0
                 };
                 let t = curve(t, f.fade_type);
-                f.to
-                    .iter()
+                f.to.iter()
                     .map(|(id, target)| {
                         let start = f.from.get(id).copied().unwrap_or_default();
                         (*id, start.lerp(target, t))
@@ -308,9 +304,10 @@ impl LightingEngine {
         // ~60 Hz cap — about_to_wait runs far hotter under ControlFlow::Poll.
         let now = Instant::now();
         if let Some(last) = self.last_tick
-            && now.duration_since(last).as_secs_f32() < 1.0 / 60.0 {
-                return;
-            }
+            && now.duration_since(last).as_secs_f32() < 1.0 / 60.0
+        {
+            return;
+        }
         self.last_tick = Some(now);
 
         self.reconcile_sender(cfg);
@@ -326,10 +323,11 @@ impl LightingEngine {
         let looks = self.evaluate(now);
         // Fade complete → collapse into live state.
         if let Some(f) = &self.fade
-            && now.duration_since(f.start).as_secs_f32() >= f.duration {
-                self.live = f.to.clone();
-                self.fade = None;
-            }
+            && now.duration_since(f.start).as_secs_f32() >= f.duration
+        {
+            self.live = f.to.clone();
+            self.fade = None;
+        }
 
         // Look layer, one masked frame per destination — fixtures render into
         // their node's frame and own exactly the channels they write.
@@ -341,10 +339,11 @@ impl LightingEngine {
             let look = looks.get(&fixture.id).copied().unwrap_or_default();
             let bytes = render_look(&profile, &look);
             let dest = fixture.effective_dest(&cfg.dest_ip);
-            look_frames
-                .entry(dest.to_string())
-                .or_default()
-                .write_span(fixture.universe, fixture.address, &bytes);
+            look_frames.entry(dest.to_string()).or_default().write_span(
+                fixture.universe,
+                fixture.address,
+                &bytes,
+            );
         }
 
         // Pixel-map segments overlay their channels over cue looks. They go to
@@ -487,14 +486,27 @@ mod tests {
     use super::*;
 
     fn look(dimmer: f32) -> FixtureLook {
-        FixtureLook { dimmer, ..Default::default() }
+        FixtureLook {
+            dimmer,
+            ..Default::default()
+        }
     }
 
     fn show(loop_mode: LoopMode, fade_out: f32, age_ms: u64) -> ActiveShow {
         // Two events: ch0 = 100 at t=0, ch0 = 200 at t=1000 → duration 1s.
         let events = vec![
-            RecEvent { t_ms: 0, universe: 1, channel: 0, value: 100 },
-            RecEvent { t_ms: 1000, universe: 1, channel: 0, value: 200 },
+            RecEvent {
+                t_ms: 0,
+                universe: 1,
+                channel: 0,
+                value: 100,
+            },
+            RecEvent {
+                t_ms: 1000,
+                universe: 1,
+                channel: 0,
+                value: 200,
+            },
         ];
         ActiveShow {
             qid: Decimal::ONE,
@@ -529,7 +541,11 @@ mod tests {
         let mut fin = Vec::new();
         let mut s = show(LoopMode::HoldLast, 0.0, 5000);
         assert_eq!(s.eval(Instant::now(), &mut fin), Some(1.0), "holds forever");
-        assert_eq!(s.player.frame().get(1).unwrap().values()[0], 200, "last frame");
+        assert_eq!(
+            s.player.frame().get(1).unwrap().values()[0],
+            200,
+            "last frame"
+        );
         assert_eq!(fin, vec![Decimal::ONE]);
         // Second eval must not re-report.
         s.eval(Instant::now(), &mut fin);
@@ -581,12 +597,38 @@ mod tests {
     #[test]
     fn go_show_refire_replaces_and_stop_all_clears() {
         let mut eng = LightingEngine::default();
-        let ev = vec![RecEvent { t_ms: 1000, universe: 1, channel: 0, value: 9 }];
-        eng.go_show(Decimal::ONE, ev.clone(), 100, 0.0, 0.0, FadeType::Linear, LoopMode::OneShot, 1);
-        eng.go_show(Decimal::ONE, ev, 120, 0.0, 0.0, FadeType::Linear, LoopMode::OneShot, 1);
+        let ev = vec![RecEvent {
+            t_ms: 1000,
+            universe: 1,
+            channel: 0,
+            value: 9,
+        }];
+        eng.go_show(
+            Decimal::ONE,
+            ev.clone(),
+            100,
+            0.0,
+            0.0,
+            FadeType::Linear,
+            LoopMode::OneShot,
+            1,
+        );
+        eng.go_show(
+            Decimal::ONE,
+            ev,
+            120,
+            0.0,
+            0.0,
+            FadeType::Linear,
+            LoopMode::OneShot,
+            1,
+        );
         assert_eq!(eng.shows.len(), 1, "refire replaces, not stacks");
         assert_eq!(eng.shows[0].priority, 120);
-        assert!(!eng.stop_show(Decimal::TWO, 0.0, FadeType::Linear), "unknown qid");
+        assert!(
+            !eng.stop_show(Decimal::TWO, 0.0, FadeType::Linear),
+            "unknown qid"
+        );
         eng.stop_all_shows();
         assert!(eng.shows.is_empty());
     }

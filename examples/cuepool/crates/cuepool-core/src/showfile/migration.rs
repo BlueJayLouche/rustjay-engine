@@ -4,7 +4,7 @@
 //! it takes a `serde_json::Value` (the raw parsed JSON) and mutates
 //! a `ShowFile` in-place.
 
-use crate::{ShowFile, SerializedColour, TriggerMode};
+use crate::{SerializedColour, ShowFile, TriggerMode};
 use serde_json::Value;
 
 /// Upgrade a show file from its on-disk version to `FILE_FORMAT_VERSION`.
@@ -36,32 +36,34 @@ fn upgrade_v2_to_v3(show_file: &mut ShowFile, raw: &Value) {
 
     // Upgrade showMetadata -> showSettings
     if let Some(meta) = raw.get("showMetadata")
-        && let Ok(settings) = serde_json::from_value(meta.clone()) {
-            show_file.show_settings = settings;
-        }
+        && let Ok(settings) = serde_json::from_value(meta.clone())
+    {
+        show_file.show_settings = settings;
+    }
 
     // Upgrade cue colours from byte to float
     for (i, cue) in show_file.cues.iter_mut().enumerate() {
         if let Some(cues_arr) = raw.get("cues").and_then(|v| v.as_array())
             && let Some(cue_raw) = cues_arr.get(i)
-                && let Some(colour_val) = cue_raw.get("colour") {
-                    let mut col = SerializedColour::BLACK;
-                    if let Some(obj) = colour_val.as_object() {
-                        if let Some(r) = obj.get("R").and_then(|v| v.as_u64()) {
-                            col.r = (r as f32) / 255.0;
-                        }
-                        if let Some(g) = obj.get("G").and_then(|v| v.as_u64()) {
-                            col.g = (g as f32) / 255.0;
-                        }
-                        if let Some(b) = obj.get("B").and_then(|v| v.as_u64()) {
-                            col.b = (b as f32) / 255.0;
-                        }
-                        if let Some(a) = obj.get("A").and_then(|v| v.as_u64()) {
-                            col.a = (a as f32) / 255.0;
-                        }
-                    }
-                    cue.base_mut().colour = col;
+            && let Some(colour_val) = cue_raw.get("colour")
+        {
+            let mut col = SerializedColour::BLACK;
+            if let Some(obj) = colour_val.as_object() {
+                if let Some(r) = obj.get("R").and_then(|v| v.as_u64()) {
+                    col.r = (r as f32) / 255.0;
                 }
+                if let Some(g) = obj.get("G").and_then(|v| v.as_u64()) {
+                    col.g = (g as f32) / 255.0;
+                }
+                if let Some(b) = obj.get("B").and_then(|v| v.as_u64()) {
+                    col.b = (b as f32) / 255.0;
+                }
+                if let Some(a) = obj.get("A").and_then(|v| v.as_u64()) {
+                    col.a = (a as f32) / 255.0;
+                }
+            }
+            cue.base_mut().colour = col;
+        }
     }
 }
 
@@ -72,13 +74,14 @@ fn upgrade_v3_to_v4(show_file: &mut ShowFile, raw: &Value) {
     for (i, cue) in show_file.cues.iter_mut().enumerate() {
         if let Some(cues_arr) = raw.get("cues").and_then(|v| v.as_array())
             && let Some(cue_raw) = cues_arr.get(i)
-                && let Some(halt) = cue_raw.get("halt") {
-                    cue.base_mut().trigger = if halt.as_bool() == Some(true) {
-                        TriggerMode::Go
-                    } else {
-                        TriggerMode::WithLast
-                    };
-                }
+            && let Some(halt) = cue_raw.get("halt")
+        {
+            cue.base_mut().trigger = if halt.as_bool() == Some(true) {
+                TriggerMode::Go
+            } else {
+                TriggerMode::WithLast
+            };
+        }
     }
 }
 
@@ -199,7 +202,11 @@ mod tests {
         upgrade_v6_to_v7(&mut sf, &Value::Null);
         match &sf.cues[0] {
             Cue::Sound { volume, .. } => {
-                assert!((volume - 0.0).abs() < 0.01, "1.0 linear = 0 dB, got {}", volume);
+                assert!(
+                    (volume - 0.0).abs() < 0.01,
+                    "1.0 linear = 0 dB, got {}",
+                    volume
+                );
             }
             _ => panic!("expected SoundCue"),
         }

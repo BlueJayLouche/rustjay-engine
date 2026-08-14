@@ -80,12 +80,14 @@ impl ShowFile {
 
         // Try decimal subdivision after the selected cue
         if let Some(base) = after_qid {
-            for scale in [Decimal::from_str_exact("0.1").unwrap(),
-                          Decimal::from_str_exact("0.01").unwrap(),
-                          Decimal::from_str_exact("0.001").unwrap(),
-                          Decimal::from_str_exact("0.0001").unwrap(),
-                          Decimal::from_str_exact("0.00001").unwrap(),
-                          Decimal::from_str_exact("0.000001").unwrap()] {
+            for scale in [
+                Decimal::from_str_exact("0.1").unwrap(),
+                Decimal::from_str_exact("0.01").unwrap(),
+                Decimal::from_str_exact("0.001").unwrap(),
+                Decimal::from_str_exact("0.0001").unwrap(),
+                Decimal::from_str_exact("0.00001").unwrap(),
+                Decimal::from_str_exact("0.000001").unwrap(),
+            ] {
                 let candidate = base + scale;
                 if !existing.contains(&candidate) {
                     return candidate;
@@ -354,22 +356,23 @@ mod tests {
                 audio_output_device: "Dante Virtual Soundcard (x64)".into(),
                 ..Default::default()
             },
-            cues: vec![
-                crate::Cue::Group {
-                    base: crate::CueBase {
-                        qid: rust_decimal::Decimal::from(1),
-                        name: "Opening".into(),
-                        ..Default::default()
-                    },
+            cues: vec![crate::Cue::Group {
+                base: crate::CueBase {
+                    qid: rust_decimal::Decimal::from(1),
+                    name: "Opening".into(),
+                    ..Default::default()
                 },
-            ],
+            }],
             ..Default::default()
         };
         let json = serde_json::to_string_pretty(&sf).unwrap();
         println!("{}", json);
         let de: ShowFile = serde_json::from_str(&json).unwrap();
         assert_eq!(sf, de);
-        assert_eq!(de.show_settings.audio_output_driver, AudioOutputDriver::ASIO);
+        assert_eq!(
+            de.show_settings.audio_output_driver,
+            AudioOutputDriver::ASIO
+        );
         assert_eq!(
             de.show_settings.audio_output_device,
             "Dante Virtual Soundcard (x64)"
@@ -378,8 +381,8 @@ mod tests {
 
     #[test]
     fn old_show_without_audio_output_fields_defaults_to_wasapi() {
-        let show: ShowFile = serde_json::from_str(r#"{"show_settings":{"title":"Old Show"}}"#)
-            .unwrap();
+        let show: ShowFile =
+            serde_json::from_str(r#"{"show_settings":{"title":"Old Show"}}"#).unwrap();
         assert_eq!(
             show.show_settings.audio_output_driver,
             AudioOutputDriver::WASAPI
@@ -390,18 +393,36 @@ mod tests {
     #[test]
     fn test_apply_import_replaces_checked_sections_only() {
         let source = ShowFile {
-            show_settings: ShowSettings { title: "Source".into(), ..Default::default() },
-            projection: crate::ProjectionConfig { canvas_width: 3840, ..Default::default() },
-            lighting: crate::LightingConfig { dest_ip: "10.0.0.9".into(), ..Default::default() },
+            show_settings: ShowSettings {
+                title: "Source".into(),
+                ..Default::default()
+            },
+            projection: crate::ProjectionConfig {
+                canvas_width: 3840,
+                ..Default::default()
+            },
+            lighting: crate::LightingConfig {
+                dest_ip: "10.0.0.9".into(),
+                ..Default::default()
+            },
             cues: vec![crate::Cue::Group {
-                base: crate::CueBase { qid: rust_decimal::Decimal::from(1), ..Default::default() },
+                base: crate::CueBase {
+                    qid: rust_decimal::Decimal::from(1),
+                    ..Default::default()
+                },
             }],
             ..Default::default()
         };
         let target = ShowFile {
-            show_settings: ShowSettings { title: "Target".into(), ..Default::default() },
+            show_settings: ShowSettings {
+                title: "Target".into(),
+                ..Default::default()
+            },
             cues: vec![crate::Cue::Group {
-                base: crate::CueBase { qid: rust_decimal::Decimal::from(7), ..Default::default() },
+                base: crate::CueBase {
+                    qid: rust_decimal::Decimal::from(7),
+                    ..Default::default()
+                },
             }],
             ..Default::default()
         };
@@ -409,7 +430,14 @@ mod tests {
         // Import projection only: projection comes from source, everything
         // else (including cues) stays the target's.
         let mut t = target.clone();
-        apply_import(&mut t, &source, ImportSections { projection: true, ..Default::default() });
+        apply_import(
+            &mut t,
+            &source,
+            ImportSections {
+                projection: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(t.projection, source.projection);
         assert_eq!(t.lighting, target.lighting);
         assert_eq!(t.show_settings.title, "Target");
@@ -420,7 +448,11 @@ mod tests {
         apply_import(
             &mut t,
             &source,
-            ImportSections { lighting: true, show_settings: true, ..Default::default() },
+            ImportSections {
+                lighting: true,
+                show_settings: true,
+                ..Default::default()
+            },
         );
         assert_eq!(t.lighting, source.lighting);
         assert_eq!(t.show_settings.title, "Source");

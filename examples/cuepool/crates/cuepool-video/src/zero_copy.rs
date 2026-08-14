@@ -1,6 +1,6 @@
 use crate::ZeroCopyPreference;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const INTEROP_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12
     .union(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
@@ -38,7 +38,9 @@ impl ZeroCopyAvailability {
                 "non-string panic payload".to_owned()
             };
             if !DIRECT_PATH_POISONED.swap(true, Ordering::AcqRel) {
-                log::error!("Video zero-copy panic: {payload}; disabling the direct path for this process");
+                log::error!(
+                    "Video zero-copy panic: {payload}; disabling the direct path for this process"
+                );
             }
             format!("zero-copy direct path panicked: {payload}")
         })
@@ -196,10 +198,9 @@ mod tests {
 
     #[test]
     fn caught_panic_poisons_the_direct_path_and_makes_the_probe_decline() {
-        let reason = ZeroCopyAvailability::catch_direct_path_panic(|| {
-            panic!("test direct-path panic")
-        })
-        .unwrap_err();
+        let reason =
+            ZeroCopyAvailability::catch_direct_path_panic(|| panic!("test direct-path panic"))
+                .unwrap_err();
 
         let poisoned = device_feature_decision(
             ZeroCopyPreference::Enabled,
@@ -209,7 +210,10 @@ mod tests {
             direct_path_poisoned(),
         );
 
-        assert_eq!(reason, "zero-copy direct path panicked: test direct-path panic");
+        assert_eq!(
+            reason,
+            "zero-copy direct path panicked: test direct-path panic"
+        );
         assert!(poisoned.0.is_empty());
         assert_eq!(poisoned.1.as_deref(), Some(DIRECT_PATH_POISONED_REASON));
     }
@@ -238,7 +242,11 @@ mod tests {
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,

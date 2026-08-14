@@ -88,8 +88,20 @@ impl YuvConverter {
             ],
         });
 
-        let planar_pipeline = create_pipeline(device, &planar_layout, &planar_shader, target_format, "yuv-planar");
-        let nv12_pipeline = create_pipeline(device, &nv12_layout, &nv12_shader, target_format, "yuv-nv12");
+        let planar_pipeline = create_pipeline(
+            device,
+            &planar_layout,
+            &planar_shader,
+            target_format,
+            "yuv-planar",
+        );
+        let nv12_pipeline = create_pipeline(
+            device,
+            &nv12_layout,
+            &nv12_shader,
+            target_format,
+            "yuv-nv12",
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("yuv-sampler"),
@@ -107,7 +119,15 @@ impl YuvConverter {
             mapped_at_creation: false,
         });
 
-        Self { planar_pipeline, planar_layout, nv12_pipeline, nv12_layout, sampler, uniform, active: None }
+        Self {
+            planar_pipeline,
+            planar_layout,
+            nv12_pipeline,
+            nv12_layout,
+            sampler,
+            uniform,
+            active: None,
+        }
     }
 
     /// Upload `frame`'s planes + the fit/colourspace uniform. Pairs with `encode`,
@@ -121,11 +141,24 @@ impl YuvConverter {
         canvas_size: [u32; 2],
         fit: CanvasFit,
     ) {
-        let (src_min, src_max, dst_min, dst_max) =
-            fit_rects(frame.width, frame.height, canvas_size[0], canvas_size[1], fit);
+        let (src_min, src_max, dst_min, dst_max) = fit_rects(
+            frame.width,
+            frame.height,
+            canvas_size[0],
+            canvas_size[1],
+            fit,
+        );
 
         match &frame.pixels {
-            FramePixels::YuvPlanar { subsample: _, bit_depth, y, u, v, full_range, bt709 } => {
+            FramePixels::YuvPlanar {
+                subsample: _,
+                bit_depth,
+                y,
+                u,
+                v,
+                full_range,
+                bt709,
+            } => {
                 let y_dim = (y.width, y.height);
                 let c_dim = (u.width, u.height);
                 let need_realloc = self
@@ -150,11 +183,26 @@ impl YuvConverter {
                         label: Some("yuv-planar-bg"),
                         layout: &self.planar_layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view(&yt)) },
-                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view(&ut)) },
-                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view(&vt)) },
-                            wgpu::BindGroupEntry { binding: 4, resource: self.uniform.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Sampler(&self.sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&view(&yt)),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&view(&ut)),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(&view(&vt)),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: self.uniform.as_entire_binding(),
+                            },
                         ],
                     });
                     self.active = Some(ActiveBinding::Planar(PlanarBinding {
@@ -167,7 +215,9 @@ impl YuvConverter {
                         bind_group,
                     }));
                 }
-                let ActiveBinding::Planar(binding) = self.active.as_ref().unwrap() else { unreachable!() };
+                let ActiveBinding::Planar(binding) = self.active.as_ref().unwrap() else {
+                    unreachable!()
+                };
                 upload_plane(queue, &binding.y, y);
                 upload_plane(queue, &binding.u, u);
                 upload_plane(queue, &binding.v, v);
@@ -191,7 +241,12 @@ impl YuvConverter {
                     }),
                 );
             }
-            FramePixels::Nv12 { y, uv, full_range, bt709 } => {
+            FramePixels::Nv12 {
+                y,
+                uv,
+                full_range,
+                bt709,
+            } => {
                 let y_dim = (y.width, y.height);
                 let uv_dim = (uv.width, uv.height);
                 let need_realloc = self
@@ -209,10 +264,22 @@ impl YuvConverter {
                         label: Some("yuv-nv12-bg"),
                         layout: &self.nv12_layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view(&yt)) },
-                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view(&uvt)) },
-                            wgpu::BindGroupEntry { binding: 3, resource: self.uniform.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::Sampler(&self.sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&view(&yt)),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&view(&uvt)),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: self.uniform.as_entire_binding(),
+                            },
                         ],
                     });
                     self.active = Some(ActiveBinding::Nv12(Nv12Binding {
@@ -223,7 +290,9 @@ impl YuvConverter {
                         bind_group,
                     }));
                 }
-                let ActiveBinding::Nv12(binding) = self.active.as_ref().unwrap() else { unreachable!() };
+                let ActiveBinding::Nv12(binding) = self.active.as_ref().unwrap() else {
+                    unreachable!()
+                };
                 upload_plane(queue, &binding.y, y);
                 upload_plane(queue, &binding.uv, uv);
 
@@ -389,7 +458,8 @@ impl YuvConverter {
         direct_converter.upload(device, queue, direct_frame, canvas_size, fit);
         readback_converter.upload(device, queue, readback_frame, canvas_size, fit);
 
-        let bytes_per_row = (canvas_size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let bytes_per_row =
+            (canvas_size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer_size = u64::from(bytes_per_row) * u64::from(canvas_size[1]);
         let direct_buffer = canary_buffer(device, "d3d11va-canary-direct-readback", buffer_size);
         let readback_buffer = canary_buffer(device, "d3d11va-canary-cpu-readback", buffer_size);
@@ -651,10 +721,19 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn plane_tex(device: &Device, label: &str, dim: (u32, u32), format: TextureFormat) -> wgpu::Texture {
+fn plane_tex(
+    device: &Device,
+    label: &str,
+    dim: (u32, u32),
+    format: TextureFormat,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: dim.0.max(1), height: dim.1.max(1), depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: dim.0.max(1),
+            height: dim.1.max(1),
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -682,13 +761,23 @@ fn upload_plane(queue: &Queue, tex: &wgpu::Texture, p: &crate::frame::YuvPlane) 
             bytes_per_row: Some(p.stride),
             rows_per_image: Some(p.height),
         },
-        wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: p.width,
+            height: p.height,
+            depth_or_array_layers: 1,
+        },
     );
 }
 
 /// Source/dest UV rects for a frame placed on the canvas under `fit`. Mirrors the
 /// CPU `compose_canvas` geometry, but expressed as normalized rects for the shader.
-fn fit_rects(fw: u32, fh: u32, cw: u32, ch: u32, fit: CanvasFit) -> ([f32; 2], [f32; 2], [f32; 2], [f32; 2]) {
+fn fit_rects(
+    fw: u32,
+    fh: u32,
+    cw: u32,
+    ch: u32,
+    fit: CanvasFit,
+) -> ([f32; 2], [f32; 2], [f32; 2], [f32; 2]) {
     let (fwf, fhf, cwf, chf) = (fw as f32, fh as f32, cw as f32, ch as f32);
     let full_src = ([0.0, 0.0], [1.0, 1.0]);
     let full_dst = ([0.0, 0.0], [1.0, 1.0]);
@@ -701,13 +790,23 @@ fn fit_rects(fw: u32, fh: u32, cw: u32, ch: u32, fit: CanvasFit) -> ([f32; 2], [
             let s = (cwf / fwf).min(chf / fhf);
             let (w, h) = (fwf * s, fhf * s);
             let (x, y) = ((cwf - w) / 2.0, (chf - h) / 2.0);
-            (full_src.0, full_src.1, [x / cwf, y / chf], [(x + w) / cwf, (y + h) / chf])
+            (
+                full_src.0,
+                full_src.1,
+                [x / cwf, y / chf],
+                [(x + w) / cwf, (y + h) / chf],
+            )
         }
         CanvasFit::Fill => {
             let s = (cwf / fwf).max(chf / fhf);
             let (vw, vh) = ((cwf / s).min(fwf), (chf / s).min(fhf));
             let (x, y) = ((fwf - vw) / 2.0, (fhf - vh) / 2.0);
-            ([x / fwf, y / fhf], [(x + vw) / fwf, (y + vh) / fhf], full_dst.0, full_dst.1)
+            (
+                [x / fwf, y / fhf],
+                [(x + vw) / fwf, (y + vh) / fhf],
+                full_dst.0,
+                full_dst.1,
+            )
         }
     }
 }
@@ -855,7 +954,12 @@ mod tests {
 
     fn plane(data: Vec<u8>, width: u32, height: u32) -> YuvPlane {
         let stride = data.len() as u32 / height.max(1);
-        YuvPlane { data, stride, width, height }
+        YuvPlane {
+            data,
+            stride,
+            width,
+            height,
+        }
     }
 
     #[test]

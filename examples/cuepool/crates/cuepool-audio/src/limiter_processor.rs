@@ -41,18 +41,19 @@ pub struct LimiterProcessor {
     source: Box<dyn SampleProvider>,
     inner: UnsafeCell<Limiter>,
     // Atomic parameters
-    cmd_threshold: AtomicU32,     // f32::to_bits
-    cmd_input_gain: AtomicU32,    // f32::to_bits
+    cmd_threshold: AtomicU32,  // f32::to_bits
+    cmd_input_gain: AtomicU32, // f32::to_bits
     cmd_enabled: AtomicBool,
     // Gain reduction metering (updated by audio thread, read by main thread)
-    gr_db_atomic: AtomicU32,      // f32::to_bits of GR in dB
+    gr_db_atomic: AtomicU32, // f32::to_bits of GR in dB
 }
 
 impl Limiter {
     /// Create a standalone limiter core. `threshold` is linear gain.
     pub fn new(threshold: f32, sample_rate: u32, channels: u16) -> Self {
         let delay_ms = 5.0f32;
-        let delay_samples = ((sample_rate as f32 * delay_ms / 1000.0) * channels as f32).ceil() as usize;
+        let delay_samples =
+            ((sample_rate as f32 * delay_ms / 1000.0) * channels as f32).ceil() as usize;
         let delay_size = delay_samples.next_power_of_two();
 
         Self {
@@ -112,7 +113,11 @@ impl Limiter {
                 self.delay_write += 1;
             }
 
-            let peak = if channels >= 2 { peak_l.max(peak_r) } else { peak_l };
+            let peak = if channels >= 2 {
+                peak_l.max(peak_r)
+            } else {
+                peak_l
+            };
 
             let target_gr = if peak > threshold {
                 threshold / peak
@@ -187,7 +192,8 @@ impl LimiterProcessor {
     }
 
     pub fn set_input_gain(&self, gain: f32) {
-        self.cmd_input_gain.store(gain.max(0.0).to_bits(), Ordering::Relaxed);
+        self.cmd_input_gain
+            .store(gain.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
     /// Read current gain reduction in dB (0.0 = no reduction, negative = reducing).
@@ -213,7 +219,8 @@ impl SampleProvider for LimiterProcessor {
         inner.input_gain = f32::from_bits(self.cmd_input_gain.load(Ordering::Relaxed));
 
         inner.process(&mut buffer[..read]);
-        self.gr_db_atomic.store(inner.gr_db.to_bits(), Ordering::Relaxed);
+        self.gr_db_atomic
+            .store(inner.gr_db.to_bits(), Ordering::Relaxed);
 
         read
     }
@@ -251,7 +258,9 @@ mod tests {
     fn dc_source(val: f32) -> Box<dyn SampleProvider> {
         Box::new(FnSource::new(
             move |buf| {
-                for s in buf.iter_mut() { *s = val; }
+                for s in buf.iter_mut() {
+                    *s = val;
+                }
                 buf.len()
             },
             48000,
@@ -316,6 +325,9 @@ mod tests {
         limiter.read(&mut buf2);
 
         // After seek, the delay should be reset so first samples pass through
-        assert!(buf2[0] > 0.1, "after seek, initial samples should pass through delay");
+        assert!(
+            buf2[0] > 0.1,
+            "after seek, initial samples should pass through delay"
+        );
     }
 }

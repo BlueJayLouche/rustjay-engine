@@ -60,12 +60,13 @@ jobs:
             mesa-vulkan-drivers libvulkan1 \
             libavcodec-dev libavformat-dev libavutil-dev \
             libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: examples/cuepool
+      - run: cargo fmt --all -- --check
       - run: cargo check --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

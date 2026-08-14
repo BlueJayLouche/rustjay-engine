@@ -1,6 +1,6 @@
-use crate::frame::{BitDepth, ChromaSubsample, VideoFrame, YuvPlane};
 use crate::FramePool;
 use crate::ZeroCopyAvailability;
+use crate::frame::{BitDepth, ChromaSubsample, VideoFrame, YuvPlane};
 use ffmpeg_next::{codec, color, ffi, format, frame, media::Type, software::scaling, threading};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,7 +68,11 @@ pub enum ZeroCopyPreference {
 
 impl ZeroCopyPreference {
     pub fn from_value(value: Option<&str>) -> Self {
-        if value == Some("1") { Self::Enabled } else { Self::Disabled }
+        if value == Some("1") {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
     }
 
     pub fn from_env() -> Self {
@@ -95,12 +99,23 @@ type HwKind = (ffi::AVHWDeviceType, ffi::AVPixelFormat, &'static str);
 /// cuepool isn't shipped there.
 #[cfg(target_os = "windows")]
 const HW_CANDIDATES: &[HwKind] = &[
-    (ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA, ffi::AVPixelFormat::AV_PIX_FMT_D3D11, "d3d11va readback"),
-    (ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2, ffi::AVPixelFormat::AV_PIX_FMT_DXVA2_VLD, "hardware (dxva2)"),
+    (
+        ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA,
+        ffi::AVPixelFormat::AV_PIX_FMT_D3D11,
+        "d3d11va readback",
+    ),
+    (
+        ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DXVA2,
+        ffi::AVPixelFormat::AV_PIX_FMT_DXVA2_VLD,
+        "hardware (dxva2)",
+    ),
 ];
 #[cfg(target_os = "macos")]
-const HW_CANDIDATES: &[HwKind] =
-    &[(ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX, "hardware (videotoolbox)")];
+const HW_CANDIDATES: &[HwKind] = &[(
+    ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+    ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX,
+    "hardware (videotoolbox)",
+)];
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 const HW_CANDIDATES: &[HwKind] = &[];
 
@@ -378,18 +393,14 @@ impl VideoSource {
         if route == OpenRoute::SoftwareOnly
             || std::env::var("QPLAYER_NO_HWACCEL").as_deref() == Ok("1")
         {
-            return Self::open_with(
-                path,
-                None,
-                frame_pool,
-                no_direct_pool(),
-                fallback_reason,
-            );
+            return Self::open_with(path, None, frame_pool, no_direct_pool(), fallback_reason);
         }
         for &hw in HW_CANDIDATES {
             #[cfg(windows)]
             if hw.0 == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
-                && let Some(device) = availability.as_ref().and_then(|value| value.device.as_ref())
+                && let Some(device) = availability
+                    .as_ref()
+                    .and_then(|value| value.device.as_ref())
             {
                 let request = DirectPoolRequest::new(Arc::clone(device));
                 match Self::open_with(
@@ -422,13 +433,7 @@ impl VideoSource {
                 Err(e) => log::warn!("Video decode: {} unavailable ({e})", hw.2),
             }
         }
-        Self::open_with(
-            path,
-            None,
-            frame_pool,
-            no_direct_pool(),
-            fallback_reason,
-        )
+        Self::open_with(path, None, frame_pool, no_direct_pool(), fallback_reason)
     }
 
     fn open_with(
@@ -484,7 +489,9 @@ impl VideoSource {
                 (*ctx).get_format = Some(hw_get_format);
                 (*ctx).opaque = hw_format_state
                     .as_deref_mut()
-                    .map_or(std::ptr::null_mut(), |state| std::ptr::from_mut(state).cast());
+                    .map_or(std::ptr::null_mut(), |state| {
+                        std::ptr::from_mut(state).cast()
+                    });
             }
             Some(pix_fmt)
         } else {
@@ -564,58 +571,56 @@ impl VideoSource {
     /// GPU if it's a hw frame, then convert it to a `VideoFrame`.
     fn handle_decoded(&mut self) -> Decoded {
         if let Some(hw_fmt) = self.hw_pix_fmt
-            && self.decoded_frame.format() == format::Pixel::from(hw_fmt) {
-                #[cfg(windows)]
-                if hw_fmt == ffi::AVPixelFormat::AV_PIX_FMT_D3D11
-                    && let Some(request) = self
-                        ._hw_format_state
-                        .as_ref()
-                        .and_then(|state| state.direct_pool.clone())
-                {
-                    return self.handle_direct_d3d11(&request);
-                }
-                // hw frames live in GPU memory and aren't readable via
-                // `plane()`; download into the reusable CPU frame first.
-                // `copy_props` carries PTS / color range / color space over,
-                // which `is_full_range` / `is_bt709` read off the frame.
-                unsafe {
-                    ffi::av_frame_unref(self.sw_frame.as_mut_ptr());
-                    let transfer_started = Instant::now();
-                    let transfer_result = ffi::av_hwframe_transfer_data(
-                        self.sw_frame.as_mut_ptr(),
-                        self.decoded_frame.as_ptr(),
-                        0,
-                    );
-                    self.last_timings.hw_transfer += transfer_started.elapsed();
-                    if transfer_result < 0 {
-                        if self.hw_checked {
-                            log::warn!("Video decode: hw download failed, skipping frame");
-                            return Decoded::Skip;
-                        }
-                        return Decoded::ReopenSoftware;
-                    }
-                    ffi::av_frame_copy_props(
-                        self.sw_frame.as_mut_ptr(),
-                        self.decoded_frame.as_ptr(),
-                    );
-                }
-                if !self.hw_checked {
-                    log::info!("Video decode: {} engaged", self.hw_label);
-                }
-                self.hw_checked = true;
-                let plane_copy_started = Instant::now();
-                let converted = convert_frame(
-                    &self.sw_frame,
-                    &mut self.scaler,
-                    &mut self.rgb_frame,
-                    self.dst_width,
-                    self.dst_height,
-                    self.time_base,
-                    &self.frame_pool,
-                );
-                self.last_timings.plane_copy += plane_copy_started.elapsed();
-                return converted.map_or(Decoded::Skip, Decoded::Frame);
+            && self.decoded_frame.format() == format::Pixel::from(hw_fmt)
+        {
+            #[cfg(windows)]
+            if hw_fmt == ffi::AVPixelFormat::AV_PIX_FMT_D3D11
+                && let Some(request) = self
+                    ._hw_format_state
+                    .as_ref()
+                    .and_then(|state| state.direct_pool.clone())
+            {
+                return self.handle_direct_d3d11(&request);
             }
+            // hw frames live in GPU memory and aren't readable via
+            // `plane()`; download into the reusable CPU frame first.
+            // `copy_props` carries PTS / color range / color space over,
+            // which `is_full_range` / `is_bt709` read off the frame.
+            unsafe {
+                ffi::av_frame_unref(self.sw_frame.as_mut_ptr());
+                let transfer_started = Instant::now();
+                let transfer_result = ffi::av_hwframe_transfer_data(
+                    self.sw_frame.as_mut_ptr(),
+                    self.decoded_frame.as_ptr(),
+                    0,
+                );
+                self.last_timings.hw_transfer += transfer_started.elapsed();
+                if transfer_result < 0 {
+                    if self.hw_checked {
+                        log::warn!("Video decode: hw download failed, skipping frame");
+                        return Decoded::Skip;
+                    }
+                    return Decoded::ReopenSoftware;
+                }
+                ffi::av_frame_copy_props(self.sw_frame.as_mut_ptr(), self.decoded_frame.as_ptr());
+            }
+            if !self.hw_checked {
+                log::info!("Video decode: {} engaged", self.hw_label);
+            }
+            self.hw_checked = true;
+            let plane_copy_started = Instant::now();
+            let converted = convert_frame(
+                &self.sw_frame,
+                &mut self.scaler,
+                &mut self.rgb_frame,
+                self.dst_width,
+                self.dst_height,
+                self.time_base,
+                &self.frame_pool,
+            );
+            self.last_timings.plane_copy += plane_copy_started.elapsed();
+            return converted.map_or(Decoded::Skip, Decoded::Frame);
+        }
         let plane_copy_started = Instant::now();
         let converted = convert_frame(
             &self.decoded_frame,
@@ -644,15 +649,10 @@ impl VideoSource {
             };
             self.last_timings.hw_transfer += transfer_started.elapsed();
             if transfer_result < 0 {
-                return Decoded::ReopenReadback(
-                    "first-frame canary readback failed".into(),
-                );
+                return Decoded::ReopenReadback("first-frame canary readback failed".into());
             }
             unsafe {
-                ffi::av_frame_copy_props(
-                    self.sw_frame.as_mut_ptr(),
-                    self.decoded_frame.as_ptr(),
-                );
+                ffi::av_frame_copy_props(self.sw_frame.as_mut_ptr(), self.decoded_frame.as_ptr());
             }
             let copy_started = Instant::now();
             let frame = convert_frame(
@@ -782,11 +782,7 @@ impl VideoSource {
             "Video zero-copy fallback: {}; retrying hardware readback",
             options.fallback_reason.as_deref().unwrap_or_default()
         );
-        match Self::open_with_options(
-            &path,
-            Arc::clone(&self.frame_pool),
-            options,
-        ) {
+        match Self::open_with_options(&path, Arc::clone(&self.frame_pool), options) {
             Ok(source) => {
                 *self = source;
                 true
@@ -896,14 +892,30 @@ impl VideoSource {
         if self.direct_engaged {
             return "d3d11va zero-copy";
         }
-        if self.hw_checked { self.hw_label } else { "software" }
+        if self.hw_checked {
+            self.hw_label
+        } else {
+            "software"
+        }
     }
-    pub fn width(&self) -> u32 { self.width }
-    pub fn height(&self) -> u32 { self.height }
-    pub fn dst_width(&self) -> u32 { self.dst_width }
-    pub fn dst_height(&self) -> u32 { self.dst_height }
-    pub fn last_timings(&self) -> VideoFrameTimings { self.last_timings }
-    pub fn fallback_reason(&self) -> Option<&str> { self.fallback_reason.as_deref() }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    pub fn dst_width(&self) -> u32 {
+        self.dst_width
+    }
+    pub fn dst_height(&self) -> u32 {
+        self.dst_height
+    }
+    pub fn last_timings(&self) -> VideoFrameTimings {
+        self.last_timings
+    }
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.fallback_reason.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -912,9 +924,22 @@ mod tests {
 
     #[test]
     fn zero_copy_is_enabled_only_by_exact_opt_in() {
-        assert_eq!(ZeroCopyPreference::from_value(Some("1")), ZeroCopyPreference::Enabled);
-        for value in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some(" 1")] {
-            assert_eq!(ZeroCopyPreference::from_value(value), ZeroCopyPreference::Disabled);
+        assert_eq!(
+            ZeroCopyPreference::from_value(Some("1")),
+            ZeroCopyPreference::Enabled
+        );
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some(" 1"),
+        ] {
+            assert_eq!(
+                ZeroCopyPreference::from_value(value),
+                ZeroCopyPreference::Disabled
+            );
         }
     }
 

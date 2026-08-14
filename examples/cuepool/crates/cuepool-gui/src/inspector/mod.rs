@@ -17,11 +17,13 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // OS thread limit was hit and the app panicked on thread::spawn.
     let waveform_path = {
         let Ok(mut state) = state.lock() else { return };
-        let path = match state.selected_cue() {
-            Some(cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. })
-                if !path.is_empty() => path.clone(),
-            _ => String::new(),
-        };
+        let path =
+            match state.selected_cue() {
+                Some(
+                    cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. },
+                ) if !path.is_empty() => path.clone(),
+                _ => String::new(),
+            };
         if !path.is_empty()
             && !state.waveform_cache.contains_key(&path)
             && state.pending_waveforms.insert(path.clone())
@@ -48,13 +50,23 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // Pre-fetch waveform and active timeline data before taking a mutable cue reference.
     let waveform_data = state.selected_cue().and_then(|cue| {
         let (qid, path, region_start_secs, kind) = match cue {
-            cuepool_core::Cue::Sound { base, path, start_time, .. } => (
+            cuepool_core::Cue::Sound {
+                base,
+                path,
+                start_time,
+                ..
+            } => (
                 base.qid,
                 path.clone(),
                 start_time.as_secs_f64() as f32,
                 crate::scrub::SeekKind::Sound,
             ),
-            cuepool_core::Cue::Video { base, path, start_time, .. } => (
+            cuepool_core::Cue::Video {
+                base,
+                path,
+                start_time,
+                ..
+            } => (
                 base.qid,
                 path.clone(),
                 start_time.as_secs_f64() as f32,
@@ -64,7 +76,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         };
         let waveform = state.waveform_cache.get(&path).cloned();
         let pending = state.pending_waveforms.contains(&path);
-        let active = state.active_cues.iter().rev().find(|active| active.qid == qid);
+        let active = state
+            .active_cues
+            .iter()
+            .rev()
+            .find(|active| active.qid == qid);
         let playhead = active.map(|active| {
             let seek_length_secs = active.length_secs.unwrap_or_default();
             crate::waveform::Playhead {
@@ -75,12 +91,22 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         });
         let interaction = if state.show_mode == crate::app::ShowMode::Show {
             crate::waveform::Interaction::Disabled
-        } else if active.and_then(|active| active.length_secs).is_some_and(|length| length > 0.0) {
+        } else if active
+            .and_then(|active| active.length_secs)
+            .is_some_and(|length| length > 0.0)
+        {
             crate::waveform::Interaction::Scrub(kind)
         } else {
             crate::waveform::Interaction::Pan
         };
-        Some((active.map_or(0, |active| active.instance_id), qid, waveform, pending, interaction, playhead))
+        Some((
+            active.map_or(0, |active| active.instance_id),
+            qid,
+            waveform,
+            pending,
+            interaction,
+            playhead,
+        ))
     });
     let (mut waveform_zoom, mut waveform_scroll) = (state.waveform_zoom, state.waveform_scroll);
 
@@ -90,7 +116,12 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         .lighting
         .fixtures
         .iter()
-        .map(|f| (f.id, format!("{} (U{} Ch{})", f.name, f.universe, f.address)))
+        .map(|f| {
+            (
+                f.id,
+                format!("{} (U{} Ch{})", f.name, f.universe, f.address),
+            )
+        })
         .collect();
     let mut lighting_live = state.lighting_live;
     let tc_fps = state.show_file.show_settings.timecode_fps;
@@ -181,8 +212,15 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         egui::ComboBox::from_id_salt("trigger_mode")
             .selected_text(format!("{:?}", base.trigger))
             .show_ui(ui, |ui| {
-                for variant in [cuepool_core::TriggerMode::Go, cuepool_core::TriggerMode::WithLast, cuepool_core::TriggerMode::AfterLast] {
-                    if ui.selectable_value(&mut base.trigger, variant, format!("{:?}", variant)).clicked() {
+                for variant in [
+                    cuepool_core::TriggerMode::Go,
+                    cuepool_core::TriggerMode::WithLast,
+                    cuepool_core::TriggerMode::AfterLast,
+                ] {
+                    if ui
+                        .selectable_value(&mut base.trigger, variant, format!("{:?}", variant))
+                        .clicked()
+                    {
                         changed = true;
                     }
                 }
@@ -191,7 +229,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.horizontal(|ui| {
         ui.label("Delay (s):");
         let mut delay_secs = base.delay.as_secs_f64();
-        let response = ui.add(egui::DragValue::new(&mut delay_secs).speed(0.1).range(0.0..=60.0));
+        let response = ui.add(
+            egui::DragValue::new(&mut delay_secs)
+                .speed(0.1)
+                .range(0.0..=60.0),
+        );
         if response.changed() {
             base.delay = cuepool_core::Timespan::from_secs_f64(delay_secs);
             changed = true;
@@ -212,8 +254,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         egui::ComboBox::from_id_salt("loop_mode")
             .selected_text(format!("{:?}", base.loop_mode))
             .show_ui(ui, |ui| {
-                for variant in [cuepool_core::LoopMode::OneShot, cuepool_core::LoopMode::Looped, cuepool_core::LoopMode::LoopedInfinite, cuepool_core::LoopMode::HoldLast] {
-                    if ui.selectable_value(&mut base.loop_mode, variant, format!("{:?}", variant)).clicked() {
+                for variant in [
+                    cuepool_core::LoopMode::OneShot,
+                    cuepool_core::LoopMode::Looped,
+                    cuepool_core::LoopMode::LoopedInfinite,
+                    cuepool_core::LoopMode::HoldLast,
+                ] {
+                    if ui
+                        .selectable_value(&mut base.loop_mode, variant, format!("{:?}", variant))
+                        .clicked()
+                    {
                         changed = true;
                     }
                 }
@@ -222,7 +272,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     if base.loop_mode == cuepool_core::LoopMode::Looped {
         ui.horizontal(|ui| {
             ui.label("Loop Count:");
-            let response = ui.add(egui::DragValue::new(&mut base.loop_count).speed(1).range(1..=999));
+            let response = ui.add(
+                egui::DragValue::new(&mut base.loop_count)
+                    .speed(1)
+                    .range(1..=999),
+            );
             if response.changed() {
                 changed = true;
             }
@@ -232,7 +286,19 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.separator();
 
     match cue {
-        cuepool_core::Cue::Sound { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing } => {
+        cuepool_core::Cue::Sound {
+            base,
+            path,
+            start_time: _,
+            duration: _,
+            volume,
+            pan,
+            fade_in,
+            fade_out,
+            fade_type,
+            eq,
+            routing,
+        } => {
             ui.label(RichText::new("Sound Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -242,20 +308,34 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "aiff", "wma"])
                         .pick_file()
-                    {
-                        *path = new_path.to_string_lossy().to_string();
-                        changed = true;
-                    }
+                {
+                    *path = new_path.to_string_lossy().to_string();
+                    changed = true;
+                }
             });
-            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) = waveform_data {
-                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, interaction, playhead);
+            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) =
+                waveform_data
+            {
+                let response = crate::waveform::draw(
+                    ui,
+                    waveform,
+                    waveform_zoom,
+                    waveform_scroll,
+                    48.0,
+                    interaction,
+                    playhead,
+                );
                 waveform_zoom = response.zoom;
                 waveform_scroll = response.scroll_offset;
                 if let Some(secs) = response.seek_target {
                     pending_commands.push(crate::app::AppCommand::SeekCue { instance_id, secs });
                 }
             } else if let Some((_, _, None, true, _, _)) = waveform_data {
-                ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new("Generating waveform…")
+                        .italics()
+                        .color(egui::Color32::GRAY),
+                );
             }
             ui.horizontal(|ui| {
                 ui.label("Volume (dB):");
@@ -286,8 +366,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("fade_type")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
@@ -295,9 +383,30 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             eq_editor(ui, eq, &mut changed);
             routing_editor(ui, routing, &mut changed);
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::Video { base, path, start_time: _, duration: _, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start } => {
+        cuepool_core::Cue::Video {
+            base,
+            path,
+            start_time: _,
+            duration: _,
+            volume,
+            pan,
+            fade_in,
+            fade_out,
+            fade_type,
+            eq,
+            routing,
+            follow_mtc,
+            mtc_start,
+        } => {
             ui.label(RichText::new("Video Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -307,20 +416,34 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Video", &["mp4", "mov", "mkv", "avi"])
                         .pick_file()
-                    {
-                        *path = new_path.to_string_lossy().to_string();
-                        changed = true;
-                    }
+                {
+                    *path = new_path.to_string_lossy().to_string();
+                    changed = true;
+                }
             });
-            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) = waveform_data {
-                let response = crate::waveform::draw(ui, waveform, waveform_zoom, waveform_scroll, 48.0, interaction, playhead);
+            if let Some((instance_id, _qid, Some(ref waveform), _, interaction, playhead)) =
+                waveform_data
+            {
+                let response = crate::waveform::draw(
+                    ui,
+                    waveform,
+                    waveform_zoom,
+                    waveform_scroll,
+                    48.0,
+                    interaction,
+                    playhead,
+                );
                 waveform_zoom = response.zoom;
                 waveform_scroll = response.scroll_offset;
                 if let Some(secs) = response.seek_target {
                     pending_commands.push(crate::app::AppCommand::SeekCue { instance_id, secs });
                 }
             } else if let Some((_, _, None, true, _, _)) = waveform_data {
-                ui.label(egui::RichText::new("Generating waveform…").italics().color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new("Generating waveform…")
+                        .italics()
+                        .color(egui::Color32::GRAY),
+                );
             }
             ui.horizontal(|ui| {
                 ui.label("Volume (dB):");
@@ -351,8 +474,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("fade_type_vid")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
@@ -379,15 +510,39 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             eq_editor(ui, eq, &mut changed);
             routing_editor(ui, routing, &mut changed);
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::Group { base } => {
             ui.label(RichText::new("Group Cue").monospace().size(12.0));
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::Stop { base, stop_qid, stop_mode, fade_out_time, fade_type, stop_all } => {
+        cuepool_core::Cue::Stop {
+            base,
+            stop_qid,
+            stop_mode,
+            fade_out_time,
+            fade_type,
+            stop_all,
+        } => {
             ui.label(RichText::new("Stop Cue").monospace().size(12.0));
-            if ui.checkbox(stop_all, "Stop All (like transport Stop)").changed() {
+            if ui
+                .checkbox(stop_all, "Stop All (like transport Stop)")
+                .changed()
+            {
                 changed = true;
             }
             ui.horizontal(|ui| {
@@ -403,8 +558,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("stop_mode")
                     .selected_text(format!("{:?}", stop_mode))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::StopMode::Immediate, cuepool_core::StopMode::LoopEnd] {
-                            if ui.selectable_value(stop_mode, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::StopMode::Immediate,
+                            cuepool_core::StopMode::LoopEnd,
+                        ] {
+                            if ui
+                                .selectable_value(stop_mode, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
@@ -420,16 +581,37 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("stop_fade_type")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
                     });
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::Volume { base, sound_qid, volume, fade_time, fade_type } => {
+        cuepool_core::Cue::Volume {
+            base,
+            sound_qid,
+            volume,
+            fade_time,
+            fade_type,
+        } => {
             ui.label(RichText::new("Volume Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Target Q#:");
@@ -454,20 +636,46 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("volume_fade_type")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
                     });
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::Dummy { base } => {
             ui.label(RichText::new("Dummy Cue").monospace().size(12.0));
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::TimeCode { base, start_time, duration } => {
+        cuepool_core::Cue::TimeCode {
+            base,
+            start_time,
+            duration,
+        } => {
             ui.label(RichText::new("TimeCode Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Start (s):");
@@ -487,7 +695,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     changed = true;
                 }
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::Osc { base, command } => {
             ui.label(RichText::new("OSC Cue").monospace().size(12.0));
@@ -498,9 +713,23 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 let response = ui.text_edit_singleline(command);
                 changed |= response.changed();
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::Text { base, text, font_size, font_colour, fit, font } => {
+        cuepool_core::Cue::Text {
+            base,
+            text,
+            font_size,
+            font_colour,
+            fit,
+            font,
+        } => {
             ui.label(RichText::new("Text Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("Text:");
@@ -509,7 +738,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             ui.horizontal(|ui| {
                 ui.label("Font Size:");
-                let response = ui.add(egui::DragValue::new(font_size).speed(1.0).range(1.0..=512.0));
+                let response = ui.add(
+                    egui::DragValue::new(font_size)
+                        .speed(1.0)
+                        .range(1.0..=512.0),
+                );
                 changed |= response.changed();
             });
             ui.horizontal(|ui| {
@@ -527,27 +760,31 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Font", &["ttf", "otf", "ttc"])
                         .pick_file()
-                    {
-                        *font = new_path.to_string_lossy().to_string();
-                        // Register now so the family is live before the cue fires
-                        // (egui applies added fonts at the next frame).
-                        if let Ok(bytes) = std::fs::read(&new_path) {
-                            ui.ctx().add_font(egui::epaint::text::FontInsert::new(
-                                font,
-                                egui::FontData::from_owned(bytes),
-                                vec![egui::epaint::text::InsertFontFamily {
-                                    family: egui::FontFamily::Name(font.clone().into()),
-                                    priority: egui::epaint::text::FontPriority::Highest,
-                                }],
-                            ));
-                        }
-                        changed = true;
+                {
+                    *font = new_path.to_string_lossy().to_string();
+                    // Register now so the family is live before the cue fires
+                    // (egui applies added fonts at the next frame).
+                    if let Ok(bytes) = std::fs::read(&new_path) {
+                        ui.ctx().add_font(egui::epaint::text::FontInsert::new(
+                            font,
+                            egui::FontData::from_owned(bytes),
+                            vec![egui::epaint::text::InsertFontFamily {
+                                family: egui::FontFamily::Name(font.clone().into()),
+                                priority: egui::epaint::text::FontPriority::Highest,
+                            }],
+                        ));
                     }
+                    changed = true;
+                }
                 if !font.is_empty()
-                    && ui.small_button("✕").on_hover_text("Use built-in font").clicked() {
-                        font.clear();
-                        changed = true;
-                    }
+                    && ui
+                        .small_button("✕")
+                        .on_hover_text("Use built-in font")
+                        .clicked()
+                {
+                    font.clear();
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Colour:");
@@ -570,14 +807,28 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("text_fit")
                     .selected_text(format!("{:?}", fit))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::CanvasFit::Stretch, cuepool_core::CanvasFit::Fit, cuepool_core::CanvasFit::Fill] {
-                            if ui.selectable_value(fit, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::CanvasFit::Stretch,
+                            cuepool_core::CanvasFit::Fit,
+                            cuepool_core::CanvasFit::Fill,
+                        ] {
+                            if ui
+                                .selectable_value(fit, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
                     });
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::Image { base, path, fit } => {
             ui.label(RichText::new("Image Cue").monospace().size(12.0));
@@ -589,24 +840,38 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "tiff", "gif"])
                         .pick_file()
-                    {
-                        *path = new_path.to_string_lossy().to_string();
-                        changed = true;
-                    }
+                {
+                    *path = new_path.to_string_lossy().to_string();
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Fit:");
                 egui::ComboBox::from_id_salt("image_fit")
                     .selected_text(format!("{:?}", fit))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::CanvasFit::Stretch, cuepool_core::CanvasFit::Fit, cuepool_core::CanvasFit::Fill] {
-                            if ui.selectable_value(fit, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::CanvasFit::Stretch,
+                            cuepool_core::CanvasFit::Fit,
+                            cuepool_core::CanvasFit::Fill,
+                        ] {
+                            if ui
+                                .selectable_value(fit, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
                     });
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::Goto { base, target_qid } => {
             ui.label(RichText::new("Goto Cue").monospace().size(12.0));
@@ -614,7 +879,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 ui.label("Target Q#:");
                 changed |= qid_edit(ui, "goto_target", target_qid);
             });
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
         cuepool_core::Cue::PixelMap { base, path } => {
             ui.label(RichText::new("Pixel Map Cue").monospace().size(12.0));
@@ -624,12 +896,15 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 changed |= response.changed();
                 if ui.button("Browse…").clicked()
                     && let Some(new_path) = rfd::FileDialog::new()
-                        .add_filter("Media", &["mp4", "mov", "mkv", "avi", "webm", "png", "jpg", "jpeg"])
+                        .add_filter(
+                            "Media",
+                            &["mp4", "mov", "mkv", "avi", "webm", "png", "jpg", "jpeg"],
+                        )
                         .pick_file()
-                    {
-                        *path = new_path.to_string_lossy().to_string();
-                        changed = true;
-                    }
+                {
+                    *path = new_path.to_string_lossy().to_string();
+                    changed = true;
+                }
             });
             ui.label(
                 egui::RichText::new(
@@ -638,9 +913,23 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 .small()
                 .weak(),
             );
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::DmxShow { base, path, fade_in, fade_out, fade_type, priority } => {
+        cuepool_core::Cue::DmxShow {
+            base,
+            path,
+            fade_in,
+            fade_out,
+            fade_type,
+            priority,
+        } => {
             ui.label(RichText::new("DMX Show Cue").monospace().size(12.0));
             ui.horizontal(|ui| {
                 ui.label("File:");
@@ -650,31 +939,46 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     && let Some(new_path) = rfd::FileDialog::new()
                         .add_filter("DMX recording", &["dmxrec"])
                         .pick_file()
-                    {
-                        *path = new_path.to_string_lossy().to_string();
-                        changed = true;
-                    }
+                {
+                    *path = new_path.to_string_lossy().to_string();
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Fade In (s):");
-                changed |= ui.add(egui::DragValue::new(fade_in).speed(0.1).range(0.0..=600.0)).changed();
+                changed |= ui
+                    .add(egui::DragValue::new(fade_in).speed(0.1).range(0.0..=600.0))
+                    .changed();
                 ui.label("Fade Out (s):");
-                changed |= ui.add(egui::DragValue::new(fade_out).speed(0.1).range(0.0..=600.0)).changed();
+                changed |= ui
+                    .add(egui::DragValue::new(fade_out).speed(0.1).range(0.0..=600.0))
+                    .changed();
             });
             ui.horizontal(|ui| {
                 ui.label("Fade Type:");
                 egui::ComboBox::from_id_salt("dmxshow_fade_type")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
                     });
-                ui.label("Priority:")
-                    .on_hover_text("sACN-style merge priority vs the look engine and other shows (default 100)");
-                changed |= ui.add(egui::DragValue::new(priority).speed(1).range(0..=255)).changed();
+                ui.label("Priority:").on_hover_text(
+                    "sACN-style merge priority vs the look engine and other shows (default 100)",
+                );
+                changed |= ui
+                    .add(egui::DragValue::new(priority).speed(1).range(0..=255))
+                    .changed();
             });
             ui.label(
                 egui::RichText::new(
@@ -683,18 +987,35 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 .small()
                 .weak(),
             );
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
         }
-        cuepool_core::Cue::Lighting { base, snapshot, fade_time, fade_type } => {
+        cuepool_core::Cue::Lighting {
+            base,
+            snapshot,
+            fade_time,
+            fade_type,
+        } => {
             let was_live = lighting_live;
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Lighting Cue").monospace().size(12.0));
-                ui.checkbox(&mut lighting_live, "🔴 Live")
-                    .on_hover_text("Stream look edits straight to the fixtures (DMX) while programming");
+                ui.checkbox(&mut lighting_live, "🔴 Live").on_hover_text(
+                    "Stream look edits straight to the fixtures (DMX) while programming",
+                );
             });
             ui.horizontal(|ui| {
                 ui.label("Fade (s):");
-                let response = ui.add(egui::DragValue::new(fade_time).speed(0.1).range(0.0..=600.0));
+                let response = ui.add(
+                    egui::DragValue::new(fade_time)
+                        .speed(0.1)
+                        .range(0.0..=600.0),
+                );
                 changed |= response.changed();
             });
             ui.horizontal(|ui| {
@@ -702,8 +1023,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 egui::ComboBox::from_id_salt("lx_fade_type")
                     .selected_text(format!("{:?}", fade_type))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::FadeType::Linear, cuepool_core::FadeType::SCurve, cuepool_core::FadeType::Square, cuepool_core::FadeType::InverseSquare] {
-                            if ui.selectable_value(fade_type, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::FadeType::Linear,
+                            cuepool_core::FadeType::SCurve,
+                            cuepool_core::FadeType::Square,
+                            cuepool_core::FadeType::InverseSquare,
+                        ] {
+                            if ui
+                                .selectable_value(fade_type, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 changed = true;
                             }
                         }
@@ -754,7 +1083,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     }
                 });
             }
-            triggers_editor(ui, &mut base.triggers, base.qid, tc_fps, &mut changed, &mut pending_commands);
+            triggers_editor(
+                ui,
+                &mut base.triggers,
+                base.qid,
+                tc_fps,
+                &mut changed,
+                &mut pending_commands,
+            );
             // Live mode: push the cue's looks on any edit, and once on toggle-on
             // so the stage snaps to the cue being programmed.
             if lighting_live && (changed || !was_live) {
@@ -783,23 +1119,33 @@ fn look_editor(ui: &mut egui::Ui, id: u32, look: &mut cuepool_core::FixtureLook)
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("Dimmer:");
-        changed |= ui.add(egui::Slider::new(&mut look.dimmer, 0.0..=1.0)).changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut look.dimmer, 0.0..=1.0))
+            .changed();
     });
     ui.horizontal(|ui| {
         ui.label("Color:");
         changed |= ui.color_edit_button_rgb(&mut look.color).changed();
         ui.label("White:");
         changed |= ui
-            .add(egui::DragValue::new(&mut look.white).speed(0.01).range(0.0..=1.0))
+            .add(
+                egui::DragValue::new(&mut look.white)
+                    .speed(0.01)
+                    .range(0.0..=1.0),
+            )
             .changed();
     });
     ui.horizontal(|ui| {
         ui.label("Pan:");
-        changed |= ui.add(egui::Slider::new(&mut look.pan, 0.0..=1.0)).changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut look.pan, 0.0..=1.0))
+            .changed();
     });
     ui.horizontal(|ui| {
         ui.label("Tilt:");
-        changed |= ui.add(egui::Slider::new(&mut look.tilt, 0.0..=1.0)).changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut look.tilt, 0.0..=1.0))
+            .changed();
     });
     egui::CollapsingHeader::new("Beam")
         .id_salt(("lx_beam", id))
@@ -807,11 +1153,19 @@ fn look_editor(ui: &mut egui::Ui, id: u32, look: &mut cuepool_core::FixtureLook)
             ui.horizontal(|ui| {
                 ui.label("Zoom:");
                 changed |= ui
-                    .add(egui::DragValue::new(&mut look.zoom).speed(0.01).range(0.0..=1.0))
+                    .add(
+                        egui::DragValue::new(&mut look.zoom)
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
                     .changed();
                 ui.label("Strobe:");
                 changed |= ui
-                    .add(egui::DragValue::new(&mut look.strobe).speed(0.01).range(0.0..=1.0))
+                    .add(
+                        egui::DragValue::new(&mut look.strobe)
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
                     .changed();
                 ui.label("Gobo:");
                 changed |= ui
@@ -852,8 +1206,11 @@ fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
     // Not focused: commit any pending edit. lost_focus() can't be used — when
     // another text field steals focus later in the same frame, this widget
     // never observes the transition.
-    let Some((_, started_from)) = pending else { return false };
-    ui.ctx().data_mut(|d| d.remove_temp::<(String, Decimal)>(id));
+    let Some((_, started_from)) = pending else {
+        return false;
+    };
+    ui.ctx()
+        .data_mut(|d| d.remove_temp::<(String, Decimal)>(id));
     let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
     // If the field was rebound mid-edit (selection changed), drop the edit
     // rather than commit one cue's text into another.
@@ -861,10 +1218,11 @@ fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
         return false;
     }
     if let Ok(new) = text.parse::<Decimal>()
-        && new != *value {
-            *value = new;
-            return true;
-        }
+        && new != *value
+    {
+        *value = new;
+        return true;
+    }
     false
 }
 
@@ -881,7 +1239,11 @@ fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bo
         .map(|(t, _)| t.clone())
         .unwrap_or_else(|| crate::transport::format_timecode(*value, fps));
     let response = ui
-        .add(egui::TextEdit::singleline(&mut text).id(id).desired_width(100.0))
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(100.0),
+        )
         .on_hover_text(format!("HH:MM:SS.FF at {fps} fps, or plain seconds"));
 
     if response.has_focus() && response.clicked_elsewhere() {
@@ -893,7 +1255,9 @@ fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bo
         return false;
     }
 
-    let Some((_, started_from)) = pending else { return false };
+    let Some((_, started_from)) = pending else {
+        return false;
+    };
     ui.ctx().data_mut(|d| d.remove_temp::<(String, f64)>(id));
     let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
     // If the field was rebound mid-edit (selection changed), drop the edit
@@ -902,10 +1266,11 @@ fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bo
         return false;
     }
     if let Some(new) = crate::transport::parse_timecode(&text, fps)
-        && new != *value {
-            *value = new;
-            return true;
-        }
+        && new != *value
+    {
+        *value = new;
+        return true;
+    }
     false
 }
 
@@ -968,7 +1333,10 @@ fn triggers_editor(
                             cuepool_core::MidiTriggerKind::NoteOff,
                             cuepool_core::MidiTriggerKind::CC,
                         ] {
-                            if ui.selectable_value(&mut midi.kind, variant, format!("{:?}", variant)).clicked() {
+                            if ui
+                                .selectable_value(&mut midi.kind, variant, format!("{:?}", variant))
+                                .clicked()
+                            {
                                 *changed = true;
                             }
                         }
@@ -1033,8 +1401,18 @@ fn triggers_editor(
                 egui::ComboBox::from_id_salt("clock_mode")
                     .selected_text(format!("{:?}", clock.mode))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::ClockMode::TwelveHour, cuepool_core::ClockMode::TwentyFourHour] {
-                            if ui.selectable_value(&mut clock.mode, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::ClockMode::TwelveHour,
+                            cuepool_core::ClockMode::TwentyFourHour,
+                        ] {
+                            if ui
+                                .selectable_value(
+                                    &mut clock.mode,
+                                    variant,
+                                    format!("{:?}", variant),
+                                )
+                                .clicked()
+                            {
                                 *changed = true;
                             }
                         }
@@ -1045,8 +1423,18 @@ fn triggers_editor(
                 egui::ComboBox::from_id_salt("clock_repeat")
                     .selected_text(format!("{:?}", clock.repeat))
                     .show_ui(ui, |ui| {
-                        for variant in [cuepool_core::RepeatMode::Once, cuepool_core::RepeatMode::Daily] {
-                            if ui.selectable_value(&mut clock.repeat, variant, format!("{:?}", variant)).clicked() {
+                        for variant in [
+                            cuepool_core::RepeatMode::Once,
+                            cuepool_core::RepeatMode::Daily,
+                        ] {
+                            if ui
+                                .selectable_value(
+                                    &mut clock.repeat,
+                                    variant,
+                                    format!("{:?}", variant),
+                                )
+                                .clicked()
+                            {
                                 *changed = true;
                             }
                         }
@@ -1061,7 +1449,9 @@ fn triggers_editor(
         if ui.checkbox(&mut enabled, "Timecode").changed() {
             *changed = true;
             triggers.timecode = if enabled {
-                Some(cuepool_core::TimecodeTrigger { time: cuepool_core::Timespan::ZERO })
+                Some(cuepool_core::TimecodeTrigger {
+                    time: cuepool_core::Timespan::ZERO,
+                })
             } else {
                 None
             };
@@ -1094,7 +1484,10 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut cuepool_core::AudioRouting, c
             .selected_text(PAIRS[cur])
             .show_ui(ui, |ui| {
                 for (i, label) in PAIRS.iter().enumerate() {
-                    if ui.selectable_value(&mut routing.out_pair, i as u8, *label).clicked() {
+                    if ui
+                        .selectable_value(&mut routing.out_pair, i as u8, *label)
+                        .clicked()
+                    {
                         *changed = true;
                     }
                 }
@@ -1102,10 +1495,18 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut cuepool_core::AudioRouting, c
     });
     ui.horizontal(|ui| {
         ui.label("Send (dB):");
-        let mut db = if routing.send > 0.0 { 20.0 * routing.send.log10() } else { -60.0 };
+        let mut db = if routing.send > 0.0 {
+            20.0 * routing.send.log10()
+        } else {
+            -60.0
+        };
         let response = ui.add(egui::Slider::new(&mut db, -60.0..=6.0));
         if response.changed() {
-            routing.send = if db <= -60.0 { 0.0 } else { 10.0f32.powf(db / 20.0) };
+            routing.send = if db <= -60.0 {
+                0.0
+            } else {
+                10.0f32.powf(db / 20.0)
+            };
             *changed = true;
         }
     });
@@ -1115,33 +1516,58 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut cuepool_core::AudioRouting, c
     // how a multichannel source (e.g. 5.1) routes its tracks to chosen outputs.
     if routing.crosspoints.is_empty() {
         if ui.button("+ Matrix routing (per-channel)").clicked() {
-            routing.crosspoints.push(cuepool_core::Crosspoint::default());
+            routing
+                .crosspoints
+                .push(cuepool_core::Crosspoint::default());
             *changed = true;
         }
     } else {
-        ui.label(egui::RichText::new("Matrix (overrides pair):").italics().size(11.0));
+        ui.label(
+            egui::RichText::new("Matrix (overrides pair):")
+                .italics()
+                .size(11.0),
+        );
         let mut remove: Option<usize> = None;
         for (i, cp) in routing.crosspoints.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 // Display channels 1-based; store 0-based.
                 ui.label("in");
                 let mut in_disp = cp.in_ch as i32 + 1;
-                if ui.add(egui::DragValue::new(&mut in_disp).range(1..=32)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut in_disp).range(1..=32))
+                    .changed()
+                {
                     cp.in_ch = (in_disp - 1).clamp(0, 31) as u8;
                     *changed = true;
                 }
                 ui.label("→ out");
                 let mut out_disp = cp.out_ch as i32 + 1;
-                if ui.add(egui::DragValue::new(&mut out_disp).range(1..=8)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut out_disp).range(1..=8))
+                    .changed()
+                {
                     cp.out_ch = (out_disp - 1).clamp(0, 7) as u8;
                     *changed = true;
                 }
-                let mut db = if cp.gain > 0.0 { 20.0 * cp.gain.log10() } else { -60.0 };
+                let mut db = if cp.gain > 0.0 {
+                    20.0 * cp.gain.log10()
+                } else {
+                    -60.0
+                };
                 if ui
-                    .add(egui::DragValue::new(&mut db).speed(0.5).range(-60.0..=6.0).suffix(" dB"))
+                    .add(
+                        egui::DragValue::new(&mut db)
+                            .speed(0.5)
+                            .range(-60.0..=6.0)
+                            .suffix(" dB"),
+                    )
                     .changed()
                 {
-                    cp.gain = if db <= -60.0 { 0.0 } else { 10.0f32.powf(db / 20.0) };
+                    cp.gain = if db <= -60.0 {
+                        0.0
+                    } else {
+                        10.0f32.powf(db / 20.0)
+                    };
                     *changed = true;
                 }
                 if ui.small_button("✕").clicked() {
@@ -1154,7 +1580,9 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut cuepool_core::AudioRouting, c
             *changed = true;
         }
         if ui.button("+ Add crosspoint").clicked() {
-            routing.crosspoints.push(cuepool_core::Crosspoint::default());
+            routing
+                .crosspoints
+                .push(cuepool_core::Crosspoint::default());
             *changed = true;
         }
     }
@@ -1170,7 +1598,10 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
         if enabled {
             // Some == EQ on. The inner `enabled` flag must agree, else the audio
             // EqProcessor (which reads it) builds no filters and EQ is silent.
-            *eq = Some(cuepool_core::EQSettings { enabled: true, ..Default::default() });
+            *eq = Some(cuepool_core::EQSettings {
+                enabled: true,
+                ..Default::default()
+            });
         } else {
             *eq = None;
         }
@@ -1181,7 +1612,12 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
     ui.horizontal(|ui| {
         ui.label("HPF:");
         let mut hpf_freq = eq.hpf.frequency;
-        let response = ui.add(egui::DragValue::new(&mut hpf_freq).speed(1.0).range(20.0..=20000.0).suffix(" Hz"));
+        let response = ui.add(
+            egui::DragValue::new(&mut hpf_freq)
+                .speed(1.0)
+                .range(20.0..=20000.0)
+                .suffix(" Hz"),
+        );
         if response.changed() {
             eq.hpf.frequency = hpf_freq;
             *changed = true;
@@ -1190,8 +1626,15 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
             .width(80.0)
             .selected_text(format!("{:?}", eq.hpf.order))
             .show_ui(ui, |ui| {
-                for variant in [cuepool_core::EQFilterOrder::Disabled, cuepool_core::EQFilterOrder::_12dBOct, cuepool_core::EQFilterOrder::_24dBOct] {
-                    if ui.selectable_value(&mut eq.hpf.order, variant, format!("{:?}", variant)).clicked() {
+                for variant in [
+                    cuepool_core::EQFilterOrder::Disabled,
+                    cuepool_core::EQFilterOrder::_12dBOct,
+                    cuepool_core::EQFilterOrder::_24dBOct,
+                ] {
+                    if ui
+                        .selectable_value(&mut eq.hpf.order, variant, format!("{:?}", variant))
+                        .clicked()
+                    {
                         *changed = true;
                     }
                 }
@@ -1201,7 +1644,12 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
     ui.horizontal(|ui| {
         ui.label("LPF:");
         let mut lpf_freq = eq.lpf.frequency;
-        let response = ui.add(egui::DragValue::new(&mut lpf_freq).speed(1.0).range(20.0..=20000.0).suffix(" Hz"));
+        let response = ui.add(
+            egui::DragValue::new(&mut lpf_freq)
+                .speed(1.0)
+                .range(20.0..=20000.0)
+                .suffix(" Hz"),
+        );
         if response.changed() {
             eq.lpf.frequency = lpf_freq;
             *changed = true;
@@ -1210,8 +1658,15 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
             .width(80.0)
             .selected_text(format!("{:?}", eq.lpf.order))
             .show_ui(ui, |ui| {
-                for variant in [cuepool_core::EQFilterOrder::Disabled, cuepool_core::EQFilterOrder::_12dBOct, cuepool_core::EQFilterOrder::_24dBOct] {
-                    if ui.selectable_value(&mut eq.lpf.order, variant, format!("{:?}", variant)).clicked() {
+                for variant in [
+                    cuepool_core::EQFilterOrder::Disabled,
+                    cuepool_core::EQFilterOrder::_12dBOct,
+                    cuepool_core::EQFilterOrder::_24dBOct,
+                ] {
+                    if ui
+                        .selectable_value(&mut eq.lpf.order, variant, format!("{:?}", variant))
+                        .clicked()
+                    {
                         *changed = true;
                     }
                 }
@@ -1240,13 +1695,21 @@ fn eq_editor(ui: &mut egui::Ui, eq: &mut Option<cuepool_core::EQSettings>, chang
                         cuepool_core::EQBandShape::HighPass,
                         cuepool_core::EQBandShape::AllPass,
                     ] {
-                        if ui.selectable_value(&mut band.shape, variant, format!("{:?}", variant)).clicked() {
+                        if ui
+                            .selectable_value(&mut band.shape, variant, format!("{:?}", variant))
+                            .clicked()
+                        {
                             *changed = true;
                         }
                     }
                 });
             let mut freq = band.freq;
-            let response = ui.add(egui::DragValue::new(&mut freq).speed(1.0).range(20.0..=20000.0).suffix(" Hz"));
+            let response = ui.add(
+                egui::DragValue::new(&mut freq)
+                    .speed(1.0)
+                    .range(20.0..=20000.0)
+                    .suffix(" Hz"),
+            );
             if response.changed() {
                 band.freq = freq;
                 *changed = true;

@@ -6,7 +6,7 @@
 
 pub mod mtc;
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 /// Events emitted by the MIDI manager that the application should handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,9 @@ impl MidiManager {
     pub fn new() -> anyhow::Result<Self> {
         let midi_in = midir::MidiInput::new("CuePool MIDI")?;
         let ports = midi_in.ports();
-        let port = ports.first().ok_or_else(|| anyhow::anyhow!("no MIDI input ports"))?;
+        let port = ports
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no MIDI input ports"))?;
         let port_name = midi_in.port_name(port).unwrap_or_default();
         log::info!("Opening MIDI input port: {}", port_name);
 

@@ -31,7 +31,9 @@ impl Xorshift64 {
 
     /// Uniform-ish in `[lo, hi)`. Returns `lo` if the range is empty.
     pub fn next_range(&mut self, lo: u32, hi: u32) -> u32 {
-        if hi <= lo { return lo; }
+        if hi <= lo {
+            return lo;
+        }
         lo + (self.next_u64() % (hi - lo) as u64) as u32
     }
 }
@@ -39,7 +41,13 @@ impl Xorshift64 {
 #[test]
 fn is_deterministic_and_never_sticks_at_zero() {
     let a: Vec<u64> = (0..8).map(|_| Xorshift64::new(42).next_u64()).collect();
-    assert!(a.iter().all(|&v| v == a[0]), "same seed must give same first value");
+    assert!(
+        a.iter().all(|&v| v == a[0]),
+        "same seed must give same first value"
+    );
     let mut r = Xorshift64::new(0);
-    assert!((0..1000).all(|_| r.next_u64() != 0), "zero seed must not degenerate");
+    assert!(
+        (0..1000).all(|_| r.next_u64() != 0),
+        "zero seed must not degenerate"
+    );
 }

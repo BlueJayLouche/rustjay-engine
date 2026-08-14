@@ -22,7 +22,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.horizontal(|ui| {
         ui.label("Canvas Width:");
         let mut w = projection.canvas_width as i32;
-        if ui.add(egui::DragValue::new(&mut w).speed(1).range(1..=16384)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut w).speed(1).range(1..=16384))
+            .changed()
+        {
             projection.canvas_width = w.max(1) as u32;
             changed = true;
         }
@@ -30,7 +33,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.horizontal(|ui| {
         ui.label("Canvas Height:");
         let mut h = projection.canvas_height as i32;
-        if ui.add(egui::DragValue::new(&mut h).speed(1).range(1..=16384)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut h).speed(1).range(1..=16384))
+            .changed()
+        {
             projection.canvas_height = h.max(1) as u32;
             changed = true;
         }
@@ -45,7 +51,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     cuepool_core::CanvasFit::Fill,
                     cuepool_core::CanvasFit::Stretch,
                 ] {
-                    if ui.selectable_value(&mut projection.fit, variant, format!("{:?}", variant)).clicked() {
+                    if ui
+                        .selectable_value(&mut projection.fit, variant, format!("{:?}", variant))
+                        .clicked()
+                    {
                         changed = true;
                     }
                 }
@@ -87,25 +96,37 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.horizontal(|ui| {
                 ui.label("Source X:");
                 let mut v = output.source_x as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(0..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(0..=16384))
+                    .changed()
+                {
                     output.source_x = v.max(0) as u32;
                     changed = true;
                 }
                 ui.label("Y:");
                 let mut v = output.source_y as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(0..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(0..=16384))
+                    .changed()
+                {
                     output.source_y = v.max(0) as u32;
                     changed = true;
                 }
                 ui.label("W:");
                 let mut v = output.source_width as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(1..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(1..=16384))
+                    .changed()
+                {
                     output.source_width = v.max(1) as u32;
                     changed = true;
                 }
                 ui.label("H:");
                 let mut v = output.source_height as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(1..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(1..=16384))
+                    .changed()
+                {
                     output.source_height = v.max(1) as u32;
                     changed = true;
                 }
@@ -114,13 +135,19 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.horizontal(|ui| {
                 ui.label("Output W:");
                 let mut v = output.output_width as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(1..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(1..=16384))
+                    .changed()
+                {
                     output.output_width = v.max(1) as u32;
                     changed = true;
                 }
                 ui.label("H:");
                 let mut v = output.output_height as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(1..=16384)).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut v).speed(1).range(1..=16384))
+                    .changed()
+                {
                     output.output_height = v.max(1) as u32;
                     changed = true;
                 }
@@ -137,7 +164,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     .selected_text(current)
                     .width(260.0)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(output.monitor_id.is_none(), "Windowed").clicked() {
+                        if ui
+                            .selectable_label(output.monitor_id.is_none(), "Windowed")
+                            .clicked()
+                        {
                             output.monitor_id = None;
                             output.fullscreen_monitor = None;
                             changed = true;
@@ -153,10 +183,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         }
                     })
                     .response
-                    .on_hover_text("Recalled by monitor position, so it survives reboots / projector reorder.");
+                    .on_hover_text(
+                        "Recalled by monitor position, so it survives reboots / projector reorder.",
+                    );
             });
             if available_monitors.is_empty() {
-                ui.label(RichText::new("(no monitors reported yet)").weak().size(10.0));
+                ui.label(
+                    RichText::new("(no monitors reported yet)")
+                        .weak()
+                        .size(10.0),
+                );
             }
 
             ui.separator();
@@ -176,18 +212,20 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     }
 
     if let Some(idx) = remove_idx
-        && projection.outputs.len() > 1 {
-            projection.outputs.remove(idx);
-            changed = true;
-        }
+        && projection.outputs.len() > 1
+    {
+        projection.outputs.remove(idx);
+        changed = true;
+    }
 
     if let Some(idx) = duplicate_idx
-        && let Some(original) = projection.outputs.get(idx).cloned() {
-            let mut copy = original;
-            copy.name.push_str(" (copy)");
-            projection.outputs.insert(idx + 1, copy);
-            changed = true;
-        }
+        && let Some(original) = projection.outputs.get(idx).cloned()
+    {
+        let mut copy = original;
+        copy.name.push_str(" (copy)");
+        projection.outputs.insert(idx + 1, copy);
+        changed = true;
+    }
 
     ui.separator();
     ui.horizontal(|ui| {
@@ -220,13 +258,19 @@ fn edge_editor(ui: &mut egui::Ui, label: &str, edge: &mut cuepool_core::EdgeBlen
         ui.add_space(8.0);
         ui.label("Width (px):");
         let mut w = edge.width as i32;
-        if ui.add(egui::DragValue::new(&mut w).speed(1).range(0..=4096)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut w).speed(1).range(0..=4096))
+            .changed()
+        {
             edge.width = w.max(0) as u32;
             changed = true;
         }
         ui.label("Gamma:");
         let mut g = edge.gamma;
-        if ui.add(egui::DragValue::new(&mut g).speed(0.05).range(0.1..=5.0)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut g).speed(0.05).range(0.1..=5.0))
+            .changed()
+        {
             edge.gamma = g;
             changed = true;
         }

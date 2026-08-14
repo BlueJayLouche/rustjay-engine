@@ -81,15 +81,13 @@ pub struct HotkeyTrigger {
     pub key: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MidiTriggerKind {
     #[default]
     NoteOn,
     NoteOff,
     CC,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MidiTrigger {
@@ -101,8 +99,7 @@ pub struct MidiTrigger {
     pub velocity_min: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ClockMode {
     TwelveHour,
     #[serde(rename = "TwentyFourHour")]
@@ -110,15 +107,12 @@ pub enum ClockMode {
     TwentyFourHour,
 }
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RepeatMode {
     #[default]
     Daily,
     Once,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WallClockTrigger {
@@ -176,13 +170,21 @@ fn unity_send() -> f32 {
 
 impl Default for AudioRouting {
     fn default() -> Self {
-        Self { out_pair: 0, send: 1.0, crosspoints: Vec::new() }
+        Self {
+            out_pair: 0,
+            send: 1.0,
+            crosspoints: Vec::new(),
+        }
     }
 }
 
 impl Default for Crosspoint {
     fn default() -> Self {
-        Self { in_ch: 0, out_ch: 0, gain: 1.0 }
+        Self {
+            in_ch: 0,
+            out_ch: 0,
+            gain: 1.0,
+        }
     }
 }
 
@@ -366,7 +368,8 @@ pub enum Cue {
         // buffers this map through serde's Content type, which won't re-parse
         // "1" → u32 on its own.
         #[serde(default, with = "fixture_key_map")]
-        snapshot: std::collections::BTreeMap<crate::lighting::FixtureId, crate::lighting::FixtureLook>,
+        snapshot:
+            std::collections::BTreeMap<crate::lighting::FixtureId, crate::lighting::FixtureLook>,
         /// Crossfade duration in seconds from live state to the snapshot.
         #[serde(default)]
         fade_time: f32,
@@ -417,7 +420,11 @@ mod fixture_key_map {
     ) -> Result<BTreeMap<u32, V>, D::Error> {
         let raw = BTreeMap::<String, V>::deserialize(de)?;
         raw.into_iter()
-            .map(|(k, v)| k.parse::<u32>().map(|k| (k, v)).map_err(serde::de::Error::custom))
+            .map(|(k, v)| {
+                k.parse::<u32>()
+                    .map(|k| (k, v))
+                    .map_err(serde::de::Error::custom)
+            })
             .collect()
     }
 }
@@ -788,9 +795,20 @@ mod tests {
         let mut snapshot = std::collections::BTreeMap::new();
         snapshot.insert(
             1u32,
-            FixtureLook { dimmer: 1.0, color: [1.0, 0.0, 0.0], ..Default::default() },
+            FixtureLook {
+                dimmer: 1.0,
+                color: [1.0, 0.0, 0.0],
+                ..Default::default()
+            },
         );
-        snapshot.insert(2u32, FixtureLook { pan: 0.25, tilt: 0.75, ..Default::default() });
+        snapshot.insert(
+            2u32,
+            FixtureLook {
+                pan: 0.25,
+                tilt: 0.75,
+                ..Default::default()
+            },
+        );
         let cue = Cue::Lighting {
             base: CueBase {
                 qid: Decimal::from(20),
@@ -811,7 +829,11 @@ mod tests {
             serde_json::from_value(serde_json::json!({"$type": "LightingCue", "qid": 1.0}))
                 .unwrap();
         match minimal {
-            Cue::Lighting { snapshot, fade_time, .. } => {
+            Cue::Lighting {
+                snapshot,
+                fade_time,
+                ..
+            } => {
                 assert!(snapshot.is_empty());
                 assert_eq!(fade_time, 0.0);
             }
@@ -841,10 +863,14 @@ mod tests {
         assert_eq!(val["$type"], "DmxShowCue");
         // Missing fields default; priority defaults to 100 (sACN convention).
         let minimal: Cue =
-            serde_json::from_value(serde_json::json!({"$type": "DmxShowCue", "qid": 1.0}))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({"$type": "DmxShowCue", "qid": 1.0})).unwrap();
         match minimal {
-            Cue::DmxShow { path, priority, fade_in, .. } => {
+            Cue::DmxShow {
+                path,
+                priority,
+                fade_in,
+                ..
+            } => {
                 assert!(path.is_empty());
                 assert_eq!(priority, 100);
                 assert_eq!(fade_in, 0.0);
@@ -867,7 +893,9 @@ mod tests {
     #[test]
     fn test_triggers_roundtrip() {
         let triggers = CueTriggers {
-            hotkey: Some(HotkeyTrigger { key: "Space".into() }),
+            hotkey: Some(HotkeyTrigger {
+                key: "Space".into(),
+            }),
             midi: Some(MidiTrigger {
                 channel: 1,
                 kind: MidiTriggerKind::NoteOn,

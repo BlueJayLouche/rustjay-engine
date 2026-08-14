@@ -56,7 +56,8 @@ impl CanvasTexture {
 
     /// Render-target view — linear Unorm, for the YUV-convert pass to write into.
     pub fn render_view(&self) -> wgpu::TextureView {
-        self.texture.create_view(&wgpu::TextureViewDescriptor::default())
+        self.texture
+            .create_view(&wgpu::TextureViewDescriptor::default())
     }
 
     /// Upload a decoded video frame into the canvas according to `fit`.
@@ -143,23 +144,53 @@ fn compose_canvas(frame: &VideoFrame, cw: u32, ch: u32, fit: CanvasFit) -> Vec<u
 
     let (src, dst) = match fit {
         CanvasFit::Stretch => (
-            Rect { x: 0.0, y: 0.0, w: fw, h: fh },
-            Rect { x: 0.0, y: 0.0, w: cwf, h: chf },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: fw,
+                h: fh,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: cwf,
+                h: chf,
+            },
         ),
         CanvasFit::Fit => {
             let s = (cwf / fw).min(chf / fh);
             let (w, h) = (fw * s, fh * s);
             (
-                Rect { x: 0.0, y: 0.0, w: fw, h: fh },
-                Rect { x: (cwf - w) / 2.0, y: (chf - h) / 2.0, w, h },
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: fw,
+                    h: fh,
+                },
+                Rect {
+                    x: (cwf - w) / 2.0,
+                    y: (chf - h) / 2.0,
+                    w,
+                    h,
+                },
             )
         }
         CanvasFit::Fill => {
             let s = (cwf / fw).max(chf / fh);
             let (vw, vh) = ((cwf / s).min(fw), (chf / s).min(fh));
             (
-                Rect { x: (fw - vw) / 2.0, y: (fh - vh) / 2.0, w: vw, h: vh },
-                Rect { x: 0.0, y: 0.0, w: cwf, h: chf },
+                Rect {
+                    x: (fw - vw) / 2.0,
+                    y: (fh - vh) / 2.0,
+                    w: vw,
+                    h: vh,
+                },
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: cwf,
+                    h: chf,
+                },
             )
         }
     };
@@ -210,8 +241,7 @@ mod tests {
             2,
             2,
             vec![
-                255, 0, 0, 255, 0, 255, 0, 255,
-                0, 0, 255, 255, 255, 255, 0, 255,
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
             ],
             0.0,
         );
@@ -231,8 +261,7 @@ mod tests {
             2,
             2,
             vec![
-                255, 0, 0, 255, 0, 255, 0, 255,
-                0, 0, 255, 255, 255, 255, 0, 255,
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
             ],
             0.0,
         );
@@ -248,7 +277,8 @@ mod tests {
     }
 
     fn has_black_pixel(buf: &[u8]) -> bool {
-        buf.chunks_exact(4).any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
+        buf.chunks_exact(4)
+            .any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
     }
 
     #[test]
@@ -263,7 +293,10 @@ mod tests {
     fn test_fill_covers_canvas() {
         // Cover must fill every pixel — no black bars anywhere.
         let buf = compose_canvas(&solid_frame(), 8, 8, CanvasFit::Fill);
-        assert!(!has_black_pixel(&buf), "Fill must cover the whole canvas (no bars)");
+        assert!(
+            !has_black_pixel(&buf),
+            "Fill must cover the whole canvas (no bars)"
+        );
     }
 
     #[test]

@@ -13,14 +13,19 @@ fn fmt_time(secs: f32) -> String {
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     let (active_cues, show_mode, seek_kinds) = {
         let Ok(state) = state.lock() else { return };
-        let seek_kinds = state.show_file.cues.iter().filter_map(|cue| {
-            let kind = match cue {
-                cuepool_core::Cue::Sound { .. } => crate::scrub::SeekKind::Sound,
-                cuepool_core::Cue::Video { .. } => crate::scrub::SeekKind::Video,
-                _ => return None,
-            };
-            Some((cue.base().qid, kind))
-        }).collect::<std::collections::HashMap<_, _>>();
+        let seek_kinds = state
+            .show_file
+            .cues
+            .iter()
+            .filter_map(|cue| {
+                let kind = match cue {
+                    cuepool_core::Cue::Sound { .. } => crate::scrub::SeekKind::Sound,
+                    cuepool_core::Cue::Video { .. } => crate::scrub::SeekKind::Video,
+                    _ => return None,
+                };
+                Some((cue.base().qid, kind))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         (state.active_cues.clone(), state.show_mode, seek_kinds)
     };
     let mut pending_commands = Vec::new();
@@ -29,7 +34,11 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     ui.separator();
 
     if active_cues.is_empty() {
-        ui.label(RichText::new("No active cues").italics().color(Color32::GRAY));
+        ui.label(
+            RichText::new("No active cues")
+                .italics()
+                .color(Color32::GRAY),
+        );
         return;
     }
 
@@ -65,9 +74,12 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                             ui.label(text);
 
                             if cue.paused {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.colored_label(Color32::YELLOW, "⏸");
-                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.colored_label(Color32::YELLOW, "⏸");
+                                    },
+                                );
                             }
                         });
 
@@ -96,9 +108,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     });
 
     if !pending_commands.is_empty()
-        && let Ok(mut state) = state.lock() {
-            state.command_queue.extend(pending_commands);
-        }
+        && let Ok(mut state) = state.lock()
+    {
+        state.command_queue.extend(pending_commands);
+    }
 }
 
 fn draw_progress_bar(
@@ -108,29 +121,35 @@ fn draw_progress_bar(
     fill: Color32,
     kind: Option<crate::scrub::SeekKind>,
 ) -> Option<f32> {
-    let sense = if kind.is_some() { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width().max(96.0), 14.0),
-        sense,
-    );
-    let pointer_target = response.interact_pointer_pos().map(|pointer| {
-        ((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 1.0) * length
-    });
-    let drag_update = kind.map(|kind| {
-        crate::scrub::update_drag(
-            ui,
-            response.id.with("scrub"),
-            &response,
-            pointer_target,
-            kind,
-        )
-    }).unwrap_or_default();
+    let sense = if kind.is_some() {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width().max(96.0), 14.0), sense);
+    let pointer_target = response
+        .interact_pointer_pos()
+        .map(|pointer| ((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 1.0) * length);
+    let drag_update = kind
+        .map(|kind| {
+            crate::scrub::update_drag(
+                ui,
+                response.id.with("scrub"),
+                &response,
+                pointer_target,
+                kind,
+            )
+        })
+        .unwrap_or_default();
     let position_secs = drag_update.preview_target.unwrap_or(cue.position_secs);
     let progress = (position_secs / length).clamp(0.0, 1.0);
     let remaining = (length - position_secs).max(0.0);
 
     if kind.is_some() {
-        let _ = response.clone().on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal);
+        let _ = response
+            .clone()
+            .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal);
         response.widget_info(|| {
             egui::WidgetInfo::slider(
                 true,
@@ -139,11 +158,13 @@ fn draw_progress_bar(
             )
         });
     } else {
-        response.widget_info(|| egui::WidgetInfo::labeled(
-            egui::WidgetType::ProgressIndicator,
-            true,
-            format!("Active cue Q{} progress", cue.qid),
-        ));
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::ProgressIndicator,
+                true,
+                format!("Active cue Q{} progress", cue.qid),
+            )
+        });
     }
 
     let painter = ui.painter();
@@ -169,7 +190,10 @@ fn draw_progress_bar(
 
     let x = (rect.min.x + rect.width() * progress).clamp(rect.min.x + 1.0, rect.max.x - 1.0);
     let segment = [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)];
-    painter.line_segment(segment, egui::Stroke::new(3.0_f32, Color32::from_rgb(25, 25, 25)));
+    painter.line_segment(
+        segment,
+        egui::Stroke::new(3.0_f32, Color32::from_rgb(25, 25, 25)),
+    );
     painter.line_segment(segment, egui::Stroke::new(1.0_f32, Color32::WHITE));
 
     drag_update.emit_target

@@ -7,8 +7,8 @@
 //! struct-alignment to get wrong (see the projection black-output postmortem).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wgpu::util::DeviceExt;
 use wgpu::{Device, Queue, TextureFormat, TextureView};
@@ -146,7 +146,12 @@ impl PixelSampler {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { pipeline, layout, sampler, segs: HashMap::new() }
+        Self {
+            pipeline,
+            layout,
+            sampler,
+            segs: HashMap::new(),
+        }
     }
 
     /// Collect finished readbacks: `(segment_id, cols, rows, tightly-packed RGBA)`.
@@ -185,9 +190,8 @@ impl PixelSampler {
         segments: &[(&TextureView, u32, [f32; 4], u32, u32)],
     ) {
         // Drop state for segments that no longer exist.
-        self.segs.retain(|id, seg| {
-            segments.iter().any(|(_, sid, ..)| sid == id) || seg.in_flight
-        });
+        self.segs
+            .retain(|id, seg| segments.iter().any(|(_, sid, ..)| sid == id) || seg.in_flight);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("pixel-sampler-encode"),
@@ -197,19 +201,27 @@ impl PixelSampler {
         for &(src, id, region, cols, rows) in segments {
             let (cols, rows) = (cols.clamp(1, 512), rows.clamp(1, 512));
             // (Re)build state on first sight or grid resize.
-            let rebuild = self.segs.get(&id).is_none_or(|s| s.cols != cols || s.rows != rows);
+            let rebuild = self
+                .segs
+                .get(&id)
+                .is_none_or(|s| s.cols != cols || s.rows != rows);
             if rebuild {
                 if self.segs.get(&id).is_some_and(|s| s.in_flight) {
                     continue; // let the old readback land first
                 }
-                self.segs.insert(id, self.build_seg(device, region, cols, rows));
+                self.segs
+                    .insert(id, self.build_seg(device, region, cols, rows));
             }
             let seg = self.segs.get_mut(&id).unwrap();
             if seg.in_flight {
                 continue;
             }
             if seg.region != region {
-                queue.write_buffer(&seg.vertices, 0, bytemuck::cast_slice(&quad_vertices(region)));
+                queue.write_buffer(
+                    &seg.vertices,
+                    0,
+                    bytemuck::cast_slice(&quad_vertices(region)),
+                );
                 seg.region = region;
             }
 
@@ -217,8 +229,14 @@ impl PixelSampler {
                 label: Some("pixel-sampler-bg"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(src),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
                 ],
             });
             {
@@ -255,7 +273,11 @@ impl PixelSampler {
                         rows_per_image: Some(rows),
                     },
                 },
-                wgpu::Extent3d { width: cols, height: rows, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: cols,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
             );
             kicked.push(id);
         }
@@ -281,7 +303,11 @@ impl PixelSampler {
     fn build_seg(&self, device: &Device, region: [f32; 4], cols: u32, rows: u32) -> SegState {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("pixel-sampler-target"),
-            size: wgpu::Extent3d { width: cols, height: rows, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: cols,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,

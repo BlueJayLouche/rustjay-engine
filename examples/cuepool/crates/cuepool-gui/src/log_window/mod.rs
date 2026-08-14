@@ -44,11 +44,7 @@ pub fn show(ui: &mut egui::Ui, _state: &SharedStateHandle) {
                 };
 
                 ui.horizontal(|ui| {
-                    ui.monospace(
-                        egui::RichText::new(level_str)
-                            .color(color)
-                            .monospace(),
-                    );
+                    ui.monospace(egui::RichText::new(level_str).color(color).monospace());
                     ui.monospace(
                         egui::RichText::new(&entry.timestamp)
                             .color(egui::Color32::from_rgb(140, 140, 140))

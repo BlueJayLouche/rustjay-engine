@@ -163,7 +163,9 @@ pub(crate) enum CanvasCommand {
 
 /// Collapse a drained burst to the latest state setters. Survivors stay in
 /// their original order; `Drop` resets every earlier canvas/overlay command.
-fn coalesce_canvas_commands(commands: impl IntoIterator<Item = CanvasCommand>) -> Vec<CanvasCommand> {
+fn coalesce_canvas_commands(
+    commands: impl IntoIterator<Item = CanvasCommand>,
+) -> Vec<CanvasCommand> {
     let mut pending = Vec::new();
     for command in commands {
         if matches!(command, CanvasCommand::Drop) {
@@ -234,23 +236,26 @@ fn frame_pacing_decision(
     tick_interval: Option<Duration>,
 ) -> FramePacingDecision {
     let Some(position) = position else {
-        return FramePacingDecision { target: None, tick_paced: false };
+        return FramePacingDecision {
+            target: None,
+            tick_paced: false,
+        };
     };
     let healthy_interval = tick_interval
         .map(|interval| interval.clamp(VSYNC_INTERVAL_MIN, VSYNC_INTERVAL_MAX))
         .filter(|interval| {
-            last_tick_age.is_some_and(|age| {
-                age < interval.saturating_mul(3).min(VSYNC_STALE_MAX)
-            })
+            last_tick_age.is_some_and(|age| age < interval.saturating_mul(3).min(VSYNC_STALE_MAX))
         });
-    if !stepping
-        && let Some(interval) = healthy_interval {
-            return FramePacingDecision {
-                target: woke_on_tick.then(|| position.saturating_add(interval)),
-                tick_paced: true,
-            };
-        }
-    FramePacingDecision { target: Some(position), tick_paced: false }
+    if !stepping && let Some(interval) = healthy_interval {
+        return FramePacingDecision {
+            target: woke_on_tick.then(|| position.saturating_add(interval)),
+            tick_paced: true,
+        };
+    }
+    FramePacingDecision {
+        target: Some(position),
+        tick_paced: false,
+    }
 }
 
 fn update_vsync_interval(
@@ -346,11 +351,18 @@ pub(crate) fn video_consume_thread(
         for cmd in coalesce_canvas_commands(cmd_rx.try_iter()) {
             match cmd {
                 CanvasCommand::Resize { w, h, force } => {
-                    if force || canvas.as_ref().is_none_or(|c| c.width != w || c.height != h) {
+                    if force
+                        || canvas
+                            .as_ref()
+                            .is_none_or(|c| c.width != w || c.height != h)
+                    {
                         canvas = Some(cuepool_video::CanvasTexture::new(&device, w, h));
                         views_dirty = true;
                     }
-                    if overlay.as_ref().is_none_or(|o| o.width != w || o.height != h) {
+                    if overlay
+                        .as_ref()
+                        .is_none_or(|o| o.width != w || o.height != h)
+                    {
                         overlay = Some(cuepool_video::CanvasTexture::new(&device, w, h));
                         views_dirty = true;
                     }
@@ -379,9 +391,8 @@ pub(crate) fn video_consume_thread(
                                     image.into_raw(),
                                     0.0,
                                 );
-                                let _configure_guard = configure_gate
-                                    .read()
-                                    .unwrap_or_else(|e| e.into_inner());
+                                let _configure_guard =
+                                    configure_gate.read().unwrap_or_else(|e| e.into_inner());
                                 c.upload_frame(&queue, &frame, fit);
                             }
                             Err(e) => log::error!("Image cue failed to load '{path}': {e}"),
@@ -392,16 +403,14 @@ pub(crate) fn video_consume_thread(
                     if let Some(ov) = overlay.as_ref() {
                         match content {
                             Some((frame, fit)) => {
-                                let _configure_guard = configure_gate
-                                    .read()
-                                    .unwrap_or_else(|e| e.into_inner());
+                                let _configure_guard =
+                                    configure_gate.read().unwrap_or_else(|e| e.into_inner());
                                 ov.upload_frame(&queue, &frame, fit);
                             }
                             None => {
                                 let blank = vec![0u8; (ov.width * ov.height * 4) as usize];
-                                let _configure_guard = configure_gate
-                                    .read()
-                                    .unwrap_or_else(|e| e.into_inner());
+                                let _configure_guard =
+                                    configure_gate.read().unwrap_or_else(|e| e.into_inner());
                                 ov.upload_rgba(&queue, &blank)
                             }
                         }
@@ -451,7 +460,9 @@ pub(crate) fn video_consume_thread(
         };
         if let Some(request) = seek_frame {
             peek = None;
-            let delivered = rx.as_ref().map(|r| r.recv_timeout(Duration::from_millis(1000)));
+            let delivered = rx
+                .as_ref()
+                .map(|r| r.recv_timeout(Duration::from_millis(1000)));
             let mut ctl = control.lock_unpoisoned();
             if rx_epoch != Some(ctl.stream_epoch) {
                 rx = None;
@@ -500,7 +511,13 @@ pub(crate) fn video_consume_thread(
                         None => clock.elapsed(),
                     })
                 };
-                pos.map(|t| if stepping { t + Duration::from_micros(1) } else { t })
+                pos.map(|t| {
+                    if stepping {
+                        t + Duration::from_micros(1)
+                    } else {
+                        t
+                    }
+                })
             } else {
                 None
             };
@@ -593,20 +610,24 @@ pub(crate) fn video_consume_thread(
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         let upload_started = Instant::now();
                         c.upload_frame(&queue, &frame, fit);
-                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        timings
+                            .upload
+                            .set_ms(upload_timing.record(upload_started.elapsed()));
                         uploaded = true;
                     }
                 }
                 #[cfg(windows)]
                 cuepool_video::FramePixels::D3d11Nv12(direct) => {
-                    if let Err(reason) = cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
-                        if yuv_converter.is_none() {
-                            yuv_converter = Some(cuepool_video::YuvConverter::new(
-                                &device,
-                                wgpu::TextureFormat::Rgba8Unorm,
-                            ));
-                        }
-                    }) {
+                    if let Err(reason) =
+                        cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
+                            if yuv_converter.is_none() {
+                                yuv_converter = Some(cuepool_video::YuvConverter::new(
+                                    &device,
+                                    wgpu::TextureFormat::Rgba8Unorm,
+                                ));
+                            }
+                        })
+                    {
                         direct.complete(Err(reason));
                         frame_presented = false;
                     }
@@ -633,50 +654,63 @@ pub(crate) fn video_consume_thread(
                         }
 
                         if frame_presented {
-                            let prepared = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
-                                let upload_started = Instant::now();
-                                conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
-                                timings.upload.set_ms(
-                                    upload_timing.record(upload_started.elapsed()),
-                                );
-                                let conversion_started = Instant::now();
-                                let mut acquire_encoder = device.create_command_encoder(
-                                    &wgpu::CommandEncoderDescriptor {
-                                        label: Some("canvas-d3d11va-acquire"),
-                                    },
-                                );
-                                let mut convert_encoder = device.create_command_encoder(
-                                    &wgpu::CommandEncoderDescriptor {
-                                        label: Some("canvas-d3d11va-convert"),
-                                    },
-                                );
-                                let mut release_encoder = device.create_command_encoder(
-                                    &wgpu::CommandEncoderDescriptor {
-                                        label: Some("canvas-d3d11va-release"),
-                                    },
-                                );
-                                unsafe { direct.record_vulkan_acquire(&mut acquire_encoder) }
-                                    .and_then(|()| {
-                                        conv.encode(&mut convert_encoder, &c.render_view());
+                            let prepared =
+                                match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
+                                    || {
+                                        let upload_started = Instant::now();
+                                        conv.upload(
+                                            &device,
+                                            &queue,
+                                            &frame,
+                                            [c.width, c.height],
+                                            fit,
+                                        );
+                                        timings
+                                            .upload
+                                            .set_ms(upload_timing.record(upload_started.elapsed()));
+                                        let conversion_started = Instant::now();
+                                        let mut acquire_encoder = device.create_command_encoder(
+                                            &wgpu::CommandEncoderDescriptor {
+                                                label: Some("canvas-d3d11va-acquire"),
+                                            },
+                                        );
+                                        let mut convert_encoder = device.create_command_encoder(
+                                            &wgpu::CommandEncoderDescriptor {
+                                                label: Some("canvas-d3d11va-convert"),
+                                            },
+                                        );
+                                        let mut release_encoder = device.create_command_encoder(
+                                            &wgpu::CommandEncoderDescriptor {
+                                                label: Some("canvas-d3d11va-release"),
+                                            },
+                                        );
                                         unsafe {
-                                            direct.record_vulkan_release(&mut release_encoder)
+                                            direct.record_vulkan_acquire(&mut acquire_encoder)
                                         }
-                                    })
-                                    .and_then(|()| unsafe {
-                                        direct.attach_keyed_mutex(&mut acquire_encoder)
-                                    })?;
-                                Ok((
-                                    [
-                                        acquire_encoder.finish(),
-                                        convert_encoder.finish(),
-                                        release_encoder.finish(),
-                                    ],
-                                    conversion_started,
-                                ))
-                            }) {
-                                Ok(prepared) => prepared,
-                                Err(reason) => Err(reason),
-                            };
+                                        .and_then(|()| {
+                                            conv.encode(&mut convert_encoder, &c.render_view());
+                                            unsafe {
+                                                direct.record_vulkan_release(&mut release_encoder)
+                                            }
+                                        })
+                                        .and_then(
+                                            |()| unsafe {
+                                                direct.attach_keyed_mutex(&mut acquire_encoder)
+                                            },
+                                        )?;
+                                        Ok((
+                                            [
+                                                acquire_encoder.finish(),
+                                                convert_encoder.finish(),
+                                                release_encoder.finish(),
+                                            ],
+                                            conversion_started,
+                                        ))
+                                    },
+                                ) {
+                                    Ok(prepared) => prepared,
+                                    Err(reason) => Err(reason),
+                                };
                             let epoch = rx_epoch.unwrap_or_default();
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {
@@ -754,7 +788,9 @@ pub(crate) fn video_consume_thread(
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         let upload_started = Instant::now();
                         conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
-                        timings.upload.set_ms(upload_timing.record(upload_started.elapsed()));
+                        timings
+                            .upload
+                            .set_ms(upload_timing.record(upload_started.elapsed()));
                         let conversion_started = Instant::now();
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -762,9 +798,9 @@ pub(crate) fn video_consume_thread(
                             });
                         conv.encode(&mut encoder, &c.render_view());
                         queue.submit(std::iter::once(encoder.finish()));
-                        timings.conversion_submit.set_ms(
-                            conversion_submit_timing.record(conversion_started.elapsed()),
-                        );
+                        timings
+                            .conversion_submit
+                            .set_ms(conversion_submit_timing.record(conversion_started.elapsed()));
                         uploaded = true;
                     }
                 }
@@ -837,8 +873,7 @@ pub(crate) fn video_consume_thread(
                     }
                     None => 1.0,
                 };
-                let has_content =
-                    ctl.video_active || ctl.canvas_has_frame || ctl.text_active;
+                let has_content = ctl.video_active || ctl.canvas_has_frame || ctl.text_active;
                 let new_outputs = if ctl.outputs_gen != outputs_gen {
                     outputs_gen = ctl.outputs_gen;
                     Some(ctl.outputs.clone())
@@ -1247,17 +1282,14 @@ pub(crate) fn video_decode_thread(
     } else {
         zero_copy
     };
-    let mut source = match VideoSource::open_with_zero_copy(
-        path,
-        Arc::clone(&frame_pool),
-        zero_copy,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("Failed to open video source {}: {e}", path);
-            return;
-        }
-    };
+    let mut source =
+        match VideoSource::open_with_zero_copy(path, Arc::clone(&frame_pool), zero_copy) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Failed to open video source {}: {e}", path);
+                return;
+            }
+        };
     if stop_flag.load(Ordering::Acquire) {
         return;
     }
@@ -1321,9 +1353,10 @@ pub(crate) fn video_decode_thread(
                 }
                 Some(f) => {
                     if let Some(p) = prev.take()
-                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
-                            return;
-                        }
+                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p))
+                    {
+                        return;
+                    }
                     if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(f)) {
                         return;
                     }
@@ -1332,9 +1365,10 @@ pub(crate) fn video_decode_thread(
                 None => {
                     // t is past the last frame: deliver that frame and end.
                     if let Some(p) = prev.take()
-                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p)) {
-                            return;
-                        }
+                        && !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(p))
+                    {
+                        return;
+                    }
                     send_video_message(&frame_tx, &stop_flag, VideoMessage::Eof);
                     return;
                 }
@@ -1355,10 +1389,11 @@ pub(crate) fn video_decode_thread(
                 #[cfg(windows)]
                 let handoff = frame.d3d11_handoff();
                 if std::mem::take(&mut diag_path_pending)
-                    && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut() {
-                        v.decode_path = source.decode_path().to_string();
-                        v.fallback_reason = source.fallback_reason().map(str::to_owned);
-                    }
+                    && let Some(v) = diag_state.lock_unpoisoned().diagnostics.video.as_mut()
+                {
+                    v.decode_path = source.decode_path().to_string();
+                    v.fallback_reason = source.fallback_reason().map(str::to_owned);
+                }
                 if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(frame)) {
                     return;
                 }
@@ -1421,11 +1456,15 @@ fn timed_read_frame(
 ) -> Option<VideoFrame> {
     let frame = source.read_frame();
     let frame_timings = source.last_timings();
-    timings.decode.set_ms(timing_windows.decode.record(frame_timings.decode));
-    timings.hw_transfer.set_ms(
-        timing_windows.hw_transfer.record(frame_timings.hw_transfer),
-    );
-    timings.plane_copy.set_ms(timing_windows.plane_copy.record(frame_timings.plane_copy));
+    timings
+        .decode
+        .set_ms(timing_windows.decode.record(frame_timings.decode));
+    timings
+        .hw_transfer
+        .set_ms(timing_windows.hw_transfer.record(frame_timings.hw_transfer));
+    timings
+        .plane_copy
+        .set_ms(timing_windows.plane_copy.record(frame_timings.plane_copy));
     frame
 }
 
@@ -1460,7 +1499,8 @@ pub(crate) fn pixmap_decode_thread(
                 if loop_mode == cuepool_core::LoopMode::OneShot && last_dims.0 > 0 {
                     // Blank to black so the LEDs go dark, mirroring video-cue end.
                     let (w, h) = last_dims;
-                    let _ = frame_tx.send(VideoFrame::new(w, h, vec![0; (w * h * 4) as usize], 0.0));
+                    let _ =
+                        frame_tx.send(VideoFrame::new(w, h, vec![0; (w * h * 4) as usize], 0.0));
                 }
                 return; // HoldLast: exit holding the last frame
             };
@@ -1516,7 +1556,12 @@ mod tests {
         assert_eq!(absent.target, Some(position));
         assert!(!absent.tick_paced);
 
-        let stale = decide(false, false, Some(Duration::from_millis(61)), Some(interval));
+        let stale = decide(
+            false,
+            false,
+            Some(Duration::from_millis(61)),
+            Some(interval),
+        );
         assert_eq!(stale.target, Some(position));
         assert!(!stale.tick_paced);
 
@@ -1537,14 +1582,26 @@ mod tests {
     #[test]
     fn canvas_commands_coalesce_to_latest_state_after_drop() {
         let commands = coalesce_canvas_commands([
-            CanvasCommand::Resize { w: 640, h: 480, force: false },
+            CanvasCommand::Resize {
+                w: 640,
+                h: 480,
+                force: false,
+            },
             CanvasCommand::Image("discarded.png".into(), CanvasFit::default()),
             CanvasCommand::Overlay(None),
             CanvasCommand::Drop,
-            CanvasCommand::Resize { w: 1280, h: 720, force: false },
+            CanvasCommand::Resize {
+                w: 1280,
+                h: 720,
+                force: false,
+            },
             CanvasCommand::BlankCanvas,
             CanvasCommand::Overlay(None),
-            CanvasCommand::Resize { w: 1920, h: 1080, force: true },
+            CanvasCommand::Resize {
+                w: 1920,
+                h: 1080,
+                force: true,
+            },
             CanvasCommand::Image("latest.png".into(), CanvasFit::default()),
             CanvasCommand::Overlay(None),
         ]);
@@ -1553,7 +1610,11 @@ mod tests {
         assert!(matches!(commands[0], CanvasCommand::Drop));
         assert!(matches!(
             commands[1],
-            CanvasCommand::Resize { w: 1920, h: 1080, force: true }
+            CanvasCommand::Resize {
+                w: 1920,
+                h: 1080,
+                force: true
+            }
         ));
         assert!(matches!(&commands[2], CanvasCommand::Image(path, _) if path == "latest.png"));
         assert!(matches!(commands[3], CanvasCommand::Overlay(None)));

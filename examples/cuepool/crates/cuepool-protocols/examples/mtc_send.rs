@@ -51,7 +51,11 @@ fn main() {
     let port = match &filter {
         Some(f) => ports
             .iter()
-            .find(|p| out.port_name(p).map(|n| n.contains(f.as_str())).unwrap_or(false))
+            .find(|p| {
+                out.port_name(p)
+                    .map(|n| n.contains(f.as_str()))
+                    .unwrap_or(false)
+            })
             .unwrap_or_else(|| {
                 eprintln!("No port matching '{f}'. Available:");
                 for p in &ports {

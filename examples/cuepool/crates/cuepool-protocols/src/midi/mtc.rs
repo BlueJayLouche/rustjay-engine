@@ -334,10 +334,11 @@ impl MtcReceiver {
                                 // Update source device name — try_lock avoids any
                                 // block if the reader happens to hold it.
                                 if let Ok(mut src) = published.source_device.try_lock()
-                                    && src.as_str() != device {
-                                        src.clear();
-                                        src.push_str(&device);
-                                    }
+                                    && src.as_str() != device
+                                {
+                                    src.clear();
+                                    src.push_str(&device);
+                                }
                                 published
                                     .smpte
                                     .store(pack_smpte(&tc, true, true), Ordering::Release);
@@ -352,10 +353,11 @@ impl MtcReceiver {
                             if let Some(tc) = MtcDecoder::parse_full_frame(msg) {
                                 log::info!("[MTC] Full-frame locate: {} from {}", tc, device);
                                 if let Ok(mut src) = published.source_device.try_lock()
-                                    && src.as_str() != device {
-                                        src.clear();
-                                        src.push_str(&device);
-                                    }
+                                    && src.as_str() != device
+                                {
+                                    src.clear();
+                                    src.push_str(&device);
+                                }
                                 // Full-frame is a locate — running but not playing.
                                 published
                                     .smpte

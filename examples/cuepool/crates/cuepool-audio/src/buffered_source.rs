@@ -100,7 +100,9 @@ impl BufferedSource {
                 inner.read_pos.store(0, Ordering::Release);
                 inner.write_pos.store(0, Ordering::Release);
                 inner.eof.store(false, Ordering::Relaxed);
-                inner.applied_seek_generation.store(seek_generation, Ordering::Release);
+                inner
+                    .applied_seek_generation
+                    .store(seek_generation, Ordering::Release);
             }
 
             if inner.eof.load(Ordering::Relaxed) {

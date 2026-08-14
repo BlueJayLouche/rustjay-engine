@@ -63,7 +63,9 @@ struct SlowSeekSource {
 
 impl SampleProvider for SlowSeekSource {
     fn read(&self, buffer: &mut [f32]) -> usize {
-        let start = self.pos.fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
+        let start = self
+            .pos
+            .fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
         for (offset, sample) in buffer.iter_mut().enumerate() {
             *sample = ramp_value(start + offset);
         }
@@ -79,10 +81,18 @@ impl SampleProvider for SlowSeekSource {
         self.pos.store(sample, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn position(&self) -> usize { self.pos.load(std::sync::atomic::Ordering::Relaxed) }
-    fn length(&self) -> Option<usize> { Some(10_000) }
-    fn sample_rate(&self) -> u32 { MIXER_SAMPLE_RATE }
-    fn channels(&self) -> u16 { MIXER_CHANNELS }
+    fn position(&self) -> usize {
+        self.pos.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn length(&self) -> Option<usize> {
+        Some(10_000)
+    }
+    fn sample_rate(&self) -> u32 {
+        MIXER_SAMPLE_RATE
+    }
+    fn channels(&self) -> u16 {
+        MIXER_CHANNELS
+    }
 }
 
 #[test]
@@ -227,7 +237,9 @@ fn slow_seek_silences_the_old_ring_until_the_new_position_is_ready() {
     let mut sink = NullSink::new(Arc::clone(&mixer), BLOCK_FRAMES);
 
     for _ in 0..100 {
-        if input.position() > 0 { break; }
+        if input.position() > 0 {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     input.seek(4_000);

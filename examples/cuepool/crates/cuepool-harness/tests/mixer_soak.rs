@@ -1,4 +1,4 @@
-use cuepool_audio::{Mixer, MixerInput, MIXER_CHANNELS, MIXER_SAMPLE_RATE};
+use cuepool_audio::{MIXER_CHANNELS, MIXER_SAMPLE_RATE, Mixer, MixerInput};
 use cuepool_harness::sink::{NullSink, RampSource};
 use std::sync::Arc;
 
@@ -26,8 +26,14 @@ fn mixer_survives_one_simulated_hour() {
         }
         let out = sink.render_block();
         for (i, s) in out.iter().enumerate() {
-            assert!(s.is_finite(), "non-finite sample at block {block} idx {i}: {s}");
-            assert!(s.abs() <= 8.0, "runaway sample at block {block} idx {i}: {s}");
+            assert!(
+                s.is_finite(),
+                "non-finite sample at block {block} idx {i}: {s}"
+            );
+            assert!(
+                s.abs() <= 8.0,
+                "runaway sample at block {block} idx {i}: {s}"
+            );
         }
     }
 }

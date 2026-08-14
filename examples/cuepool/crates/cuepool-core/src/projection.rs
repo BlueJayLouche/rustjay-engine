@@ -60,7 +60,11 @@ impl ProjectionConfig {
                     fullscreen_monitor: None,
                     monitor_id: None,
                     edge_blend: EdgeBlend {
-                        right: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
+                        right: EdgeBlendEdge {
+                            enabled: true,
+                            width: 180,
+                            gamma: 2.0,
+                        },
                         ..Default::default()
                     },
                 },
@@ -75,8 +79,16 @@ impl ProjectionConfig {
                     fullscreen_monitor: None,
                     monitor_id: None,
                     edge_blend: EdgeBlend {
-                        left: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
-                        right: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
+                        left: EdgeBlendEdge {
+                            enabled: true,
+                            width: 180,
+                            gamma: 2.0,
+                        },
+                        right: EdgeBlendEdge {
+                            enabled: true,
+                            width: 180,
+                            gamma: 2.0,
+                        },
                         ..Default::default()
                     },
                 },
@@ -91,7 +103,11 @@ impl ProjectionConfig {
                     fullscreen_monitor: None,
                     monitor_id: None,
                     edge_blend: EdgeBlend {
-                        left: EdgeBlendEdge { enabled: true, width: 180, gamma: 2.0 },
+                        left: EdgeBlendEdge {
+                            enabled: true,
+                            width: 180,
+                            gamma: 2.0,
+                        },
                         ..Default::default()
                     },
                 },
@@ -185,8 +201,15 @@ pub struct MonitorId {
 impl MonitorId {
     /// Human-readable label for the assignment dropdown.
     pub fn label(&self) -> String {
-        let name = if self.name.is_empty() { "Display" } else { self.name.as_str() };
-        format!("{name} — {}×{} @ ({},{})", self.width, self.height, self.pos_x, self.pos_y)
+        let name = if self.name.is_empty() {
+            "Display"
+        } else {
+            self.name.as_str()
+        };
+        format!(
+            "{name} — {}×{} @ ({},{})",
+            self.width, self.height, self.pos_x, self.pos_y
+        )
     }
 
     /// Squared virtual-desktop position distance to another monitor.
@@ -234,7 +257,13 @@ mod monitor_tests {
     use super::*;
 
     fn pj(x: i32) -> MonitorId {
-        MonitorId { name: "PJ".into(), width: 1920, height: 1080, pos_x: x, pos_y: 0 }
+        MonitorId {
+            name: "PJ".into(),
+            width: 1920,
+            height: 1080,
+            pos_x: x,
+            pos_y: 0,
+        }
     }
 
     #[test]

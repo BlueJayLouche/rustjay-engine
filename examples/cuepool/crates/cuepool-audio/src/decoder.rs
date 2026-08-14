@@ -57,7 +57,10 @@ impl FileDecoder {
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
         let mut hint = Hint::new();
-        if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
             hint.with_extension(ext);
         }
 
@@ -325,7 +328,11 @@ mod tests {
         assert!(read > 0, "should decode some samples");
 
         let max = buf[..read].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(max > 0.001 && max <= 1.0, "samples should be in [-1,1], got max {}", max);
+        assert!(
+            max > 0.001 && max <= 1.0,
+            "samples should be in [-1,1], got max {}",
+            max
+        );
 
         // A real signal has many zero crossings.
         let zc = buf[..read].windows(2).filter(|w| w[0] * w[1] < 0.0).count();
@@ -358,11 +365,18 @@ mod tests {
         // stay at EOF rather than being swapped for one rewound to the start.
         let len = decoder.length().unwrap_or(1 << 24);
         decoder.seek(len * 10);
-        assert_eq!(decoder.read(&mut buf), 0, "failed seek at EOF must stay silent");
+        assert_eq!(
+            decoder.read(&mut buf),
+            0,
+            "failed seek at EOF must stay silent"
+        );
 
         // The workaround itself: a valid seek after EOF replays audio.
         decoder.seek(0);
-        assert!(decoder.read(&mut buf) > 0, "valid seek after EOF should replay");
+        assert!(
+            decoder.read(&mut buf) > 0,
+            "valid seek after EOF should replay"
+        );
 
         let _ = std::fs::remove_file(&m4a);
     }

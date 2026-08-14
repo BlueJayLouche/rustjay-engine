@@ -52,15 +52,18 @@ impl FadeProcessor {
 
     /// Start a fade to `target_volume` over `duration_frames`.
     pub fn start_fade(&self, target_volume: f32, duration_frames: u32, fade_type: FadeType) {
-        self.cmd_target_volume.store(target_volume.to_bits(), Ordering::Relaxed);
-        self.cmd_duration_frames.store(duration_frames, Ordering::Relaxed);
+        self.cmd_target_volume
+            .store(target_volume.to_bits(), Ordering::Relaxed);
+        self.cmd_duration_frames
+            .store(duration_frames, Ordering::Relaxed);
         self.cmd_fade_type.store(fade_type as u8, Ordering::Relaxed);
         self.cmd_trigger.store(true, Ordering::Release);
     }
 
     /// Snap to a volume immediately (cancel any active fade).
     pub fn set_volume(&self, volume: f32) {
-        self.cmd_target_volume.store(volume.to_bits(), Ordering::Relaxed);
+        self.cmd_target_volume
+            .store(volume.to_bits(), Ordering::Relaxed);
         self.cmd_duration_frames.store(0, Ordering::Relaxed);
         self.cmd_trigger.store(true, Ordering::Release);
     }
@@ -224,7 +227,9 @@ mod tests {
     fn test_fade_linear() {
         let source = Box::new(FnSource::new(
             |buf| {
-                for s in buf.iter_mut() { *s = 1.0; }
+                for s in buf.iter_mut() {
+                    *s = 1.0;
+                }
                 buf.len()
             },
             48000,
@@ -239,10 +244,18 @@ mod tests {
         assert_eq!(read, 960);
 
         // First frame should be near full volume (gain ~1.0)
-        assert!((buf[0] - 1.0).abs() < 0.01, "first frame should be near full volume, got {}", buf[0]);
+        assert!(
+            (buf[0] - 1.0).abs() < 0.01,
+            "first frame should be near full volume, got {}",
+            buf[0]
+        );
         // Last frame: at t = 479/480 ≈ 0.998, gain ≈ 0.002
         let last_l = buf[958];
-        assert!(last_l < 0.05, "last frame should be near silence, got {}", last_l);
+        assert!(
+            last_l < 0.05,
+            "last frame should be near silence, got {}",
+            last_l
+        );
     }
 
     #[test]
@@ -267,9 +280,21 @@ mod tests {
         // 4 frames over 4-frame fade: t = 0/4, 1/4, 2/4, 3/4
         // smoothstep: 0, 0.15625, 0.5, 0.84375
         assert!(buf[0].abs() < 0.01, "start should be ~0, got {}", buf[0]);
-        assert!((buf[1] - 0.15625).abs() < 0.01, "quarter should be ~0.156, got {}", buf[1]);
-        assert!((buf[2] - 0.5).abs() < 0.01, "half should be ~0.5, got {}", buf[2]);
-        assert!((buf[3] - 0.84375).abs() < 0.01, "three-quarter should be ~0.844, got {}", buf[3]);
+        assert!(
+            (buf[1] - 0.15625).abs() < 0.01,
+            "quarter should be ~0.156, got {}",
+            buf[1]
+        );
+        assert!(
+            (buf[2] - 0.5).abs() < 0.01,
+            "half should be ~0.5, got {}",
+            buf[2]
+        );
+        assert!(
+            (buf[3] - 0.84375).abs() < 0.01,
+            "three-quarter should be ~0.844, got {}",
+            buf[3]
+        );
     }
 
     #[test]

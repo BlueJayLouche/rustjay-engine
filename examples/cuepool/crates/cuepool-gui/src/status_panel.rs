@@ -25,17 +25,19 @@ pub fn show(
     ui.separator();
 
     for (title, rows) in diagnostics.sections() {
-        egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
-            egui::Grid::new(format!("status_grid_{title}"))
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    for (key, value) in rows {
-                        ui.monospace(key);
-                        ui.monospace(value);
-                        ui.end_row();
-                    }
-                });
-        });
+        egui::CollapsingHeader::new(title)
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::Grid::new(format!("status_grid_{title}"))
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for (key, value) in rows {
+                            ui.monospace(key);
+                            ui.monospace(value);
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 }

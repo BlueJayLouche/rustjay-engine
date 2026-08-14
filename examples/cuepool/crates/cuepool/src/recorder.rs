@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use cuepool_gui::app::RecorderStatus;
-use rustjay_lighting::{read_rec, DmxReceiver, MaskedFrame, PunchRecorder, RecWriter, RxConfig};
+use rustjay_lighting::{DmxReceiver, MaskedFrame, PunchRecorder, RecWriter, RxConfig, read_rec};
 
 use crate::lighting_engine::LightingEngine;
 
@@ -113,7 +113,12 @@ impl Recorder {
             .map_err(|e| format!("cannot open DMX input sockets: {e}"))?;
         log::info!("Recorder: pass started on '{}'", file.display());
         self.rx_packets = 0;
-        self.pass = Some(Pass { punch, started: Instant::now(), file, rx });
+        self.pass = Some(Pass {
+            punch,
+            started: Instant::now(),
+            file,
+            rx,
+        });
         Ok(())
     }
 
@@ -244,8 +249,10 @@ mod tests {
     /// unicast to the standard port → tick drains → stop & keep → file.
     #[test]
     fn record_pass_end_to_end() {
-        let file = std::env::temp_dir()
-            .join(format!("cuepool-recorder-e2e-{}.dmxrec", std::process::id()));
+        let file = std::env::temp_dir().join(format!(
+            "cuepool-recorder-e2e-{}.dmxrec",
+            std::process::id()
+        ));
         std::fs::remove_file(&file).ok();
         let file_s = file.to_string_lossy().to_string();
 
@@ -253,7 +260,11 @@ mod tests {
         let mut rec = Recorder::new();
         // Ephemeral port: a real sACN app on :5568 (reuseport) would steal
         // the unicast test packets.
-        rec.rx_config = RxConfig { artnet: false, sacn_port: 0, ..Default::default() };
+        rec.rx_config = RxConfig {
+            artnet: false,
+            sacn_port: 0,
+            ..Default::default()
+        };
         rec.record_toggle(&file_s);
         let snap = rec.snapshot();
         assert!(snap.recording, "pass should start: {:?}", snap.error);
@@ -305,13 +316,19 @@ mod tests {
     /// Live input during a pass punches in like wire input.
     #[test]
     fn live_input_feeds_recording_pass() {
-        let file = std::env::temp_dir()
-            .join(format!("cuepool-recorder-osc-{}.dmxrec", std::process::id()));
+        let file = std::env::temp_dir().join(format!(
+            "cuepool-recorder-osc-{}.dmxrec",
+            std::process::id()
+        ));
         std::fs::remove_file(&file).ok();
         let file_s = file.to_string_lossy().to_string();
 
         let mut rec = Recorder::new();
-        rec.rx_config = RxConfig { artnet: false, sacn_port: 0, ..Default::default() };
+        rec.rx_config = RxConfig {
+            artnet: false,
+            sacn_port: 0,
+            ..Default::default()
+        };
         rec.record_toggle(&file_s);
         assert!(rec.recording());
 
@@ -320,7 +337,10 @@ mod tests {
         rec.record_toggle(&file_s); // stop & keep
 
         let take = read_rec(&file).unwrap();
-        assert_eq!((take[0].universe, take[0].channel, take[0].value), (2, 5, 99));
+        assert_eq!(
+            (take[0].universe, take[0].channel, take[0].value),
+            (2, 5, 99)
+        );
         std::fs::remove_file(&file).ok();
     }
 }

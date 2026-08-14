@@ -103,9 +103,11 @@ pub(crate) fn projection_structure_changed(
     if built.outputs.len() != live_outputs.len() {
         return true;
     }
-    built.outputs.iter().zip(live_outputs).any(|(b, l)| {
-        b.monitor_id != l.monitor_id || b.fullscreen_monitor != l.fullscreen_monitor
-    })
+    built
+        .outputs
+        .iter()
+        .zip(live_outputs)
+        .any(|(b, l)| b.monitor_id != l.monitor_id || b.fullscreen_monitor != l.fullscreen_monitor)
 }
 
 impl App {
@@ -117,7 +119,8 @@ impl App {
                 out.window.set_fullscreen(None);
                 out.window.set_cursor_visible(true);
             } else {
-                out.window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+                out.window
+                    .set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 out.window.set_cursor_visible(false);
             }
         }
@@ -170,10 +173,12 @@ impl App {
         for (o, a) in outputs.iter().zip(assigned.iter_mut()) {
             if a.is_none()
                 && let Some(idx) = o.fullscreen_monitor
-                    && idx < monitors.len() && !used[idx] {
-                        used[idx] = true;
-                        *a = Some(idx);
-                    }
+                && idx < monitors.len()
+                && !used[idx]
+            {
+                used[idx] = true;
+                *a = Some(idx);
+            }
         }
 
         // Windowed (un-assigned) outputs are tiled side-by-side at a preview size
@@ -202,13 +207,12 @@ impl App {
 
             if let Some(mon_idx) = assigned[out_idx] {
                 if let Some(monitor) = monitors.get(mon_idx) {
-                    attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
-                        monitor.clone(),
-                    ))));
+                    attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(
+                        Some(monitor.clone()),
+                    )));
                 }
             } else {
-                let aspect =
-                    output.output_height.max(1) as f64 / output.output_width.max(1) as f64;
+                let aspect = output.output_height.max(1) as f64 / output.output_width.max(1) as f64;
                 let h = (tile_w * aspect).min(screen_h * 0.7);
                 let x = gap + windowed_idx as f64 * (tile_w + gap);
                 attrs = attrs
@@ -218,7 +222,9 @@ impl App {
             }
 
             let window = Arc::new(
-                event_loop.create_window(attrs).expect("create output window"),
+                event_loop
+                    .create_window(attrs)
+                    .expect("create output window"),
             );
 
             let surface = self
@@ -289,13 +295,10 @@ impl App {
                 );
             }
 
-            let pixel_perfect =
-                output.output_width == output.source_width && output.output_height == output.source_height;
-            let renderer = cuepool_video::ProjectionRenderer::new(
-                &self.device,
-                config.format,
-                pixel_perfect,
-            );
+            let pixel_perfect = output.output_width == output.source_width
+                && output.output_height == output.source_height;
+            let renderer =
+                cuepool_video::ProjectionRenderer::new(&self.device, config.format, pixel_perfect);
 
             let size_atomic = Arc::new(AtomicU64::new(pack_size(size.width, size.height)));
             let stop = Arc::new(AtomicBool::new(false));

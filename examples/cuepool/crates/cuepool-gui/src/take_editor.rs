@@ -10,7 +10,7 @@
 //! "Output scrub" pushes the frame at the playhead to the lighting output
 //! through [`AppCommand::RecorderScrub`].
 
-use rustjay_lighting::{rec_duration_ms, MaskedFrame, RecEvent, ShowPlayer};
+use rustjay_lighting::{MaskedFrame, RecEvent, ShowPlayer, rec_duration_ms};
 
 use crate::app::{AppCommand, SharedStateHandle};
 
@@ -77,7 +77,11 @@ impl TakeEditor {
     }
 
     fn rebuild_channels(&mut self) {
-        self.channels = self.events.iter().map(|e| (e.universe, e.channel)).collect();
+        self.channels = self
+            .events
+            .iter()
+            .map(|e| (e.universe, e.channel))
+            .collect();
         self.channels.sort_unstable();
         self.channels.dedup();
         if self.sel.is_none_or(|s| !self.channels.contains(&s)) {
@@ -169,9 +173,10 @@ impl TakeEditor {
         }
         self.open = open;
         if let Some(cmd) = scrub_cmd
-            && let Ok(mut s) = state.lock() {
-                s.command_queue.push(cmd);
-            }
+            && let Ok(mut s) = state.lock()
+        {
+            s.command_queue.push(cmd);
+        }
     }
 
     fn header_ui(&mut self, ui: &mut egui::Ui, recording: bool) {
@@ -214,10 +219,11 @@ impl TakeEditor {
                     .add_enabled(self.undo.is_some() && !recording, egui::Button::new("Undo"))
                     .on_hover_text("Undo the last edit (single level)")
                     .clicked()
-                    && let Some(prev) = self.undo.take() {
-                        self.events = prev;
-                        self.edited();
-                    }
+                    && let Some(prev) = self.undo.take()
+                {
+                    self.events = prev;
+                    self.edited();
+                }
             });
         });
     }
@@ -233,7 +239,11 @@ impl TakeEditor {
                 .selected_text(sel_label)
                 .show_ui(ui, |ui| {
                     for &(u, c) in &self.channels {
-                        ui.selectable_value(&mut self.sel, Some((u, c)), format!("U{u} ch{}", c + 1));
+                        ui.selectable_value(
+                            &mut self.sel,
+                            Some((u, c)),
+                            format!("U{u} ch{}", c + 1),
+                        );
                     }
                 });
             let has_sel = self.sel.is_some();
@@ -241,50 +251,72 @@ impl TakeEditor {
                 .add_enabled(has_sel, egui::Button::new("Delete channel"))
                 .on_hover_text("Remove all of this channel's events — other sources own it again")
                 .clicked()
-                && let Some((u, c)) = self.sel {
-                    self.snapshot_undo();
-                    self.events.retain(|e| (e.universe, e.channel) != (u, c));
-                    self.edited();
-                }
+                && let Some((u, c)) = self.sel
+            {
+                self.snapshot_undo();
+                self.events.retain(|e| (e.universe, e.channel) != (u, c));
+                self.edited();
+            }
             ui.separator();
             ui.label("Shift (ms):");
-            ui.add(egui::DragValue::new(&mut self.shift_ms).speed(10).range(-3_600_000..=3_600_000));
+            ui.add(
+                egui::DragValue::new(&mut self.shift_ms)
+                    .speed(10)
+                    .range(-3_600_000..=3_600_000),
+            );
             if ui
                 .add_enabled(has_sel && self.shift_ms != 0, egui::Button::new("Apply"))
                 .on_hover_text("Time-shift every event of this channel (clamped at 0)")
                 .clicked()
-                && let Some((u, c)) = self.sel {
-                    self.snapshot_undo();
-                    for e in &mut self.events {
-                        if (e.universe, e.channel) == (u, c) {
-                            e.t_ms = e.t_ms.saturating_add_signed(self.shift_ms);
-                        }
+                && let Some((u, c)) = self.sel
+            {
+                self.snapshot_undo();
+                for e in &mut self.events {
+                    if (e.universe, e.channel) == (u, c) {
+                        e.t_ms = e.t_ms.saturating_add_signed(self.shift_ms);
                     }
-                    self.edited();
                 }
+                self.edited();
+            }
         });
     }
 
     fn range_ops_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Range (s):");
-            ui.add(egui::DragValue::new(&mut self.range.0).speed(0.1).range(0.0..=86_400.0));
+            ui.add(
+                egui::DragValue::new(&mut self.range.0)
+                    .speed(0.1)
+                    .range(0.0..=86_400.0),
+            );
             ui.label("–");
-            ui.add(egui::DragValue::new(&mut self.range.1).speed(0.1).range(0.0..=86_400.0));
+            ui.add(
+                egui::DragValue::new(&mut self.range.1)
+                    .speed(0.1)
+                    .range(0.0..=86_400.0),
+            );
             let valid = self.range.1 > self.range.0;
             if ui
                 .add_enabled(valid, egui::Button::new("Trim take"))
-                .on_hover_text("Keep only this window; held values at the start become the new baseline")
+                .on_hover_text(
+                    "Keep only this window; held values at the start become the new baseline",
+                )
                 .clicked()
             {
                 self.trim();
             }
             ui.separator();
             ui.label("Flatten to:");
-            ui.add(egui::DragValue::new(&mut self.flat_value).speed(1).range(0..=255));
+            ui.add(
+                egui::DragValue::new(&mut self.flat_value)
+                    .speed(1)
+                    .range(0..=255),
+            );
             if ui
                 .add_enabled(valid && self.sel.is_some(), egui::Button::new("Flatten"))
-                .on_hover_text("Hold this channel at a constant over the range; the old curve resumes after")
+                .on_hover_text(
+                    "Hold this channel at a constant over the range; the old curve resumes after",
+                )
                 .clicked()
             {
                 self.flatten();
@@ -316,7 +348,10 @@ impl TakeEditor {
             self.events
                 .iter()
                 .filter(|e| e.t_ms > start && e.t_ms <= end)
-                .map(|e| RecEvent { t_ms: e.t_ms - start, ..*e }),
+                .map(|e| RecEvent {
+                    t_ms: e.t_ms - start,
+                    ..*e
+                }),
         );
         self.events = out;
         self.edited();
@@ -335,17 +370,29 @@ impl TakeEditor {
             .state_at(end)
             .get(u)
             .map_or(0, |m| m.values()[c as usize]);
-        self.events.retain(|e| {
-            (e.universe, e.channel) != (u, c) || e.t_ms < start || e.t_ms > end
+        self.events
+            .retain(|e| (e.universe, e.channel) != (u, c) || e.t_ms < start || e.t_ms > end);
+        self.events.push(RecEvent {
+            t_ms: start,
+            universe: u,
+            channel: c,
+            value: self.flat_value,
         });
-        self.events.push(RecEvent { t_ms: start, universe: u, channel: c, value: self.flat_value });
-        self.events.push(RecEvent { t_ms: end, universe: u, channel: c, value: resume });
+        self.events.push(RecEvent {
+            t_ms: end,
+            universe: u,
+            channel: c,
+            value: resume,
+        });
         self.edited();
     }
 
     #[cfg(test)]
     fn from_events(events: Vec<RecEvent>) -> Self {
-        let mut ed = Self { events, ..Default::default() };
+        let mut ed = Self {
+            events,
+            ..Default::default()
+        };
         ed.rebuild_channels();
         ed
     }
@@ -357,7 +404,9 @@ impl TakeEditor {
             ui.add(egui::Slider::new(&mut self.zoom, 1.0..=100.0).logarithmic(true));
             ui.add_enabled(
                 self.zoom > 1.0,
-                egui::Slider::new(&mut self.scroll, 0.0..=1.0).show_value(false).text("scroll"),
+                egui::Slider::new(&mut self.scroll, 0.0..=1.0)
+                    .show_value(false)
+                    .text("scroll"),
             );
             let changed = ui
                 .checkbox(&mut self.output_scrub, "Output scrub")
@@ -389,7 +438,11 @@ impl TakeEditor {
         // Value gridlines.
         for v in [0u8, 64, 128, 192, 255] {
             let y = to_y(v);
-            painter.hline(rect.x_range(), y, egui::Stroke::new(1.0_f32, egui::Color32::from_gray(38)));
+            painter.hline(
+                rect.x_range(),
+                y,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(38)),
+            );
             painter.text(
                 egui::pos2(rect.left() + 2.0, y),
                 egui::Align2::LEFT_BOTTOM,
@@ -412,12 +465,27 @@ impl TakeEditor {
                 let (t, v) = (e.t_ms as f32, e.value);
                 let (pt, pv) = last.unwrap_or((0.0, 0));
                 // Hold previous value, then jump at the event time.
-                painter.line_segment([egui::pos2(to_x(pt), to_y(pv)), egui::pos2(to_x(t), to_y(pv))], stroke);
-                painter.line_segment([egui::pos2(to_x(t), to_y(pv)), egui::pos2(to_x(t), to_y(v))], stroke);
+                painter.line_segment(
+                    [
+                        egui::pos2(to_x(pt), to_y(pv)),
+                        egui::pos2(to_x(t), to_y(pv)),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [egui::pos2(to_x(t), to_y(pv)), egui::pos2(to_x(t), to_y(v))],
+                    stroke,
+                );
                 last = Some((t, v));
             }
             if let Some((t, v)) = last {
-                painter.line_segment([egui::pos2(to_x(t), to_y(v)), egui::pos2(rect.right(), to_y(v))], stroke);
+                painter.line_segment(
+                    [
+                        egui::pos2(to_x(t), to_y(v)),
+                        egui::pos2(rect.right(), to_y(v)),
+                    ],
+                    stroke,
+                );
             }
 
             // Point handles + hit test.
@@ -431,7 +499,11 @@ impl TakeEditor {
                 }
                 painter.circle_filled(
                     p,
-                    if near || self.drag_idx == Some(i) { 5.0 } else { 3.0 },
+                    if near || self.drag_idx == Some(i) {
+                        5.0
+                    } else {
+                        3.0
+                    },
                     if near || self.drag_idx == Some(i) {
                         egui::Color32::WHITE
                     } else {
@@ -450,8 +522,12 @@ impl TakeEditor {
                     let pos_in_list = idxs.iter().position(|&i| i == di);
                     let (lo, hi) = match pos_in_list {
                         Some(k) => (
-                            k.checked_sub(1).map(|p| self.events[idxs[p]].t_ms + 1).unwrap_or(0),
-                            idxs.get(k + 1).map(|&n| self.events[n].t_ms - 1).unwrap_or(u32::MAX),
+                            k.checked_sub(1)
+                                .map(|p| self.events[idxs[p]].t_ms + 1)
+                                .unwrap_or(0),
+                            idxs.get(k + 1)
+                                .map(|&n| self.events[n].t_ms - 1)
+                                .unwrap_or(u32::MAX),
                         ),
                         None => (0, u32::MAX),
                     };
@@ -464,37 +540,41 @@ impl TakeEditor {
                     self.edited();
                 }
                 // Double-click empty space: insert a point.
-                if resp.double_clicked() && hover_idx.is_none()
-                    && let Some(pos) = resp.interact_pointer_pos() {
-                        self.snapshot_undo();
-                        self.events.push(RecEvent {
-                            t_ms: to_t(pos.x) as u32,
-                            universe: su,
-                            channel: sc,
-                            value: to_v(pos.y),
-                        });
-                        self.edited();
-                    }
+                if resp.double_clicked()
+                    && hover_idx.is_none()
+                    && let Some(pos) = resp.interact_pointer_pos()
+                {
+                    self.snapshot_undo();
+                    self.events.push(RecEvent {
+                        t_ms: to_t(pos.x) as u32,
+                        universe: su,
+                        channel: sc,
+                        value: to_v(pos.y),
+                    });
+                    self.edited();
+                }
                 // Right-click a point: delete it.
                 if resp.secondary_clicked()
-                    && let Some(i) = hover_idx {
-                        self.snapshot_undo();
-                        self.events.remove(i);
-                        self.edited();
-                    }
+                    && let Some(i) = hover_idx
+                {
+                    self.snapshot_undo();
+                    self.events.remove(i);
+                    self.edited();
+                }
                 // Plain drag on empty canvas scrubs the playhead.
-                if resp.dragged() && self.drag_idx.is_none()
-                    && let Some(pos) = resp.interact_pointer_pos() {
-                        let t = to_t(pos.x) as u32;
-                        if t != self.scrub_ms {
-                            self.scrub_ms = t;
-                            if self.output_scrub {
-                                let frame = self.state_at(t);
-                                *scrub_cmd =
-                                    Some(AppCommand::RecorderScrub { frame: Some(frame) });
-                            }
+                if resp.dragged()
+                    && self.drag_idx.is_none()
+                    && let Some(pos) = resp.interact_pointer_pos()
+                {
+                    let t = to_t(pos.x) as u32;
+                    if t != self.scrub_ms {
+                        self.scrub_ms = t;
+                        if self.output_scrub {
+                            let frame = self.state_at(t);
+                            *scrub_cmd = Some(AppCommand::RecorderScrub { frame: Some(frame) });
                         }
                     }
+                }
             }
         } else {
             painter.text(
@@ -509,7 +589,11 @@ impl TakeEditor {
         // Playhead.
         let px = to_x(self.scrub_ms as f32);
         if rect.x_range().contains(px) {
-            painter.vline(px, rect.y_range(), egui::Stroke::new(1.0_f32, egui::Color32::YELLOW));
+            painter.vline(
+                px,
+                rect.y_range(),
+                egui::Stroke::new(1.0_f32, egui::Color32::YELLOW),
+            );
         }
         painter.text(
             egui::pos2(px + 3.0, rect.top() + 2.0),
@@ -533,7 +617,12 @@ mod tests {
     use super::*;
 
     fn ev(t_ms: u32, universe: u16, channel: u16, value: u8) -> RecEvent {
-        RecEvent { t_ms, universe, channel, value }
+        RecEvent {
+            t_ms,
+            universe,
+            channel,
+            value,
+        }
     }
 
     #[test]
@@ -573,7 +662,12 @@ mod tests {
         // was 200 (the swallowed curve), re-asserted at the range end.
         assert_eq!(
             ed.events,
-            vec![ev(0, 1, 0, 10), ev(1000, 1, 0, 99), ev(3000, 1, 0, 200), ev(4000, 1, 0, 30)]
+            vec![
+                ev(0, 1, 0, 10),
+                ev(1000, 1, 0, 99),
+                ev(3000, 1, 0, 200),
+                ev(4000, 1, 0, 30)
+            ]
         );
     }
 

@@ -27,7 +27,7 @@ pub use fade_processor::FadeProcessor;
 pub use limiter_processor::LimiterProcessor;
 pub use loop_processor::LoopProcessor;
 pub use metering_processor::{MeterData, MeteringProcessor};
-pub use mixer::{db_to_linear, linear_to_db, Mixer, MixerInput, MIXER_CHANNELS, MIXER_SAMPLE_RATE};
+pub use mixer::{MIXER_CHANNELS, MIXER_SAMPLE_RATE, Mixer, MixerInput, db_to_linear, linear_to_db};
 pub use pan_processor::PanProcessor;
 pub use resampler::ResamplerProcessor;
 pub use sample_provider::{FnSource, SampleProvider};

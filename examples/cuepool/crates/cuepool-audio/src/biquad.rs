@@ -22,10 +22,15 @@ pub struct Biquad {
 impl Default for Biquad {
     fn default() -> Self {
         Self {
-            b0: 1.0, b1: 0.0, b2: 0.0,
-            a1: 0.0, a2: 0.0,
-            x1: 0.0, x2: 0.0,
-            y1: 0.0, y2: 0.0,
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 }
@@ -33,10 +38,15 @@ impl Default for Biquad {
 impl Biquad {
     pub const fn new() -> Self {
         Self {
-            b0: 1.0, b1: 0.0, b2: 0.0,
-            a1: 0.0, a2: 0.0,
-            x1: 0.0, x2: 0.0,
-            y1: 0.0, y2: 0.0,
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 
@@ -44,7 +54,8 @@ impl Biquad {
     #[inline]
     pub fn process(&mut self, x: f64) -> f64 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
-                - self.a1 * self.y1 - self.a2 * self.y2;
+            - self.a1 * self.y1
+            - self.a2 * self.y2;
         self.x2 = self.x1;
         self.x1 = x;
         self.y2 = self.y1;
@@ -193,7 +204,10 @@ impl Biquad {
             b2: b2 * inv_a0,
             a1: a1 * inv_a0,
             a2: a2 * inv_a0,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 }
@@ -254,7 +268,11 @@ mod tests {
             *sample = bq.process(1.0);
         }
         // After transient, should settle to ~1.0
-        assert!((out[99] - 1.0).abs() < 0.001, "unity gain bell should pass DC, got {}", out[99]);
+        assert!(
+            (out[99] - 1.0).abs() < 0.001,
+            "unity gain bell should pass DC, got {}",
+            out[99]
+        );
     }
 
     #[test]
@@ -272,7 +290,11 @@ mod tests {
             phase += 2.0 * std::f64::consts::PI * freq / sr;
         }
         // Should be significantly attenuated (> 12 dB)
-        assert!(max_out < 0.25, "LP should attenuate 12kHz, got peak {}", max_out);
+        assert!(
+            max_out < 0.25,
+            "LP should attenuate 12kHz, got peak {}",
+            max_out
+        );
     }
 
     #[test]
@@ -283,6 +305,10 @@ mod tests {
             *sample = bq.process(1.0);
         }
         // After transient, DC should be blocked
-        assert!(out[999].abs() < 0.01, "HP should block DC, got {}", out[999]);
+        assert!(
+            out[999].abs() < 0.01,
+            "HP should block DC, got {}",
+            out[999]
+        );
     }
 }

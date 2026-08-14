@@ -11,9 +11,15 @@ pub struct VirtualClock {
 
 impl VirtualClock {
     pub fn new(sample_rate: u32, block_frames: usize) -> Self {
-        Self { sample_rate, block_frames, blocks: 0 }
+        Self {
+            sample_rate,
+            block_frames,
+            blocks: 0,
+        }
     }
-    pub fn advance(&mut self, blocks: usize) { self.blocks += blocks as u64; }
+    pub fn advance(&mut self, blocks: usize) {
+        self.blocks += blocks as u64;
+    }
     pub fn elapsed(&self) -> Duration {
         Duration::from_secs_f64(
             (self.blocks * self.block_frames as u64) as f64 / self.sample_rate as f64,

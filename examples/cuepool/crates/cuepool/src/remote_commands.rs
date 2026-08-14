@@ -17,11 +17,18 @@ pub(crate) fn strip_udp_prefix(command: &str) -> Option<&str> {
 /// else (no colon, or an unresolved candidate) sends the whole remainder to
 /// `default_host` — keeping bare `udp:PLAY x.mp4` cues and colon-containing
 /// filenames working.
-pub(crate) fn resolve_udp_command<'a>(remainder: &'a str, targets: &[cuepool_core::UdpTarget], default_host: &str) -> (String, &'a str) {
+pub(crate) fn resolve_udp_command<'a>(
+    remainder: &'a str,
+    targets: &[cuepool_core::UdpTarget],
+    default_host: &str,
+) -> (String, &'a str) {
     if let Some(idx) = remainder.find(':') {
         let candidate = remainder[..idx].trim();
         let payload = remainder[idx + 1..].trim();
-        if let Some(t) = targets.iter().find(|t| t.name.eq_ignore_ascii_case(candidate)) {
+        if let Some(t) = targets
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(candidate))
+        {
             log::info!("UDP target '{}' resolved to {}", t.name, t.host);
             return (t.host.clone(), payload);
         }
@@ -29,7 +36,10 @@ pub(crate) fn resolve_udp_command<'a>(remainder: &'a str, targets: &[cuepool_cor
             log::info!("UDP target '{}' used as a literal IPv4 address", candidate);
             return (candidate.to_string(), payload);
         }
-        log::warn!("UDP target '{}' not found in registry, treating whole command as payload", candidate);
+        log::warn!(
+            "UDP target '{}' not found in registry, treating whole command as payload",
+            candidate
+        );
     }
     (default_host.to_string(), remainder)
 }
@@ -130,7 +140,10 @@ mod tests {
 
     #[test]
     fn test_strip_udp_prefix() {
-        assert_eq!(strip_udp_prefix("udp:PLAY myfile.mp4"), Some("PLAY myfile.mp4"));
+        assert_eq!(
+            strip_udp_prefix("udp:PLAY myfile.mp4"),
+            Some("PLAY myfile.mp4")
+        );
         assert_eq!(strip_udp_prefix("  UDP:stop  "), Some("stop"));
         assert_eq!(strip_udp_prefix("udp:"), Some(""));
         assert_eq!(strip_udp_prefix("/qplayer/go,5"), None);
@@ -141,29 +154,63 @@ mod tests {
     #[test]
     fn test_resolve_udp_command() {
         let targets = vec![
-            cuepool_core::UdpTarget { name: "left".into(), host: "10.0.0.11".into() },
-            cuepool_core::UdpTarget { name: "right".into(), host: "brightsign-right.local".into() },
+            cuepool_core::UdpTarget {
+                name: "left".into(),
+                host: "10.0.0.11".into(),
+            },
+            cuepool_core::UdpTarget {
+                name: "right".into(),
+                host: "brightsign-right.local".into(),
+            },
         ];
         let default = "255.255.255.255";
-        fn resolve<'a>(cmd: &'a str, targets: &[cuepool_core::UdpTarget], default: &str) -> (String, &'a str) {
+        fn resolve<'a>(
+            cmd: &'a str,
+            targets: &[cuepool_core::UdpTarget],
+            default: &str,
+        ) -> (String, &'a str) {
             resolve_udp_command(strip_udp_prefix(cmd).unwrap(), targets, default)
         }
 
         // Named target hit
-        assert_eq!(resolve("udp:left:PLAY a.mp4", &targets, default), ("10.0.0.11".to_string(), "PLAY a.mp4"));
+        assert_eq!(
+            resolve("udp:left:PLAY a.mp4", &targets, default),
+            ("10.0.0.11".to_string(), "PLAY a.mp4")
+        );
         // Case-insensitive name match
-        assert_eq!(resolve("udp:LEFT:stop", &targets, default), ("10.0.0.11".to_string(), "stop"));
+        assert_eq!(
+            resolve("udp:LEFT:stop", &targets, default),
+            ("10.0.0.11".to_string(), "stop")
+        );
         // Hostname target
-        assert_eq!(resolve("udp:right:reboot", &targets, default), ("brightsign-right.local".to_string(), "reboot"));
+        assert_eq!(
+            resolve("udp:right:reboot", &targets, default),
+            ("brightsign-right.local".to_string(), "reboot")
+        );
         // Raw IPv4 escape hatch
-        assert_eq!(resolve("udp:10.0.0.99:reboot", &targets, default), ("10.0.0.99".to_string(), "reboot"));
+        assert_eq!(
+            resolve("udp:10.0.0.99:reboot", &targets, default),
+            ("10.0.0.99".to_string(), "reboot")
+        );
         // Unknown name falls back to whole payload + default host
-        assert_eq!(resolve("udp:lef:PLAY a.mp4", &targets, default), (default.to_string(), "lef:PLAY a.mp4"));
+        assert_eq!(
+            resolve("udp:lef:PLAY a.mp4", &targets, default),
+            (default.to_string(), "lef:PLAY a.mp4")
+        );
         // No colon: whole remainder is the payload
-        assert_eq!(resolve("udp:PLAY a.mp4", &targets, default), (default.to_string(), "PLAY a.mp4"));
+        assert_eq!(
+            resolve("udp:PLAY a.mp4", &targets, default),
+            (default.to_string(), "PLAY a.mp4")
+        );
         // Colon-containing filename with no target: unresolved candidate falls back
-        assert_eq!(resolve("udp:PLAY C:drive.mp4", &targets, default), (default.to_string(), "PLAY C:drive.mp4"));
+        assert_eq!(
+            resolve("udp:PLAY C:drive.mp4", &targets, default),
+            (default.to_string(), "PLAY C:drive.mp4")
+        );
         // Empty payload after a resolved target (send_udp_command warns and skips)
-        assert_eq!(resolve("udp:left:", &targets, default), ("10.0.0.11".to_string(), ""));
+        assert_eq!(
+            resolve("udp:left:", &targets, default),
+            ("10.0.0.11".to_string(), "")
+        );
     }
 }

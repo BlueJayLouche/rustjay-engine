@@ -38,17 +38,39 @@ fn main() {
     let mut snap1 = BTreeMap::new();
     snap1.insert(
         1u32,
-        FixtureLook { dimmer: 1.0, color: [1.0, 0.0, 0.0], pan: 0.25, ..Default::default() },
+        FixtureLook {
+            dimmer: 1.0,
+            color: [1.0, 0.0, 0.0],
+            pan: 0.25,
+            ..Default::default()
+        },
     );
-    snap1.insert(2u32, FixtureLook { dimmer: 0.75, ..Default::default() });
+    snap1.insert(
+        2u32,
+        FixtureLook {
+            dimmer: 0.75,
+            ..Default::default()
+        },
+    );
 
     // Q2: 2s fade — blue, dim out, pan 0.75.
     let mut snap2 = BTreeMap::new();
     snap2.insert(
         1u32,
-        FixtureLook { dimmer: 0.0, color: [0.0, 0.0, 1.0], pan: 0.75, ..Default::default() },
+        FixtureLook {
+            dimmer: 0.0,
+            color: [0.0, 0.0, 1.0],
+            pan: 0.75,
+            ..Default::default()
+        },
     );
-    snap2.insert(2u32, FixtureLook { dimmer: 0.25, ..Default::default() });
+    snap2.insert(
+        2u32,
+        FixtureLook {
+            dimmer: 0.25,
+            ..Default::default()
+        },
+    );
 
     // Pixel-map segment: full pixmap texture → 4×1 RGB grid on universe 2.
     show.lighting.segments = vec![PixelMapSegment {
@@ -60,20 +82,32 @@ fn main() {
 
     show.cues = vec![
         Cue::Lighting {
-            base: CueBase { qid: Decimal::from(1), name: "Red look (snap)".into(), ..Default::default() },
+            base: CueBase {
+                qid: Decimal::from(1),
+                name: "Red look (snap)".into(),
+                ..Default::default()
+            },
             snapshot: snap1,
             fade_time: 0.0,
             fade_type: FadeType::Linear,
         },
         Cue::Lighting {
-            base: CueBase { qid: Decimal::from(2), name: "Blue look (2s fade)".into(), ..Default::default() },
+            base: CueBase {
+                qid: Decimal::from(2),
+                name: "Blue look (2s fade)".into(),
+                ..Default::default()
+            },
             snapshot: snap2,
             fade_time: 2.0,
             fade_type: FadeType::Linear,
         },
         // Q3: still image into the pixel-map texture (RGBW vertical stripes).
         Cue::PixelMap {
-            base: CueBase { qid: Decimal::from(3), name: "Stripes still".into(), ..Default::default() },
+            base: CueBase {
+                qid: Decimal::from(3),
+                name: "Stripes still".into(),
+                ..Default::default()
+            },
             path: "/Users/ac/developer/rust/rustjay-engine/testFiles/lx_stripes.png".into(),
         },
         // Q4: looping stripes video into the pixel-map texture.
@@ -88,7 +122,9 @@ fn main() {
         },
     ];
 
-    let path = std::env::args().nth(1).expect("usage: gen_lx_test <out.qproj>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: gen_lx_test <out.qproj>");
     std::fs::write(&path, serde_json::to_string_pretty(&show).unwrap()).unwrap();
     println!("wrote {path}");
 }

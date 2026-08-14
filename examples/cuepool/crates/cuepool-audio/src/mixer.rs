@@ -115,7 +115,8 @@ impl MixerInput {
 
     #[inline]
     pub fn set_pan(&self, pan: f32) {
-        self.pan.store(pan.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.pan
+            .store(pan.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     #[inline]
@@ -206,9 +207,11 @@ impl MixerInput {
     pub fn start_fade(&self, target_volume: f32, duration_frames: u32, fade_type: FadeType) {
         let current = self.volume();
         self.fade_start.store(current.to_bits(), Ordering::Relaxed);
-        self.fade_target.store(target_volume.to_bits(), Ordering::Relaxed);
+        self.fade_target
+            .store(target_volume.to_bits(), Ordering::Relaxed);
         self.fade_duration.store(duration_frames, Ordering::Relaxed);
-        self.fade_remaining.store(duration_frames, Ordering::Relaxed);
+        self.fade_remaining
+            .store(duration_frames, Ordering::Relaxed);
         self.fade_type.store(fade_type as u8, Ordering::Relaxed);
         self.fade_active.store(true, Ordering::Release);
     }
@@ -366,7 +369,9 @@ impl Mixer {
                     fade_remaining = fade_remaining.saturating_sub(1);
                 }
 
-                input.fade_remaining.store(fade_remaining, Ordering::Relaxed);
+                input
+                    .fade_remaining
+                    .store(fade_remaining, Ordering::Relaxed);
                 if fade_remaining == 0 {
                     input.fade_active.store(false, Ordering::Release);
                     input.volume.store(fade_target.to_bits(), Ordering::Relaxed);
@@ -388,12 +393,23 @@ impl Mixer {
             // lightweight pair route. try_lock is uncontended — routing is set
             // before the input goes live, and not changed during playback.
             if let Ok(cps) = input.crosspoints.try_lock() {
-                route_cue(&temp[..read], in_ch, buffer, self.channels as usize, &cps, input.out_pair(), volume, pan, input.send());
+                route_cue(
+                    &temp[..read],
+                    in_ch,
+                    buffer,
+                    self.channels as usize,
+                    &cps,
+                    input.out_pair(),
+                    volume,
+                    pan,
+                    input.send(),
+                );
             }
         }
 
         // Advance the master audio clock.
-        self.frame_counter.fetch_add(frames as u64, Ordering::Relaxed);
+        self.frame_counter
+            .fetch_add(frames as u64, Ordering::Relaxed);
     }
 
     /// Current playback time according to the audio master clock.
@@ -509,8 +525,16 @@ mod tests {
             0,
             1.0,
             vec![
-                Crosspoint { in_ch: 0, out_ch: 2, gain: 1.0 },
-                Crosspoint { in_ch: 3, out_ch: 0, gain: 1.0 },
+                Crosspoint {
+                    in_ch: 0,
+                    out_ch: 2,
+                    gain: 1.0,
+                },
+                Crosspoint {
+                    in_ch: 3,
+                    out_ch: 0,
+                    gain: 1.0,
+                },
             ],
         );
 
@@ -522,8 +546,16 @@ mod tests {
         mixer.render(&mut buf);
 
         // Frame 0: out0 = src ch3 = 0.4, out2 = src ch0 = 0.1, others silent.
-        assert!((buf[0] - 0.4).abs() < 1e-4, "out0 should be src ch3 (0.4), got {}", buf[0]);
-        assert!((buf[2] - 0.1).abs() < 1e-4, "out2 should be src ch0 (0.1), got {}", buf[2]);
+        assert!(
+            (buf[0] - 0.4).abs() < 1e-4,
+            "out0 should be src ch3 (0.4), got {}",
+            buf[0]
+        );
+        assert!(
+            (buf[2] - 0.1).abs() < 1e-4,
+            "out2 should be src ch0 (0.1), got {}",
+            buf[2]
+        );
         assert!(buf[1].abs() < 1e-4, "out1 unrouted, got {}", buf[1]);
         assert!(buf[3].abs() < 1e-4, "out3 unrouted, got {}", buf[3]);
         // Same pattern on the next frame.
@@ -592,7 +624,7 @@ mod tests {
             Box::new(crate::FnSource::new(
                 |buf| {
                     for i in 0..buf.len() / 2 {
-                        buf[i * 2] = 1.0;     // L
+                        buf[i * 2] = 1.0; // L
                         buf[i * 2 + 1] = 1.0; // R
                     }
                     buf.len()
@@ -622,7 +654,9 @@ mod tests {
         let src = Arc::new(MixerInput::new(
             Box::new(crate::FnSource::new(
                 |buf| {
-                    for s in buf.iter_mut() { *s = 1.0; }
+                    for s in buf.iter_mut() {
+                        *s = 1.0;
+                    }
                     buf.len()
                 },
                 48000,
@@ -642,10 +676,26 @@ mod tests {
         mixer.render(&mut output);
 
         // Frame 0: gain ~1.0, Frame 1: gain ~0.75, Frame 2: gain ~0.5, Frame 3: gain ~0.25
-        assert!((output[0] - 1.0).abs() < 0.01, "frame 0 should be ~1.0, got {}", output[0]);
-        assert!((output[2] - 0.75).abs() < 0.1, "frame 1 should be ~0.75, got {}", output[2]);
-        assert!((output[4] - 0.5).abs() < 0.1, "frame 2 should be ~0.5, got {}", output[4]);
-        assert!((output[6] - 0.25).abs() < 0.1, "frame 3 should be ~0.25, got {}", output[6]);
+        assert!(
+            (output[0] - 1.0).abs() < 0.01,
+            "frame 0 should be ~1.0, got {}",
+            output[0]
+        );
+        assert!(
+            (output[2] - 0.75).abs() < 0.1,
+            "frame 1 should be ~0.75, got {}",
+            output[2]
+        );
+        assert!(
+            (output[4] - 0.5).abs() < 0.1,
+            "frame 2 should be ~0.5, got {}",
+            output[4]
+        );
+        assert!(
+            (output[6] - 0.25).abs() < 0.1,
+            "frame 3 should be ~0.25, got {}",
+            output[6]
+        );
 
         // After fade, input should be inactive and finished
         assert!(!src.is_active(), "input should be inactive after fade");
@@ -659,7 +709,9 @@ mod tests {
         let src = Arc::new(MixerInput::new(
             Box::new(crate::FnSource::new(
                 |buf| {
-                    for s in buf.iter_mut() { *s = 1.0; }
+                    for s in buf.iter_mut() {
+                        *s = 1.0;
+                    }
                     buf.len()
                 },
                 48000,
@@ -677,13 +729,33 @@ mod tests {
         mixer.render(&mut output);
 
         // Frame 0: gain=0.5, Frame 1: gain=0.625, Frame 2: gain=0.75, Frame 3: gain=0.875
-        assert!((output[0] - 0.5).abs() < 0.01, "frame 0 should be ~0.5, got {}", output[0]);
-        assert!((output[2] - 0.625).abs() < 0.1, "frame 1 should be ~0.625, got {}", output[2]);
-        assert!((output[4] - 0.75).abs() < 0.1, "frame 2 should be ~0.75, got {}", output[4]);
-        assert!((output[6] - 0.875).abs() < 0.1, "frame 3 should be ~0.875, got {}", output[6]);
+        assert!(
+            (output[0] - 0.5).abs() < 0.01,
+            "frame 0 should be ~0.5, got {}",
+            output[0]
+        );
+        assert!(
+            (output[2] - 0.625).abs() < 0.1,
+            "frame 1 should be ~0.625, got {}",
+            output[2]
+        );
+        assert!(
+            (output[4] - 0.75).abs() < 0.1,
+            "frame 2 should be ~0.75, got {}",
+            output[4]
+        );
+        assert!(
+            (output[6] - 0.875).abs() < 0.1,
+            "frame 3 should be ~0.875, got {}",
+            output[6]
+        );
 
         // After fade, volume should be updated to target
         assert!(!src.is_fading(), "fade should be complete");
-        assert!((src.volume() - 1.0).abs() < 0.01, "volume should be 1.0, got {}", src.volume());
+        assert!(
+            (src.volume() - 1.0).abs() < 0.01,
+            "volume should be 1.0, got {}",
+            src.volume()
+        );
     }
 }

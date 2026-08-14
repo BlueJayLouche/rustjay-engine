@@ -7,8 +7,8 @@
 use crate::SampleProvider;
 use cuepool_core::LoopMode;
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Loop and trim processor.
 pub struct LoopProcessor {
@@ -136,8 +136,7 @@ impl SampleProvider for LoopProcessor {
             // Ensure source is at the right position (trim start)
             let current_src_frame = self.samples_to_frames(self.source.position());
             if current_src_frame < inner.start_frame {
-                self.source
-                    .seek(self.frames_to_samples(inner.start_frame));
+                self.source.seek(self.frames_to_samples(inner.start_frame));
             }
 
             let current_src_frame = self.samples_to_frames(self.source.position());
@@ -162,8 +161,7 @@ impl SampleProvider for LoopProcessor {
                         if let Some(ref counter) = self.loop_counter {
                             counter.fetch_add(1, Ordering::Relaxed);
                         }
-                        self.source
-                            .seek(self.frames_to_samples(inner.start_frame));
+                        self.source.seek(self.frames_to_samples(inner.start_frame));
                         continue;
                     }
                     LoopMode::LoopedInfinite => {
@@ -171,15 +169,16 @@ impl SampleProvider for LoopProcessor {
                         if let Some(ref counter) = self.loop_counter {
                             counter.fetch_add(1, Ordering::Relaxed);
                         }
-                        self.source
-                            .seek(self.frames_to_samples(inner.start_frame));
+                        self.source.seek(self.frames_to_samples(inner.start_frame));
                         continue;
                     }
                 }
             }
 
             let buf_start = total_read * channels;
-            let read = self.source.read(&mut buffer[buf_start..buf_start + samples_to_read]);
+            let read = self
+                .source
+                .read(&mut buffer[buf_start..buf_start + samples_to_read]);
             if read == 0 {
                 // Source exhausted unexpectedly
                 inner.exhausted = true;
@@ -221,7 +220,10 @@ impl SampleProvider for LoopProcessor {
         } else {
             cmd_end.min(source_frames)
         };
-        let start = self.cmd_start_frame.load(Ordering::Relaxed).min(effective_end);
+        let start = self
+            .cmd_start_frame
+            .load(Ordering::Relaxed)
+            .min(effective_end);
         let loop_frames = effective_end.saturating_sub(start);
 
         match inner.loop_mode {

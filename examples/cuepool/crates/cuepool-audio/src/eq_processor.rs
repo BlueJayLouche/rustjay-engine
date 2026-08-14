@@ -3,8 +3,8 @@
 //! Matches C# `EQSampleProvider`. Processes 4 bands in series, plus optional
 //! HPF/LPF. Coefficients recalculated when settings change.
 
-use crate::biquad::{biquad_from_band, biquads_from_filter, Biquad};
 use crate::SampleProvider;
+use crate::biquad::{Biquad, biquad_from_band, biquads_from_filter};
 use cuepool_core::EQSettings;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -160,7 +160,12 @@ impl EqInner {
 
         for c in 0..ch.min(MAX_CHANNELS) {
             // Rebuild 4 bands
-            let bands = [settings.band1, settings.band2, settings.band3, settings.band4];
+            let bands = [
+                settings.band1,
+                settings.band2,
+                settings.band3,
+                settings.band4,
+            ];
             for (i, band) in bands.iter().enumerate() {
                 self.bands[c][i] = if settings.enabled {
                     biquad_from_band(band, sr as f32)
@@ -214,7 +219,9 @@ mod tests {
     fn dc_source(val: f32) -> Box<dyn SampleProvider> {
         Box::new(crate::FnSource::new(
             move |buf| {
-                for s in buf.iter_mut() { *s = val; }
+                for s in buf.iter_mut() {
+                    *s = val;
+                }
                 buf.len()
             },
             48000,
@@ -327,6 +334,10 @@ mod tests {
             eq.read(&mut buf);
         }
         let out = buf[0];
-        assert!(out.abs() < 0.05, "HPF should block DC after update, got {}", out);
+        assert!(
+            out.abs() < 0.05,
+            "HPF should block DC after update, got {}",
+            out
+        );
     }
 }

@@ -23,7 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create audio engine
     let engine = cuepool_audio::AudioEngine::new_default()?;
-    println!("Audio engine started: {} Hz, {} ch", engine.sample_rate(), engine.channels());
+    println!(
+        "Audio engine started: {} Hz, {} ch",
+        engine.sample_rate(),
+        engine.channels()
+    );
 
     // Open file
     let decoder = cuepool_audio::FileDecoder::open(&path)?;
@@ -35,7 +39,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Play
-    let _input = engine.play(Box::new(decoder)).expect("resampler setup failed");
+    let _input = engine
+        .play(Box::new(decoder))
+        .expect("resampler setup failed");
     println!("Playing for 5 seconds... (press Ctrl+C to stop early)");
 
     // Refresh mixer snapshot so the audio callback sees the new input

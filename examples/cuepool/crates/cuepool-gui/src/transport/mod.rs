@@ -74,9 +74,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add_enabled(has_standby, go_btn)
             .on_hover_text(go_hover)
             .clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::Go);
-            }
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::Go);
+        }
 
         let readout = standby_label(standby.as_ref().map(|(qid, _, _)| *qid));
         let readout_hover = standby.as_ref().map_or_else(
@@ -111,17 +112,24 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         let stop_btn = Button::new(RichText::new("⏹ STOP").strong())
             .fill(Color32::from_rgb(200, 0, 0))
             .min_size(button_size);
-        if ui.add(stop_btn).on_hover_text("Stop all cues (Esc)").clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::Stop);
-            }
+        if ui
+            .add(stop_btn)
+            .on_hover_text("Stop all cues (Esc)")
+            .clicked()
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::Stop);
+        }
 
-        let pause_btn = Button::new(RichText::new("⏸ PAUSE"))
-            .min_size(button_size);
-        if ui.add(pause_btn).on_hover_text("Pause/resume the show clock").clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::Pause);
-            }
+        let pause_btn = Button::new(RichText::new("⏸ PAUSE")).min_size(button_size);
+        if ui
+            .add(pause_btn)
+            .on_hover_text("Pause/resume the show clock")
+            .clicked()
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::Pause);
+        }
 
         let (show_time, show_paused, next_tc, tc_fps) = {
             let Ok(state) = state.lock() else { return };
@@ -148,20 +156,21 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add_enabled(show_paused, back_btn)
             .on_hover_text("Step one video frame back (paused only); the show clock follows")
             .clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::FrameStepBack);
-            }
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::FrameStepBack);
+        }
         let step_btn = Button::new(RichText::new("⏭")).min_size(Vec2::new(36.0, 32.0));
         if ui
             .add_enabled(show_paused, step_btn)
             .on_hover_text("Step one video frame forward (paused only); the show clock follows")
             .clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::FrameStep);
-            }
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::FrameStep);
+        }
 
-        let preload_btn = Button::new(RichText::new("PRELOAD"))
-            .min_size(Vec2::new(70.0, 32.0));
+        let preload_btn = Button::new(RichText::new("PRELOAD")).min_size(Vec2::new(70.0, 32.0));
         if ui
             .add_enabled(has_standby, preload_btn)
             .on_hover_text(if has_standby {
@@ -170,9 +179,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 "Select a cue before preloading"
             })
             .clicked()
-            && let Ok(mut state) = state.lock() {
-                state.command_queue.push(AppCommand::Preload);
-            }
+            && let Ok(mut state) = state.lock()
+        {
+            state.command_queue.push(AppCommand::Preload);
+        }
 
         ui.separator();
 
@@ -188,8 +198,17 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             Some(t) => format_timecode(t, tc_fps),
             None => "--:--:--.--".into(),
         };
-        ui.label(RichText::new(tc_text).monospace().size(20.0).color(tc_color))
-            .on_hover_text(if show_paused { "Show clock (paused)" } else { "Show clock" });
+        ui.label(
+            RichText::new(tc_text)
+                .monospace()
+                .size(20.0)
+                .color(tc_color),
+        )
+        .on_hover_text(if show_paused {
+            "Show clock (paused)"
+        } else {
+            "Show clock"
+        });
         if let Some((qid, t)) = next_tc {
             ui.label(
                 RichText::new(format!("next: Q{qid} @ {}", format_timecode(t, tc_fps)))
@@ -258,15 +277,16 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .add(mode_btn)
             .on_hover_text("Toggle Show/Edit mode — cue editing is locked in Show mode")
             .clicked()
-            && let Ok(mut state) = state.lock() {
-                let snapshot = crate::app::Snapshot::from_state(&state);
-                state.undo_redo.push(snapshot);
-                state.show_mode = match state.show_mode {
-                    crate::app::ShowMode::Edit => crate::app::ShowMode::Show,
-                    crate::app::ShowMode::Show => crate::app::ShowMode::Edit,
-                };
-                state.dirty = true;
-            }
+            && let Ok(mut state) = state.lock()
+        {
+            let snapshot = crate::app::Snapshot::from_state(&state);
+            state.undo_redo.push(snapshot);
+            state.show_mode = match state.show_mode {
+                crate::app::ShowMode::Edit => crate::app::ShowMode::Show,
+                crate::app::ShowMode::Show => crate::app::ShowMode::Edit,
+            };
+            state.dirty = true;
+        }
     };
 
     egui::containers::Sides::new()
@@ -289,8 +309,12 @@ fn draw_meter(ui: &mut egui::Ui, data: &GuiMeterData) {
     let height = 32.0;
     let _gap = 4.0;
 
-    for &(peak_db, rms_db) in &[(data.peak_l_db, data.rms_l_db), (data.peak_r_db, data.rms_r_db)] {
-        let (rect, _response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    for &(peak_db, rms_db) in &[
+        (data.peak_l_db, data.rms_l_db),
+        (data.peak_r_db, data.rms_r_db),
+    ] {
+        let (rect, _response) =
+            ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
         let painter = ui.painter();
 
         // Background
@@ -362,10 +386,7 @@ mod tests {
     #[test]
     fn standby_labels_cover_empty_and_selected_states() {
         assert_eq!(standby_label(None), "Standby: (no cue selected)");
-        assert_eq!(
-            standby_label(Some(Decimal::new(35, 1))),
-            "Standby: Q3.5"
-        );
+        assert_eq!(standby_label(Some(Decimal::new(35, 1))), "Standby: Q3.5");
     }
 
     #[test]
@@ -373,17 +394,36 @@ mod tests {
         assert_eq!(format_timecode(0.0, 30.0), "00:00:00.00");
         assert_eq!(format_timecode(1.0, 30.0), "00:00:01.00");
         assert_eq!(format_timecode(0.5, 30.0), "00:00:00.15");
-        assert_eq!(format_timecode(3661.5, 25.0), "01:01:01.13", "25fps half-second = frame 12.5 → 13");
-        assert_eq!(format_timecode(-3.0, 30.0), "00:00:00.00", "negative clamps");
+        assert_eq!(
+            format_timecode(3661.5, 25.0),
+            "01:01:01.13",
+            "25fps half-second = frame 12.5 → 13"
+        );
+        assert_eq!(
+            format_timecode(-3.0, 30.0),
+            "00:00:00.00",
+            "negative clamps"
+        );
     }
 
     #[test]
     fn timecode_parsing() {
-        assert_eq!(parse_timecode("00:19:28.08", 25.0), Some(19.0 * 60.0 + 28.0 + 8.0 / 25.0));
+        assert_eq!(
+            parse_timecode("00:19:28.08", 25.0),
+            Some(19.0 * 60.0 + 28.0 + 8.0 / 25.0)
+        );
         assert_eq!(parse_timecode("01:01:01", 30.0), Some(3661.0));
         assert_eq!(parse_timecode("2:30", 30.0), Some(150.0), "MM:SS shorthand");
-        assert_eq!(parse_timecode("2:30.15", 30.0), Some(150.5), "frames at 30fps");
-        assert_eq!(parse_timecode("668.259", 25.0), Some(668.259), "no colons = plain seconds");
+        assert_eq!(
+            parse_timecode("2:30.15", 30.0),
+            Some(150.5),
+            "frames at 30fps"
+        );
+        assert_eq!(
+            parse_timecode("668.259", 25.0),
+            Some(668.259),
+            "no colons = plain seconds"
+        );
         assert_eq!(parse_timecode("", 30.0), None);
         assert_eq!(parse_timecode("abc", 30.0), None);
         assert_eq!(parse_timecode("1:xx", 30.0), None);

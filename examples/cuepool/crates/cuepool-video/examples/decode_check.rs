@@ -13,7 +13,9 @@ use std::time::Instant;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("Usage: decode_check <file> [num_frames]");
+    let path = args
+        .next()
+        .expect("Usage: decode_check <file> [num_frames]");
     let max_frames: u32 = args.next().as_deref().unwrap_or("120").parse().unwrap();
 
     let mut src = match VideoSource::open(&path) {
@@ -33,7 +35,11 @@ fn main() {
         if n == 0 {
             let path_kind = match &f.pixels {
                 FramePixels::Rgba(_) => "swscale -> RGBA (CPU fallback)".to_string(),
-                FramePixels::YuvPlanar { subsample, bit_depth, .. } => {
+                FramePixels::YuvPlanar {
+                    subsample,
+                    bit_depth,
+                    ..
+                } => {
                     format!("GPU YUV {subsample:?} {bit_depth:?}")
                 }
                 FramePixels::Nv12 { .. } => "GPU NV12".to_string(),

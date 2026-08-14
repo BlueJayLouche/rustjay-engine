@@ -21,7 +21,11 @@ pub(crate) fn spawn_autosave_thread(state: SharedStateHandle, running: Arc<Atomi
             elapsed = 0;
             let (should_save, path, autosave_enabled) = {
                 let Ok(state) = state.lock() else { continue };
-                (state.dirty, state.project_path.clone(), state.show_file.show_settings.autosave_enabled)
+                (
+                    state.dirty,
+                    state.project_path.clone(),
+                    state.show_file.show_settings.autosave_enabled,
+                )
             };
             if !autosave_enabled || !should_save {
                 continue;
@@ -87,7 +91,11 @@ pub(crate) fn emergency_save(state: &SharedStateHandle, reason: &str) {
 
     if let Some(project_path) = path {
         if let Err(e) = std::fs::write(&project_path, &json) {
-            log::error!("Emergency save: failed to overwrite {:?}: {}", project_path, e);
+            log::error!(
+                "Emergency save: failed to overwrite {:?}: {}",
+                project_path,
+                e
+            );
         } else {
             log::info!(target: PERSIST_TARGET, "Recovery save overwrote {:?}", project_path);
         }

@@ -16,8 +16,8 @@ pub struct PanProcessor {
     source: Box<dyn SampleProvider>,
     inner: UnsafeCell<PanInner>,
     // Atomic parameters (written by control thread, read by audio thread)
-    cmd_volume: AtomicU32,           // f32::to_bits
-    cmd_pan: AtomicU32,              // f32::to_bits
+    cmd_volume: AtomicU32, // f32::to_bits
+    cmd_pan: AtomicU32,    // f32::to_bits
     cmd_fade_in_frames: AtomicU32,
     cmd_fade_out_frames: AtomicU32,
     cmd_fade_out_start_frame: AtomicU32,
@@ -62,7 +62,8 @@ impl PanProcessor {
     }
 
     pub fn set_pan(&self, pan: f32) {
-        self.cmd_pan.store(pan.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.cmd_pan
+            .store(pan.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn set_fade_in(&self, frames: u32) {
@@ -71,7 +72,8 @@ impl PanProcessor {
 
     pub fn set_fade_out(&self, frames: u32, start_frame: u32) {
         self.cmd_fade_out_frames.store(frames, Ordering::Relaxed);
-        self.cmd_fade_out_start_frame.store(start_frame, Ordering::Relaxed);
+        self.cmd_fade_out_start_frame
+            .store(start_frame, Ordering::Relaxed);
     }
 
     pub fn set_fade_type(&self, fade_type: FadeType) {
@@ -280,13 +282,29 @@ mod tests {
         pan.read(&mut buf);
 
         // Frame 0: t=0/4=0, gain=0
-        assert!(buf[0].abs() < 0.01, "frame 0 should be silent, got {}", buf[0]);
+        assert!(
+            buf[0].abs() < 0.01,
+            "frame 0 should be silent, got {}",
+            buf[0]
+        );
         // Frame 1: t=1/4=0.25, gain=0.25
-        assert!((buf[2] - 0.25).abs() < 0.01, "frame 1 should be 0.25, got {}", buf[2]);
+        assert!(
+            (buf[2] - 0.25).abs() < 0.01,
+            "frame 1 should be 0.25, got {}",
+            buf[2]
+        );
         // Frame 2: t=2/4=0.5, gain=0.5
-        assert!((buf[4] - 0.5).abs() < 0.01, "frame 2 should be 0.5, got {}", buf[4]);
+        assert!(
+            (buf[4] - 0.5).abs() < 0.01,
+            "frame 2 should be 0.5, got {}",
+            buf[4]
+        );
         // Frame 3: t=3/4=0.75, gain=0.75
-        assert!((buf[6] - 0.75).abs() < 0.01, "frame 3 should be 0.75, got {}", buf[6]);
+        assert!(
+            (buf[6] - 0.75).abs() < 0.01,
+            "frame 3 should be 0.75, got {}",
+            buf[6]
+        );
     }
 
     #[test]
@@ -299,13 +317,29 @@ mod tests {
         pan.read(&mut buf);
 
         // Frame 0: t=1-0/4=1.0, gain=1.0
-        assert!((buf[0] - 1.0).abs() < 0.01, "frame 0 should be full, got {}", buf[0]);
+        assert!(
+            (buf[0] - 1.0).abs() < 0.01,
+            "frame 0 should be full, got {}",
+            buf[0]
+        );
         // Frame 1: t=1-1/4=0.75, gain=0.75
-        assert!((buf[2] - 0.75).abs() < 0.01, "frame 1 should be 0.75, got {}", buf[2]);
+        assert!(
+            (buf[2] - 0.75).abs() < 0.01,
+            "frame 1 should be 0.75, got {}",
+            buf[2]
+        );
         // Frame 2: t=1-2/4=0.5, gain=0.5
-        assert!((buf[4] - 0.5).abs() < 0.01, "frame 2 should be 0.5, got {}", buf[4]);
+        assert!(
+            (buf[4] - 0.5).abs() < 0.01,
+            "frame 2 should be 0.5, got {}",
+            buf[4]
+        );
         // Frame 3: t=1-3/4=0.25, gain=0.25
-        assert!((buf[6] - 0.25).abs() < 0.01, "frame 3 should be 0.25, got {}", buf[6]);
+        assert!(
+            (buf[6] - 0.25).abs() < 0.01,
+            "frame 3 should be 0.25, got {}",
+            buf[6]
+        );
     }
 
     #[test]

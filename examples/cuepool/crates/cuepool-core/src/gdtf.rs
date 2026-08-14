@@ -45,11 +45,20 @@ fn parse_description(xml: &str) -> Result<GdtfFixture, String> {
         .descendants()
         .find(|n| n.has_tag_name("FixtureType"))
         .ok_or("no FixtureType element")?;
-    let name = fixture_type.attribute("Name").unwrap_or("GDTF fixture").to_string();
-    let manufacturer = fixture_type.attribute("Manufacturer").unwrap_or("").to_string();
+    let name = fixture_type
+        .attribute("Name")
+        .unwrap_or("GDTF fixture")
+        .to_string();
+    let manufacturer = fixture_type
+        .attribute("Manufacturer")
+        .unwrap_or("")
+        .to_string();
 
     let mut modes = Vec::new();
-    for mode in fixture_type.descendants().filter(|n| n.has_tag_name("DMXMode")) {
+    for mode in fixture_type
+        .descendants()
+        .filter(|n| n.has_tag_name("DMXMode"))
+    {
         let mode_name = mode.attribute("Name").unwrap_or("Mode").to_string();
         // (offset 0-based → role); size determined by the highest offset seen.
         let mut slots: Vec<Option<ChannelRole>> = Vec::new();
@@ -72,7 +81,9 @@ fn parse_description(xml: &str) -> Result<GdtfFixture, String> {
                 .split(',')
                 .filter_map(|s| s.trim().parse::<usize>().ok())
                 .collect();
-            let Some(&coarse) = offsets.first() else { continue };
+            let Some(&coarse) = offsets.first() else {
+                continue;
+            };
             if coarse == 0 {
                 continue;
             }
@@ -86,22 +97,32 @@ fn parse_description(xml: &str) -> Result<GdtfFixture, String> {
             let (role, fine) = map_attribute(attribute, default);
             set(coarse - 1, role);
             if let Some(&f) = offsets.get(1)
-                && f > 0 {
-                    set(f - 1, fine);
-                }
+                && f > 0
+            {
+                set(f - 1, fine);
+            }
         }
 
         // Gaps in the declared layout hold 0.
-        let channels: Vec<ChannelRole> =
-            slots.into_iter().map(|s| s.unwrap_or(ChannelRole::Static(0))).collect();
+        let channels: Vec<ChannelRole> = slots
+            .into_iter()
+            .map(|s| s.unwrap_or(ChannelRole::Static(0)))
+            .collect();
         if !channels.is_empty() {
-            modes.push(GdtfMode { name: mode_name, channels });
+            modes.push(GdtfMode {
+                name: mode_name,
+                channels,
+            });
         }
     }
     if modes.is_empty() {
         return Err("no usable DMX modes found".into());
     }
-    Ok(GdtfFixture { name, manufacturer, modes })
+    Ok(GdtfFixture {
+        name,
+        manufacturer,
+        modes,
+    })
 }
 
 /// GDTF attribute name → (coarse role, fine-byte role). Unknown attributes
@@ -138,8 +159,14 @@ fn channel_default(ch: &roxmltree::Node, _offsets: usize) -> u8 {
         .find_map(|f| f.attribute("Default"))
         .unwrap_or("0/1");
     let mut parts = raw.split('/');
-    let value: u64 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-    let bytes: u32 = parts.next().and_then(|b| b.trim().parse().ok()).unwrap_or(1);
+    let value: u64 = parts
+        .next()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let bytes: u32 = parts
+        .next()
+        .and_then(|b| b.trim().parse().ok())
+        .unwrap_or(1);
     (value >> (8 * bytes.saturating_sub(1))).min(255) as u8
 }
 
@@ -175,8 +202,12 @@ fn zip_extract(data: &[u8], want: &str) -> Option<Vec<u8>> {
             if data.get(local_off..local_off + 4)? != [0x50, 0x4b, 0x03, 0x04] {
                 return None;
             }
-            let lname = u16::from_le_bytes(data.get(local_off + 26..local_off + 28)?.try_into().ok()?) as usize;
-            let lextra = u16::from_le_bytes(data.get(local_off + 28..local_off + 30)?.try_into().ok()?) as usize;
+            let lname =
+                u16::from_le_bytes(data.get(local_off + 26..local_off + 28)?.try_into().ok()?)
+                    as usize;
+            let lextra =
+                u16::from_le_bytes(data.get(local_off + 28..local_off + 30)?.try_into().ok()?)
+                    as usize;
             let start = local_off + 30 + lname + lextra;
             let raw = data.get(start..start + csize)?;
             return match method {
@@ -184,7 +215,9 @@ fn zip_extract(data: &[u8], want: &str) -> Option<Vec<u8>> {
                 8 => {
                     use std::io::Read;
                     let mut out = Vec::new();
-                    flate2::read::DeflateDecoder::new(raw).read_to_end(&mut out).ok()?;
+                    flate2::read::DeflateDecoder::new(raw)
+                        .read_to_end(&mut out)
+                        .ok()?;
                     Some(out)
                 }
                 _ => None, // exotic compression — not seen in GDTF builders
@@ -250,10 +283,10 @@ mod tests {
             std_mode.channels,
             vec![
                 Pan,
-                PanFine,       // 16-bit pair from Offset="1,2"
+                PanFine, // 16-bit pair from Offset="1,2"
                 Dimmer,
                 Red,
-                Static(42),    // unknown Control1 holds its GDTF default
+                Static(42), // unknown Control1 holds its GDTF default
                 Strobe,
             ],
         );
@@ -310,7 +343,10 @@ mod tests {
         z.extend_from_slice(&(cd_start as u32).to_le_bytes());
         z.extend_from_slice(&0u16.to_le_bytes());
 
-        assert_eq!(zip_extract(&z, "description.xml").as_deref(), Some(&content[..]));
+        assert_eq!(
+            zip_extract(&z, "description.xml").as_deref(),
+            Some(&content[..])
+        );
         assert_eq!(zip_extract(&z, "missing.xml"), None);
     }
 }

@@ -13,7 +13,10 @@ pub struct NullSink {
 impl NullSink {
     pub fn new(mixer: Arc<Mixer>, block_frames: usize) -> Self {
         let channels = mixer.channels() as usize;
-        Self { mixer, buffer: vec![0.0; block_frames * channels] }
+        Self {
+            mixer,
+            buffer: vec![0.0; block_frames * channels],
+        }
     }
 
     /// One audio-callback's worth of render. Returns the filled block.
@@ -35,7 +38,12 @@ pub struct RampSource {
 
 impl RampSource {
     pub fn new(sample_rate: u32, channels: u16, len_samples: usize) -> Self {
-        Self { sample_rate, channels, len_samples, pos: AtomicUsize::new(0) }
+        Self {
+            sample_rate,
+            channels,
+            len_samples,
+            pos: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -49,9 +57,20 @@ impl SampleProvider for RampSource {
         self.pos.store(start + n, Ordering::Relaxed);
         n
     }
-    fn seek(&self, sample: usize) { self.pos.store(sample.min(self.len_samples), Ordering::Relaxed); }
-    fn position(&self) -> usize { self.pos.load(Ordering::Relaxed) }
-    fn length(&self) -> Option<usize> { Some(self.len_samples) }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn channels(&self) -> u16 { self.channels }
+    fn seek(&self, sample: usize) {
+        self.pos
+            .store(sample.min(self.len_samples), Ordering::Relaxed);
+    }
+    fn position(&self) -> usize {
+        self.pos.load(Ordering::Relaxed)
+    }
+    fn length(&self) -> Option<usize> {
+        Some(self.len_samples)
+    }
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    fn channels(&self) -> u16 {
+        self.channels
+    }
 }

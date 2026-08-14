@@ -13,13 +13,40 @@ use std::thread::JoinHandle;
 /// Events emitted by the MSC manager.
 #[derive(Debug, Clone)]
 pub enum MscEvent {
-    Go { qid: String, executor: Option<u8>, page: Option<u8> },
-    TimedGo { qid: String, executor: Option<u8>, page: Option<u8>, time: MscTime },
-    Stop { qid: Option<String>, executor: Option<u8>, page: Option<u8> },
-    Resume { qid: Option<String>, executor: Option<u8>, page: Option<u8> },
-    Set { fader: u8, page: u8, value: f32 },
-    Fire { macro_num: u8 },
-    GoOff { qid: String, executor: Option<u8>, page: Option<u8> },
+    Go {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    TimedGo {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+        time: MscTime,
+    },
+    Stop {
+        qid: Option<String>,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    Resume {
+        qid: Option<String>,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    Set {
+        fader: u8,
+        page: u8,
+        value: f32,
+    },
+    Fire {
+        macro_num: u8,
+    },
+    GoOff {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,13 +115,40 @@ pub struct MamscPacket {
 
 #[derive(Debug, Clone)]
 pub enum MscData {
-    Go { qid: String, executor: Option<u8>, page: Option<u8> },
-    Stop { qid: Option<String>, executor: Option<u8>, page: Option<u8> },
-    Resume { qid: Option<String>, executor: Option<u8>, page: Option<u8> },
-    TimedGo { qid: String, executor: Option<u8>, page: Option<u8>, time: MscTime },
-    Set { fader: u8, page: u8, value: f32 },
-    Fire { macro_num: u8 },
-    GoOff { qid: String, executor: Option<u8>, page: Option<u8> },
+    Go {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    Stop {
+        qid: Option<String>,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    Resume {
+        qid: Option<String>,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
+    TimedGo {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+        time: MscTime,
+    },
+    Set {
+        fader: u8,
+        page: u8,
+        value: f32,
+    },
+    Fire {
+        macro_num: u8,
+    },
+    GoOff {
+        qid: String,
+        executor: Option<u8>,
+        page: Option<u8>,
+    },
     None,
 }
 
@@ -157,23 +211,43 @@ fn parse_command_data(cmd: MscCommand, buf: &[u8]) -> Option<MscData> {
         MscCommand::Go => {
             let (qid, rest) = read_qid(buf)?;
             let (executor, page) = read_executor_page(rest);
-            Some(MscData::Go { qid, executor, page })
+            Some(MscData::Go {
+                qid,
+                executor,
+                page,
+            })
         }
         MscCommand::Stop => {
             if buf.is_empty() {
-                return Some(MscData::Stop { qid: None, executor: None, page: None });
+                return Some(MscData::Stop {
+                    qid: None,
+                    executor: None,
+                    page: None,
+                });
             }
             let (qid, rest) = read_qid(buf)?;
             let (executor, page) = read_executor_page(rest);
-            Some(MscData::Stop { qid: Some(qid), executor, page })
+            Some(MscData::Stop {
+                qid: Some(qid),
+                executor,
+                page,
+            })
         }
         MscCommand::Resume => {
             if buf.is_empty() {
-                return Some(MscData::Resume { qid: None, executor: None, page: None });
+                return Some(MscData::Resume {
+                    qid: None,
+                    executor: None,
+                    page: None,
+                });
             }
             let (qid, rest) = read_qid(buf)?;
             let (executor, page) = read_executor_page(rest);
-            Some(MscData::Resume { qid: Some(qid), executor, page })
+            Some(MscData::Resume {
+                qid: Some(qid),
+                executor,
+                page,
+            })
         }
         MscCommand::TimedGo => {
             if buf.len() < 5 {
@@ -188,7 +262,12 @@ fn parse_command_data(cmd: MscCommand, buf: &[u8]) -> Option<MscData> {
             };
             let (qid, rest) = read_qid(&buf[5..])?;
             let (executor, page) = read_executor_page(rest);
-            Some(MscData::TimedGo { qid, executor, page, time })
+            Some(MscData::TimedGo {
+                qid,
+                executor,
+                page,
+                time,
+            })
         }
         MscCommand::Set => {
             if buf.len() < 4 {
@@ -211,7 +290,11 @@ fn parse_command_data(cmd: MscCommand, buf: &[u8]) -> Option<MscData> {
         MscCommand::GoOff => {
             let (qid, rest) = read_qid(buf)?;
             let (executor, page) = read_executor_page(rest);
-            Some(MscData::GoOff { qid, executor, page })
+            Some(MscData::GoOff {
+                qid,
+                executor,
+                page,
+            })
         }
         _ => Some(MscData::None),
     }
@@ -220,7 +303,11 @@ fn parse_command_data(cmd: MscCommand, buf: &[u8]) -> Option<MscData> {
 fn read_qid(buf: &[u8]) -> Option<(String, &[u8])> {
     let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     let qid = std::str::from_utf8(&buf[..nul]).ok()?.to_string();
-    let rest = if nul < buf.len() { &buf[nul + 1..] } else { &[] };
+    let rest = if nul < buf.len() {
+        &buf[nul + 1..]
+    } else {
+        &[]
+    };
     Some((qid, rest))
 }
 
@@ -228,7 +315,10 @@ fn read_executor_page(buf: &[u8]) -> (Option<u8>, Option<u8>) {
     if buf.is_empty() {
         return (None, None);
     }
-    let sep = buf.iter().position(|&b| b == 0 || b == b'.').unwrap_or(buf.len());
+    let sep = buf
+        .iter()
+        .position(|&b| b == 0 || b == b'.')
+        .unwrap_or(buf.len());
     let executor = std::str::from_utf8(&buf[..sep])
         .ok()
         .and_then(|s| s.parse().ok());
@@ -256,7 +346,12 @@ pub struct MamscDriver {
 }
 
 impl MamscDriver {
-    pub fn bind(nic: Ipv4Addr, rx_port: u16, tx_port: u16, subnet: Ipv4Addr) -> anyhow::Result<Self> {
+    pub fn bind(
+        nic: Ipv4Addr,
+        rx_port: u16,
+        tx_port: u16,
+        subnet: Ipv4Addr,
+    ) -> anyhow::Result<Self> {
         let broadcast = make_broadcast(nic, subnet);
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, rx_port);
         let socket = UdpSocket::bind(bind_addr)?;
@@ -274,7 +369,8 @@ impl MamscDriver {
     where
         F: FnMut(MamscPacket, std::net::SocketAddr) + Send + 'static,
     {
-        self.running.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let socket = Arc::clone(&self.socket);
         let running = Arc::clone(&self.running);
         self.rx_thread = Some(std::thread::spawn(move || {
@@ -302,7 +398,8 @@ impl MamscDriver {
 
 impl Drop for MamscDriver {
     fn drop(&mut self) {
-        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(t) = self.rx_thread.take() {
             let _ = t.join();
         }
@@ -344,8 +441,9 @@ impl MscManager {
         let mut driver = MamscDriver::bind(nic, rx_port, tx_port, subnet)?;
         // ponytail: Match the field inline; introduce an alias when the manager API next changes.
         #[allow(clippy::type_complexity)]
-        let subscribers: Arc<Mutex<Vec<(MscCommandFlags, Box<dyn Fn(&MamscPacket) + Send>)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let subscribers: Arc<
+            Mutex<Vec<(MscCommandFlags, Box<dyn Fn(&MamscPacket) + Send>)>>,
+        > = Arc::new(Mutex::new(Vec::new()));
         let subs = Arc::clone(&subscribers);
         driver.start(move |pkt, _src| {
             let flags = command_to_flags(pkt.command);
@@ -368,7 +466,9 @@ impl MscManager {
     where
         F: Fn(&MamscPacket) + Send + 'static,
     {
-        self.subscribers.lock_unpoisoned().push((commands, Box::new(handler)));
+        self.subscribers
+            .lock_unpoisoned()
+            .push((commands, Box::new(handler)));
     }
 }
 
@@ -424,7 +524,9 @@ mod tests {
         let pkt = MamscPacket::try_read(&buf).unwrap();
         assert_eq!(pkt.device_id, 1);
         assert_eq!(pkt.command, MscCommand::Go);
-        assert!(matches!(pkt.data, MscData::Go { qid, executor, page } if qid == "1.5" && executor == Some(2) && page == Some(3)));
+        assert!(
+            matches!(pkt.data, MscData::Go { qid, executor, page } if qid == "1.5" && executor == Some(2) && page == Some(3))
+        );
     }
 
     #[test]

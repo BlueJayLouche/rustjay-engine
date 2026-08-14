@@ -40,7 +40,10 @@ struct ResamplerInner {
 }
 
 impl ResamplerProcessor {
-    pub fn new(source: Box<dyn SampleProvider>, target_rate: u32) -> Result<Self, rubato::ResamplerConstructionError> {
+    pub fn new(
+        source: Box<dyn SampleProvider>,
+        target_rate: u32,
+    ) -> Result<Self, rubato::ResamplerConstructionError> {
         let source_rate = source.sample_rate();
         let channels = source.channels();
         let ratio = target_rate as f64 / source_rate as f64;
@@ -49,7 +52,7 @@ impl ResamplerProcessor {
         let chunk_size = 1024;
         let resampler = FastFixedOut::new(
             ratio,
-            2.0,                    // max ratio variation
+            2.0,                      // max ratio variation
             PolynomialDegree::Septic, // good quality/CPU tradeoff
             chunk_size,
             channels as usize,
@@ -174,8 +177,8 @@ impl SampleProvider for ResamplerProcessor {
         let inner = self.inner_mut();
         let channels = inner.channels.max(1) as usize;
         let target_frame = sample / channels;
-        let source_frame = (target_frame as f64 * inner.source_rate as f64
-            / inner.target_rate as f64) as usize;
+        let source_frame =
+            (target_frame as f64 * inner.source_rate as f64 / inner.target_rate as f64) as usize;
         self.source.seek(source_frame.saturating_mul(channels));
         inner.ring_read = 0;
         inner.ring_write = 0;
@@ -199,12 +202,14 @@ impl SampleProvider for ResamplerProcessor {
         // (Currently shadowed by BufferedSource's own read position, but keep the
         // trait contract self-consistent for any direct consumer.)
         let inner = self.inner();
-        (self.source.position() as f64 * inner.target_rate as f64 / inner.source_rate as f64) as usize
+        (self.source.position() as f64 * inner.target_rate as f64 / inner.source_rate as f64)
+            as usize
     }
 
     fn length(&self) -> Option<usize> {
         self.source.length().map(|len| {
-            (len as f64 * self.inner().target_rate as f64 / self.inner().source_rate as f64) as usize
+            (len as f64 * self.inner().target_rate as f64 / self.inner().source_rate as f64)
+                as usize
         })
     }
 
@@ -232,19 +237,33 @@ mod tests {
     }
 
     impl SampleProvider for SeekProbe {
-        fn read(&self, _buffer: &mut [f32]) -> usize { 0 }
-        fn seek(&self, sample: usize) { self.sought_sample.store(sample, Ordering::Relaxed); }
-        fn position(&self) -> usize { 0 }
-        fn length(&self) -> Option<usize> { Some(44_100 * 2) }
-        fn sample_rate(&self) -> u32 { 44_100 }
-        fn channels(&self) -> u16 { 2 }
+        fn read(&self, _buffer: &mut [f32]) -> usize {
+            0
+        }
+        fn seek(&self, sample: usize) {
+            self.sought_sample.store(sample, Ordering::Relaxed);
+        }
+        fn position(&self) -> usize {
+            0
+        }
+        fn length(&self) -> Option<usize> {
+            Some(44_100 * 2)
+        }
+        fn sample_rate(&self) -> u32 {
+            44_100
+        }
+        fn channels(&self) -> u16 {
+            2
+        }
     }
 
     #[test]
     fn seek_converts_target_rate_samples_to_source_rate() {
         let sought_sample = Arc::new(AtomicUsize::new(usize::MAX));
         let resampler = ResamplerProcessor::new(
-            Box::new(SeekProbe { sought_sample: Arc::clone(&sought_sample) }),
+            Box::new(SeekProbe {
+                sought_sample: Arc::clone(&sought_sample),
+            }),
             48_000,
         )
         .unwrap();
@@ -291,7 +310,11 @@ mod tests {
             total += read;
         }
         // Should get approximately 1 second of audio (96000 samples stereo)
-        assert!(total > 90000, "expected ~96000 samples total, got {}", total);
+        assert!(
+            total > 90000,
+            "expected ~96000 samples total, got {}",
+            total
+        );
     }
 
     /// Distortion guard: a clean 1 kHz sine resampled 44.1k→48k must stay a clean
@@ -312,7 +335,8 @@ mod tests {
             move |buf| {
                 for f in 0..buf.len() / 2 {
                     let i = n.fetch_add(1, Ordering::Relaxed) as f64;
-                    let s = (AMP as f64 * (2.0 * std::f64::consts::PI * FREQ * i / SRC_SR).sin()) as f32;
+                    let s = (AMP as f64 * (2.0 * std::f64::consts::PI * FREQ * i / SRC_SR).sin())
+                        as f32;
                     buf[f * 2] = s;
                     buf[f * 2 + 1] = s;
                 }
@@ -334,14 +358,23 @@ mod tests {
             }
             out.extend_from_slice(&buf[..read]);
         }
-        assert!(out.len() >= 48_000, "resampler underran: {} samples", out.len());
+        assert!(
+            out.len() >= 48_000,
+            "resampler underran: {} samples",
+            out.len()
+        );
 
         // Steady-state left channel (skip warm-up; index 4096 is even = left).
         let left: Vec<f32> = out[4096..].iter().step_by(2).copied().collect();
 
         let peak = left.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
         assert!(peak <= 1.05, "output blew up — peak {}", peak);
-        assert!(peak > 0.30, "output collapsed — peak {} (expected ~{})", peak, AMP);
+        assert!(
+            peak > 0.30,
+            "output collapsed — peak {} (expected ~{})",
+            peak,
+            AMP
+        );
 
         let rms = (left.iter().map(|s| s * s).sum::<f32>() / left.len() as f32).sqrt();
         let ideal_rms = AMP / std::f32::consts::SQRT_2; // ~0.354

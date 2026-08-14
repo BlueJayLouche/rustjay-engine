@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 pub use rustjay_lighting::{
-    builtin_profiles, render_look, Axis, ChannelRole, Corner, FixtureLook, FixtureProfile,
-    ProfileId, ScanOrder, SegmentColor, WhiteMode,
+    Axis, ChannelRole, Corner, FixtureLook, FixtureProfile, ProfileId, ScanOrder, SegmentColor,
+    WhiteMode, builtin_profiles, render_look,
 };
 
 /// Stable identity of a patched fixture, referenced by lighting cues.
@@ -140,11 +140,7 @@ impl PatchedFixture {
     /// project-level one. Empty = protocol default (multicast/broadcast).
     pub fn effective_dest<'a>(&'a self, global: &'a str) -> &'a str {
         let ip = self.dest_ip.trim();
-        if ip.is_empty() {
-            global.trim()
-        } else {
-            ip
-        }
+        if ip.is_empty() { global.trim() } else { ip }
     }
 }
 
@@ -166,11 +162,19 @@ impl LightingConfig {
     }
 
     pub fn next_fixture_id(&self) -> FixtureId {
-        self.fixtures.iter().map(|f| f.id).max().map_or(1, |m| m + 1)
+        self.fixtures
+            .iter()
+            .map(|f| f.id)
+            .max()
+            .map_or(1, |m| m + 1)
     }
 
     pub fn next_segment_id(&self) -> u32 {
-        self.segments.iter().map(|s| s.id).max().map_or(1, |m| m + 1)
+        self.segments
+            .iter()
+            .map(|s| s.id)
+            .max()
+            .map_or(1, |m| m + 1)
     }
 
     /// Enabled segments with a resolvable profile — what the sampler must feed.
@@ -206,7 +210,10 @@ fn full_region() -> [f32; 4] {
 }
 
 fn segment_color_default() -> SegmentColor {
-    SegmentColor { white: WhiteMode::Off, ..Default::default() }
+    SegmentColor {
+        white: WhiteMode::Off,
+        ..Default::default()
+    }
 }
 
 /// Patch sheet CSV for riggers/electricians: fixture summary rows with
@@ -214,19 +221,35 @@ fn segment_color_default() -> SegmentColor {
 /// universe a segment crosses), sorted by universe/address. The `Notes`
 /// column flags address overlaps.
 pub fn patch_sheet_csv(cfg: &LightingConfig) -> String {
-    use rustjay_lighting::{find_overlaps, segment_spans, PatchSpan};
+    use rustjay_lighting::{PatchSpan, find_overlaps, segment_spans};
 
-    let fixture_label =
-        |f: &PatchedFixture| if f.name.is_empty() { format!("Fixture {}", f.id) } else { f.name.clone() };
+    let fixture_label = |f: &PatchedFixture| {
+        if f.name.is_empty() {
+            format!("Fixture {}", f.id)
+        } else {
+            f.name.clone()
+        }
+    };
 
     // Occupied spans (fixtures + all patched segments) for overlap detection.
     let mut spans: Vec<PatchSpan> = Vec::new();
     for f in &cfg.fixtures {
-        let Some(p) = cfg.profile(&f.profile_id) else { continue };
-        spans.extend(segment_spans(fixture_label(f), p.name.clone(), f.universe, f.address, p.footprint(), 1));
+        let Some(p) = cfg.profile(&f.profile_id) else {
+            continue;
+        };
+        spans.extend(segment_spans(
+            fixture_label(f),
+            p.name.clone(),
+            f.universe,
+            f.address,
+            p.footprint(),
+            1,
+        ));
     }
     for s in &cfg.segments {
-        let Some(p) = cfg.profile(&s.profile_id) else { continue };
+        let Some(p) = cfg.profile(&s.profile_id) else {
+            continue;
+        };
         spans.extend(segment_spans(
             s.name.clone(),
             p.name.clone(),
@@ -247,8 +270,15 @@ pub fn patch_sheet_csv(cfg: &LightingConfig) -> String {
                     && (o.a.owner == owner || o.b.owner == owner)
             })
             .map(|o| {
-                let other = if o.a.owner == owner { &o.b.owner } else { &o.a.owner };
-                format!("OVERLAP with {} @ U{} {}-{}", other, o.universe, o.start, o.end)
+                let other = if o.a.owner == owner {
+                    &o.b.owner
+                } else {
+                    &o.a.owner
+                };
+                format!(
+                    "OVERLAP with {} @ U{} {}-{}",
+                    other, o.universe, o.start, o.end
+                )
             })
             .collect::<Vec<_>>()
             .join("; ")
@@ -265,7 +295,9 @@ pub fn patch_sheet_csv(cfg: &LightingConfig) -> String {
     // (sort key, csv line) so fixtures/segments interleave by address.
     let mut rows: Vec<((u16, u16, u8), String)> = Vec::new();
     for f in &cfg.fixtures {
-        let Some(p) = cfg.profile(&f.profile_id) else { continue };
+        let Some(p) = cfg.profile(&f.profile_id) else {
+            continue;
+        };
         let name = fixture_label(f);
         let end = f.address + p.footprint().max(1) as u16 - 1;
         let note = overlap_note(&name, f.universe, f.address, end);
@@ -273,30 +305,58 @@ pub fn patch_sheet_csv(cfg: &LightingConfig) -> String {
             (f.universe, f.address, 0),
             format!(
                 "fixture,{},{},{},{},{},{},{},{}",
-                esc(&name), esc(&p.name), f.universe, f.address, p.footprint(), end,
-                esc(f.effective_dest(&cfg.dest_ip)), esc(&note)
+                esc(&name),
+                esc(&p.name),
+                f.universe,
+                f.address,
+                p.footprint(),
+                end,
+                esc(f.effective_dest(&cfg.dest_ip)),
+                esc(&note)
             ),
         ));
         for (i, role) in p.channels.iter().enumerate() {
             let addr = f.address + i as u16;
             rows.push((
                 (f.universe, f.address, 1 + i.min(254) as u8),
-                format!("channel,{},{},{},{},1,{},,", esc(&name), esc(&role.describe()), f.universe, addr, addr),
+                format!(
+                    "channel,{},{},{},{},1,{},,",
+                    esc(&name),
+                    esc(&role.describe()),
+                    f.universe,
+                    addr,
+                    addr
+                ),
             ));
         }
     }
     for s in &cfg.segments {
-        let Some(p) = cfg.profile(&s.profile_id) else { continue };
+        let Some(p) = cfg.profile(&s.profile_id) else {
+            continue;
+        };
         let count = (s.cols * s.rows) as usize;
-        for span in segment_spans(s.name.clone(), p.name.clone(), s.universe, s.address, p.footprint(), count) {
+        for span in segment_spans(
+            s.name.clone(),
+            p.name.clone(),
+            s.universe,
+            s.address,
+            p.footprint(),
+            count,
+        ) {
             let note = overlap_note(&s.name, span.universe, span.start, span.end);
             let layout = format!("{} × {} ({} ch/cell)", count, p.name, p.footprint());
             rows.push((
                 (span.universe, span.start, 0),
                 format!(
                     "segment,{},{},{},{},{},{},{},{}",
-                    esc(&s.name), esc(&layout), span.universe, span.start,
-                    span.end - span.start + 1, span.end, esc(cfg.dest_ip.trim()), esc(&note)
+                    esc(&s.name),
+                    esc(&layout),
+                    span.universe,
+                    span.start,
+                    span.end - span.start + 1,
+                    span.end,
+                    esc(cfg.dest_ip.trim()),
+                    esc(&note)
                 ),
             ));
         }
@@ -421,13 +481,27 @@ mod patch_sheet_tests {
 
         let csv = patch_sheet_csv(&cfg);
         let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines[0], "Kind,Name,Profile,Universe,Address,Channels,End,Dest IP,Notes");
+        assert_eq!(
+            lines[0],
+            "Kind,Name,Profile,Universe,Address,Channels,End,Dest IP,Notes"
+        );
         // Fixture summary, then its channel rows, sorted by address.
         assert!(lines[1].starts_with("fixture,Spot L,"), "got {}", lines[1]);
-        assert!(lines[2].starts_with("channel,Spot L,Red,1,1,"), "got {}", lines[2]);
-        assert!(lines[1].contains("OVERLAP with Fixture 2"), "got {}", lines[1]);
+        assert!(
+            lines[2].starts_with("channel,Spot L,Red,1,1,"),
+            "got {}",
+            lines[2]
+        );
+        assert!(
+            lines[1].contains("OVERLAP with Fixture 2"),
+            "got {}",
+            lines[1]
+        );
         // Second fixture carries its per-fixture dest IP.
-        let fx2 = lines.iter().find(|l| l.starts_with("fixture,Fixture 2")).unwrap();
+        let fx2 = lines
+            .iter()
+            .find(|l| l.starts_with("fixture,Fixture 2"))
+            .unwrap();
         assert!(fx2.contains("10.0.0.5"));
         // Segment produces one row per universe crossed.
         let seg_rows: Vec<_> = lines.iter().filter(|l| l.starts_with("segment,")).collect();

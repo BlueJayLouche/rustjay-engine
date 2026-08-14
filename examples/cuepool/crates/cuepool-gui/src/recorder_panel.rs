@@ -18,17 +18,17 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("DMX recording", &["dmxrec"])
                     .pick_file()
-                {
-                    state.recorder_file = path.to_string_lossy().to_string();
-                }
+            {
+                state.recorder_file = path.to_string_lossy().to_string();
+            }
             if ui.button("New…").clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("DMX recording", &["dmxrec"])
                     .set_file_name("take.dmxrec")
                     .save_file()
-                {
-                    state.recorder_file = path.to_string_lossy().to_string();
-                }
+            {
+                state.recorder_file = path.to_string_lossy().to_string();
+            }
         });
     });
 
@@ -98,8 +98,9 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label("Live input:")
-            .on_hover_text("OSC: /dmx/{universe}/{channel} 0.0–1.0 — active as a bridge even when not recording");
+        ui.label("Live input:").on_hover_text(
+            "OSC: /dmx/{universe}/{channel} 0.0–1.0 — active as a bridge even when not recording",
+        );
         let mut midi = state.recorder_midi_enabled;
         if ui
             .checkbox(&mut midi, "MIDI CC → universe")
@@ -110,7 +111,10 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         }
         let mut uni = state.recorder_midi_universe;
         if ui
-            .add_enabled(midi, egui::DragValue::new(&mut uni).speed(1).range(1..=63999))
+            .add_enabled(
+                midi,
+                egui::DragValue::new(&mut uni).speed(1).range(1..=63999),
+            )
             .changed()
         {
             state.recorder_midi_universe = uni;

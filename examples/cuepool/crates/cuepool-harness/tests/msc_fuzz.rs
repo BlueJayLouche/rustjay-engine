@@ -43,7 +43,14 @@ fn well_framed_packets_with_fuzzed_payloads_never_panic() {
     let mut rng = Xorshift64::new(0x6D736364);
     for _ in 0..40_000 {
         // Inner MIDI sysex: F0 7F <device> 02 <format> <command> <data...> F7.
-        let mut sysex = vec![0xF0, 0x7F, rng.next_byte(), 0x02, rng.next_byte(), rng.next_byte()];
+        let mut sysex = vec![
+            0xF0,
+            0x7F,
+            rng.next_byte(),
+            0x02,
+            rng.next_byte(),
+            rng.next_byte(),
+        ];
         let data_len = rng.next_range(0, 24) as usize;
         sysex.extend(rng.next_bytes(data_len));
         sysex.push(0xF7);

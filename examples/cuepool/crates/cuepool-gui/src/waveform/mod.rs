@@ -2,8 +2,8 @@
 //!
 //! Peak files (`.qpek`) cache decoded waveform data for instant reload.
 
-use egui::Color32;
 use cuepool_audio::SampleProvider;
+use egui::Color32;
 use std::io::{Read, Write};
 
 const QPEK_MAGIC: &[u8] = b"QPEK";
@@ -23,14 +23,16 @@ pub fn generate_peaks(path: &str, num_bars: usize) -> Option<WaveformData> {
     if length == 0 || num_bars == 0 {
         return None;
     }
-    let duration_secs = length as f32
-        / f32::from(decoder.channels().max(1))
-        / decoder.sample_rate().max(1) as f32;
+    let duration_secs =
+        length as f32 / f32::from(decoder.channels().max(1)) / decoder.sample_rate().max(1) as f32;
 
     // Opening the decoder is intentionally still required for a cached peak file:
     // the sidecar predates scrubbing and does not store the media duration.
     if let Some(peaks) = load_peaks(path) {
-        return Some(WaveformData { peaks, duration_secs });
+        return Some(WaveformData {
+            peaks,
+            duration_secs,
+        });
     }
 
     let chunk_size = (length / num_bars).max(1);
@@ -54,7 +56,10 @@ pub fn generate_peaks(path: &str, num_bars: usize) -> Option<WaveformData> {
     // Save to cache for next time
     let _ = save_peaks(path, &peaks);
 
-    Some(WaveformData { peaks, duration_secs })
+    Some(WaveformData {
+        peaks,
+        duration_secs,
+    })
 }
 
 /// Load peaks from a `.qpek` sidecar file if it exists and is valid.
@@ -85,10 +90,7 @@ fn load_peaks(audio_path: &str) -> Option<Vec<(f32, f32)>> {
         let mut max_buf = [0u8; 4];
         file.read_exact(&mut min_buf).ok()?;
         file.read_exact(&mut max_buf).ok()?;
-        peaks.push((
-            f32::from_le_bytes(min_buf),
-            f32::from_le_bytes(max_buf),
-        ));
+        peaks.push((f32::from_le_bytes(min_buf), f32::from_le_bytes(max_buf)));
     }
 
     Some(peaks)
@@ -155,8 +157,7 @@ pub(crate) fn media_to_seek_secs(
     region_start_secs: f32,
     seek_length_secs: f32,
 ) -> f32 {
-    (media_secs.max(0.0) - region_start_secs.max(0.0))
-        .clamp(0.0, seek_length_secs.max(0.0))
+    (media_secs.max(0.0) - region_start_secs.max(0.0)).clamp(0.0, seek_length_secs.max(0.0))
 }
 
 fn media_secs_to_x(
@@ -207,7 +208,11 @@ pub(crate) fn draw(
 
     painter.rect_filled(rect, 2.0, Color32::from_rgb(30, 30, 30));
     if waveform.peaks.is_empty() || waveform.duration_secs <= 0.0 {
-        return DrawResponse { zoom, scroll_offset, seek_target: None };
+        return DrawResponse {
+            zoom,
+            scroll_offset,
+            seek_target: None,
+        };
     }
 
     let mut new_zoom = zoom;
@@ -267,10 +272,10 @@ pub(crate) fn draw(
         })
         .unwrap_or_default();
     if matches!(interaction, Interaction::Scrub(_)) {
-        let _ = response.clone().on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal);
-        response.widget_info(|| {
-            egui::WidgetInfo::slider(true, 0.0, "Scrub selected cue waveform")
-        });
+        let _ = response
+            .clone()
+            .on_hover_and_drag_cursor(egui::CursorIcon::ResizeHorizontal);
+        response.widget_info(|| egui::WidgetInfo::slider(true, 0.0, "Scrub selected cue waveform"));
     }
 
     let bar_width = rect.width() / waveform.peaks.len() as f32 * new_zoom;
@@ -280,7 +285,13 @@ pub(crate) fn draw(
     let visible_bars = (rect.width() / bar_width.max(1.0)).ceil() as usize + 1;
     let end_bar = (start_bar + visible_bars).min(waveform.peaks.len());
 
-    for (i, (min_val, max_val)) in waveform.peaks.iter().enumerate().take(end_bar).skip(start_bar) {
+    for (i, (min_val, max_val)) in waveform
+        .peaks
+        .iter()
+        .enumerate()
+        .take(end_bar)
+        .skip(start_bar)
+    {
         let x = rect.min.x + (i as f32 - new_scroll) * bar_width;
         if x < rect.min.x - bar_width || x > rect.max.x {
             continue;
@@ -299,7 +310,10 @@ pub(crate) fn draw(
         let thumb_width = rect.width() / total_virtual_width * rect.width();
         let thumb_x = rect.min.x + new_scroll / waveform.peaks.len() as f32 * rect.width();
         let scrollbar_rect = egui::Rect::from_min_size(
-            egui::pos2(thumb_x.clamp(rect.min.x, rect.max.x - thumb_width.max(2.0)), rect.max.y - 3.0),
+            egui::pos2(
+                thumb_x.clamp(rect.min.x, rect.max.x - thumb_width.max(2.0)),
+                rect.max.y - 3.0,
+            ),
             egui::vec2(thumb_width.max(2.0), 2.0),
         );
         painter.rect_filled(scrollbar_rect, 1.0, Color32::from_rgb(180, 180, 180));
@@ -322,7 +336,10 @@ pub(crate) fn draw(
         );
         if rect.x_range().contains(x) {
             let segment = [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)];
-            painter.line_segment(segment, egui::Stroke::new(3.0_f32, Color32::from_rgb(25, 25, 25)));
+            painter.line_segment(
+                segment,
+                egui::Stroke::new(3.0_f32, Color32::from_rgb(25, 25, 25)),
+            );
             painter.line_segment(segment, egui::Stroke::new(1.0_f32, Color32::WHITE));
         }
     }
@@ -340,9 +357,18 @@ mod tests {
 
     #[test]
     fn pointer_x_maps_through_waveform_zoom_and_scroll() {
-        assert_eq!(pointer_x_to_media_secs(0.0, 400.0, 200, 2.0, 50.0, 120.0), 30.0);
-        assert_eq!(pointer_x_to_media_secs(200.0, 400.0, 200, 2.0, 50.0, 120.0), 60.0);
-        assert_eq!(pointer_x_to_media_secs(400.0, 400.0, 200, 2.0, 50.0, 120.0), 90.0);
+        assert_eq!(
+            pointer_x_to_media_secs(0.0, 400.0, 200, 2.0, 50.0, 120.0),
+            30.0
+        );
+        assert_eq!(
+            pointer_x_to_media_secs(200.0, 400.0, 200, 2.0, 50.0, 120.0),
+            60.0
+        );
+        assert_eq!(
+            pointer_x_to_media_secs(400.0, 400.0, 200, 2.0, 50.0, 120.0),
+            90.0
+        );
     }
 
     #[test]

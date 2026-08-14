@@ -2,15 +2,21 @@
 
 use crate::app::{AppCommand, CueType, SharedStateHandle};
 use crate::{colour_to_egui, cue_type_label};
-use egui::{Color32, RichText};
 use cuepool_core::Cue;
+use egui::{Color32, RichText};
 use rust_decimal::Decimal;
 
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     let (cues, selected_id, show_mode, active_positions, tc_fps) = {
         let Ok(state) = state.lock() else { return };
-        let active_positions: std::collections::HashMap<rust_decimal::Decimal, (f32, Option<f32>, bool)> =
-            state.active_cues.iter().map(|ac| (ac.qid, (ac.position_secs, ac.length_secs, ac.paused))).collect();
+        let active_positions: std::collections::HashMap<
+            rust_decimal::Decimal,
+            (f32, Option<f32>, bool),
+        > = state
+            .active_cues
+            .iter()
+            .map(|ac| (ac.qid, (ac.position_secs, ac.length_secs, ac.paused)))
+            .collect();
         (
             state.show_file.cues.clone(),
             state.selected_cue_id,
@@ -591,10 +597,15 @@ fn describe_triggers(triggers: &cuepool_core::CueTriggers, tc_fps: f32) -> Strin
     }
     if let Some(midi) = &triggers.midi {
         let what = match midi.kind {
-            cuepool_core::MidiTriggerKind::NoteOn | cuepool_core::MidiTriggerKind::NoteOff => "note",
+            cuepool_core::MidiTriggerKind::NoteOn | cuepool_core::MidiTriggerKind::NoteOff => {
+                "note"
+            }
             cuepool_core::MidiTriggerKind::CC => "CC",
         };
-        let mut s = format!("MIDI {:?} ch{} {} {}", midi.kind, midi.channel, what, midi.note_or_cc);
+        let mut s = format!(
+            "MIDI {:?} ch{} {} {}",
+            midi.kind, midi.channel, what, midi.note_or_cc
+        );
         if matches!(midi.kind, cuepool_core::MidiTriggerKind::NoteOn) {
             s.push_str(&format!(" vel ≥ {}", midi.velocity_min));
         }

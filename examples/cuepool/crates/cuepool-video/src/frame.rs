@@ -62,7 +62,12 @@ impl VideoFrame {
     /// RGBA8 frame (images, text cues, tests).
     pub fn new(width: u32, height: u32, data: Vec<u8>, pts: f64) -> Self {
         debug_assert_eq!(data.len(), (width * height * 4) as usize);
-        Self { width, height, pts, pixels: FramePixels::Rgba(data) }
+        Self {
+            width,
+            height,
+            pts,
+            pixels: FramePixels::Rgba(data),
+        }
     }
 
     /// Planar YUV frame (any 4:2:0/4:2:2/4:4:4, 8 or 10-bit — GPU path).
@@ -83,7 +88,15 @@ impl VideoFrame {
             width,
             height,
             pts,
-            pixels: FramePixels::YuvPlanar { subsample, bit_depth, y, u, v, full_range, bt709 },
+            pixels: FramePixels::YuvPlanar {
+                subsample,
+                bit_depth,
+                y,
+                u,
+                v,
+                full_range,
+                bt709,
+            },
         }
     }
 
@@ -97,16 +110,21 @@ impl VideoFrame {
         full_range: bool,
         bt709: bool,
     ) -> Self {
-        Self { width, height, pts, pixels: FramePixels::Nv12 { y, uv, full_range, bt709 } }
+        Self {
+            width,
+            height,
+            pts,
+            pixels: FramePixels::Nv12 {
+                y,
+                uv,
+                full_range,
+                bt709,
+            },
+        }
     }
 
     #[cfg(windows)]
-    pub(crate) fn d3d11_nv12(
-        width: u32,
-        height: u32,
-        pts: f64,
-        frame: crate::D3d11Frame,
-    ) -> Self {
+    pub(crate) fn d3d11_nv12(width: u32, height: u32, pts: f64, frame: crate::D3d11Frame) -> Self {
         Self {
             width,
             height,

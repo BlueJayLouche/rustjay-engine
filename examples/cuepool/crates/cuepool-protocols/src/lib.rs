@@ -1,8 +1,8 @@
 //! CuePool Protocols — OSC, MSC, and MIDI.
 
 pub mod midi;
-pub mod osc;
 pub mod msc;
+pub mod osc;
 
 /// Lock a `Mutex` while tolerating poisoning, so a panicking protocol handler
 /// can't kill the receive thread (or stop dispatch) on its next lock. Mirrors

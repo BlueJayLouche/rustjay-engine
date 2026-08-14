@@ -98,12 +98,13 @@ impl UndoRedo {
         }
         if let Some(ref key) = snapshot.merge_key
             && let Some(top) = self.undo_stack.last()
-                && top.merge_key.as_ref() == Some(key) {
-                    // Replace top snapshot with new one (merge consecutive edits)
-                    *self.undo_stack.last_mut().unwrap() = snapshot;
-                    self.redo_stack.clear();
-                    return;
-                }
+            && top.merge_key.as_ref() == Some(key)
+        {
+            // Replace top snapshot with new one (merge consecutive edits)
+            *self.undo_stack.last_mut().unwrap() = snapshot;
+            self.redo_stack.clear();
+            return;
+        }
         self.undo_stack.push(snapshot);
         if self.undo_stack.len() > self.max_depth {
             self.undo_stack.remove(0);
@@ -203,11 +204,14 @@ pub struct DecodeTiming(std::sync::Arc<std::sync::atomic::AtomicU64>);
 
 impl DecodeTiming {
     pub fn from_ms(ms: f64) -> Self {
-        Self(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(ms.to_bits())))
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+            ms.to_bits(),
+        )))
     }
 
     pub fn set_ms(&self, ms: f64) {
-        self.0.store(ms.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .store(ms.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn get_ms(&self) -> f64 {
@@ -276,19 +280,25 @@ impl Diagnostics {
     pub fn sections(&self) -> Vec<(&'static str, Vec<(String, String)>)> {
         let mut sections = Vec::new();
 
-        sections.push(("System", vec![
-            ("App Version".into(), self.app_version.clone()),
-            ("OS".into(), self.os.clone()),
-            ("Arch".into(), self.arch.clone()),
-            ("Log File".into(), self.log_file.clone()),
-        ]));
+        sections.push((
+            "System",
+            vec![
+                ("App Version".into(), self.app_version.clone()),
+                ("OS".into(), self.os.clone()),
+                ("Arch".into(), self.arch.clone()),
+                ("Log File".into(), self.log_file.clone()),
+            ],
+        ));
 
-        sections.push(("GPU", vec![
-            ("Name".into(), self.gpu_name.clone()),
-            ("Backend".into(), self.gpu_backend.clone()),
-            ("Driver".into(), self.gpu_driver.clone()),
-            ("Driver Info".into(), self.gpu_driver_info.clone()),
-        ]));
+        sections.push((
+            "GPU",
+            vec![
+                ("Name".into(), self.gpu_name.clone()),
+                ("Backend".into(), self.gpu_backend.clone()),
+                ("Driver".into(), self.gpu_driver.clone()),
+                ("Driver Info".into(), self.gpu_driver_info.clone()),
+            ],
+        ));
 
         let mut outputs = Vec::new();
         if self.outputs.is_empty() {
@@ -297,12 +307,21 @@ impl Diagnostics {
         for (i, out) in self.outputs.iter().enumerate() {
             let p = format!("Output {}", i + 1);
             outputs.push((format!("{p} Name"), out.name.clone()));
-            outputs.push((format!("{p} Size"), format!("{}x{}", out.size.0, out.size.1)));
+            outputs.push((
+                format!("{p} Size"),
+                format!("{}x{}", out.size.0, out.size.1),
+            ));
             outputs.push((format!("{p} Present Mode"), out.present_mode.clone()));
             outputs.push((format!("{p} Surface Format"), out.format.clone()));
             outputs.push((format!("{p} Monitor Refresh"), out.refresh.clone()));
-            outputs.push((format!("{p} Fullscreen"), if out.fullscreen { "yes" } else { "no" }.into()));
-            outputs.push((format!("{p} Presented/s"), format!("{:.0}", out.presented_per_sec)));
+            outputs.push((
+                format!("{p} Fullscreen"),
+                if out.fullscreen { "yes" } else { "no" }.into(),
+            ));
+            outputs.push((
+                format!("{p} Presented/s"),
+                format!("{:.0}", out.presented_per_sec),
+            ));
         }
         sections.push(("Outputs", outputs));
 
@@ -311,26 +330,58 @@ impl Diagnostics {
                 ("File".into(), v.path.clone()),
                 ("Source Size".into(), format!("{}x{}", v.width, v.height)),
                 ("Decode Path".into(), v.decode_path.clone()),
-                ("Fallback Reason".into(), v.fallback_reason.clone().unwrap_or_else(|| "none".into())),
-                ("Decode ms/frame".into(), format!("{:.2}", v.timings.decode.get_ms())),
-                ("HW transfer ms/frame".into(), format!("{:.2}", v.timings.hw_transfer.get_ms())),
-                ("Plane copy ms/frame".into(), format!("{:.2}", v.timings.plane_copy.get_ms())),
-                ("Upload ms/frame".into(), format!("{:.2}", v.timings.upload.get_ms())),
-                ("Conversion submit ms/frame".into(), format!("{:.2}", v.timings.conversion_submit.get_ms())),
+                (
+                    "Fallback Reason".into(),
+                    v.fallback_reason.clone().unwrap_or_else(|| "none".into()),
+                ),
+                (
+                    "Decode ms/frame".into(),
+                    format!("{:.2}", v.timings.decode.get_ms()),
+                ),
+                (
+                    "HW transfer ms/frame".into(),
+                    format!("{:.2}", v.timings.hw_transfer.get_ms()),
+                ),
+                (
+                    "Plane copy ms/frame".into(),
+                    format!("{:.2}", v.timings.plane_copy.get_ms()),
+                ),
+                (
+                    "Upload ms/frame".into(),
+                    format!("{:.2}", v.timings.upload.get_ms()),
+                ),
+                (
+                    "Conversion submit ms/frame".into(),
+                    format!("{:.2}", v.timings.conversion_submit.get_ms()),
+                ),
             ],
             None => vec![("Status".into(), "no video playing".into())],
         };
         sections.push(("Video Decode", video));
 
-        sections.push(("Pacing", vec![
-            ("Output Count".into(), self.outputs.len().to_string()),
-            ("Event Loop/s".into(), format!("{:.0}", self.event_loop_per_sec)),
-            ("Presented/s (all outputs)".into(), format!("{:.0}", self.presented_per_sec)),
-            ("Uploads/s".into(), format!("{:.0}", self.uploads_per_sec)),
-            ("Dropped/s".into(), format!("{:.0}", self.dropped_per_sec)),
-            ("Starved/s".into(), format!("{:.0}", self.starved_per_sec)),
-            ("Video Consumer".into(), self.consumer_error.clone().unwrap_or_else(|| "running".into())),
-        ]));
+        sections.push((
+            "Pacing",
+            vec![
+                ("Output Count".into(), self.outputs.len().to_string()),
+                (
+                    "Event Loop/s".into(),
+                    format!("{:.0}", self.event_loop_per_sec),
+                ),
+                (
+                    "Presented/s (all outputs)".into(),
+                    format!("{:.0}", self.presented_per_sec),
+                ),
+                ("Uploads/s".into(), format!("{:.0}", self.uploads_per_sec)),
+                ("Dropped/s".into(), format!("{:.0}", self.dropped_per_sec)),
+                ("Starved/s".into(), format!("{:.0}", self.starved_per_sec)),
+                (
+                    "Video Consumer".into(),
+                    self.consumer_error
+                        .clone()
+                        .unwrap_or_else(|| "running".into()),
+                ),
+            ],
+        ));
 
         if !self.frame_pacing.is_empty() {
             sections.push(("Frame Pacing (wgpu)", self.frame_pacing.clone()));
@@ -563,7 +614,11 @@ impl SharedState {
         self.recent_files.truncate(10);
     }
 
-    pub fn load_show_file(&mut self, path: &std::path::Path, data: &str) -> Result<(), serde_json::Error> {
+    pub fn load_show_file(
+        &mut self,
+        path: &std::path::Path,
+        data: &str,
+    ) -> Result<(), serde_json::Error> {
         let show: ShowFile = serde_json::from_str(data)?;
         self.apply_show_file(path, show);
         Ok(())
@@ -594,10 +649,16 @@ pub type SharedStateHandle = Arc<Mutex<SharedState>>;
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     NewProject,
-    OpenProject { path: PathBuf },
+    OpenProject {
+        path: PathBuf,
+    },
     SaveProject,
-    SaveProjectAs { path: PathBuf },
-    PackProject { path: PathBuf },
+    SaveProjectAs {
+        path: PathBuf,
+    },
+    PackProject {
+        path: PathBuf,
+    },
     Go,
     Stop,
     Pause,
@@ -608,12 +669,18 @@ pub enum AppCommand {
     SelectLastCue,
     Undo,
     Redo,
-    AddCue { cue_type: CueType },
+    AddCue {
+        cue_type: CueType,
+    },
     DeleteSelectedCue,
     DuplicateSelectedCue,
     MoveSelectedCueUp,
     MoveSelectedCueDown,
-    MoveCue { from_idx: usize, to_idx: usize, parent: Option<Decimal> },
+    MoveCue {
+        from_idx: usize,
+        to_idx: usize,
+        parent: Option<Decimal>,
+    },
     SetLimiterThreshold(f32),
     SetAudioDriver(cuepool_core::AudioOutputDriver),
     SetAudioDevice(String),
@@ -623,29 +690,50 @@ pub enum AppCommand {
     ToggleProjectionWindow,
     OpenProjectionOutputs,
     Preload,
-    UpdateCueQid { qid: Decimal, new_qid: Decimal },
-    UpdateCueName { qid: Decimal, name: String },
-    UpdateCueTrigger { qid: Decimal, trigger: cuepool_core::TriggerMode },
-    LearnMidiTrigger { qid: Decimal },
-    CaptureTimecodeTrigger { qid: Decimal },
+    UpdateCueQid {
+        qid: Decimal,
+        new_qid: Decimal,
+    },
+    UpdateCueName {
+        qid: Decimal,
+        name: String,
+    },
+    UpdateCueTrigger {
+        qid: Decimal,
+        trigger: cuepool_core::TriggerMode,
+    },
+    LearnMidiTrigger {
+        qid: Decimal,
+    },
+    CaptureTimecodeTrigger {
+        qid: Decimal,
+    },
     /// Snap the lighting engine's live state to these looks (inspector live mode).
     LightingLivePush {
         snapshot: std::collections::BTreeMap<u32, cuepool_core::FixtureLook>,
     },
     /// Start a recording pass on `file`, or stop-and-keep the running one.
-    RecorderRecord { file: String },
+    RecorderRecord {
+        file: String,
+    },
     /// Stop and throw away the in-flight pass.
     RecorderDiscard,
     /// Swap `file` with its `.prev` (undo the last kept pass).
-    RecorderRevert { file: String },
+    RecorderRevert {
+        file: String,
+    },
     RecorderSetMonitor(bool),
     /// Preview the take through the lighting output (no cue involved).
-    RecorderPreview { file: String },
+    RecorderPreview {
+        file: String,
+    },
     RecorderStopPreview,
     /// Release every channel the OSC/MIDI live bridge holds.
     RecorderClearLive,
     /// Take-editor scrub: hold this frame on the lighting output (None = release).
-    RecorderScrub { frame: Option<rustjay_lighting::MaskedFrame> },
+    RecorderScrub {
+        frame: Option<rustjay_lighting::MaskedFrame>,
+    },
     /// Step one video frame forward while paused (show clock follows).
     FrameStep,
     /// Step one video frame back while paused (show clock follows).
@@ -653,7 +741,10 @@ pub enum AppCommand {
     /// Seek an active Sound or Video cue in the `ActiveCueInfo` timeline.
     /// Looped cues use seconds relative to the loop region; targets outside
     /// that region clamp to its final frame.
-    SeekCue { instance_id: u64, secs: f32 },
+    SeekCue {
+        instance_id: u64,
+        secs: f32,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -664,11 +755,7 @@ enum SelectionStep {
     Last,
 }
 
-fn step_selection(
-    cues: &[Cue],
-    current: Option<Decimal>,
-    step: SelectionStep,
-) -> Option<Decimal> {
+fn step_selection(cues: &[Cue], current: Option<Decimal>, step: SelectionStep) -> Option<Decimal> {
     if cues.is_empty() {
         return None;
     }
@@ -864,11 +951,7 @@ impl CuePoolApp {
         self.apply_project_show(path, show)
     }
 
-    fn apply_project_show(
-        &mut self,
-        path: &std::path::Path,
-        show: ShowFile,
-    ) -> Result<(), String> {
+    fn apply_project_show(&mut self, path: &std::path::Path, show: ShowFile) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
@@ -956,57 +1039,76 @@ impl CuePoolApp {
 
             // Undo / Redo
             if modifiers.command && i.key_pressed(egui::Key::Z) {
-                let cmd = if modifiers.shift { AppCommand::Redo } else { AppCommand::Undo };
+                let cmd = if modifiers.shift {
+                    AppCommand::Redo
+                } else {
+                    AppCommand::Undo
+                };
                 if let Ok(mut state) = self.state.lock() {
                     state.command_queue.push(cmd);
                 }
             }
 
             // New / Open / Save
-            if modifiers.command && i.key_pressed(egui::Key::N)
-                && let Ok(mut state) = self.state.lock() {
-                    state.command_queue.push(AppCommand::NewProject);
-                }
-            if modifiers.command && i.key_pressed(egui::Key::O)
+            if modifiers.command
+                && i.key_pressed(egui::Key::N)
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::NewProject);
+            }
+            if modifiers.command
+                && i.key_pressed(egui::Key::O)
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("CuePool project", &["qproj"])
                     .pick_file()
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(AppCommand::OpenProject { path });
-                    }
-            if modifiers.command && i.key_pressed(egui::Key::S)
-                && let Ok(mut state) = self.state.lock() {
-                    state.command_queue.push(AppCommand::SaveProject);
-                }
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::OpenProject { path });
+            }
+            if modifiers.command
+                && i.key_pressed(egui::Key::S)
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::SaveProject);
+            }
 
             // Delete selected cue (Delete, or Backspace which is the Mac "delete").
             if !editing_text
                 && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
-                && let Ok(mut state) = self.state.lock() {
-                    state.command_queue.push(AppCommand::DeleteSelectedCue);
-                }
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::DeleteSelectedCue);
+            }
 
             // Duplicate selected cue
-            if modifiers.command && i.key_pressed(egui::Key::D)
-                && let Ok(mut state) = self.state.lock() {
-                    state.command_queue.push(AppCommand::DuplicateSelectedCue);
-                }
+            if modifiers.command
+                && i.key_pressed(egui::Key::D)
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::DuplicateSelectedCue);
+            }
 
             // Add new sound cue
-            if modifiers.command && i.key_pressed(egui::Key::T)
-                && let Ok(mut state) = self.state.lock() {
-                    state.command_queue.push(AppCommand::AddCue { cue_type: CueType::Sound });
-                }
+            if modifiers.command
+                && i.key_pressed(egui::Key::T)
+                && let Ok(mut state) = self.state.lock()
+            {
+                state.command_queue.push(AppCommand::AddCue {
+                    cue_type: CueType::Sound,
+                });
+            }
 
             // Move selected cue up/down
             if modifiers.command {
                 if i.key_pressed(egui::Key::ArrowUp)
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(AppCommand::MoveSelectedCueUp);
-                    }
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.command_queue.push(AppCommand::MoveSelectedCueUp);
+                }
                 if i.key_pressed(egui::Key::ArrowDown)
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(AppCommand::MoveSelectedCueDown);
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.command_queue.push(AppCommand::MoveSelectedCueDown);
                 }
             }
 
@@ -1025,21 +1127,24 @@ impl CuePoolApp {
                     None
                 };
                 if let Some(command) = command
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(command);
-                    }
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.command_queue.push(command);
+                }
             }
 
             // Go / Stop / Pause (transport shortcuts)
             if !modifiers.command && !modifiers.alt {
                 if i.key_pressed(egui::Key::Space)
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(AppCommand::Go);
-                    }
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.command_queue.push(AppCommand::Go);
+                }
                 if i.key_pressed(egui::Key::Escape)
-                    && let Ok(mut state) = self.state.lock() {
-                        state.command_queue.push(AppCommand::Stop);
-                    }
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.command_queue.push(AppCommand::Stop);
+                }
             }
         });
 
@@ -1081,7 +1186,9 @@ impl CuePoolApp {
 
         // Progress overlay
         let overlay = {
-            let Ok(state) = self.state.lock() else { return; };
+            let Ok(state) = self.state.lock() else {
+                return;
+            };
             state.progress_overlay.clone()
         };
         if let Some(overlay) = overlay {
@@ -1089,23 +1196,39 @@ impl CuePoolApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let screen_rect = ctx.content_rect();
-                    ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 180));
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_rgba_premultiplied(0, 0, 0, 180),
+                    );
 
                     let modal_size = egui::vec2(320.0, 120.0);
                     let modal_rect = egui::Rect::from_center_size(screen_rect.center(), modal_size);
-                    ui.painter().rect_filled(modal_rect, 8.0, ui.visuals().panel_fill);
-                    ui.painter().rect_stroke(modal_rect, 8.0, egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color), egui::StrokeKind::Inside);
+                    ui.painter()
+                        .rect_filled(modal_rect, 8.0, ui.visuals().panel_fill);
+                    ui.painter().rect_stroke(
+                        modal_rect,
+                        8.0,
+                        egui::Stroke::new(
+                            1.0_f32,
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
 
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(modal_rect.shrink(16.0)), |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.heading("Please Wait");
-                            ui.add_space(8.0);
-                            ui.label(&overlay.message);
-                            ui.add_space(8.0);
-                            let progress = overlay.progress.clamp(0.0, 1.0);
-                            ui.add(egui::ProgressBar::new(progress).show_percentage());
-                        });
-                    });
+                    ui.scope_builder(
+                        egui::UiBuilder::new().max_rect(modal_rect.shrink(16.0)),
+                        |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.heading("Please Wait");
+                                ui.add_space(8.0);
+                                ui.label(&overlay.message);
+                                ui.add_space(8.0);
+                                let progress = overlay.progress.clamp(0.0, 1.0);
+                                ui.add(egui::ProgressBar::new(progress).show_percentage());
+                            });
+                        },
+                    );
                 });
         }
 
@@ -1389,12 +1512,21 @@ impl CuePoolApp {
         };
         if show_waveform {
             let (selected_path, peaks, zoom, scroll) = if let Ok(state) = self.state.lock() {
-                let path = state.selected_cue().and_then(|cue| match cue {
-                    cuepool_core::Cue::Sound { path, .. } | cuepool_core::Cue::Video { path, .. } => Some(path.clone()),
-                    _ => None,
-                }).unwrap_or_default();
+                let path = state
+                    .selected_cue()
+                    .and_then(|cue| match cue {
+                        cuepool_core::Cue::Sound { path, .. }
+                        | cuepool_core::Cue::Video { path, .. } => Some(path.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let peaks = state.waveform_cache.get(&path).cloned();
-                (path, peaks, state.waveform_window_zoom, state.waveform_window_scroll)
+                (
+                    path,
+                    peaks,
+                    state.waveform_window_zoom,
+                    state.waveform_window_scroll,
+                )
             } else {
                 show_waveform = false;
                 (String::new(), None, 1.0, 0.0)
@@ -1408,7 +1540,13 @@ impl CuePoolApp {
                     if selected_path.is_empty() {
                         ui.label("Select a Sound or Video cue to view its waveform.");
                     } else if let Some(waveform) = peaks {
-                        ui.label(std::path::Path::new(&selected_path).file_name().and_then(|n| n.to_str()).unwrap_or(&selected_path).to_string());
+                        ui.label(
+                            std::path::Path::new(&selected_path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&selected_path)
+                                .to_string(),
+                        );
                         let response = crate::waveform::draw(
                             ui,
                             &waveform,
@@ -1507,7 +1645,11 @@ impl CuePoolApp {
         self.take_editor.show(ctx, &self.state);
 
         // Quit-confirm modal (in-app; a native dialog deadlocks the winit loop).
-        let pending_close = self.state.lock().map(|s| s.pending_close_confirm).unwrap_or(false);
+        let pending_close = self
+            .state
+            .lock()
+            .map(|s| s.pending_close_confirm)
+            .unwrap_or(false);
         if pending_close {
             egui::Modal::new(egui::Id::new("quit_confirm")).show(ctx, |ui| {
                 ui.set_width(320.0);
@@ -1517,14 +1659,16 @@ impl CuePoolApp {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Discard & Quit").clicked()
-                        && let Ok(mut s) = self.state.lock() {
-                            s.pending_close_confirm = false;
-                            s.quit = true;
-                        }
+                        && let Ok(mut s) = self.state.lock()
+                    {
+                        s.pending_close_confirm = false;
+                        s.quit = true;
+                    }
                     if ui.button("Cancel").clicked()
-                        && let Ok(mut s) = self.state.lock() {
-                            s.pending_close_confirm = false;
-                        }
+                        && let Ok(mut s) = self.state.lock()
+                    {
+                        s.pending_close_confirm = false;
+                    }
                 });
             });
         }
@@ -1579,7 +1723,11 @@ impl CuePoolApp {
         }
 
         // Import-from-project modal (File → Import from Project…)
-        let import = self.state.lock().ok().and_then(|s| s.import_request.clone());
+        let import = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.import_request.clone());
         if let Some(mut request) = import {
             egui::Window::new(format!("Import from {}", request.name))
                 .collapsible(false)
@@ -1595,22 +1743,27 @@ impl CuePoolApp {
                         let any_checked = request.sections.projection
                             || request.sections.lighting
                             || request.sections.show_settings;
-                        if ui.add_enabled(any_checked, egui::Button::new("Import")).clicked()
-                            && let Ok(mut state) = self.state.lock() {
-                                apply_project_import(&mut state, &request.show, request.sections);
-                                state.import_request = None;
-                            }
+                        if ui
+                            .add_enabled(any_checked, egui::Button::new("Import"))
+                            .clicked()
+                            && let Ok(mut state) = self.state.lock()
+                        {
+                            apply_project_import(&mut state, &request.show, request.sections);
+                            state.import_request = None;
+                        }
                         if ui.button("Cancel").clicked()
-                            && let Ok(mut state) = self.state.lock() {
-                                state.import_request = None;
-                            }
+                            && let Ok(mut state) = self.state.lock()
+                        {
+                            state.import_request = None;
+                        }
                     });
                 });
             // Persist checkbox edits unless Import/Cancel cleared the request.
             if let Ok(mut state) = self.state.lock()
-                && state.import_request.is_some() {
-                    state.import_request = Some(request);
-                }
+                && state.import_request.is_some()
+            {
+                state.import_request = Some(request);
+            }
         }
 
         if let Some((elapsed, remaining)) = launch_splash_timing {
@@ -1675,8 +1828,7 @@ impl CuePoolApp {
 }
 
 fn launch_splash_opacity(remaining: Duration) -> f32 {
-    let remaining =
-        (remaining.as_secs_f32() / LAUNCH_SPLASH_FADE_DURATION.as_secs_f32()).min(1.0);
+    let remaining = (remaining.as_secs_f32() / LAUNCH_SPLASH_FADE_DURATION.as_secs_f32()).min(1.0);
     remaining * remaining
 }
 
@@ -1703,8 +1855,7 @@ fn ascii_torus_frame(elapsed: f32) -> String {
             let rotated_x = x * cos_z - rotated_y * sin_z;
             let rotated_y = x * sin_z + rotated_y * cos_z;
             let inverse_z = 1.0 / (5.0 + rotated_z);
-            let screen_x =
-                (ASCII_TORUS_WIDTH as f32 / 2.0 + 28.0 * inverse_z * rotated_x) as isize;
+            let screen_x = (ASCII_TORUS_WIDTH as f32 / 2.0 + 28.0 * inverse_z * rotated_x) as isize;
             let screen_y =
                 (ASCII_TORUS_HEIGHT as f32 / 2.0 - 14.0 * inverse_z * rotated_y) as isize;
 
@@ -1976,7 +2127,9 @@ impl CuePoolApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let (active_count, cue_count, show_mode, dirty) = {
-            let Ok(state) = self.state.lock() else { return; };
+            let Ok(state) = self.state.lock() else {
+                return;
+            };
             (
                 state.active_cues.len(),
                 state.show_file.cues.len(),
@@ -1988,7 +2141,11 @@ impl CuePoolApp {
         ui.horizontal(|ui| {
             // Status text
             let status = if active_count > 0 {
-                format!("▶ Playing {} cue{}", active_count, if active_count == 1 { "" } else { "s" })
+                format!(
+                    "▶ Playing {} cue{}",
+                    active_count,
+                    if active_count == 1 { "" } else { "s" }
+                )
             } else {
                 "Ready".to_string()
             };
@@ -2016,7 +2173,11 @@ impl CuePoolApp {
 
             // Dirty indicator
             if dirty {
-                ui.label(egui::RichText::new("● Unsaved changes").small().color(egui::Color32::YELLOW));
+                ui.label(
+                    egui::RichText::new("● Unsaved changes")
+                        .small()
+                        .color(egui::Color32::YELLOW),
+                );
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2026,7 +2187,11 @@ impl CuePoolApp {
                 } else {
                     egui::Color32::from_rgb(120, 120, 120)
                 };
-                let audio_text = if active_count > 0 { "Audio: On" } else { "Audio: Off" };
+                let audio_text = if active_count > 0 {
+                    "Audio: On"
+                } else {
+                    "Audio: Off"
+                };
                 ui.label(egui::RichText::new(audio_text).small().color(audio_color));
             });
         });
@@ -2034,7 +2199,9 @@ impl CuePoolApp {
 
     fn confirm_discard(state: &SharedStateHandle) -> bool {
         let (dirty, has_running) = {
-            let Ok(state) = state.lock() else { return false };
+            let Ok(state) = state.lock() else {
+                return false;
+            };
             (state.dirty, !state.active_cues.is_empty())
         };
         if has_running {
@@ -2062,7 +2229,9 @@ impl CuePoolApp {
 
     fn process_commands(&mut self, _ctx: &egui::Context) {
         let commands = {
-            let Ok(mut state) = self.state.lock() else { return };
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
             let cmds: Vec<_> = state.command_queue.drain(..).collect();
             cmds
         };
@@ -2100,15 +2269,16 @@ impl CuePoolApp {
                             "Project loaded: {}",
                             path.display()
                         ),
-                        Err(error) => log::error!(
-                            "Project load failed for '{}': {error}",
-                            path.display()
-                        ),
+                        Err(error) => {
+                            log::error!("Project load failed for '{}': {error}", path.display())
+                        }
                     }
                 }
                 AppCommand::SaveProject => {
                     let path = {
-                        let Ok(state) = self.state.lock() else { continue };
+                        let Ok(state) = self.state.lock() else {
+                            continue;
+                        };
                         state.project_path.clone()
                     };
                     if let Some(path) = path {
@@ -2120,9 +2290,10 @@ impl CuePoolApp {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("CuePool project", &["qproj"])
                             .save_file()
-                            && let Err(e) = self.save_to_path(&path) {
-                                log::error!("Failed to save project: {}", e);
-                            }
+                            && let Err(e) = self.save_to_path(&path)
+                        {
+                            log::error!("Failed to save project: {}", e);
+                        }
                     }
                 }
                 AppCommand::SaveProjectAs { path } => {
@@ -2154,12 +2325,12 @@ impl CuePoolApp {
                     if let Ok(mut state) = self.state.lock()
                         && let Some(next) =
                             step_selection(&state.show_file.cues, state.selected_cue_id, step)
-                        && state.selected_cue_id != Some(next) {
-                            let snapshot =
-                                Snapshot::from_state(&state).with_merge_key("selection");
-                            state.undo_redo.push(snapshot);
-                            state.selected_cue_id = Some(next);
-                        }
+                        && state.selected_cue_id != Some(next)
+                    {
+                        let snapshot = Snapshot::from_state(&state).with_merge_key("selection");
+                        state.undo_redo.push(snapshot);
+                        state.selected_cue_id = Some(next);
+                    }
                 }
                 AppCommand::Undo => {
                     if let Ok(mut state) = self.state.lock() {
@@ -2199,8 +2370,9 @@ impl CuePoolApp {
                         // timecode trigger with the current time, so "pause at
                         // the moment, add cue" lands armed at the right spot.
                         if let Some(t) = state.show_time {
-                            base.triggers.timecode =
-                                Some(cuepool_core::TimecodeTrigger { time: cuepool_core::Timespan::from_secs_f64(t) });
+                            base.triggers.timecode = Some(cuepool_core::TimecodeTrigger {
+                                time: cuepool_core::Timespan::from_secs_f64(t),
+                            });
                         }
 
                         let cue = match cue_type {
@@ -2300,64 +2472,71 @@ impl CuePoolApp {
                 }
                 AppCommand::DeleteSelectedCue => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id {
-                            let snapshot = Snapshot::from_state(&state);
-                            state.undo_redo.push(snapshot);
-                            state.show_file.cues.retain(|c| c.base().qid != id);
-                            state.selected_cue_id = None;
-                            state.dirty = true;
-                        }
+                        && let Some(id) = state.selected_cue_id
+                    {
+                        let snapshot = Snapshot::from_state(&state);
+                        state.undo_redo.push(snapshot);
+                        state.show_file.cues.retain(|c| c.base().qid != id);
+                        state.selected_cue_id = None;
+                        state.dirty = true;
+                    }
                 }
                 AppCommand::DuplicateSelectedCue => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(cue) = state.selected_cue().cloned() {
-                            let snapshot = Snapshot::from_state(&state);
-                            state.undo_redo.push(snapshot);
+                        && let Some(cue) = state.selected_cue().cloned()
+                    {
+                        let snapshot = Snapshot::from_state(&state);
+                        state.undo_redo.push(snapshot);
 
-                            let mut new_cue = cue;
-                            let original_qid = new_cue.base().qid;
-                            let next_qid = state.show_file.choose_qid(Some(original_qid));
-                            new_cue.base_mut().qid = next_qid;
-                            new_cue.base_mut().name.push_str(" (copy)");
-                            state.show_file.cues.push(new_cue);
-                            state.dirty = true;
-                        }
+                        let mut new_cue = cue;
+                        let original_qid = new_cue.base().qid;
+                        let next_qid = state.show_file.choose_qid(Some(original_qid));
+                        new_cue.base_mut().qid = next_qid;
+                        new_cue.base_mut().name.push_str(" (copy)");
+                        state.show_file.cues.push(new_cue);
+                        state.dirty = true;
+                    }
                 }
                 AppCommand::MoveSelectedCueUp => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id {
-                            let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                            if let Some(i) = idx
-                                && i > 0 {
-                                    let snapshot = Snapshot::from_state(&state)
-                                        .with_merge_key("move_cue");
-                                    state.undo_redo.push(snapshot);
-                                    state.show_file.cues.swap(i, i - 1);
-                                    state.dirty = true;
-                                }
+                        && let Some(id) = state.selected_cue_id
+                    {
+                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
+                        if let Some(i) = idx
+                            && i > 0
+                        {
+                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
+                            state.undo_redo.push(snapshot);
+                            state.show_file.cues.swap(i, i - 1);
+                            state.dirty = true;
                         }
+                    }
                 }
                 AppCommand::MoveSelectedCueDown => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id {
-                            let len = state.show_file.cues.len();
-                            let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                            if let Some(i) = idx
-                                && i + 1 < len {
-                                    let snapshot = Snapshot::from_state(&state)
-                                        .with_merge_key("move_cue");
-                                    state.undo_redo.push(snapshot);
-                                    state.show_file.cues.swap(i, i + 1);
-                                    state.dirty = true;
-                                }
+                        && let Some(id) = state.selected_cue_id
+                    {
+                        let len = state.show_file.cues.len();
+                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
+                        if let Some(i) = idx
+                            && i + 1 < len
+                        {
+                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
+                            state.undo_redo.push(snapshot);
+                            state.show_file.cues.swap(i, i + 1);
+                            state.dirty = true;
                         }
+                    }
                 }
-                AppCommand::MoveCue { from_idx, to_idx, parent } => {
+                AppCommand::MoveCue {
+                    from_idx,
+                    to_idx,
+                    parent,
+                } => {
                     if let Ok(mut state) = self.state.lock() {
                         let len = state.show_file.cues.len();
                         if from_idx < len && from_idx != to_idx {
-                            let snapshot = Snapshot::from_state(&state)
-                                .with_merge_key("move_cue");
+                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
                             state.undo_redo.push(snapshot);
                             let mut cue = state.show_file.cues.remove(from_idx);
                             // Drag sets group membership: parent = the group the cue
@@ -2372,7 +2551,11 @@ impl CuePoolApp {
                             };
                             cue.base_mut().parent = parent;
                             // Removing shifts everything after from_idx left by one.
-                            let insert_idx = if to_idx > from_idx { to_idx - 1 } else { to_idx };
+                            let insert_idx = if to_idx > from_idx {
+                                to_idx - 1
+                            } else {
+                                to_idx
+                            };
                             let insert_idx = insert_idx.min(state.show_file.cues.len());
                             state.show_file.cues.insert(insert_idx, cue);
                             state.dirty = true;
@@ -2386,7 +2569,11 @@ impl CuePoolApp {
                             log::warn!("Cue {} already exists — keeping {}", new_qid, qid);
                             continue;
                         }
-                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == qid);
+                        let idx = state
+                            .show_file
+                            .cues
+                            .iter()
+                            .position(|c| c.base().qid == qid);
                         if let Some(i) = idx {
                             let snapshot = Snapshot::from_state(&state)
                                 .with_merge_key(format!("cue:{}:qid", qid));
@@ -2398,9 +2585,21 @@ impl CuePoolApp {
                                     c.base_mut().parent = Some(new_qid);
                                 }
                                 match c {
-                                    cuepool_core::Cue::Stop { stop_qid, .. } if *stop_qid == qid => *stop_qid = new_qid,
-                                    cuepool_core::Cue::Volume { sound_qid, .. } if *sound_qid == qid => *sound_qid = new_qid,
-                                    cuepool_core::Cue::Goto { target_qid, .. } if *target_qid == qid => *target_qid = new_qid,
+                                    cuepool_core::Cue::Stop { stop_qid, .. }
+                                        if *stop_qid == qid =>
+                                    {
+                                        *stop_qid = new_qid
+                                    }
+                                    cuepool_core::Cue::Volume { sound_qid, .. }
+                                        if *sound_qid == qid =>
+                                    {
+                                        *sound_qid = new_qid
+                                    }
+                                    cuepool_core::Cue::Goto { target_qid, .. }
+                                        if *target_qid == qid =>
+                                    {
+                                        *target_qid = new_qid
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2413,7 +2612,11 @@ impl CuePoolApp {
                 }
                 AppCommand::UpdateCueName { qid, name } => {
                     if let Ok(mut state) = self.state.lock() {
-                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == qid);
+                        let idx = state
+                            .show_file
+                            .cues
+                            .iter()
+                            .position(|c| c.base().qid == qid);
                         if let Some(i) = idx {
                             let snapshot = Snapshot::from_state(&state)
                                 .with_merge_key(format!("cue:{}:name", qid));
@@ -2425,7 +2628,11 @@ impl CuePoolApp {
                 }
                 AppCommand::UpdateCueTrigger { qid, trigger } => {
                     if let Ok(mut state) = self.state.lock() {
-                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == qid);
+                        let idx = state
+                            .show_file
+                            .cues
+                            .iter()
+                            .position(|c| c.base().qid == qid);
                         if let Some(i) = idx {
                             let snapshot = Snapshot::from_state(&state)
                                 .with_merge_key(format!("cue:{}:trigger", qid));
@@ -2444,9 +2651,10 @@ impl CuePoolApp {
 
         // Put back commands that main.rs should handle
         if !unhandled.is_empty()
-            && let Ok(mut state) = self.state.lock() {
-                state.command_queue.extend(unhandled);
-            }
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.command_queue.extend(unhandled);
+        }
     }
 
     fn save_to_path(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -2473,13 +2681,15 @@ impl CuePoolApp {
         let media_dir = folder.join("Media");
         std::fs::create_dir_all(&media_dir)?;
 
-        let folder_name = folder.file_name()
+        let folder_name = folder
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("Packed");
         let proj_path = folder.join(format!("{}.qproj", folder_name));
 
         // Collect file paths and build path mapping
-        let mut path_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut path_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         {
             let Ok(state) = self.state.lock() else {
@@ -2508,8 +2718,10 @@ impl CuePoolApp {
             }
 
             // Build collision map: filename -> list of (original_path, absolute_path)
-            let mut by_filename: std::collections::HashMap<String, Vec<(String, std::path::PathBuf)>> =
-                std::collections::HashMap::new();
+            let mut by_filename: std::collections::HashMap<
+                String,
+                Vec<(String, std::path::PathBuf)>,
+            > = std::collections::HashMap::new();
 
             for original in &file_paths {
                 let abs = if std::path::Path::new(original).is_absolute() {
@@ -2524,7 +2736,10 @@ impl CuePoolApp {
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")
                     .to_string();
-                by_filename.entry(fname).or_default().push((original.clone(), abs));
+                by_filename
+                    .entry(fname)
+                    .or_default()
+                    .push((original.clone(), abs));
             }
 
             // Copy files and build path mapping
@@ -2534,7 +2749,9 @@ impl CuePoolApp {
                     let abs_paths: Vec<_> = entries.iter().map(|(_, abs)| abs.clone()).collect();
                     let common = common_path_prefix(&abs_paths);
                     for (original, abs) in entries {
-                        let rel = abs.strip_prefix(&common).unwrap_or(std::path::Path::new(abs.file_name().unwrap_or_default()));
+                        let rel = abs
+                            .strip_prefix(&common)
+                            .unwrap_or(std::path::Path::new(abs.file_name().unwrap_or_default()));
                         let dst = media_dir.join(rel);
                         if let Some(parent) = dst.parent() {
                             let _ = std::fs::create_dir_all(parent);
@@ -2542,8 +2759,8 @@ impl CuePoolApp {
                         if abs.exists() {
                             std::fs::copy(abs, &dst)?;
                         }
-                        let new_rel = pathdiff::diff_paths(&dst, folder)
-                            .unwrap_or_else(|| dst.clone());
+                        let new_rel =
+                            pathdiff::diff_paths(&dst, folder).unwrap_or_else(|| dst.clone());
                         path_map.insert(original.clone(), new_rel.to_string_lossy().to_string());
                     }
                 } else {
@@ -2553,8 +2770,7 @@ impl CuePoolApp {
                     if abs.exists() {
                         std::fs::copy(abs, &dst)?;
                     }
-                    let new_rel = pathdiff::diff_paths(&dst, folder)
-                        .unwrap_or_else(|| dst.clone());
+                    let new_rel = pathdiff::diff_paths(&dst, folder).unwrap_or_else(|| dst.clone());
                     path_map.insert(original.clone(), new_rel.to_string_lossy().to_string());
                 }
             }
@@ -2766,10 +2982,7 @@ mod tests {
     fn launch_splash_fades_only_at_the_end() {
         assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_DURATION), 1.0);
         assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION), 1.0);
-        assert_eq!(
-            launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION / 2),
-            0.25
-        );
+        assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION / 2), 0.25);
         assert_eq!(launch_splash_opacity(Duration::ZERO), 0.0);
     }
 
@@ -2832,12 +3045,16 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(diagnostics.sections()[0]
-            .1
-            .contains(&("Log File".into(), "C:/CuePool/cuepool.log".into())));
-        assert!(diagnostics
-            .to_text()
-            .contains("Log File: C:/CuePool/cuepool.log"));
+        assert!(
+            diagnostics.sections()[0]
+                .1
+                .contains(&("Log File".into(), "C:/CuePool/cuepool.log".into()))
+        );
+        assert!(
+            diagnostics
+                .to_text()
+                .contains("Log File: C:/CuePool/cuepool.log")
+        );
     }
 
     #[test]
@@ -2858,10 +3075,12 @@ mod tests {
         );
 
         assert_eq!(state.project_generation, 7);
-        assert!(state
-            .command_queue
-            .iter()
-            .any(|command| matches!(command, AppCommand::ApplyAudioSettings)));
+        assert!(
+            state
+                .command_queue
+                .iter()
+                .any(|command| matches!(command, AppCommand::ApplyAudioSettings))
+        );
     }
 
     #[test]
@@ -2870,8 +3089,7 @@ mod tests {
         state.show_file.show_settings.audio_output_driver = cuepool_core::AudioOutputDriver::ASIO;
         state.show_file.show_settings.audio_output_device = "ASIO device".into();
         state.undo_redo.push(Snapshot::from_state(&state));
-        state.show_file.show_settings.audio_output_driver =
-            cuepool_core::AudioOutputDriver::WASAPI;
+        state.show_file.show_settings.audio_output_driver = cuepool_core::AudioOutputDriver::WASAPI;
         state.show_file.show_settings.audio_output_device = "WASAPI device".into();
 
         let current = Snapshot::from_state(&state);
@@ -2881,10 +3099,12 @@ mod tests {
             state.show_file.show_settings.audio_output_driver,
             cuepool_core::AudioOutputDriver::ASIO
         );
-        assert!(state
-            .command_queue
-            .iter()
-            .any(|command| matches!(command, AppCommand::ApplyAudioSettings)));
+        assert!(
+            state
+                .command_queue
+                .iter()
+                .any(|command| matches!(command, AppCommand::ApplyAudioSettings))
+        );
     }
 
     #[test]

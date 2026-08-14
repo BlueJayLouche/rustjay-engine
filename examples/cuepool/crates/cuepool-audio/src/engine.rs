@@ -3,6 +3,7 @@
 //! Replaces C# `AudioPlaybackManager`. Owns the cpal stream,
 //! the master mixer, and all active playback channels.
 
+use crate::SampleProvider;
 use crate::buffered_source::BufferedSource;
 use crate::channel_converter::MonoToStereo;
 use crate::eq_processor::EqProcessor;
@@ -12,12 +13,11 @@ use crate::loop_processor::LoopProcessor;
 use crate::metering_processor::{MeterData, MeteringProcessor};
 use crate::mixer::{Mixer, MixerInput};
 use crate::resampler::ResamplerProcessor;
-use crate::SampleProvider;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample, SupportedBufferSize};
 use cuepool_core::{AudioOutputDriver, EQSettings, FadeType, LoopMode};
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
 const TARGET_OUTPUTS: u16 = 8;
@@ -33,9 +33,9 @@ enum HostChoice {
 fn host_choice(driver: AudioOutputDriver) -> HostChoice {
     match driver {
         AudioOutputDriver::ASIO => HostChoice::Asio,
-        AudioOutputDriver::WASAPI
-        | AudioOutputDriver::Wave
-        | AudioOutputDriver::DirectSound => HostChoice::Default,
+        AudioOutputDriver::WASAPI | AudioOutputDriver::Wave | AudioOutputDriver::DirectSound => {
+            HostChoice::Default
+        }
     }
 }
 
@@ -206,7 +206,9 @@ struct AtomicF32 {
 
 impl AtomicF32 {
     fn new(v: f32) -> Self {
-        Self { inner: std::sync::atomic::AtomicU32::new(v.to_bits()) }
+        Self {
+            inner: std::sync::atomic::AtomicU32::new(v.to_bits()),
+        }
     }
     fn load(&self, ordering: std::sync::atomic::Ordering) -> f32 {
         f32::from_bits(self.inner.load(ordering))
@@ -411,8 +413,8 @@ impl AudioEngine {
         // Within that format choose eight channels, then a larger configuration
         // before falling back below eight, and 48 kHz. Dante can expose
         // I16/I24/I32 depending on its ASIO encoding.
-        let config = select_output_config(&all_configs)
-            .ok_or_else(|| AudioError::NoSupportedFormat {
+        let config =
+            select_output_config(&all_configs).ok_or_else(|| AudioError::NoSupportedFormat {
                 available: all_configs
                     .iter()
                     .map(|config| config.sample_format().to_string())
@@ -450,7 +452,11 @@ impl AudioEngine {
         let limiter_threshold = Arc::new(AtomicF32::new(0.95));
         let limiter_thresh_clone = Arc::clone(&limiter_threshold);
         // Arc-shared so read_limiter_gr_db() on the main thread reads GR from the callback.
-        let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(0.95, sample_rate, channels)));
+        let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(
+            0.95,
+            sample_rate,
+            channels,
+        )));
         let limiter_clone = Arc::clone(&limiter);
         let format_mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let format_mismatch_clone = Arc::clone(&format_mismatch);
@@ -527,7 +533,10 @@ impl AudioEngine {
 
     /// Set the master limiter threshold (linear gain, e.g. 0.95).
     pub fn set_limiter_threshold(&self, threshold: f32) {
-        self.limiter_threshold.store(threshold.clamp(0.01, 1.0), std::sync::atomic::Ordering::Relaxed);
+        self.limiter_threshold.store(
+            threshold.clamp(0.01, 1.0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Read master metering data.
@@ -597,8 +606,11 @@ impl AudioEngine {
         params: CueChainParams,
     ) -> Result<CuePlayback, AudioError> {
         let source_rate = source.sample_rate();
-        let loop_counter = matches!(params.loop_mode, LoopMode::Looped | LoopMode::LoopedInfinite)
-            .then(|| Arc::new(AtomicU32::new(0)));
+        let loop_counter = matches!(
+            params.loop_mode,
+            LoopMode::Looped | LoopMode::LoopedInfinite
+        )
+        .then(|| Arc::new(AtomicU32::new(0)));
 
         let loop_processor = LoopProcessor::new(source);
         loop_processor.set_loop(
@@ -652,9 +664,7 @@ impl AudioEngine {
     }
 
     /// List output devices from exactly the configured driver host.
-    pub fn list_devices(
-        driver: AudioOutputDriver,
-    ) -> Result<Vec<AudioDeviceInfo>, AudioError> {
+    pub fn list_devices(driver: AudioOutputDriver) -> Result<Vec<AudioDeviceInfo>, AudioError> {
         let host = host_for_driver(driver)?;
         named_output_devices(driver, &host)
             .map(|devices| devices.into_iter().map(|device| device.info).collect())
@@ -672,13 +682,12 @@ fn sample_format_rank(format: cpal::SampleFormat) -> Option<u8> {
 }
 
 fn config_preference(config: &cpal::SupportedStreamConfigRange) -> Option<(u8, (bool, u16), u64)> {
-    let rate_distance = if (config.min_sample_rate()..=config.max_sample_rate())
-        .contains(&TARGET_RATE)
-    {
-        0
-    } else {
-        (config.min_sample_rate() as i64 - TARGET_RATE as i64).unsigned_abs() + 1
-    };
+    let rate_distance =
+        if (config.min_sample_rate()..=config.max_sample_rate()).contains(&TARGET_RATE) {
+            0
+        } else {
+            (config.min_sample_rate() as i64 - TARGET_RATE as i64).unsigned_abs() + 1
+        };
     Some((
         sample_format_rank(config.sample_format())?,
         channel_preference(config.channels()),
@@ -707,10 +716,7 @@ fn max_callback_samples(config: &cpal::SupportedStreamConfigRange) -> usize {
 }
 
 fn channel_preference(channels: u16) -> (bool, u16) {
-    (
-        channels < TARGET_OUTPUTS,
-        channels.abs_diff(TARGET_OUTPUTS),
-    )
+    (channels < TARGET_OUTPUTS, channels.abs_diff(TARGET_OUTPUTS))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -836,12 +842,22 @@ struct NullSource {
 }
 
 impl SampleProvider for NullSource {
-    fn read(&self, _buffer: &mut [f32]) -> usize { 0 }
+    fn read(&self, _buffer: &mut [f32]) -> usize {
+        0
+    }
     fn seek(&self, _sample: usize) {}
-    fn position(&self) -> usize { 0 }
-    fn length(&self) -> Option<usize> { None }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn channels(&self) -> u16 { self.channels }
+    fn position(&self) -> usize {
+        0
+    }
+    fn length(&self) -> Option<usize> {
+        None
+    }
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    fn channels(&self) -> u16 {
+        self.channels
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -853,7 +869,9 @@ pub enum AudioError {
         #[source]
         source: rubato::ResamplerConstructionError,
     },
-    #[error("audio output driver {driver} was requested, but CuePool was built without ASIO support; rebuild cuepool with `--features asio`")]
+    #[error(
+        "audio output driver {driver} was requested, but CuePool was built without ASIO support; rebuild cuepool with `--features asio`"
+    )]
     DriverNotCompiled { driver: &'static str },
     #[error("audio output driver {driver} is only supported on Windows, not {platform}")]
     UnsupportedPlatform {
@@ -877,7 +895,9 @@ pub enum AudioError {
         driver: &'static str,
         available: String,
     },
-    #[error("configured {driver} output device '{device}' was not found; available devices: {available}")]
+    #[error(
+        "configured {driver} output device '{device}' was not found; available devices: {available}"
+    )]
     DeviceNotFound {
         driver: &'static str,
         device: String,
@@ -889,14 +909,18 @@ pub enum AudioError {
         #[source]
         source: cpal::Error,
     },
-    #[error("configured {driver} output device '{device}' could not open: {reason}; available devices: {available}")]
+    #[error(
+        "configured {driver} output device '{device}' could not open: {reason}; available devices: {available}"
+    )]
     OpenDevice {
         driver: &'static str,
         device: String,
         available: String,
         reason: String,
     },
-    #[error("no supported output sample format (F32, I32, I24, or I16); device formats: {available}")]
+    #[error(
+        "no supported output sample format (F32, I32, I24, or I16); device formats: {available}"
+    )]
     NoSupportedFormat { available: String },
     #[error("cpal error: {0}")]
     Cpal(cpal::Error),
@@ -1025,7 +1049,10 @@ mod tests {
     fn driver_selection_decision_table() {
         assert_eq!(host_choice(AudioOutputDriver::WASAPI), HostChoice::Default);
         assert_eq!(host_choice(AudioOutputDriver::Wave), HostChoice::Default);
-        assert_eq!(host_choice(AudioOutputDriver::DirectSound), HostChoice::Default);
+        assert_eq!(
+            host_choice(AudioOutputDriver::DirectSound),
+            HostChoice::Default
+        );
         assert_eq!(host_choice(AudioOutputDriver::ASIO), HostChoice::Asio);
     }
 
@@ -1057,12 +1084,11 @@ mod tests {
 
     #[test]
     fn probe_failure_is_classified_and_formatted_for_empty_selection() {
-        let configs: Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error> = Err(
-            cpal::Error::with_message(
+        let configs: Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error> =
+            Err(cpal::Error::with_message(
                 cpal::ErrorKind::UnsupportedConfig,
                 "driver rejected its packed sample format",
-            ),
-        );
+            ));
         let failed = classify_device("Dante Virtual Soundcard".to_string(), &configs);
         let available = classify_device("Built-in Output".to_string(), &Ok(Vec::new()));
 
@@ -1191,8 +1217,7 @@ mod tests {
                 .iter()
                 .filter(|config| config.sample_format() == format)
                 .min_by_key(|config| {
-                    let rate_distance = if (config.min_sample_rate()
-                        ..=config.max_sample_rate())
+                    let rate_distance = if (config.min_sample_rate()..=config.max_sample_rate())
                         .contains(&TARGET_RATE)
                     {
                         0

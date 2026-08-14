@@ -23,7 +23,11 @@ fn main() {
     let mut last_pts = f64::NEG_INFINITY;
     while n < 120 {
         let Some(f) = src.read_frame() else { break };
-        assert!(f.pts >= last_pts, "PTS not monotonic: {last_pts} -> {}", f.pts);
+        assert!(
+            f.pts >= last_pts,
+            "PTS not monotonic: {last_pts} -> {}",
+            f.pts
+        );
         last_pts = f.pts;
         n += 1;
     }

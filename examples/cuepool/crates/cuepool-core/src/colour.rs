@@ -54,8 +54,14 @@ mod tests {
 
     #[test]
     fn test_consts() {
-        assert_eq!(SerializedColour::BLACK, SerializedColour::new(0.0, 0.0, 0.0, 1.0));
-        assert_eq!(SerializedColour::WHITE, SerializedColour::new(1.0, 1.0, 1.0, 1.0));
+        assert_eq!(
+            SerializedColour::BLACK,
+            SerializedColour::new(0.0, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            SerializedColour::WHITE,
+            SerializedColour::new(1.0, 1.0, 1.0, 1.0)
+        );
     }
 
     #[test]
