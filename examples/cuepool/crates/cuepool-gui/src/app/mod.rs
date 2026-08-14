@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 const LAUNCH_SPLASH_DURATION: Duration = Duration::from_millis(2400);
 const LAUNCH_SPLASH_FADE_DURATION: Duration = Duration::from_millis(220);
 const LAUNCH_SPLASH_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const OPERATOR_ALERT_DURATION: Duration = Duration::from_secs(10);
 const ASCII_TORUS_WIDTH: usize = 64;
 const ASCII_TORUS_HEIGHT: usize = 22;
 const ASCII_TORUS_RAMP: &[u8] = b".,-~:;=!*#$@";
@@ -501,6 +502,8 @@ pub struct SharedState {
     pub quit: bool,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
     pub progress_overlay: Option<ProgressOverlay>,
+    /// Latest non-blocking runtime error for the operator. Session-only.
+    pub operator_alert: Option<OperatorAlert>,
     /// If Some, the next received MIDI event should be stored as this cue's MIDI trigger.
     pub pending_midi_learn: Option<Decimal>,
     /// If Some, the current show time should be stored as this cue's timecode trigger.
@@ -537,6 +540,13 @@ pub struct ImportRequest {
 pub struct ProgressOverlay {
     pub message: String,
     pub progress: f32, // 0.0 to 1.0
+}
+
+/// A short-lived, non-blocking runtime error shown above the status bar.
+#[derive(Debug, Clone)]
+pub struct OperatorAlert {
+    pub message: String,
+    pub expires_at: Instant,
 }
 
 impl Default for SharedState {
@@ -590,6 +600,7 @@ impl Default for SharedState {
             pending_close_confirm: false,
             quit: false,
             progress_overlay: None,
+            operator_alert: None,
             pending_midi_learn: None,
             pending_timecode_capture: None,
             project_generation: 0,
@@ -604,6 +615,13 @@ impl Default for SharedState {
 impl SharedState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn report_operator_error(&mut self, message: impl Into<String>) {
+        self.operator_alert = Some(OperatorAlert {
+            message: message.into(),
+            expires_at: Instant::now() + OPERATOR_ALERT_DURATION,
+        });
     }
 
     /// Add a path to the recent files list, moving it to the front if it already exists.
@@ -1167,6 +1185,52 @@ impl CuePoolApp {
         egui::Panel::bottom("status_bar").show_inside(ui, |ui| {
             self.status_bar(ui);
         });
+
+        let now = Instant::now();
+        let alert = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state
+                .operator_alert
+                .as_ref()
+                .is_some_and(|alert| alert.expires_at <= now)
+            {
+                state.operator_alert = None;
+            }
+            state.operator_alert.clone()
+        };
+        if let Some(alert) = alert {
+            ctx.request_repaint_after(alert.expires_at.saturating_duration_since(now));
+            let mut dismiss = false;
+            egui::Panel::bottom("operator_alert")
+                .frame(
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(70, 28, 28))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(220, 100, 100),
+                        ))
+                        .inner_margin(8),
+                )
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Projection output unavailable")
+                                .strong()
+                                .color(egui::Color32::LIGHT_RED),
+                        );
+                        ui.separator();
+                        ui.add(egui::Label::new(&alert.message).wrap());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            dismiss = ui.button("Dismiss").clicked()
+                        });
+                    });
+                });
+            if dismiss && let Ok(mut state) = self.state.lock() {
+                state.operator_alert = None;
+            }
+        }
 
         // Active cues panel (left side)
         egui::Panel::left("active_cues")

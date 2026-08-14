@@ -7,6 +7,7 @@ use egui_kittest::{
     kittest::{By, Queryable},
 };
 use rust_decimal::Decimal;
+use std::time::{Duration, Instant};
 
 fn has_wgpu_adapter() -> bool {
     let instance = egui_wgpu::wgpu::Instance::new(
@@ -52,20 +53,22 @@ fn launch_splash_shows_the_build_and_blocks_the_workspace() {
     drop(state);
     harness.remove_cursor();
     harness.step();
-    // GitHub's Linux WGPU backend differs from the macOS baseline by one edge pixel.
-    let snapshot_options = has_wgpu_adapter()
-        .then(|| SnapshotOptions::new().failed_pixel_count_threshold(OsThreshold::new(0).linux(1)));
-    if let Some(options) = &snapshot_options {
-        harness.snapshot_options("launch_splash", options);
-    }
+    // Keep the visual baseline stable across patch-version glyph changes. The
+    // dynamic label assertion above still verifies the full build identity.
+    // GitHub's Linux WGPU backend differs by one additional edge pixel.
+    let pixel_threshold = if has_wgpu_adapter() {
+        OsThreshold::new(9).linux(10)
+    } else {
+        OsThreshold::new(9)
+    };
+    let snapshot_options = SnapshotOptions::new().failed_pixel_count_threshold(pixel_threshold);
+    harness.snapshot_options("launch_splash", &snapshot_options);
 
     let started_at = 1.0 / 60.0;
     harness.input_mut().time = Some(started_at + 2.29);
     harness.step();
     assert!(harness.query_by_label(&build_identity()).is_some());
-    if let Some(options) = &snapshot_options {
-        harness.snapshot_options("launch_splash_fade", options);
-    }
+    harness.snapshot_options("launch_splash_fade", &snapshot_options);
 
     harness.input_mut().time = Some(started_at + 2.5);
     harness.step();
@@ -128,6 +131,36 @@ fn status_window_is_not_embedded_in_control_viewport() {
 
     assert!(harness.query_by_label("Copy to Clipboard").is_none());
     assert!(state.lock().unwrap().show_status_window);
+}
+
+#[test]
+fn operator_alert_is_visible_dismissible_and_expires() {
+    let (mut harness, state) = demo_harness();
+    const MESSAGE: &str = "Projector 2 failed; 2 of 3 outputs remain active. See Window → Log.";
+
+    state.lock().unwrap().report_operator_error(MESSAGE);
+    harness.step();
+    assert!(harness.query_by_label(MESSAGE).is_some());
+
+    harness
+        .get(By::new().role(Role::Button).label("Dismiss"))
+        .click();
+    harness.run();
+    harness.step();
+    assert!(state.lock().unwrap().operator_alert.is_none());
+    assert!(harness.query_by_label(MESSAGE).is_none());
+
+    state.lock().unwrap().report_operator_error(MESSAGE);
+    state
+        .lock()
+        .unwrap()
+        .operator_alert
+        .as_mut()
+        .unwrap()
+        .expires_at = Instant::now() - Duration::from_millis(1);
+    harness.step();
+    assert!(state.lock().unwrap().operator_alert.is_none());
+    assert!(harness.query_by_label(MESSAGE).is_none());
 }
 
 #[test]

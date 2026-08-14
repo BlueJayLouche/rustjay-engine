@@ -251,6 +251,25 @@ fn remote_discovery_message(settings: &cuepool_core::ShowSettings) -> Option<ros
     })
 }
 
+fn gpu_display_context(
+    adapter: &wgpu::Adapter,
+    monitor: Option<&cuepool_core::MonitorId>,
+) -> String {
+    let info = adapter.get_info();
+    let monitor = monitor
+        .map(cuepool_core::MonitorId::label)
+        .unwrap_or_else(|| "windowed/unassigned".into());
+    format!(
+        "adapter='{}' backend={:?} driver='{}' driver_info='{}'; monitor={monitor}",
+        info.name, info.backend, info.driver, info.driver_info
+    )
+}
+
+fn control_surface_retry_delay(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(6);
+    Duration::from_millis((100_u64 << exponent).min(5_000))
+}
+
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
 enum AppEvent {
@@ -260,6 +279,11 @@ enum AppEvent {
     OutputSurfaceLost(WindowId),
     /// The shared GPU device is gone; recovery requires rebuilding all resources.
     DeviceLost,
+}
+
+enum TerminalError {
+    Startup(String),
+    Runtime(&'static str),
 }
 
 struct VideoDecodeRequest {
@@ -331,6 +355,8 @@ struct App {
     control_surface: Option<wgpu::Surface<'static>>,
     control_config: Option<wgpu::SurfaceConfiguration>,
     status_window: Option<StatusWindow>,
+    control_surface_retry_at: Option<Instant>,
+    control_surface_retry_failures: u32,
 
     // ── projection output windows ──
     /// The Text cue currently shown on the overlay.
@@ -370,7 +396,7 @@ struct App {
     show_engine: ShowEngine,
     engine_epoch: Instant,
     window_ids: Option<WindowIds>,
-    terminal_error: Option<&'static str>,
+    terminal_error: Option<TerminalError>,
 
     // ── playback adapter state ──
     paused: bool,
@@ -733,6 +759,8 @@ impl App {
             control_surface: None,
             control_config: None,
             status_window: None,
+            control_surface_retry_at: None,
+            control_surface_retry_failures: 0,
             egui_ctx,
             egui_state: None,
             registered_fonts: std::collections::HashSet::new(),
@@ -806,32 +834,48 @@ impl App {
         app
     }
 
-    /// Create the control window + surface + egui state.
-    fn create_control_window(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    winit::window::WindowAttributes::default()
-                        .with_title("CuePool")
-                        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0)),
-                )
-                .expect("create control window"),
-        );
-
+    fn create_configured_control_surface(
+        &self,
+        window: &Arc<Window>,
+        required_format: Option<wgpu::TextureFormat>,
+    ) -> Result<(wgpu::Surface<'static>, wgpu::SurfaceConfiguration), String> {
+        let monitor = window
+            .current_monitor()
+            .map(|monitor| monitor_descriptor(&monitor));
+        let context = gpu_display_context(&self.adapter, monitor.as_ref());
         let surface = self
             .instance
-            .create_surface(Arc::clone(&window))
-            .expect("create control surface");
+            .create_surface(Arc::clone(window))
+            .map_err(|error| format!("control surface creation failed: {error}; {context}"))?;
 
         let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return Err(format!(
+                "control surface configuration failed: window size is {}x{}; {context}",
+                size.width, size.height
+            ));
+        }
         let mut config = surface
             .get_default_config(&self.adapter, size.width, size.height)
-            .expect("control surface config");
+            .ok_or_else(|| {
+                format!(
+                    "control surface configuration failed: no supported configuration for {}x{}; {context}",
+                    size.width, size.height
+                )
+            })?;
+        let caps = surface.get_capabilities(&self.adapter);
+        if let Some(format) = required_format {
+            if !caps.formats.contains(&format) {
+                return Err(format!(
+                    "control surface configuration failed: original format {format:?} is no longer supported; {context}"
+                ));
+            }
+            config.format = format;
+        }
         // Non-vsync present for the CONTROL window: on this single-threaded loop a
         // vsync-blocked control present serializes with the output window's vsync
         // present and roughly halves the output's effective frame rate. Tearing on
         // the operator GUI is irrelevant; output windows keep Fifo for clean playback.
-        let caps = surface.get_capabilities(&self.adapter);
         if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
             config.present_mode = wgpu::PresentMode::Mailbox;
         } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
@@ -844,6 +888,28 @@ impl App {
                 .unwrap_or_else(|e| e.into_inner());
             surface.configure(&self.device, &config);
         }
+
+        Ok((surface, config))
+    }
+
+    /// Create the control window + surface + egui state.
+    fn create_control_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+        let monitor = event_loop
+            .primary_monitor()
+            .or_else(|| event_loop.available_monitors().next())
+            .map(|monitor| monitor_descriptor(&monitor));
+        let context = gpu_display_context(&self.adapter, monitor.as_ref());
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    winit::window::WindowAttributes::default()
+                        .with_title("CuePool")
+                        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0)),
+                )
+                .map_err(|error| format!("control window creation failed: {error}; {context}"))?,
+        );
+
+        let (surface, config) = self.create_configured_control_surface(&window, None)?;
 
         let egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -875,6 +941,55 @@ impl App {
             control: control_id,
             video: Vec::new(),
         });
+        Ok(())
+    }
+
+    fn retry_control_surface(&mut self) {
+        let Some(retry_at) = self.control_surface_retry_at else {
+            return;
+        };
+        if retry_at > Instant::now() {
+            return;
+        }
+        let Some(window) = self.control_window.as_ref().cloned() else {
+            return;
+        };
+        let Some(format) = self.control_config.as_ref().map(|config| config.format) else {
+            return;
+        };
+
+        match self.create_configured_control_surface(&window, Some(format)) {
+            Ok((surface, config)) => {
+                let failures = self.control_surface_retry_failures;
+                self.control_present_mode = format!("{:?}", config.present_mode);
+                self.control_surface = Some(surface);
+                self.control_config = Some(config);
+                self.control_surface_retry_at = None;
+                self.control_surface_retry_failures = 0;
+                let monitor = window
+                    .current_monitor()
+                    .map(|monitor| monitor_descriptor(&monitor));
+                let context = gpu_display_context(&self.adapter, monitor.as_ref());
+                if failures == 0 {
+                    log::info!("Control surface recovered immediately; {context}");
+                } else {
+                    log::info!(
+                        "Control surface recovered after {failures} failed attempt(s); {context}"
+                    );
+                }
+            }
+            Err(error) => {
+                self.control_surface_retry_failures =
+                    self.control_surface_retry_failures.saturating_add(1);
+                let failures = self.control_surface_retry_failures;
+                let delay = control_surface_retry_delay(failures);
+                self.control_surface_retry_at = Some(Instant::now() + delay);
+                log::error!(
+                    "Control surface recovery attempt {failures} failed: {error}; retrying in {} ms",
+                    delay.as_millis()
+                );
+            }
+        }
     }
 
     fn create_status_window(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
@@ -3372,6 +3487,9 @@ impl App {
 
     fn render_control_inner(&mut self) {
         self.update_window_title();
+        if self.control_surface.is_none() {
+            self.retry_control_surface();
+        }
 
         // Acquire (under the shared gate) BEFORE running the egui pass: bailing
         // out after `run` would discard its texture deltas and desync the atlas.
@@ -3405,25 +3523,17 @@ impl App {
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 drop(submit_guard);
-                log::warn!("Control surface lost, recreating");
-                let Some(window) = self.control_window.as_ref() else {
-                    return;
-                };
-                let Some(config) = self.control_config.as_ref() else {
-                    return;
-                };
-                let surface = self
-                    .instance
-                    .create_surface(Arc::clone(window))
-                    .expect("recreate control surface");
-                {
-                    let _configure_guard = self
-                        .configure_gate
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
-                    surface.configure(&self.device, config);
-                }
-                self.control_surface = Some(surface);
+                let monitor = self
+                    .control_window
+                    .as_ref()
+                    .and_then(|window| window.current_monitor())
+                    .map(|monitor| monitor_descriptor(&monitor));
+                let context = gpu_display_context(&self.adapter, monitor.as_ref());
+                log::warn!("Control surface lost; parking it for recovery; {context}");
+                self.control_surface = None;
+                self.control_surface_retry_failures = 0;
+                self.control_surface_retry_at = Some(Instant::now());
+                self.retry_control_surface();
                 return;
             }
             err => {
@@ -3551,8 +3661,12 @@ impl App {
 
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.control_window.is_none() {
-            self.create_control_window(event_loop);
+        if self.control_window.is_none()
+            && let Err(error) = self.create_control_window(event_loop)
+        {
+            self.terminal_error = Some(TerminalError::Startup(error));
+            event_loop.exit();
+            return;
         }
         if let Some(api) = self.api.as_ref() {
             api.mark_ready();
@@ -3591,7 +3705,7 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::DeviceLost => {
                 let error = "GPU device lost; CuePool cannot recover without a restart";
                 log::error!("{error} — exiting");
-                self.terminal_error = Some(error);
+                self.terminal_error = Some(TerminalError::Runtime(error));
                 event_loop.exit();
             }
         }
@@ -4536,7 +4650,12 @@ fn run(log_file: String) -> anyhow::Result<()> {
     win_timer::release();
 
     if let Some(error) = app.terminal_error {
-        anyhow::bail!("{error}");
+        match error {
+            TerminalError::Startup(message) => {
+                return Err(startup_error("Could not start CuePool", message));
+            }
+            TerminalError::Runtime(message) => anyhow::bail!("{message}"),
+        }
     }
     Ok(())
 }
@@ -4544,6 +4663,14 @@ fn run(log_file: String) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_surface_retry_backoff_is_capped() {
+        let delays: Vec<_> = (1..=9)
+            .map(|failures| control_surface_retry_delay(failures).as_millis())
+            .collect();
+        assert_eq!(delays, [100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
+    }
 
     #[test]
     fn winit_drain_requeues_gui_file_commands() {

@@ -1,5 +1,5 @@
 use crate::video_pipeline::output_render_thread;
-use crate::{App, MONITOR_MATCH_DIST_SQ};
+use crate::{App, MONITOR_MATCH_DIST_SQ, gpu_display_context};
 use cuepool_core::LockExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -110,6 +110,35 @@ pub(crate) fn projection_structure_changed(
         .any(|(b, l)| b.monitor_id != l.monitor_id || b.fullscreen_monitor != l.fullscreen_monitor)
 }
 
+fn record_output_failure(
+    failures: &mut Vec<String>,
+    output_name: &str,
+    stage: &str,
+    error: impl std::fmt::Display,
+    context: &str,
+) {
+    log::error!("Output '{output_name}' disabled at {stage}: {error}; {context}");
+    failures.push(output_name.to_owned());
+}
+
+fn output_failure_summary(total: usize, active: usize, failures: &[String]) -> String {
+    let failed = failures.join(", ");
+    if active == 0 {
+        format!(
+            "No projection outputs could be opened ({failed}); cues continue without picture. See Window → Log."
+        )
+    } else {
+        let noun = if failures.len() == 1 {
+            "output"
+        } else {
+            "outputs"
+        };
+        format!(
+            "Projection {noun} {failed} failed; {active} of {total} outputs remain active. See Window → Log."
+        )
+    }
+}
+
 impl App {
     /// Toggle fullscreen on all output windows and update cursor visibility.
     pub(crate) fn toggle_output_fullscreen(&self) {
@@ -199,8 +228,11 @@ impl App {
             .max(160.0);
         let mut windowed_idx = 0usize;
         let mut pending_outputs = Vec::with_capacity(outputs.len());
+        let mut failed_outputs = Vec::new();
 
         for (out_idx, output) in outputs.iter().enumerate() {
+            let assigned_monitor = assigned[out_idx].and_then(|idx| mon_descs.get(idx));
+            let context = gpu_display_context(&self.adapter, assigned_monitor);
             let mut attrs = winit::window::WindowAttributes::default()
                 .with_title(format!("CuePool Output {}", output.name))
                 .with_visible(true);
@@ -221,21 +253,50 @@ impl App {
                 windowed_idx += 1;
             }
 
-            let window = Arc::new(
-                event_loop
-                    .create_window(attrs)
-                    .expect("create output window"),
-            );
+            let window = match event_loop.create_window(attrs) {
+                Ok(window) => Arc::new(window),
+                Err(error) => {
+                    record_output_failure(
+                        &mut failed_outputs,
+                        &output.name,
+                        "window creation",
+                        error,
+                        &context,
+                    );
+                    continue;
+                }
+            };
 
-            let surface = self
-                .instance
-                .create_surface(Arc::clone(&window))
-                .expect("create output surface");
+            let surface = match self.instance.create_surface(Arc::clone(&window)) {
+                Ok(surface) => surface,
+                Err(error) => {
+                    record_output_failure(
+                        &mut failed_outputs,
+                        &output.name,
+                        "surface creation",
+                        error,
+                        &context,
+                    );
+                    continue;
+                }
+            };
 
             let size = window.inner_size();
-            let mut config = surface
-                .get_default_config(&self.adapter, size.width, size.height)
-                .expect("output surface config");
+            let Some(mut config) =
+                surface.get_default_config(&self.adapter, size.width, size.height)
+            else {
+                record_output_failure(
+                    &mut failed_outputs,
+                    &output.name,
+                    "surface configuration",
+                    format_args!(
+                        "no supported configuration for {}x{}",
+                        size.width, size.height
+                    ),
+                    &context,
+                );
+                continue;
+            };
             let caps = surface.get_capabilities(&self.adapter);
             // The edge-blend brightness ramp is a linear-light multiply; it's only
             // correct if the GPU re-encodes to sRGB on write. Windows backends
@@ -317,6 +378,7 @@ impl App {
                 presented,
                 present_mode,
                 format,
+                context,
             ));
         }
 
@@ -333,6 +395,7 @@ impl App {
             presented,
             present_mode,
             format,
+            context,
         ) in pending_outputs
         {
             let video_id = window.id();
@@ -372,9 +435,12 @@ impl App {
                     // Skipping the pushes below drops the window and registers
                     // nothing, so the failed output simply stays dark while the
                     // rest of the show carries on.
-                    log::error!(
-                        "Output '{}' disabled: could not spawn render thread: {e}",
-                        output_config.name
+                    record_output_failure(
+                        &mut failed_outputs,
+                        &output_config.name,
+                        "render-thread spawn",
+                        e,
+                        &context,
                     );
                     continue;
                 }
@@ -396,11 +462,37 @@ impl App {
             }
         }
 
+        if !failed_outputs.is_empty() {
+            let message =
+                output_failure_summary(outputs.len(), self.output_windows.len(), &failed_outputs);
+            self.cuepool
+                .state()
+                .lock_unpoisoned()
+                .report_operator_error(message);
+        }
+
         // Freshly created (fullscreen) output windows grab the foreground — on
         // Windows they bury the control window, and auto-rebuilds make that a
         // surprise. Pull the GUI back to the front.
         if let Some(control) = &self.control_window {
             control.focus_window();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_failure_summary;
+
+    #[test]
+    fn output_failure_summary_distinguishes_partial_and_total_failure() {
+        assert_eq!(
+            output_failure_summary(3, 2, &["Projector 2".into()]),
+            "Projection output Projector 2 failed; 2 of 3 outputs remain active. See Window → Log."
+        );
+        assert_eq!(
+            output_failure_summary(2, 0, &["Left".into(), "Right".into()]),
+            "No projection outputs could be opened (Left, Right); cues continue without picture. See Window → Log."
+        );
     }
 }
