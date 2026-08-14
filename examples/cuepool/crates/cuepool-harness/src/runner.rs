@@ -196,6 +196,7 @@ impl HeadlessShowRunner {
             self.consume_due_video()?;
             let actions = self.engine.tick(self.clock.elapsed());
             self.apply_actions(actions)?;
+            std::thread::yield_now();
         }
         Ok(())
     }
