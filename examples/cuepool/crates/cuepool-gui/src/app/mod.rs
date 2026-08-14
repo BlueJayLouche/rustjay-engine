@@ -884,6 +884,11 @@ impl CuePoolApp {
         &self.state
     }
 
+    /// Render the contents of the native Status window.
+    pub fn show_status(&mut self, ui: &mut egui::Ui) {
+        crate::status_panel::show(ui, &self.state, &mut self.status_copied_at);
+    }
+
     /// Open a project without showing native confirmation dialogs.
     ///
     /// Remote automation may only replace a clean project with a bounded,
@@ -1671,28 +1676,6 @@ impl CuePoolApp {
                     }
                 });
             });
-        }
-
-        // Status window (live diagnostics for bug reports)
-        let mut show_status = if let Ok(state) = self.state.lock() {
-            state.show_status_window
-        } else {
-            false
-        };
-        if show_status {
-            egui::Window::new("Status")
-                .collapsible(false)
-                .resizable(true)
-                .default_size([460.0, 600.0])
-                .open(&mut show_status)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        crate::status_panel::show(ui, &self.state, &mut self.status_copied_at);
-                    });
-                });
-        }
-        if let Ok(mut state) = self.state.lock() {
-            state.show_status_window = show_status;
         }
 
         // About window

@@ -121,6 +121,16 @@ fn go_button_queues_transport_command() {
 }
 
 #[test]
+fn status_window_is_not_embedded_in_control_viewport() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().show_status_window = true;
+    harness.run();
+
+    assert!(harness.query_by_label("Copy to Clipboard").is_none());
+    assert!(state.lock().unwrap().show_status_window);
+}
+
+#[test]
 fn active_progress_scrubs_only_in_edit_mode() {
     let (mut harness, state) = demo_harness();
     let bar = harness.get_by_label("Scrub active cue Q1.1").rect();

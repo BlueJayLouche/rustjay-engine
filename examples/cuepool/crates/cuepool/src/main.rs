@@ -1,4 +1,4 @@
-//! CuePool binary — custom winit event loop with dual windows.
+//! CuePool binary — custom winit event loop with native control, status, and output windows.
 //!
 //! - Control window: egui UI (replaces eframe)
 //! - Video output windows: one render thread per output, each blocking on its
@@ -119,6 +119,118 @@ const IDENTIFY_COLORS: [wgpu::Color; 6] = [
 ];
 const IDENTIFY_COLOR_NAMES: [&str; 6] = ["RED", "GREEN", "BLUE", "YELLOW", "MAGENTA", "CYAN"];
 
+struct StatusWindow {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
+}
+
+impl StatusWindow {
+    fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        configure_gate: &RwLock<()>,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        self.config.width = size.width;
+        self.config.height = size.height;
+        let _configure_guard = configure_gate.write().unwrap_or_else(|e| e.into_inner());
+        self.surface.configure(device, &self.config);
+    }
+
+    fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        configure_gate: &RwLock<()>,
+        cuepool: &mut CuePoolApp,
+    ) {
+        let submit_guard = configure_gate.read().unwrap_or_else(|e| e.into_inner());
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(output)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+            wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                drop(submit_guard);
+                let _configure_guard = configure_gate.write().unwrap_or_else(|e| e.into_inner());
+                self.surface.configure(device, &self.config);
+                return;
+            }
+            error => {
+                log::warn!("Status surface acquire failed: {error:?}");
+                return;
+            }
+        };
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| cuepool.show_status(ui));
+            });
+        });
+        self.egui_state
+            .handle_platform_output(&self.window, full_output.platform_output);
+
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: self.window.scale_factor() as f32 * self.egui_ctx.zoom_factor(),
+        };
+        let paint_jobs = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("status-encoder"),
+        });
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(device, queue, *id, image_delta);
+        }
+        self.egui_renderer.update_buffers(
+            device,
+            queue,
+            &mut encoder,
+            &paint_jobs,
+            &screen_descriptor,
+        );
+        {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("status-render-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            self.egui_renderer.render(
+                &mut render_pass.forget_lifetime(),
+                &paint_jobs,
+                &screen_descriptor,
+            );
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
+    }
+}
+
 fn configured_audio_error(
     driver: AudioOutputDriver,
     device: &str,
@@ -218,6 +330,7 @@ struct App {
     control_window: Option<Arc<Window>>,
     control_surface: Option<wgpu::Surface<'static>>,
     control_config: Option<wgpu::SurfaceConfiguration>,
+    status_window: Option<StatusWindow>,
 
     // ── projection output windows ──
     /// The Text cue currently shown on the overlay.
@@ -619,6 +732,7 @@ impl App {
             control_window: None,
             control_surface: None,
             control_config: None,
+            status_window: None,
             egui_ctx,
             egui_state: None,
             registered_fonts: std::collections::HashSet::new(),
@@ -761,6 +875,70 @@ impl App {
             control: control_id,
             video: Vec::new(),
         });
+    }
+
+    fn create_status_window(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        let window = Arc::new(
+            event_loop.create_window(
+                winit::window::WindowAttributes::default()
+                    .with_title("CuePool Status")
+                    .with_inner_size(winit::dpi::LogicalSize::new(460.0, 600.0))
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(360.0, 320.0)),
+            )?,
+        );
+        let surface = self.instance.create_surface(Arc::clone(&window))?;
+        let size = window.inner_size();
+        let mut config = surface
+            .get_default_config(&self.adapter, size.width, size.height)
+            .ok_or_else(|| anyhow::anyhow!("no compatible Status surface configuration"))?;
+        let capabilities = surface.get_capabilities(&self.adapter);
+        if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Mailbox)
+        {
+            config.present_mode = wgpu::PresentMode::Mailbox;
+        } else if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate)
+        {
+            config.present_mode = wgpu::PresentMode::Immediate;
+        }
+        {
+            let _configure_guard = self
+                .configure_gate
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            surface.configure(&self.device, &config);
+        }
+
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_global_style((*self.egui_ctx.global_style()).clone());
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            None,
+            None,
+            None,
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &self.device,
+            config.format,
+            egui_wgpu::RendererOptions {
+                dithering: false,
+                ..Default::default()
+            },
+        );
+        window.request_redraw();
+        self.status_window = Some(StatusWindow {
+            window,
+            surface,
+            config,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
+        });
+        Ok(())
     }
 
     fn engine_now(&self) -> Duration {
@@ -3435,6 +3613,10 @@ impl ApplicationHandler<AppEvent> for App {
             .as_ref()
             .map(|ids| ids.video.contains(&window_id))
             .unwrap_or(false);
+        let is_status = self
+            .status_window
+            .as_ref()
+            .is_some_and(|status| status.window.id() == window_id);
 
         if is_control {
             let egui_consumed = if let (Some(egui_state), Some(window)) =
@@ -3517,6 +3699,44 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
                 _ => {}
+            }
+        } else if is_status {
+            let repaint = self
+                .status_window
+                .as_mut()
+                .map(|status| {
+                    status
+                        .egui_state
+                        .on_window_event(&status.window, &event)
+                        .repaint
+                })
+                .unwrap_or(false);
+            match event {
+                WindowEvent::CloseRequested => {
+                    self.status_window = None;
+                    self.cuepool.state().lock_unpoisoned().show_status_window = false;
+                }
+                WindowEvent::Resized(size) => {
+                    if let Some(status) = self.status_window.as_mut() {
+                        status.resize(&self.device, &self.configure_gate, size);
+                        status.window.request_redraw();
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    if let Some(status) = self.status_window.as_mut() {
+                        status.render(
+                            &self.device,
+                            &self.queue,
+                            &self.configure_gate,
+                            &mut self.cuepool,
+                        );
+                    }
+                }
+                _ => {
+                    if repaint && let Some(status) = self.status_window.as_ref() {
+                        status.window.request_redraw();
+                    }
+                }
             }
         } else if is_video {
             match event {
@@ -3608,6 +3828,21 @@ impl ApplicationHandler<AppEvent> for App {
         // Quit confirmed by the in-app modal — hard-exit (see hard_exit for why).
         if self.cuepool.state().lock().map(|s| s.quit).unwrap_or(false) {
             self.hard_exit("operator confirmed discard and quit");
+        }
+
+        let show_status = self
+            .cuepool
+            .state()
+            .lock()
+            .map(|state| state.show_status_window)
+            .unwrap_or(false);
+        if show_status && self.status_window.is_none() {
+            if let Err(error) = self.create_status_window(event_loop) {
+                log::error!("Could not open Status window: {error:#}");
+                self.cuepool.state().lock_unpoisoned().show_status_window = false;
+            }
+        } else if !show_status {
+            self.status_window = None;
         }
 
         if !self.consume_failure_reported
@@ -3982,6 +4217,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
             d.frame_pacing = rows;
             drop(state);
+            if let Some(status) = self.status_window.as_ref() {
+                status.window.request_redraw();
+            }
             self.dbg_ticks = 0;
             self.dbg_last_log = std::time::Instant::now();
         }
