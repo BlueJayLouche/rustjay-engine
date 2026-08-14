@@ -38,6 +38,9 @@ pollster = "0.3"
 # Networking / Protocols
 rosc = "0.11"
 tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "net", "time", "fs"] }
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
+utoipa = "5.5"
 
 # MIDI
 midir = "0.11"

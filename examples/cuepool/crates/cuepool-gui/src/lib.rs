@@ -29,7 +29,11 @@ pub mod projection_panel;
 pub mod transport;
 pub mod waveform;
 
-pub use app::{ActiveCueInfo, AppCommand, CuePoolApp, DecodeTiming, Diagnostics, GuiMeterData, OutputDiagnostics, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics, VideoTimings};
+pub use app::{
+    ActiveCueInfo, AppCommand, CuePoolApp, DecodeTiming, Diagnostics, GuiMeterData,
+    OutputDiagnostics, PreparedProject, SharedState, SharedStateHandle, ShowMode, VideoDiagnostics,
+    VideoTimings, prepare_unattended_project,
+};
 
 pub(crate) fn cue_type_label(cue: &cuepool_core::Cue) -> &'static str {
     use cuepool_core::Cue;

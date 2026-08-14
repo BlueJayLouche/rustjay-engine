@@ -26,6 +26,9 @@ anyhow = { workspace = true }
 dirs = { workspace = true }
 rfd = { workspace = true }
 tokio = { workspace = true }
+axum = { workspace = true }
+tokio-stream = { workspace = true }
+utoipa = { workspace = true }
 log = { workspace = true }
 rust_decimal = { workspace = true }
 rosc = { workspace = true }
@@ -45,3 +48,4 @@ single-instance = "0.3"
 
 [dev-dependencies]
 env_logger = "0.11"
+tower = "0.5"

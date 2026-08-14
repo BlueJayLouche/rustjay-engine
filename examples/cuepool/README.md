@@ -13,6 +13,44 @@ cd examples/cuepool
 cargo run --release
 ```
 
+## Automation API
+
+CuePool starts a read-only HTTP API with the app at
+`http://127.0.0.1:7133/v1`. The OpenAPI document is available at
+`/v1/openapi.json`.
+
+Read endpoints cover health, the loaded project, cues, active cues, the full
+Help > Status snapshot, one-second status history, and cursor-based logs.
+`/v1/events` is an SSE stream of status samples, new logs, and command results.
+
+Set `CUEPOOL_API_CONTROL_TOKEN` before launch to enable commands. Send the token
+as `Authorization: Bearer <token>`. Without it, all reads remain available and
+`POST /v1/commands` returns `403 control_disabled`.
+
+```sh
+curl http://127.0.0.1:7133/v1/health
+
+curl -H "Authorization: Bearer $CUEPOOL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"go"}' \
+  http://127.0.0.1:7133/v1/commands
+```
+
+Commands are `open_project`, `select_cue`, `go`, `stop`, `pause`, `resume`,
+`preload`, and `seek`. The API returns `202` with a pending command ID. Poll
+`/v1/commands/{id}` or listen to `/v1/events` for the applied or rejected
+result. Send an `Idempotency-Key` header when a command may be retried; reuse of
+the same key returns the original command instead of executing it twice while
+the result remains in CuePool's 256-command history. Once that result expires,
+the old key is rejected rather than executed again.
+`open_project` requires an absolute local `.qproj` path and rejects replacement
+of a dirty project or a project with active cues.
+
+`CUEPOOL_API_BIND` can change the loopback address or port, but CuePool rejects
+non-loopback binds because the API is plain HTTP. For remote access, forward the
+loopback listener through an authenticated TLS tunnel or reverse proxy; never
+expose it directly to a network.
+
 ## Window layout
 
 | Area | What it is |

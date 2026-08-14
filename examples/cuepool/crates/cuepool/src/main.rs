@@ -34,6 +34,8 @@ use winit::window::{Window, WindowId};
 
 use human_panic::Metadata;
 
+mod api;
+use api::{ApiCommand, ApiCommandOutcome, ApiRuntime};
 mod cue_exec;
 use cue_exec::{
     ActiveCue, DelayedCue, PendingStop, active_cue_length_samples, fade_elapsed,
@@ -300,6 +302,8 @@ struct App {
     /// Last `SharedState.project_generation` we acted on. A change means a project
     /// was loaded, so the output windows must rebuild for its projection settings.
     last_project_generation: u64,
+    /// Throttle the engine-owned active-cue snapshot shared with UI and API readers.
+    last_active_cue_publish: Instant,
     /// When the control window was last asked to repaint (throttles its ~60 Hz redraw).
     last_control_redraw: std::time::Instant,
     /// Last seen set of physical monitors, to detect hotplug / projector warm-up and
@@ -316,6 +320,9 @@ struct App {
     /// main-loop liveness diagnostic (a GPU-stalled loop shows up here).
     dbg_ticks: u32,
     dbg_last_log: std::time::Instant,
+
+    // ── localhost automation API ──
+    api: Option<ApiRuntime>,
 
     // ── protocols ──
     osc_manager: Option<OscManager>,
@@ -349,6 +356,7 @@ struct App {
     pixmap_yuv: Option<cuepool_video::YuvConverter>,
     pixmap_frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
     pixmap_stop_flag: Arc<AtomicBool>,
+    current_pixmap_qid: Option<rust_decimal::Decimal>,
 
     // ── trigger state ──
     wall_clock_fired: std::collections::HashMap<rust_decimal::Decimal, Instant>,
@@ -360,6 +368,17 @@ struct App {
     modifiers: winit::keyboard::ModifiersState,
 
     // ── plugins ──
+}
+
+enum ShowControlCommand {
+    OpenProject(Box<cuepool_gui::PreparedProject>),
+    SelectCue(rust_decimal::Decimal),
+    Go,
+    Stop,
+    Pause,
+    Resume,
+    Preload,
+    Seek { instance_id: u64, seconds: f32 },
 }
 
 impl App {
@@ -531,6 +550,14 @@ impl App {
                 .expect("spawn video consume thread")
         };
 
+        let api = match api::start(Arc::clone(cuepool.state())) {
+            Ok(api) => Some(api),
+            Err(error) => {
+                log::error!("CuePool API unavailable: {error}");
+                None
+            }
+        };
+
         let mut app = Self {
             instance,
             adapter,
@@ -568,6 +595,7 @@ impl App {
             current_video_qid: None,
             current_video_instance_id: None,
             last_project_generation: 0,
+            last_active_cue_publish: Instant::now() - Duration::from_secs(1),
             last_control_redraw: std::time::Instant::now(),
             last_monitor_set: Vec::new(),
             last_monitor_check: std::time::Instant::now(),
@@ -575,6 +603,7 @@ impl App {
             fps_debug: std::env::var("QPLAYER_FPS_DEBUG").is_ok(),
             dbg_ticks: 0,
             dbg_last_log: std::time::Instant::now(),
+            api,
             osc_manager,
             osc_rx,
             msc_manager,
@@ -606,6 +635,7 @@ impl App {
             pixmap_yuv: None,
             pixmap_frame_rx: None,
             pixmap_stop_flag: Arc::new(AtomicBool::new(false)),
+            current_pixmap_qid: None,
             wall_clock_fired: std::collections::HashMap::new(),
             timecode_fired: std::collections::HashSet::new(),
         };
@@ -688,18 +718,7 @@ impl App {
 
     /// Handle a `Go` command: start audio (and video if cue is VideoCue).
     /// Also handles `WithLast` trigger mode for subsequent cues.
-    fn handle_go(&mut self, event_loop: &ActiveEventLoop) {
-        // Start the show clock on first Go
-        if self.show_start_time.is_none() {
-            self.show_start_time = Some(Instant::now());
-            self.show_start_clock = Some(self.audio_clock());
-            self.show_paused_offset = 0.0;
-            self.show_pause_started = self.paused.then(|| self.audio_clock());
-            self.triggered_timecodes.clear();
-            self.active_timecodes.clear();
-            self.timecode_fired.clear();
-        }
-
+    fn handle_go(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         let (start_qid, start_idx) = {
             let state = self.cuepool.state().lock_unpoisoned();
             let qid = state.selected_cue_id;
@@ -709,11 +728,11 @@ impl App {
 
         let Some(start_qid) = start_qid else {
             log::info!("Go pressed but no cue selected");
-            return;
+            return Err("no cue selected".into());
         };
         let Some(start_idx) = start_idx else {
             log::warn!("Selected cue Q{} not found in cue list", start_qid);
-            return;
+            return Err(format!("selected cue Q{start_qid} not found"));
         };
 
 
@@ -740,8 +759,36 @@ impl App {
             result
         };
 
+        if cues_to_play.is_empty() {
+            return Err(format!("selected cue Q{start_qid} is disabled"));
+        }
+
+        // TimeCode cues use the show clock while they are applied. If the cue
+        // fails synchronously, restore the stopped state below.
+        let started_show_clock = self.show_start_time.is_none();
+        if self.show_start_time.is_none() {
+            self.show_start_time = Some(Instant::now());
+            self.show_start_clock = Some(self.audio_clock());
+            self.show_paused_offset = 0.0;
+            self.show_pause_started = self.paused.then(|| self.audio_clock());
+            self.triggered_timecodes.clear();
+            self.active_timecodes.clear();
+            self.timecode_fired.clear();
+        }
+
+        let mut cues_to_play = cues_to_play.into_iter();
+        let primary = cues_to_play.next().expect("non-empty cue list");
+        if let Err(error) = self.play_cue(&primary, event_loop) {
+            if started_show_clock {
+                self.reset_show_clock();
+            }
+            return Err(error);
+        }
+
         for cue in cues_to_play {
-            self.play_cue(&cue, event_loop);
+            if let Err(error) = self.play_cue(&cue, event_loop) {
+                log::error!("WithLast cue Q{} failed: {error}", cue.base().qid);
+            }
         }
 
         // Advance the playhead so the next Go fires the following cue (QLab-style
@@ -761,6 +808,7 @@ impl App {
             && let Ok(mut state) = self.cuepool.state().lock() {
                 state.selected_cue_id = Some(next_qid);
             }
+        Ok(())
     }
 
     /// Look up a cue by QID and play it. Used by MIDI/hotkey/wall-clock/timecode triggers.
@@ -770,7 +818,7 @@ impl App {
             state.show_file.cues.iter().find(|c| c.base().qid == qid).cloned()
         };
         if let Some(cue) = cue {
-            self.play_cue(&cue, event_loop);
+            let _ = self.play_cue(&cue, event_loop);
         } else {
             log::warn!("Trigger referenced unknown cue Q{}", qid);
         }
@@ -789,10 +837,14 @@ impl App {
             })
     }
 
-    fn play_cue(&mut self, cue: &cuepool_core::Cue, event_loop: &ActiveEventLoop) {
+    fn play_cue(
+        &mut self,
+        cue: &cuepool_core::Cue,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), String> {
         if !cue.enabled() {
             log::info!("Skipping disabled cue Q{}", cue.base().qid);
-            return;
+            return Err(format!("cue Q{} is disabled", cue.base().qid));
         }
 
         let qid = cue.base().qid;
@@ -803,30 +855,35 @@ impl App {
         // already playing (stops stacked audio / flashing video from a double Go).
         if !cue.base().retriggerable && self.cue_is_active(qid) {
             log::info!("Ignoring re-trigger of Q{qid} (not re-triggerable, still playing)");
-            return;
+            return Err(format!("cue Q{qid} is already active and not retriggerable"));
         }
 
         // Remote cue delegation: if remote_node is set and not local, send OSC instead
         let remote_node = cue.base().remote_node.clone();
         if !remote_node.is_empty() {
             let (enable_remote, local_name) = {
-                let Ok(state) = self.cuepool.state().lock() else { return; };
+                let Ok(state) = self.cuepool.state().lock() else {
+                    return Err("project state lock poisoned".into());
+                };
                 (state.show_file.show_settings.enable_remote_control,
                  state.show_file.show_settings.node_name.clone())
             };
             if enable_remote && remote_node != local_name {
                 if let Some(osc) = &self.osc_manager {
                     let qid_str = qid.to_string();
-                    let _ = osc.send(rosc::OscMessage {
+                    osc.send(rosc::OscMessage {
                         addr: "/qplayer/remote/go".into(),
                         args: vec![
                             rosc::OscType::String(remote_node),
                             rosc::OscType::String(qid_str),
                         ],
-                    });
+                    })
+                    .map_err(|error| format!("failed to delegate cue Q{qid}: {error}"))?;
                     log::info!("Delegated Q{} to remote node {}", qid, cue.base().remote_node);
+                } else {
+                    return Err("OSC manager is unavailable for remote cue delegation".into());
                 }
-                return;
+                return Ok(());
             }
         }
 
@@ -841,7 +898,7 @@ impl App {
                 cue,
                 start_at: std::time::Instant::now() + std::time::Duration::from_secs_f64(delay.as_secs_f64()),
             });
-            return;
+            return Ok(());
         }
 
         // Check if cue is already preloaded — if so, just activate it
@@ -855,13 +912,13 @@ impl App {
             };
             ac.state = new_state;
             log::info!("Activated preloaded cue Q{}", qid);
-            return;
+            return Ok(());
         }
 
         match cue {
             cuepool_core::Cue::Sound { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, .. } => {
                 log::info!("Go SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false)?;
             }
             cuepool_core::Cue::Video { path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, routing, follow_mtc, mtc_start, .. } => {
                 log::info!("Go VideoCue: {}", path);
@@ -884,7 +941,9 @@ impl App {
                     // A plain video cue takes over the output — drop any MTC follow.
                     self.mtc_follow = None;
                     let active_count = self.active_cues.len();
-                    self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false);
+                    if let Err(error) = self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, *start_time, *duration, *volume, *fade_in, *fade_out, *fade_type, *eq, *pan, routing.clone(), false) {
+                        log::warn!("Video cue Q{qid} is starting without audio: {error}");
+                    }
                     let audio_instance_id = self.active_cues.get(active_count).filter(|cue| cue.qid == qid)
                         .map_or(video_instance_id, |cue| cue.instance_id);
                     self.play_video(path, qid, audio_instance_id, *start_time, *duration, event_loop);
@@ -910,22 +969,23 @@ impl App {
                     // the default target, `udp:name:payload` or
                     // `udp:10.0.0.5:payload` to a specific player. No OSC encoding.
                     let (host, port, payload) = {
-                        let Ok(state) = self.cuepool.state().lock() else { return; };
+                        let Ok(state) = self.cuepool.state().lock() else {
+                            return Err("project state lock poisoned".into());
+                        };
                         let settings = &state.show_file.show_settings;
                         let (host, payload) = resolve_udp_command(remainder, &settings.udp_targets, &settings.udp_tx_host);
                         (host, settings.udp_tx_port, payload.to_string())
                     };
-                    send_udp_command(&payload, &host, port);
+                    send_udp_command(&payload, &host, port).map_err(|error| {
+                        format!("UDP send to {host}:{port} failed: {error}")
+                    })?;
                 } else if let Some(osc) = &self.osc_manager {
-                    if let Ok(msg) = parse_osc_command(command) {
-                        if let Err(e) = osc.send(msg) {
-                            log::error!("OSC send failed: {}", e);
-                        }
-                    } else {
-                        log::error!("Invalid OSC command: {}", command);
-                    }
+                    let message = parse_osc_command(command)
+                        .map_err(|error| format!("invalid OSC command: {error}"))?;
+                    osc.send(message)
+                        .map_err(|error| format!("OSC send failed: {error}"))?;
                 } else {
-                    log::warn!("OSC manager not available, cannot send: {}", command);
+                    return Err("OSC manager is unavailable".into());
                 }
             }
             cuepool_core::Cue::Group { .. } => {
@@ -952,7 +1012,9 @@ impl App {
                 };
                 log::info!("Go GroupCue Q{} — firing {} member(s)", qid, members.len());
                 for member in members {
-                    self.play_cue(&member, event_loop);
+                    if let Err(error) = self.play_cue(&member, event_loop) {
+                        log::error!("Group member Q{} failed: {error}", member.base().qid);
+                    }
                 }
             }
             cuepool_core::Cue::TimeCode { start_time, duration, .. } => {
@@ -1037,7 +1099,7 @@ impl App {
                 };
                 let Some(target) = final_target else {
                     log::warn!("Goto cue Q{}: cyclic or unknown target; ignoring", qid);
-                    return;
+                    return Err(format!("goto cue Q{qid} has a cyclic or unknown target"));
                 };
                 // A goto just moves the playhead: arm the target as the next
                 // standby cue (the following GO fires it). It does not fire it.
@@ -1049,7 +1111,7 @@ impl App {
             }
             cuepool_core::Cue::PixelMap { path, .. } => {
                 log::info!("Go PixelMapCue Q{}: {}", qid, path);
-                self.play_pixmap(path, cue.base().loop_mode);
+                self.play_pixmap(path, qid, cue.base().loop_mode);
             }
             cuepool_core::Cue::Lighting { snapshot, fade_time, fade_type, .. } => {
                 log::info!(
@@ -1083,7 +1145,10 @@ impl App {
                             cue.base().loop_count,
                         );
                     }
-                    Err(e) => log::error!("DmxShow cue Q{qid} failed to load '{resolved}': {e}"),
+                    Err(e) => {
+                        log::error!("DmxShow cue Q{qid} failed to load '{resolved}': {e}");
+                        return Err(format!("DmxShow cue Q{qid} failed to load: {e}"));
+                    }
                 }
             }
             other => {
@@ -1106,17 +1171,24 @@ impl App {
         ) {
             self.play_after_last_chain(qid, event_loop);
         }
+        Ok(())
     }
 
     /// Play media into the dedicated pixel-map texture. Stills upload once;
     /// videos get a self-paced decode thread (wall-clock PTS — no A/V sync or
     /// vsync consumer here, LEDs don't need it).
-    fn play_pixmap(&mut self, path: &str, loop_mode: cuepool_core::LoopMode) {
+    fn play_pixmap(
+        &mut self,
+        path: &str,
+        qid: rust_decimal::Decimal,
+        loop_mode: cuepool_core::LoopMode,
+    ) {
         // Replace any previous pixmap stream (per-thread flag, same reasoning
         // as play_video).
         self.pixmap_stop_flag.store(true, Ordering::Relaxed);
         self.pixmap_stop_flag = Arc::new(AtomicBool::new(false));
         self.pixmap_frame_rx = None;
+        self.current_pixmap_qid = Some(qid);
 
         let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
 
@@ -1170,10 +1242,20 @@ impl App {
     fn upload_pixmap_frames(&mut self) {
         let Some(rx) = &self.pixmap_frame_rx else { return };
         let mut latest: Option<VideoFrame> = None;
-        while let Ok(f) = rx.try_recv() {
-            if let Some(discarded) = latest.replace(f) {
-                self.frame_pool.recycle_frame(discarded);
+        let disconnected = loop {
+            match rx.try_recv() {
+                Ok(frame) => {
+                    if let Some(discarded) = latest.replace(frame) {
+                        self.frame_pool.recycle_frame(discarded);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
             }
+        };
+        if disconnected {
+            self.pixmap_frame_rx = None;
+            self.current_pixmap_qid = None;
         }
         let Some(frame) = latest else { return };
         let (w, h) = (frame.width, frame.height);
@@ -1463,7 +1545,7 @@ impl App {
         pan: f32,
         routing: cuepool_core::AudioRouting,
         preload_only: bool,
-    ) {
+    ) -> Result<(), String> {
         let (requested_driver, requested_device, configured_error) = {
             let state = self.cuepool.state().lock_unpoisoned();
             (
@@ -1487,7 +1569,7 @@ impl App {
                 )
             });
             log::error!("Cannot play audio cue Q{qid}: audio playback is disabled: {reason}");
-            return;
+            return Err(format!("audio playback is disabled: {reason}"));
         };
         let resolved = self.resolve_path(path).unwrap_or_else(|| path.to_string());
         if resolved != path {
@@ -1530,7 +1612,7 @@ impl App {
                     Ok(playback) => playback,
                     Err(e) => {
                         log::error!("Cannot play audio cue Q{qid}: {e}");
-                        return;
+                        return Err(format!("cannot start audio cue Q{qid}: {e}"));
                     }
                 };
                 let input = playback.input;
@@ -1567,12 +1649,15 @@ impl App {
                     fade_out_started: false,
                     pending_stop: None,
                 });
+                Ok(())
             }
             Err(e) => {
                 if let cuepool_audio::DecodeError::NoAudioTrack = e {
                     log::info!("No audio stream in {} — playing silent", path);
+                    Err(format!("cue Q{qid} has no audio stream"))
                 } else {
                     log::error!("Failed to open audio for {}: {}", path, e);
+                    Err(format!("failed to open audio for cue Q{qid}: {e}"))
                 }
             }
         }
@@ -1694,7 +1779,7 @@ impl App {
     }
 
     /// Preload the selected cue: decode and add to mixer as inactive (Ready state).
-    fn handle_preload(&mut self, _event_loop: &ActiveEventLoop) {
+    fn handle_preload(&mut self, _event_loop: &ActiveEventLoop) -> Result<(), String> {
         let cue = {
             let state = self.cuepool.state().lock_unpoisoned();
             state.selected_cue().cloned()
@@ -1702,7 +1787,7 @@ impl App {
 
         let Some(cue) = cue else {
             log::info!("Preload pressed but no cue selected");
-            return;
+            return Err("no cue selected".into());
         };
 
         let qid = cue.base().qid;
@@ -1711,20 +1796,23 @@ impl App {
         // Skip if already preloaded or playing
         if self.active_cues.iter().any(|ac| ac.qid == qid) {
             log::info!("Cue Q{} is already loaded", qid);
-            return;
+            return Err(format!("cue Q{qid} is already loaded"));
         }
 
         match cue {
             cuepool_core::Cue::Sound { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
                 log::info!("Preload SoundCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true)?;
+                Ok(())
             }
             cuepool_core::Cue::Video { ref path, start_time, duration, volume, pan, fade_in, fade_out, fade_type, eq, ref routing, .. } => {
                 log::info!("Preload VideoCue: {}", path);
-                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true);
+                self.play_audio(path, qid, &name, cue.base().loop_mode, cue.base().loop_count, start_time, duration, volume, fade_in, fade_out, fade_type, eq, pan, routing.clone(), true)?;
+                Ok(())
             }
             other => {
                 log::info!("Preload not supported for cue type: {:?}", std::mem::discriminant(&other));
+                Err(format!("preload is not supported for cue Q{qid}"))
             }
         }
     }
@@ -1863,13 +1951,13 @@ impl App {
         path: &str,
         target_secs: f64,
         media_offset_secs: f64,
-    ) {
+    ) -> Result<(), String> {
         let paused = self.video_control.lock_unpoisoned().paused;
         let now = Instant::now();
         let media_target_secs = video_media_secs(target_secs, media_offset_secs);
         let Some((clock, pause_started)) = video_seek_clock(now, media_target_secs, paused) else {
             log::debug!("Video seek target {target_secs:.3}s is outside the clock range");
-            return;
+            return Err(format!("video seek target {target_secs:.3}s is outside the clock range"));
         };
         {
             let mut ctl = self.video_control.lock_unpoisoned();
@@ -1897,9 +1985,10 @@ impl App {
             }),
             true,
         );
+        Ok(())
     }
 
-    fn seek_cue(&mut self, instance_id: u64, secs: f32) {
+    fn seek_cue(&mut self, instance_id: u64, secs: f32) -> Result<(), String> {
         let qid = self.active_cues.iter()
             .find(|cue| cue.instance_id == instance_id)
             .map(|cue| cue.qid)
@@ -1908,7 +1997,7 @@ impl App {
                 .flatten());
         let Some(qid) = qid else {
             log::debug!("SeekCue instance {instance_id}: inactive; ignoring");
-            return;
+            return Err(format!("active cue instance {instance_id} not found"));
         };
         let cue = {
             let state = self.cuepool.state().lock_unpoisoned();
@@ -1916,14 +2005,16 @@ impl App {
         };
         let Some(cue) = cue else {
             log::debug!("SeekCue Q{qid}: unknown cue; ignoring");
-            return;
+            return Err(format!("cue Q{qid} not found"));
         };
 
         match cue {
             cuepool_core::Cue::Sound { .. } => {
                 if self.seek_active_audio_cue(instance_id, secs).is_none() {
                     log::debug!("SeekCue Q{qid}: cue is inactive or has no known length; ignoring");
+                    return Err(format!("cue Q{qid} is inactive or has no known length"));
                 }
+                Ok(())
             }
             cuepool_core::Cue::Video {
                 path,
@@ -1935,7 +2026,7 @@ impl App {
                     || self.current_video_instance_id != Some(instance_id)
                 {
                     log::debug!("SeekCue Q{qid}: video cue is inactive; ignoring");
-                    return;
+                    return Err(format!("video cue Q{qid} is inactive"));
                 }
                 let audio_target = self.seek_active_audio_cue(instance_id, secs);
                 let media_offset = start_time.as_secs_f64();
@@ -1952,15 +2043,19 @@ impl App {
                 };
                 if cue_length == Some(0.0) {
                     log::debug!("SeekCue Q{qid}: video cue has no seekable region; ignoring");
-                    return;
+                    return Err(format!("video cue Q{qid} has no seekable region"));
                 }
                 let target = audio_target.map_or_else(
                     || video_seek_target(secs, cue_length),
                     |audio| clamp_video_seek_secs(audio, cue_length),
                 );
-                self.seek_video_cue(qid, &path, target, media_offset);
+                self.seek_video_cue(qid, &path, target, media_offset)?;
+                Ok(())
             }
-            _ => log::debug!("SeekCue Q{qid}: cue type is not seekable; ignoring"),
+            _ => {
+                log::debug!("SeekCue Q{qid}: cue type is not seekable; ignoring");
+                Err(format!("cue Q{qid} is not seekable"))
+            }
         }
     }
 
@@ -2033,7 +2128,7 @@ impl App {
             next_after_last(&state.show_file.cues, finished_qid).cloned()
         };
         if let Some(cue) = next {
-            self.play_cue(&cue, event_loop);
+            let _ = self.play_cue(&cue, event_loop);
         }
     }
 
@@ -2319,6 +2414,7 @@ impl App {
         // Stop the pixmap stream and blank its texture so pixel-mapped LEDs go dark.
         self.pixmap_stop_flag.store(true, Ordering::Relaxed);
         self.pixmap_frame_rx = None;
+        self.current_pixmap_qid = None;
         if let Some(tex) = self.pixmap_texture.as_ref() {
             let (w, h) = (tex.width, tex.height);
             let blank = vec![0u8; (w * h * 4) as usize];
@@ -2373,8 +2469,8 @@ impl App {
 
     fn resume_all(&mut self) {
         for ac in &mut self.active_cues {
-            ac.input.set_active(true);
             if ac.state == CueState::Paused {
+                ac.input.set_active(true);
                 ac.state = CueState::Playing;
             }
         }
@@ -2722,6 +2818,135 @@ impl App {
         }
     }
 
+    fn process_api_commands(&mut self, event_loop: &ActiveEventLoop) {
+        let requests: Vec<_> = match self.api.as_mut() {
+            Some(api) => std::iter::from_fn(|| api.try_recv()).collect(),
+            None => return,
+        };
+        for request in requests {
+            let outcome = match self.apply_api_command(
+                request.command,
+                request.prepared_project,
+                event_loop,
+            ) {
+                Ok(message) => ApiCommandOutcome::Applied(message),
+                Err(message) => ApiCommandOutcome::Rejected(message),
+            };
+            self.publish_active_cues_if_due(true);
+            if let Some(api) = self.api.as_ref() {
+                api.complete(request.id, outcome);
+            }
+        }
+    }
+
+    fn apply_api_command(
+        &mut self,
+        command: ApiCommand,
+        prepared_project: Option<cuepool_gui::PreparedProject>,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<String, String> {
+        let command = match command {
+            ApiCommand::OpenProject { .. } => ShowControlCommand::OpenProject(Box::new(
+                prepared_project.ok_or_else(|| "project was not prepared by the API".to_string())?,
+            )),
+            ApiCommand::SelectCue { qid } => ShowControlCommand::SelectCue(
+                qid.parse::<rust_decimal::Decimal>()
+                    .map_err(|error| format!("invalid cue qid '{qid}': {error}"))?,
+            ),
+            ApiCommand::Go => ShowControlCommand::Go,
+            ApiCommand::Stop => ShowControlCommand::Stop,
+            ApiCommand::Pause => ShowControlCommand::Pause,
+            ApiCommand::Resume => ShowControlCommand::Resume,
+            ApiCommand::Preload => ShowControlCommand::Preload,
+            ApiCommand::Seek {
+                instance_id,
+                seconds,
+            } => ShowControlCommand::Seek {
+                instance_id,
+                seconds,
+            },
+        };
+        self.execute_show_control(command, event_loop)
+    }
+
+    fn execute_show_control(
+        &mut self,
+        command: ShowControlCommand,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<String, String> {
+        match command {
+            ShowControlCommand::OpenProject(project) => {
+                if self.show_control_is_active() {
+                    return Err("the current show is active; stop it before opening a project".into());
+                }
+                let path = project.path.display().to_string();
+                self.cuepool.apply_unattended_project(*project)?;
+                self.reset_for_project_change();
+                self.apply_audio_settings();
+                self.last_project_generation = self
+                    .cuepool
+                    .state()
+                    .lock_unpoisoned()
+                    .project_generation;
+                Ok(format!("opened project {path}"))
+            }
+            ShowControlCommand::SelectCue(qid) => {
+                self.cuepool.select_cue(qid)?;
+                Ok(format!("selected cue Q{qid}"))
+            }
+            ShowControlCommand::Go => {
+                self.handle_go(event_loop)?;
+                Ok("GO applied".into())
+            }
+            ShowControlCommand::Stop => {
+                self.stop_all();
+                Ok("all cues stopped".into())
+            }
+            ShowControlCommand::Pause => {
+                if self.paused {
+                    return Err("playback is already paused".into());
+                }
+                if self.show_start_time.is_none() {
+                    return Err("playback is not running".into());
+                }
+                self.pause_all();
+                Ok("playback paused".into())
+            }
+            ShowControlCommand::Resume => {
+                if !self.paused {
+                    return Err("playback is not paused".into());
+                }
+                self.resume_all();
+                Ok("playback resumed".into())
+            }
+            ShowControlCommand::Preload => {
+                self.handle_preload(event_loop)?;
+                Ok("selected cue preloaded".into())
+            }
+            ShowControlCommand::Seek {
+                instance_id,
+                seconds,
+            } => {
+                self.seek_cue(instance_id, seconds)?;
+                Ok(format!("cue instance {instance_id} seeked to {seconds:.3}s"))
+            }
+        }
+    }
+
+    fn show_control_is_active(&self) -> bool {
+        !self.active_cues.is_empty()
+            || !self.delayed_cues.is_empty()
+            || !self.active_timecodes.is_empty()
+            || self.show_start_time.is_some()
+            || self.current_video_qid.is_some()
+            || self.current_text_qid.is_some()
+            || self.pending_video_decode.is_some()
+            || self.current_pixmap_qid.is_some()
+            || self.mtc_follow.is_some()
+            || self.recorder.recording()
+            || self.lighting.is_active()
+    }
+
     /// Drain any AppCommands queued by the UI and execute them.
     fn process_commands(&mut self, event_loop: &ActiveEventLoop) {
         let commands = {
@@ -2733,14 +2958,19 @@ impl App {
 
         for cmd in commands {
             match cmd {
-                AppCommand::Go => self.handle_go(event_loop),
-                AppCommand::Stop => self.stop_all(),
+                AppCommand::Go => {
+                    let _ = self.execute_show_control(ShowControlCommand::Go, event_loop);
+                }
+                AppCommand::Stop => {
+                    let _ = self.execute_show_control(ShowControlCommand::Stop, event_loop);
+                }
                 AppCommand::Pause => {
-                    if self.paused {
-                        self.resume_all();
+                    let command = if self.paused {
+                        ShowControlCommand::Resume
                     } else {
-                        self.pause_all();
-                    }
+                        ShowControlCommand::Pause
+                    };
+                    let _ = self.execute_show_control(command, event_loop);
                 }
                 AppCommand::SetLimiterThreshold(threshold) => {
                     if let Some(engine) = &self.audio_engine {
@@ -2767,7 +2997,7 @@ impl App {
                 }
                 AppCommand::ApplyAudioSettings => self.apply_audio_settings(),
                 AppCommand::Preload => {
-                    self.handle_preload(event_loop);
+                    let _ = self.execute_show_control(ShowControlCommand::Preload, event_loop);
                 }
                 AppCommand::ToggleVideoWindow => {
                     if !self.output_windows.is_empty() {
@@ -2827,7 +3057,15 @@ impl App {
                 AppCommand::RecorderScrub { frame } => self.recorder.set_scrub(frame),
                 AppCommand::FrameStep => self.frame_step(),
                 AppCommand::FrameStepBack => self.frame_step_back(),
-                AppCommand::SeekCue { instance_id, secs } => self.seek_cue(instance_id, secs),
+                AppCommand::SeekCue { instance_id, secs } => {
+                    let _ = self.execute_show_control(
+                        ShowControlCommand::Seek {
+                            instance_id,
+                            seconds: secs,
+                        },
+                        event_loop,
+                    );
+                }
                 _ => {}
             }
         }
@@ -3355,7 +3593,7 @@ impl App {
                 }
             });
             for cue in ready {
-                self.play_cue(&cue, event_loop);
+                let _ = self.play_cue(&cue, event_loop);
             }
         }
 
@@ -3385,7 +3623,7 @@ impl App {
                 let qid = cue.base().qid;
                 log::info!("TimeCode cue Q{} triggered at {:.2}s", qid, elapsed);
                 self.triggered_timecodes.push(qid);
-                self.play_cue(&cue, event_loop);
+                let _ = self.play_cue(&cue, event_loop);
             }
         }
 
@@ -3413,6 +3651,158 @@ impl App {
         self.process_commands(event_loop);
         if let Some(engine) = &self.audio_engine {
             engine.refresh();
+        }
+        self.publish_active_cues();
+    }
+
+    fn publish_active_cues(&mut self) {
+        self.publish_active_cues_if_due(false);
+    }
+
+    fn publish_active_cues_if_due(&mut self, force: bool) {
+        if !force && self.last_active_cue_publish.elapsed() < Duration::from_millis(16) {
+            return;
+        }
+        self.last_active_cue_publish = Instant::now();
+        let mut published: Vec<cuepool_gui::ActiveCueInfo> = self
+            .active_cues
+            .iter()
+            .map(|cue| {
+                let loop_length_frames =
+                    cue.loop_end_frame.saturating_sub(cue.loop_start_frame) as usize;
+                let (position, length) = if cue.loop_counter.is_some() && loop_length_frames > 0 {
+                    let channels = cue.input.channels().max(1);
+                    let total_frames = cue.input.position() / channels;
+                    let relative_frames = total_frames % loop_length_frames;
+                    (relative_frames * channels, Some(loop_length_frames * channels))
+                } else {
+                    (cue.input.position(), cue.input.length())
+                };
+                let seconds = |samples: usize| {
+                    (samples as f64 / cue.input.channels().max(1) as f64
+                        / f64::from(cue.input.sample_rate().max(1))) as f32
+                };
+                cuepool_gui::ActiveCueInfo {
+                    instance_id: cue.instance_id,
+                    qid: cue.qid,
+                    name: cue.name.clone(),
+                    paused: !cue.input.is_active(),
+                    position_secs: seconds(position),
+                    length_secs: length.map(seconds),
+                    state: cue.state,
+                }
+            })
+            .collect();
+        let (video_paused, video_position, video_length) = {
+            let control = self.video_control.lock_unpoisoned();
+            let media_position = match (control.clock, control.pause_started) {
+                (Some(clock), Some(paused_at)) => paused_at.duration_since(clock).as_secs_f64(),
+                (Some(clock), None) => clock.elapsed().as_secs_f64(),
+                _ => 0.0,
+            };
+            (
+                control.pause_started.is_some(),
+                video_timeline_secs(media_position, control.timeline_offset_secs) as f32,
+                control
+                    .media_length_secs
+                    .map(|length| video_timeline_secs(length, control.timeline_offset_secs) as f32),
+            )
+        };
+        if let Ok(mut state) = self.cuepool.state().lock() {
+            if let Some(qid) = self.current_video_qid
+                && !published.iter().any(|cue| cue.qid == qid)
+                && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
+            {
+                let configured_duration = match cue {
+                    cuepool_core::Cue::Video { duration, .. } => duration.as_secs_f64() as f32,
+                    _ => 0.0,
+                };
+                published.push(cuepool_gui::ActiveCueInfo {
+                    instance_id: self.current_video_instance_id.unwrap_or(0),
+                    qid,
+                    name: cue.base().name.clone(),
+                    paused: video_paused,
+                    position_secs: video_position,
+                    length_secs: (configured_duration > 0.0)
+                        .then_some(configured_duration)
+                        .or(video_length),
+                    state: if video_paused {
+                        CueState::Paused
+                    } else {
+                        CueState::Playing
+                    },
+                });
+            }
+            for delayed in &self.delayed_cues {
+                if !published.iter().any(|cue| cue.qid == delayed.cue.base().qid) {
+                    published.push(cuepool_gui::ActiveCueInfo {
+                        qid: delayed.cue.base().qid,
+                        name: delayed.cue.base().name.clone(),
+                        state: CueState::Delay,
+                        ..Default::default()
+                    });
+                }
+            }
+            for (qid, deadline) in &self.active_timecodes {
+                if !published.iter().any(|cue| cue.qid == *qid)
+                    && let Some(cue) = state
+                        .show_file
+                        .cues
+                        .iter()
+                        .find(|cue| cue.base().qid == *qid)
+                {
+                    let duration = match cue {
+                        cuepool_core::Cue::TimeCode { duration, .. } => {
+                            duration.as_secs_f64() as f32
+                        }
+                        _ => 0.0,
+                    };
+                    let remaining = deadline.saturating_duration_since(Instant::now()).as_secs_f32();
+                    published.push(cuepool_gui::ActiveCueInfo {
+                        qid: *qid,
+                        name: cue.base().name.clone(),
+                        position_secs: (duration - remaining).max(0.0),
+                        length_secs: Some(duration),
+                        state: CueState::Playing,
+                        ..Default::default()
+                    });
+                }
+            }
+            if let Some(qid) = self.current_text_qid
+                && !published.iter().any(|cue| cue.qid == qid)
+                && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
+            {
+                published.push(cuepool_gui::ActiveCueInfo {
+                    qid,
+                    name: cue.base().name.clone(),
+                    state: CueState::Playing,
+                    ..Default::default()
+                });
+            }
+            if let Some(qid) = self.current_pixmap_qid
+                && !published.iter().any(|cue| cue.qid == qid)
+                && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
+            {
+                published.push(cuepool_gui::ActiveCueInfo {
+                    qid,
+                    name: cue.base().name.clone(),
+                    state: CueState::Playing,
+                    ..Default::default()
+                });
+            }
+            for qid in self.lighting.active_show_qids() {
+                if !published.iter().any(|cue| cue.qid == qid)
+                    && let Some(cue) = state.show_file.cues.iter().find(|cue| cue.base().qid == qid)
+                {
+                    published.push(cuepool_gui::ActiveCueInfo {
+                        qid,
+                        name: cue.base().name.clone(),
+                        state: CueState::Playing,
+                        ..Default::default()
+                    });
+                }
+            }
+            state.active_cues = published;
         }
     }
 
@@ -3473,82 +3863,6 @@ impl App {
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let raw_input = egui_state.take_egui_input(window);
-        // Sync active cue state into the GUI shared state
-        {
-            let mut gui_active: Vec<cuepool_gui::ActiveCueInfo> = self.active_cues.iter().map(|ac| {
-                // For looping cues with explicit loop boundaries, show loop-relative
-                // position so the progress bar resets to 0 on each loop iteration.
-                let loop_length_frames = ac.loop_end_frame.saturating_sub(ac.loop_start_frame) as usize;
-                let (position, length) = if ac.loop_counter.is_some() && loop_length_frames > 0 {
-                    let channels = ac.input.channels().max(1);
-                    let total_frames = ac.input.position() / channels;
-                    let rel_frames = total_frames % loop_length_frames;
-                    (rel_frames * channels, Some(loop_length_frames * channels))
-                } else {
-                    (ac.input.position(), ac.input.length())
-                };
-                let secs = |samples: usize| {
-                    (samples as f64 / ac.input.channels().max(1) as f64
-                        / f64::from(ac.input.sample_rate().max(1))) as f32
-                };
-                cuepool_gui::ActiveCueInfo {
-                    instance_id: ac.instance_id,
-                    qid: ac.qid,
-                    name: ac.name.clone(),
-                    paused: !ac.input.is_active(),
-                    position_secs: secs(position),
-                    length_secs: length.map(secs),
-                    state: ac.state,
-                }
-            }).collect();
-            // Video clock state for the synthesized entry below — read BEFORE
-            // the GUI state lock so the two locks are never held together.
-            let (video_paused, video_pos_secs, video_length_secs) = {
-                let ctl = self.video_control.lock_unpoisoned();
-                let media_pos = match (ctl.clock, ctl.pause_started) {
-                    (Some(clock), Some(paused_at)) => paused_at.duration_since(clock).as_secs_f64(),
-                    (Some(clock), None) => clock.elapsed().as_secs_f64(),
-                    _ => 0.0,
-                };
-                (
-                    ctl.pause_started.is_some(),
-                    video_timeline_secs(media_pos, ctl.timeline_offset_secs) as f32,
-                    ctl.media_length_secs
-                        .map(|length| video_timeline_secs(length, ctl.timeline_offset_secs) as f32),
-                )
-            };
-            if let Ok(mut state) = self.cuepool.state().lock() {
-                // A video with no audio track (or whose audio failed to open) has
-                // no mixer input and thus no ActiveCue — but it is on screen.
-                // Synthesize a panel entry from the video clock so it still shows
-                // as active. Position comes from the video clock (frozen across
-                // pause); length from the cue's duration field when set.
-                if let Some(vqid) = self.current_video_qid
-                    && !gui_active.iter().any(|c| c.qid == vqid)
-                        && let Some(cue) = state.show_file.cues.iter().find(|c| c.base().qid == vqid) {
-                            let paused = video_paused;
-                            let position_secs = video_pos_secs;
-                            let configured_duration = match cue {
-                                cuepool_core::Cue::Video { duration, .. } => duration.as_secs_f64() as f32,
-                                _ => 0.0,
-                            };
-                            let length_secs = (configured_duration > 0.0)
-                                .then_some(configured_duration)
-                                .or(video_length_secs);
-                            gui_active.push(cuepool_gui::ActiveCueInfo {
-                                instance_id: self.current_video_instance_id.unwrap_or(0),
-                                qid: vqid,
-                                name: cue.base().name.clone(),
-                                paused,
-                                position_secs,
-                                length_secs,
-                                state: if paused { CueState::Paused } else { CueState::Playing },
-                            });
-                        }
-                state.active_cues = gui_active;
-            }
-        }
-
         // Sync master meter data into the GUI shared state
         if let Some(engine) = &self.audio_engine {
             let meters = engine.read_meters();
@@ -3623,6 +3937,9 @@ impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.control_window.is_none() {
             self.create_control_window(event_loop);
+        }
+        if let Some(api) = self.api.as_ref() {
+            api.mark_ready();
         }
     }
 
@@ -3862,6 +4179,9 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.dbg_ticks += 1;
+        if let Some(api) = self.api.as_ref() {
+            api.mark_alive();
+        }
         // Quit confirmed by the in-app modal — hard-exit (see hard_exit for why).
         if self.cuepool.state().lock().map(|s| s.quit).unwrap_or(false) {
             self.hard_exit();
@@ -3916,9 +4236,14 @@ impl ApplicationHandler<AppEvent> for App {
             state.mtc_drift_ms = self.mtc_drift.map(|d| d * 1000.0);
         }
         self.process_protocol_events();
+        // Preserve arrival order across control surfaces: protocol/UI commands
+        // already queued for this iteration execute before newer API requests.
+        self.process_commands(event_loop);
+        self.process_api_commands(event_loop);
         self.poll_wall_clock_triggers(event_loop);
         self.poll_timecode_triggers(event_loop);
         self.tick_engine(event_loop);
+        self.upload_pixmap_frames();
 
         // Lighting: sender lifecycle + fade advance + DMX submit (self-throttled).
         {
@@ -3927,7 +4252,6 @@ impl ApplicationHandler<AppEvent> for App {
             // Pixel-map segments: downsample each segment's source texture →
             // engine overlay. Throttled to the DMX rate.
             if cfg.enabled && self.last_pixel_sample.elapsed().as_secs_f32() >= 1.0 / cfg.fps.max(1.0) {
-                self.upload_pixmap_frames();
                 // Raw (non-sRGB) views: bytes as stored, display-referred —
                 // the colour pipeline's gamma does the linearisation.
                 // The canvas lives on the consume thread; its linear view is
@@ -4321,6 +4645,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     event_loop.run_app(&mut app)?;
+    if let Some(api) = app.api.as_ref() {
+        api.mark_stopping();
+    }
 
     // Save persisted settings
     let recent_files = app.cuepool.state().lock().map(|s| s.recent_files.clone()).unwrap_or_default();

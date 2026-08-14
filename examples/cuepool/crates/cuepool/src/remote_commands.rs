@@ -35,11 +35,13 @@ pub(crate) fn resolve_udp_command<'a>(remainder: &'a str, targets: &[cuepool_cor
 }
 
 /// Send `payload` as a single raw UTF-8 UDP datagram to `host:port`.
-/// Broadcast targets require `set_broadcast(true)`; failures are logged.
-pub(crate) fn send_udp_command(payload: &str, host: &str, port: u16) {
+/// Broadcast targets require `set_broadcast(true)`.
+pub(crate) fn send_udp_command(payload: &str, host: &str, port: u16) -> std::io::Result<()> {
     if payload.is_empty() {
-        log::warn!("UDP command is empty, nothing sent");
-        return;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "UDP command is empty",
+        ));
     }
     let send = || -> std::io::Result<()> {
         let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
@@ -48,8 +50,14 @@ pub(crate) fn send_udp_command(payload: &str, host: &str, port: u16) {
         Ok(())
     };
     match send() {
-        Ok(_) => log::info!("UDP TX -> {}:{}: {}", host, port, payload),
-        Err(e) => log::error!("UDP send to {}:{} failed: {}", host, port, e),
+        Ok(_) => {
+            log::info!("UDP TX -> {}:{}: {}", host, port, payload);
+            Ok(())
+        }
+        Err(error) => {
+            log::error!("UDP send to {}:{} failed: {}", host, port, error);
+            Err(error)
+        }
     }
 }
 

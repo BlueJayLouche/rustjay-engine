@@ -161,6 +161,14 @@ fn curve(t: f32, fade_type: FadeType) -> f32 {
 }
 
 impl LightingEngine {
+    pub fn is_active(&self) -> bool {
+        self.fade.is_some() || !self.shows.is_empty() || self.overlay.is_some()
+    }
+
+    pub fn active_show_qids(&self) -> impl Iterator<Item = Decimal> + '_ {
+        self.shows.iter().map(|show| show.qid)
+    }
+
     /// Fire a lighting cue: crossfade live state to `snapshot` over `fade_time`.
     pub fn go(
         &mut self,

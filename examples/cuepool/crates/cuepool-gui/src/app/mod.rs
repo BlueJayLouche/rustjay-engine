@@ -2,6 +2,7 @@
 
 use cuepool_core::{Cue, ShowFile};
 use rust_decimal::Decimal;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ const LAUNCH_SPLASH_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const ASCII_TORUS_WIDTH: usize = 64;
 const ASCII_TORUS_HEIGHT: usize = 22;
 const ASCII_TORUS_RAMP: &[u8] = b".,-~:;=!*#$@";
+const MAX_AUTOMATION_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A full snapshot of editable state for undo/redo.
 #[derive(Debug, Clone)]
@@ -23,6 +25,15 @@ pub struct Snapshot {
     pub dirty: bool,
     /// If set, consecutive snapshots with the same key are merged into one.
     pub merge_key: Option<String>,
+}
+
+/// A validated project prepared off the show-control event loop.
+#[derive(Debug)]
+pub struct PreparedProject {
+    pub path: PathBuf,
+    show: ShowFile,
+    file_len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 impl Snapshot {
@@ -545,12 +556,17 @@ impl SharedState {
 
     pub fn load_show_file(&mut self, path: &std::path::Path, data: &str) -> Result<(), serde_json::Error> {
         let show: ShowFile = serde_json::from_str(data)?;
+        self.apply_show_file(path, show);
+        Ok(())
+    }
+
+    fn apply_show_file(&mut self, path: &std::path::Path, show: ShowFile) {
         self.show_file = show;
         self.project_path = Some(path.to_path_buf());
+        self.selected_cue_id = None;
         self.dirty = false;
         // Signal the control binary to rebuild output windows for the new projection.
         self.project_generation = self.project_generation.wrapping_add(1);
-        Ok(())
     }
 
     pub fn selected_cue(&self) -> Option<&Cue> {
@@ -771,6 +787,146 @@ impl CuePoolApp {
     pub fn state(&self) -> &SharedStateHandle {
         &self.state
     }
+
+    /// Open a project without showing native confirmation dialogs.
+    ///
+    /// Remote automation may only replace a clean project with a bounded,
+    /// regular local file. The playback owner separately enforces idleness.
+    pub fn open_project_unattended(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if self
+            .state
+            .lock()
+            .map_err(|_| "project state lock poisoned".to_string())?
+            .dirty
+        {
+            return Err("current project has unsaved changes".into());
+        }
+        let project = prepare_unattended_project(path)?;
+        self.apply_unattended_project(project)
+    }
+
+    pub fn apply_unattended_project(&mut self, project: PreparedProject) -> Result<(), String> {
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| "project state lock poisoned".to_string())?;
+            if state.dirty {
+                return Err("current project has unsaved changes".into());
+            }
+        }
+        let metadata = project.path.metadata().map_err(|error| {
+            format!(
+                "project changed after validation; failed to inspect '{}': {error}",
+                project.path.display()
+            )
+        })?;
+        if metadata.len() != project.file_len || metadata.modified().ok() != project.modified {
+            return Err("project changed after validation; submit the command again".into());
+        }
+        self.apply_project_show(&project.path, project.show)
+    }
+
+    pub fn select_cue(&mut self, id: Decimal) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "project state lock poisoned".to_string())?;
+        if !state.show_file.cues.iter().any(|cue| cue.base().qid == id) {
+            return Err(format!("cue Q{id} not found"));
+        }
+        if state.selected_cue_id != Some(id) {
+            let snapshot = Snapshot::from_state(&state);
+            state.undo_redo.push(snapshot);
+            state.selected_cue_id = Some(id);
+        }
+        Ok(())
+    }
+
+    fn open_project_path(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let data = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
+        self.apply_project_text(path, &data)
+    }
+
+    fn apply_project_text(&mut self, path: &std::path::Path, data: &str) -> Result<(), String> {
+        let show = serde_json::from_str(data)
+            .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
+        self.apply_project_show(path, show)
+    }
+
+    fn apply_project_show(
+        &mut self,
+        path: &std::path::Path,
+        show: ShowFile,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "project state lock poisoned".to_string())?;
+        let snapshot = Snapshot::from_state(&state);
+        state.undo_redo.push(snapshot);
+        state.apply_show_file(path, show);
+        state.push_recent_file(path);
+        log::info!("Open project: {:?}", path);
+        Ok(())
+    }
+}
+
+pub fn prepare_unattended_project(path: &std::path::Path) -> Result<PreparedProject, String> {
+    if !path.is_absolute() {
+        return Err("project path must be absolute".into());
+    }
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("qproj"))
+    {
+        return Err("project path must name a .qproj file".into());
+    }
+    #[cfg(windows)]
+    if !matches!(
+        path.components().next(),
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(_))
+    ) {
+        return Err("project path must use a local drive".into());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve '{}': {error}", path.display()))?;
+    let metadata = canonical
+        .metadata()
+        .map_err(|error| format!("failed to inspect '{}': {error}", canonical.display()))?;
+    if !metadata.is_file() {
+        return Err("project path must name a regular file".into());
+    }
+    if metadata.len() > MAX_AUTOMATION_PROJECT_BYTES {
+        return Err(format!(
+            "project exceeds the {} MiB automation limit",
+            MAX_AUTOMATION_PROJECT_BYTES / 1024 / 1024
+        ));
+    }
+    let file = std::fs::File::open(&canonical)
+        .map_err(|error| format!("failed to open '{}': {error}", canonical.display()))?;
+    let mut data = String::new();
+    file.take(MAX_AUTOMATION_PROJECT_BYTES + 1)
+        .read_to_string(&mut data)
+        .map_err(|error| format!("failed to read '{}': {error}", canonical.display()))?;
+    if data.len() as u64 > MAX_AUTOMATION_PROJECT_BYTES {
+        return Err(format!(
+            "project exceeds the {} MiB automation limit",
+            MAX_AUTOMATION_PROJECT_BYTES / 1024 / 1024
+        ));
+    }
+    let show = serde_json::from_str(&data)
+        .map_err(|error| format!("failed to parse '{}': {error}", canonical.display()))?;
+    Ok(PreparedProject {
+        path: canonical,
+        show,
+        file_len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 impl CuePoolApp {
@@ -1924,22 +2080,8 @@ impl CuePoolApp {
                     if !Self::confirm_discard(&self.state) {
                         continue;
                     }
-                    log::info!("Open project: {:?}", path);
-                    match std::fs::read_to_string(&path) {
-                        Ok(data) => {
-                            if let Ok(mut state) = self.state.lock() {
-                                let snapshot = Snapshot::from_state(&state);
-                                state.undo_redo.push(snapshot);
-                                if let Err(e) = state.load_show_file(&path, &data) {
-                                    log::error!("Failed to parse show file: {}", e);
-                                } else {
-                                    state.push_recent_file(&path);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Failed to read file: {}", e);
-                        }
+                    if let Err(error) = self.open_project_path(&path) {
+                        log::error!("{error}");
                     }
                 }
                 AppCommand::SaveProject => {
@@ -1972,11 +2114,8 @@ impl CuePoolApp {
                     }
                 }
                 AppCommand::SelectCue(id) => {
-                    if let Ok(mut state) = self.state.lock() {
-                        // Capture snapshot before switching cues so inspector edits are undoable
-                        let snapshot = Snapshot::from_state(&state);
-                        state.undo_redo.push(snapshot);
-                        state.selected_cue_id = Some(id);
+                    if let Err(error) = self.select_cue(id) {
+                        log::warn!("{error}");
                     }
                 }
                 navigation @ (AppCommand::SelectPreviousCue
@@ -2472,6 +2611,72 @@ mod tests {
         let state = SharedState::new();
         assert!(state.show_file.cues.is_empty());
         assert_eq!(state.selected_cue_id, None);
+    }
+
+    #[test]
+    fn unattended_open_refuses_to_discard_dirty_state() {
+        let mut app = CuePoolApp::new();
+        app.state().lock().unwrap().dirty = true;
+
+        assert_eq!(
+            app.open_project_unattended(std::path::Path::new("/missing.qproj")),
+            Err("current project has unsaved changes".into())
+        );
+    }
+
+    #[test]
+    fn unattended_open_rejects_non_regular_paths() {
+        let mut app = CuePoolApp::new();
+
+        assert_eq!(
+            app.open_project_unattended(&std::env::temp_dir()),
+            Err("project path must name a .qproj file".into())
+        );
+    }
+
+    #[test]
+    fn cue_selection_reuses_the_validated_app_path() {
+        let mut show = ShowFile::default();
+        show.cues.push(Cue::Dummy {
+            base: CueBase {
+                qid: Decimal::new(15, 1),
+                ..Default::default()
+            },
+        });
+        let mut app = CuePoolApp::with_show_file(show, None);
+
+        assert!(app.select_cue(Decimal::new(15, 1)).is_ok());
+        assert_eq!(
+            app.state().lock().unwrap().selected_cue_id,
+            Some(Decimal::new(15, 1))
+        );
+        assert_eq!(
+            app.select_cue(Decimal::from(2)),
+            Err("cue Q2 not found".into())
+        );
+    }
+
+    #[test]
+    fn unattended_open_rejects_a_file_changed_after_preparation() {
+        let path = std::env::temp_dir().join(format!(
+            "cuepool-project-{}-{}.qproj",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let show = serde_json::to_string(&ShowFile::default()).unwrap();
+        std::fs::write(&path, &show).unwrap();
+        let prepared = prepare_unattended_project(&path).unwrap();
+        std::fs::write(&path, format!("{show}\n")).unwrap();
+
+        let mut app = CuePoolApp::new();
+        assert_eq!(
+            app.apply_unattended_project(prepared),
+            Err("project changed after validation; submit the command again".into())
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
