@@ -100,6 +100,13 @@ fn configured_audio_error(
     format!("configured {driver} output device '{device}' failed: {error}")
 }
 
+fn remote_discovery_message(settings: &cuepool_core::ShowSettings) -> Option<rosc::OscMessage> {
+    settings.enable_remote_control.then(|| rosc::OscMessage {
+        addr: "/qplayer/remote/discovery".into(),
+        args: vec![rosc::OscType::String(settings.node_name.clone())],
+    })
+}
+
 
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
@@ -2706,15 +2713,12 @@ impl App {
         // Discovery broadcast every 1 second
         if self.last_discovery.elapsed() >= Duration::from_secs(1) {
             self.last_discovery = Instant::now();
-            let node_name = {
+            let message = {
                 let Ok(state) = self.cuepool.state().lock() else { return; };
-                state.show_file.show_settings.node_name.clone()
+                remote_discovery_message(&state.show_file.show_settings)
             };
-            if let Some(osc) = &self.osc_manager {
-                let _ = osc.send(rosc::OscMessage {
-                    addr: "/qplayer/remote/discovery".into(),
-                    args: vec![rosc::OscType::String(node_name)],
-                });
+            if let (Some(osc), Some(message)) = (&self.osc_manager, message) {
+                let _ = osc.send(message);
             }
         }
 
@@ -3857,6 +3861,26 @@ mod tests {
                 AppCommand::SaveProjectAs { .. }
             ]
         ));
+    }
+
+    #[test]
+    fn remote_discovery_requires_remote_control() {
+        let disabled = cuepool_core::ShowSettings {
+            node_name: "stage-left".into(),
+            ..Default::default()
+        };
+        assert!(remote_discovery_message(&disabled).is_none());
+
+        let enabled = cuepool_core::ShowSettings {
+            enable_remote_control: true,
+            ..disabled
+        };
+        let message = remote_discovery_message(&enabled).unwrap();
+        assert_eq!(message.addr, "/qplayer/remote/discovery");
+        assert_eq!(
+            message.args,
+            vec![rosc::OscType::String("stage-left".into())]
+        );
     }
 
     fn cli_project_test_dir() -> PathBuf {
