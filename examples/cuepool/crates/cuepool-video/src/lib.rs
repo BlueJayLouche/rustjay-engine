@@ -47,6 +47,19 @@ pub use video_source::{
 pub use yuv_converter::YuvConverter;
 pub use zero_copy::ZeroCopyAvailability;
 
+/// Serializes GPU device creation/use across tests. With the default parallel
+/// test harness, concurrent device create/destroy cycles from several test
+/// threads can spin inside the NVIDIA user-mode driver when another process
+/// (the venue soak) is actively rendering — observed wedging the suite for an
+/// hour on ASHOF-PC02. Every GPU test takes this lock first.
+#[cfg(test)]
+pub(crate) fn gpu_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GPU_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 #[cfg(test)]
 pub(crate) fn test_device_queue(
     required_features: wgpu::Features,

@@ -349,6 +349,7 @@ mod tests {
 
     #[test]
     fn test_projection_renderer_renders_frame() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
             return;
         };
@@ -460,6 +461,7 @@ mod tests {
     /// catching black output that the tiny stretch test above can miss.
     #[test]
     fn test_projection_default_single_fit_center_nonblack() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
             return;
         };

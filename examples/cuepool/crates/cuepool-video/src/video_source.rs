@@ -1550,7 +1550,7 @@ impl FfmpegVideoSource {
         let hw_pix_fmt = if let Some((device_type, pix_fmt, _)) = hw {
             unsafe {
                 let ctx = decoder.as_mut_ptr();
-                let mut device = std::ptr::null_mut();
+                let mut device: *mut ffi::AVBufferRef = std::ptr::null_mut();
                 // The zero-copy candidate adopts wgpu's ID3D12Device so decoded
                 // resources are usable by the renderer without sharing; every
                 // readback candidate creates its own device as before.

@@ -142,6 +142,7 @@ mod tests {
     /// completes only after the fence signals.
     #[test]
     fn decode_wait_gates_its_own_submission_only() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, shared, fence)) = dx12_shared_queue() else {
             eprintln!("skipping decode-wait test: no DX12 adapter available");
             return;
@@ -191,6 +192,7 @@ mod tests {
     /// for (or stolen by) another thread's submit.
     #[test]
     fn concurrent_submissions_do_not_steal_the_staged_wait() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, shared, fence)) = dx12_shared_queue() else {
             eprintln!("skipping wait-steal test: no DX12 adapter available");
             return;

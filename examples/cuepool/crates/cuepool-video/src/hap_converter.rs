@@ -386,6 +386,7 @@ mod tests {
         rgba: Vec<u8>,
         canvas_size: [u32; 2],
     ) -> Option<(Vec<u8>, u32)> {
+        let _gpu = crate::gpu_test_lock();
         let (device, queue) = crate::test_device_queue(wgpu::Features::TEXTURE_COMPRESSION_BC)?;
         let encoded = HapFrameEncoder::new(qt_format, width, height)
             .unwrap()

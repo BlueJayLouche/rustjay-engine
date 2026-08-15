@@ -172,8 +172,11 @@ jobs:
         if: runner.os == 'Windows' && matrix.ffmpeg
         shell: pwsh
         run: |
-          # pinned to n8.1 — ffmpeg-next can't compile against master's moving API
-          curl.exe -L -o ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
+          # Pinned to the immutable 8.0 SDK: it matches the FFMPEG_DIR SDK and
+          # runtime DLLs on the venue rigs, and cuepool's D3D12VA layout guard
+          # rejects the 8.1.2+ ABI (struct rework) by design. BtbN's
+          # "n8.1-latest" is a moving target that crossed that rework.
+          curl.exe -L -o ffmpeg.zip "https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-full_build-shared.zip"
           Expand-Archive ffmpeg.zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
           $dir = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Directory | Select-Object -First 1
           "FFMPEG_DIR=$($dir.FullName)" >> $env:GITHUB_ENV

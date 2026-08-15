@@ -305,6 +305,26 @@ pub(crate) unsafe fn configure_pool(
         request.fail(crate::zero_copy::DIRECT_PATH_POISONED_REASON);
         return Err(crate::zero_copy::DIRECT_PATH_POISONED_REASON.into());
     }
+    // FFmpeg changed the AVD3D12VA struct layouts inside the libavutil 60
+    // series (the 8.1.2+ texture-array rework), so an additive-looking DLL
+    // swap can silently change the ABI these mirrors were built against.
+    // Decline the direct path unless the runtime matches the build exactly at
+    // major.minor; readback and software are unaffected by the rework.
+    let runtime = ffmpeg_next::util::version();
+    let built = ((ffi::LIBAVUTIL_VERSION_MAJOR as u32) << 16)
+        | ((ffi::LIBAVUTIL_VERSION_MINOR as u32) << 8);
+    if runtime >> 8 != built >> 8 {
+        let reason = format!(
+            "FFmpeg runtime libavutil {}.{} differs from build {}.{}; \
+             D3D12VA struct layouts may not match",
+            runtime >> 16,
+            (runtime >> 8) & 0xff,
+            built >> 16,
+            (built >> 8) & 0xff,
+        );
+        request.fail(reason.clone());
+        return Err(reason);
+    }
     let mut frames_ref = std::ptr::null_mut();
     let result = unsafe {
         ffi::avcodec_get_hw_frames_parameters(

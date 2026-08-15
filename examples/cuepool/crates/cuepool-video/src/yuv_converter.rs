@@ -949,6 +949,7 @@ mod tests {
 
     #[test]
     fn planar_converter_compiles_and_uploads() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) =
             crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
         else {
@@ -972,6 +973,7 @@ mod tests {
 
     #[test]
     fn nv12_converter_compiles_and_uploads() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) =
             crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
         else {
@@ -992,6 +994,7 @@ mod tests {
 
     #[test]
     fn p10_converter_compiles_and_uploads() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) =
             crate::test_device_queue(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
         else {

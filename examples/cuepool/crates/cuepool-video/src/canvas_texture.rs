@@ -233,6 +233,7 @@ mod tests {
 
     #[test]
     fn test_canvas_stretch() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
             return;
         };
@@ -253,6 +254,7 @@ mod tests {
 
     #[test]
     fn test_canvas_fit() {
+        let _gpu = crate::gpu_test_lock();
         let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
             return;
         };
