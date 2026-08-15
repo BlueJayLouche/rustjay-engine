@@ -174,7 +174,7 @@ impl StatusWindow {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+        let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| cuepool.show_status(ui));
             });
@@ -192,10 +192,13 @@ impl StatusWindow {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("status-encoder"),
         });
-        for (id, image_deltas) in &full_output.textures_delta.set {
+        // egui 0.36 requires every texture delta to be applied or cleared
+        // before TexturesDelta drops (debug assert), so drain rather than
+        // iterate by reference.
+        for (id, image_deltas) in full_output.textures_delta.set.drain() {
             for image_delta in image_deltas {
                 self.egui_renderer
-                    .update_texture(device, queue.queue(), *id, image_delta);
+                    .update_texture(device, queue.queue(), id, &image_delta);
             }
         }
         self.egui_renderer.update_buffers(
@@ -230,8 +233,8 @@ impl StatusWindow {
         }
         queue.submit(std::iter::once(encoder.finish()));
         queue.queue().present(output);
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
+        for id in full_output.textures_delta.free.drain() {
+            self.egui_renderer.free_texture(&id);
         }
     }
 }
@@ -3656,7 +3659,7 @@ impl App {
                 cuepool_gui::GuiMeterData::default();
         }
 
-        let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+        let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
             self.cuepool.update(ui);
         });
         egui_state.handle_platform_output(window, full_output.platform_output);
@@ -3675,9 +3678,9 @@ impl App {
                 label: Some("control-encoder"),
             });
 
-        for (id, image_deltas) in &full_output.textures_delta.set {
+        for (id, image_deltas) in full_output.textures_delta.set.drain() {
             for image_delta in image_deltas {
-                egui_renderer.update_texture(&self.device, self.queue.queue(), *id, image_delta);
+                egui_renderer.update_texture(&self.device, self.queue.queue(), id, &image_delta);
             }
         }
         egui_renderer.update_buffers(
@@ -3714,6 +3717,9 @@ impl App {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.queue().present(output);
+        for id in full_output.textures_delta.free.drain() {
+            egui_renderer.free_texture(&id);
+        }
         // Commands queued during the UI frame drain in tick_engine, which runs
         // in about_to_wait later this same iteration.
     }
