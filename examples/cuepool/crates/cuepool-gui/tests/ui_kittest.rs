@@ -39,7 +39,22 @@ fn demo_harness() -> (Harness<'static>, SharedStateHandle) {
     app_harness(preview::demo_app())
 }
 
-fn snapshot_version_neutral_splash(
+// Keep the visual baselines stable across version glyph and accent changes.
+// Semantic and unit assertions still verify the exact dynamic values.
+// GitHub's Linux WGPU backend differs by one additional edge pixel.
+fn card_snapshot_options() -> SnapshotOptions {
+    let pixel_threshold = if has_wgpu_adapter() {
+        OsThreshold::new(9).linux(10)
+    } else {
+        OsThreshold::new(9)
+    };
+    SnapshotOptions::new().max_failed_pixels(pixel_threshold)
+}
+
+// Recolours the donut back to the 0.5-series blue so the baseline survives a
+// release-series accent change. Only valid where the backdrop behind the donut
+// is uniform, which is true of the launch presentation and not of About.
+fn snapshot_version_neutral_card(
     harness: &mut Harness<'static>,
     name: &str,
     options: &SnapshotOptions,
@@ -75,38 +90,63 @@ fn snapshot_version_neutral_splash(
 }
 
 #[test]
-fn launch_splash_shows_the_build_and_blocks_the_workspace() {
-    let (mut harness, state) = app_harness(CuePoolApp::new());
+fn launch_card_shows_the_build_then_fades_out() {
+    let (mut harness, _state) = app_harness(CuePoolApp::new());
 
     assert!(harness.query_by_label(&build_identity()).is_some());
-    harness.get_by_label("Edit Mode").click();
-    harness.key_press(egui::Key::Space);
-    harness.step();
-
-    let state = state.lock().unwrap();
-    assert_eq!(state.show_mode, ShowMode::Edit);
-    assert!(state.command_queue.is_empty());
-    drop(state);
     harness.remove_cursor();
     harness.step();
-    // Keep the visual baseline stable across version glyph and accent changes.
-    // Semantic and unit assertions still verify the exact dynamic values.
-    let pixel_threshold = if has_wgpu_adapter() {
-        OsThreshold::new(9).linux(10)
-    } else {
-        OsThreshold::new(9)
-    };
-    let snapshot_options = SnapshotOptions::new().max_failed_pixels(pixel_threshold);
-    snapshot_version_neutral_splash(&mut harness, "launch_splash", &snapshot_options);
+    let snapshot_options = card_snapshot_options();
+    snapshot_version_neutral_card(&mut harness, "launch_splash", &snapshot_options);
 
     let started_at = 1.0 / 60.0;
     harness.input_mut().time = Some(started_at + 2.29);
     harness.step();
     assert!(harness.query_by_label(&build_identity()).is_some());
-    snapshot_version_neutral_splash(&mut harness, "launch_splash_fade", &snapshot_options);
+    snapshot_version_neutral_card(&mut harness, "launch_splash_fade", &snapshot_options);
 
     harness.input_mut().time = Some(started_at + 2.5);
     harness.step();
+    assert!(harness.query_by_label(&build_identity()).is_none());
+}
+
+#[test]
+fn launch_card_is_skippable_and_swallows_the_keypress() {
+    let (mut harness, state) = app_harness(CuePoolApp::new());
+
+    assert!(harness.query_by_label(&build_identity()).is_some());
+    harness.key_press(egui::Key::Space);
+    harness.step();
+
+    // The card goes early, but Space must not have reached the show behind it.
+    assert!(harness.query_by_label(&build_identity()).is_none());
+    let state = state.lock().unwrap();
+    assert_eq!(state.show_mode, ShowMode::Edit);
+    assert!(state.command_queue.is_empty());
+}
+
+#[test]
+fn about_reopens_the_same_card_with_credits() {
+    let (mut harness, state) = demo_harness();
+
+    assert!(harness.query_by_label(&build_identity()).is_none());
+    state.lock().unwrap().show_about_window = true;
+    harness.step();
+
+    // Same identity as the launch presentation, plus the credits it adds.
+    assert!(harness.query_by_label(&build_identity()).is_some());
+    assert!(harness.query_by_label("License: GPL-3.0").is_some());
+    harness.remove_cursor();
+    harness.step();
+    // Snapshotted as rendered, not version-neutralised: that helper assumes a
+    // uniform backdrop behind the donut, and About deliberately leaves the
+    // workspace visible, so it would rewrite real pixels inside the donut's
+    // bounding box. This baseline moves when the release series changes.
+    harness.snapshot_options("about_card", &card_snapshot_options());
+
+    harness.get_by_label("Close").click();
+    harness.run();
+    assert!(!state.lock().unwrap().show_about_window);
     assert!(harness.query_by_label(&build_identity()).is_none());
 }
 

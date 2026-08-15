@@ -2,7 +2,7 @@
 //!
 //! Replaces all WPF Views and ViewModels.
 
-/// Human-readable identity shared by the launch splash, About window and diagnostics.
+/// Human-readable identity shared by the identity card and diagnostics.
 pub fn build_identity() -> String {
     match option_env!("CUEPOOL_BUILD_ID")
         .map(str::trim)

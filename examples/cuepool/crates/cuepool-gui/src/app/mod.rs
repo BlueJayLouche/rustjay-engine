@@ -7,22 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const LAUNCH_SPLASH_DURATION: Duration = Duration::from_millis(2400);
-const LAUNCH_SPLASH_FADE_DURATION: Duration = Duration::from_millis(220);
-const LAUNCH_SPLASH_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+mod identity_card;
+
+use identity_card::{CardPresentation, LAUNCH_HOLD, identity_card, launch_opacity};
+
 const OPERATOR_ALERT_DURATION: Duration = Duration::from_secs(10);
-const ASCII_TORUS_WIDTH: usize = 64;
-const ASCII_TORUS_HEIGHT: usize = 22;
-const ASCII_TORUS_RAMP: &[u8] = b".,-~:;=!*#$@";
-const LAUNCH_SPLASH_COLOURS: [egui::Color32; 7] = [
-    egui::Color32::from_rgb(76, 255, 225),
-    egui::Color32::from_rgb(255, 124, 159),
-    egui::Color32::from_rgb(255, 196, 92),
-    egui::Color32::from_rgb(92, 210, 255),
-    egui::Color32::from_rgb(154, 255, 150),
-    egui::Color32::from_rgb(92, 168, 255),
-    egui::Color32::from_rgb(183, 135, 255),
-];
 const MAX_AUTOMATION_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 pub const RELEASE_NOTES_VERSION: &str = "0.4";
 
@@ -515,7 +504,7 @@ pub struct SharedState {
     pub audio_devices: Vec<cuepool_audio::AudioDeviceInfo>,
     /// Whether the log window is open.
     pub show_log_window: bool,
-    /// Whether the About window is open.
+    /// Whether Help → About has asked for the identity card.
     pub show_about_window: bool,
     /// Whether the Status diagnostics window is open.
     pub show_status_window: bool,
@@ -934,8 +923,10 @@ pub struct CuePoolApp {
     /// Status window "Copied!" feedback: when the clipboard copy happened.
     status_copied_at: Option<Instant>,
     /// Starts on the first rendered frame, so slow initialization cannot consume it.
-    launch_splash_pending: bool,
-    launch_splash_started_at: Option<f64>,
+    launch_card_pending: bool,
+    launch_card_started_at: Option<f64>,
+    /// When Help → About opened the card, so its torus animates from zero.
+    invoked_card_opened_at: Option<f64>,
 }
 
 impl Default for CuePoolApp {
@@ -950,8 +941,9 @@ impl CuePoolApp {
             state: Arc::new(Mutex::new(SharedState::new())),
             take_editor: Default::default(),
             status_copied_at: None,
-            launch_splash_pending: true,
-            launch_splash_started_at: None,
+            launch_card_pending: true,
+            launch_card_started_at: None,
+            invoked_card_opened_at: None,
         }
     }
 
@@ -965,8 +957,9 @@ impl CuePoolApp {
             })),
             take_editor: Default::default(),
             status_copied_at: None,
-            launch_splash_pending: false,
-            launch_splash_started_at: None,
+            launch_card_pending: false,
+            launch_card_started_at: None,
+            invoked_card_opened_at: None,
         }
     }
 
@@ -1121,8 +1114,9 @@ impl CuePoolApp {
         // Panels lay out in the root `ui`; windows/areas/input still go through
         // the context.
         let ctx = &ui.ctx().clone();
-        let launch_splash_timing = self.launch_splash_timing(ctx.input(|i| i.time));
-        let show_release_notes = launch_splash_timing.is_none()
+        let frame_time = ctx.input(|i| i.time);
+        let launch_card_timing = self.launch_card_timing(frame_time);
+        let show_release_notes = launch_card_timing.is_none()
             && self
                 .state
                 .lock()
@@ -1132,10 +1126,11 @@ impl CuePoolApp {
                 .unwrap_or(false);
         // Keyboard shortcuts. Skip bare cue-selection/deletion keys while a
         // text field is focused so editing isn't hijacked. Startup overlays also
-        // block shortcuts, so Space/Escape cannot operate the show behind them.
+        // block shortcuts, so the keypress that dismisses the launch card cannot
+        // also operate the show behind it.
         let editing_text = ctx.egui_wants_keyboard_input();
         ctx.input(|i| {
-            if launch_splash_timing.is_some() || show_release_notes {
+            if launch_card_timing.is_some() || show_release_notes {
                 return;
             }
             let modifiers = i.modifiers;
@@ -1822,33 +1817,6 @@ impl CuePoolApp {
             });
         }
 
-        // About window
-        let mut show_about = if let Ok(state) = self.state.lock() {
-            state.show_about_window
-        } else {
-            false
-        };
-        if show_about {
-            egui::Window::new("About CuePool")
-                .collapsible(false)
-                .resizable(false)
-                .default_size([320.0, 180.0])
-                .open(&mut show_about)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("CuePool");
-                        ui.label("A professional audio/video playback application");
-                        ui.separator();
-                        ui.monospace(crate::build_identity());
-                        ui.hyperlink_to("GitHub", "https://github.com/BlueJayLouche/CuePool");
-                        ui.label("License: GPL-3.0");
-                    });
-                });
-        }
-        if let Ok(mut state) = self.state.lock() {
-            state.show_about_window = show_about;
-        }
-
         // Import-from-project modal (File → Import from Project…)
         let import = self
             .state
@@ -1951,154 +1919,76 @@ impl CuePoolApp {
             });
         }
 
-        if let Some((elapsed, remaining)) = launch_splash_timing {
-            let opacity = launch_splash_opacity(remaining);
-            ctx.request_repaint_after(remaining.min(LAUNCH_SPLASH_FRAME_INTERVAL));
-            egui::Modal::new(egui::Id::new("launch_splash"))
+        // The identity card, in whichever presentation is called for. The launch
+        // one wins if both are somehow armed, since Help is unreachable behind it.
+        if let Some((elapsed, remaining)) = launch_card_timing {
+            let opacity = launch_opacity(remaining);
+            ctx.request_repaint_after(remaining.min(identity_card::FRAME_INTERVAL));
+            let card = egui::Modal::new(egui::Id::new("identity_card"))
                 .frame(egui::Frame::NONE)
-                .backdrop_color(egui::Color32::from_black_alpha(248).gamma_multiply(opacity))
+                .backdrop_color(CardPresentation::Launch.backdrop().gamma_multiply(opacity))
                 .show(ctx, |ui| {
                     ui.set_opacity(opacity);
-                    ui.set_width(680.0);
-                    ui.vertical_centered(|ui| {
-                        let donut = ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(ascii_torus_frame(elapsed))
-                                    .monospace()
-                                    .size(11.0)
-                                    .color(launch_splash_colour(
-                                        env!("CARGO_PKG_VERSION_MAJOR"),
-                                        env!("CARGO_PKG_VERSION_MINOR"),
-                                    )),
-                            )
-                            .extend()
-                            .selectable(false),
-                        );
-                        donut.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Label,
-                                ui.is_enabled(),
-                                "Animated CuePool donut",
-                            )
-                        });
-                        ui.add_space(8.0);
-                        ui.heading(egui::RichText::new("CUEPOOL").size(36.0).strong());
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("AUDIO  /  VIDEO  /  LIGHTING  /  CONTROL")
-                                .monospace()
-                                .strong()
-                                .color(egui::Color32::from_rgb(255, 184, 92)),
-                        );
-                        ui.add_space(14.0);
-                        ui.label(
-                            egui::RichText::new(crate::build_identity())
-                                .monospace()
-                                .color(egui::Color32::from_gray(180)),
-                        );
-                    });
+                    identity_card(ui, elapsed, CardPresentation::Launch);
                 });
+            // Any click or keypress skips the rest of the hold — the modal's own
+            // `should_close` only covers Escape and the backdrop, not the card
+            // itself. The shortcut handler above has already ignored this frame's
+            // input, so whatever ends the card can't also operate the show.
+            let skipped = ctx.input(|i| {
+                i.pointer.any_pressed()
+                    || i.events
+                        .iter()
+                        .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+            });
+            if skipped || card.should_close() {
+                self.launch_card_started_at = None;
+            }
+        } else if !show_release_notes && self.about_requested() {
+            let opened_at = *self.invoked_card_opened_at.get_or_insert(frame_time);
+            let elapsed = (frame_time - opened_at).max(0.0) as f32;
+            ctx.request_repaint_after(identity_card::FRAME_INTERVAL);
+            let card = egui::Modal::new(egui::Id::new("identity_card"))
+                .frame(egui::Frame::NONE)
+                .backdrop_color(CardPresentation::Invoked.backdrop())
+                .show(ctx, |ui| {
+                    identity_card(ui, elapsed, CardPresentation::Invoked)
+                });
+            if card.inner || card.should_close() {
+                self.invoked_card_opened_at = None;
+                if let Ok(mut state) = self.state.lock() {
+                    state.show_about_window = false;
+                }
+            }
         }
 
         // Process any commands queued during the frame
         self.process_commands(ctx);
     }
 
-    fn launch_splash_timing(&mut self, now: f64) -> Option<(f32, Duration)> {
-        if self.launch_splash_pending {
-            self.launch_splash_pending = false;
-            self.launch_splash_started_at = Some(now);
+    fn about_requested(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.show_about_window)
+            .unwrap_or(false)
+    }
+
+    fn launch_card_timing(&mut self, now: f64) -> Option<(f32, Duration)> {
+        if self.launch_card_pending {
+            self.launch_card_pending = false;
+            self.launch_card_started_at = Some(now);
         }
-        let elapsed = (now - self.launch_splash_started_at?).max(0.0);
-        if elapsed >= LAUNCH_SPLASH_DURATION.as_secs_f64() {
-            self.launch_splash_started_at = None;
+        let elapsed = (now - self.launch_card_started_at?).max(0.0);
+        if elapsed >= LAUNCH_HOLD.as_secs_f64() {
+            self.launch_card_started_at = None;
             None
         } else {
             Some((
                 elapsed as f32,
-                Duration::from_secs_f64(LAUNCH_SPLASH_DURATION.as_secs_f64() - elapsed),
+                Duration::from_secs_f64(LAUNCH_HOLD.as_secs_f64() - elapsed),
             ))
         }
     }
-}
-
-fn launch_splash_opacity(remaining: Duration) -> f32 {
-    let remaining = (remaining.as_secs_f32() / LAUNCH_SPLASH_FADE_DURATION.as_secs_f32()).min(1.0);
-    remaining * remaining
-}
-
-fn launch_splash_colour(major: &str, minor: &str) -> egui::Color32 {
-    let major = major
-        .parse::<usize>()
-        .expect("Cargo major version is numeric");
-    let minor = minor
-        .parse::<usize>()
-        .expect("Cargo minor version is numeric");
-    LAUNCH_SPLASH_COLOURS[(major + minor) % LAUNCH_SPLASH_COLOURS.len()]
-}
-
-fn ascii_torus_frame(elapsed: f32) -> String {
-    let mut pixels = vec![b' '; ASCII_TORUS_WIDTH * ASCII_TORUS_HEIGHT];
-    let mut depth = vec![0.0; pixels.len()];
-    let rotation_x = 0.8 + elapsed * 1.25;
-    let rotation_z = 0.2 + elapsed * 0.7;
-    let (sin_x, cos_x) = rotation_x.sin_cos();
-    let (sin_z, cos_z) = rotation_z.sin_cos();
-    let mut tube_angle = 0.0_f32;
-
-    while tube_angle < std::f32::consts::TAU {
-        let (sin_tube, cos_tube) = tube_angle.sin_cos();
-        let mut ring_angle = 0.0_f32;
-        while ring_angle < std::f32::consts::TAU {
-            let (sin_ring, cos_ring) = ring_angle.sin_cos();
-            let ring_radius = 2.0 + cos_tube;
-            let x = ring_radius * cos_ring;
-            let y = ring_radius * sin_ring;
-            let z = sin_tube;
-            let rotated_y = y * cos_x - z * sin_x;
-            let rotated_z = y * sin_x + z * cos_x;
-            let rotated_x = x * cos_z - rotated_y * sin_z;
-            let rotated_y = x * sin_z + rotated_y * cos_z;
-            let inverse_z = 1.0 / (5.0 + rotated_z);
-            let screen_x = (ASCII_TORUS_WIDTH as f32 / 2.0 + 28.0 * inverse_z * rotated_x) as isize;
-            let screen_y =
-                (ASCII_TORUS_HEIGHT as f32 / 2.0 - 14.0 * inverse_z * rotated_y) as isize;
-
-            let normal_x = cos_tube * cos_ring;
-            let normal_y = cos_tube * sin_ring;
-            let normal_z = sin_tube;
-            let rotated_normal_y = normal_y * cos_x - normal_z * sin_x;
-            let rotated_normal_z = normal_y * sin_x + normal_z * cos_x;
-            let rotated_normal_y = normal_x * sin_z + rotated_normal_y * cos_z;
-            let luminance = rotated_normal_y - rotated_normal_z;
-
-            if luminance > 0.0
-                && (0..ASCII_TORUS_WIDTH as isize).contains(&screen_x)
-                && (0..ASCII_TORUS_HEIGHT as isize).contains(&screen_y)
-            {
-                let index = screen_y as usize * ASCII_TORUS_WIDTH + screen_x as usize;
-                if inverse_z > depth[index] {
-                    depth[index] = inverse_z;
-                    let shade = ((luminance * 8.0) as usize).min(ASCII_TORUS_RAMP.len() - 1);
-                    pixels[index] = ASCII_TORUS_RAMP[shade];
-                }
-            }
-
-            ring_angle += 0.07;
-        }
-        tube_angle += 0.15;
-    }
-
-    let mut frame = String::with_capacity(pixels.len() + ASCII_TORUS_HEIGHT - 1);
-    for (row, line) in pixels.chunks_exact(ASCII_TORUS_WIDTH).enumerate() {
-        if row > 0 {
-            frame.push('\n');
-        }
-        for &pixel in line {
-            frame.push(char::from(pixel));
-        }
-    }
-    frame
 }
 
 impl CuePoolApp {
@@ -3232,50 +3122,22 @@ mod tests {
     }
 
     #[test]
-    fn launch_splash_runs_for_its_full_duration_from_first_render() {
+    fn launch_card_runs_for_its_full_duration_from_first_render() {
         let mut app = CuePoolApp::new();
 
-        assert_eq!(
-            app.launch_splash_timing(10.0),
-            Some((0.0, LAUNCH_SPLASH_DURATION))
-        );
-        assert_eq!(app.launch_splash_timing(12.4), None);
-        assert!(app.launch_splash_started_at.is_none());
+        assert_eq!(app.launch_card_timing(10.0), Some((0.0, LAUNCH_HOLD)));
+        assert_eq!(app.launch_card_timing(12.4), None);
+        assert!(app.launch_card_started_at.is_none());
     }
 
     #[test]
-    fn launch_splash_fades_only_at_the_end() {
-        assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_DURATION), 1.0);
-        assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION), 1.0);
-        assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION / 2), 0.25);
-        assert_eq!(launch_splash_opacity(Duration::ZERO), 0.0);
-    }
+    fn a_loaded_project_skips_the_launch_card_but_keeps_about_available() {
+        let mut app = CuePoolApp::with_show_file(ShowFile::default(), None);
 
-    #[test]
-    fn launch_splash_colour_changes_with_the_release_series() {
-        let v0_5 = launch_splash_colour("0", "5");
-        let v0_6 = launch_splash_colour("0", "6");
-        let v1_0 = launch_splash_colour("1", "0");
-
-        assert_eq!(v0_5, egui::Color32::from_rgb(92, 168, 255));
-        assert_eq!(v0_6, egui::Color32::from_rgb(183, 135, 255));
-        assert_ne!(v0_5, v0_6);
-        assert_ne!(v0_6, v1_0);
-    }
-
-    #[test]
-    fn ascii_torus_is_fixed_size_and_animated() {
-        let first = ascii_torus_frame(0.0);
-        let next = ascii_torus_frame(0.4);
-
-        assert_ne!(first, next);
-        assert_eq!(first.lines().count(), ASCII_TORUS_HEIGHT);
-        assert!(first.lines().all(|line| line.len() == ASCII_TORUS_WIDTH));
-        assert!(
-            first
-                .bytes()
-                .all(|byte| byte == b'\n' || byte == b' ' || ASCII_TORUS_RAMP.contains(&byte))
-        );
+        assert_eq!(app.launch_card_timing(10.0), None);
+        assert!(!app.about_requested());
+        app.state().lock().unwrap().show_about_window = true;
+        assert!(app.about_requested());
     }
 
     #[test]
