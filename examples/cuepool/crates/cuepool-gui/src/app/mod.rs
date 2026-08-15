@@ -227,6 +227,11 @@ pub struct VideoTimings {
     pub hw_transfer: DecodeTiming,
     pub plane_copy: DecodeTiming,
     pub upload: DecodeTiming,
+    /// Building the convert command buffer: encoder creation, the render pass
+    /// encode and `finish()`. Split from `conversion_submit` so a stalled
+    /// `queue.submit` is distinguishable from slow encoding (issue #139).
+    pub conversion_encode: DecodeTiming,
+    /// The `queue.submit` call alone — not the encode that precedes it.
     pub conversion_submit: DecodeTiming,
 }
 
@@ -351,6 +356,10 @@ impl Diagnostics {
                 (
                     "Upload ms/frame".into(),
                     format!("{:.2}", v.timings.upload.get_ms()),
+                ),
+                (
+                    "Conversion encode ms/frame".into(),
+                    format!("{:.2}", v.timings.conversion_encode.get_ms()),
                 ),
                 (
                     "Conversion submit ms/frame".into(),

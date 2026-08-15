@@ -317,6 +317,7 @@ pub(crate) fn video_consume_thread(
     let mut outputs_gen = 0u64;
     let mut timings = VideoTimings::default();
     let mut upload_timing = TimingWindow::default();
+    let mut conversion_encode_timing = TimingWindow::default();
     let mut conversion_submit_timing = TimingWindow::default();
     #[cfg(windows)]
     let mut direct_retirement = cuepool_video::SubmissionRetirement::default();
@@ -441,6 +442,7 @@ pub(crate) fn video_consume_thread(
                 rx_epoch = Some(ctl.stream_epoch);
                 timings = ctl.timings.clone();
                 upload_timing = TimingWindow::default();
+                conversion_encode_timing = TimingWindow::default();
                 conversion_submit_timing = TimingWindow::default();
                 peek = None;
                 ctl.peek_pts = None;
@@ -659,16 +661,21 @@ pub(crate) fn video_consume_thread(
                                 timings
                                     .upload
                                     .set_ms(upload_timing.record(upload_started.elapsed()));
-                                let conversion_started = Instant::now();
+                                let encode_started = Instant::now();
                                 let mut encoder = device.create_command_encoder(
                                     &wgpu::CommandEncoderDescriptor {
                                         label: Some("canvas-hap-convert"),
                                     },
                                 );
                                 conv.encode(&mut encoder, &c.render_view());
-                                queue.submit(std::iter::once(encoder.finish()));
+                                let command_buffer = encoder.finish();
+                                timings.conversion_encode.set_ms(
+                                    conversion_encode_timing.record(encode_started.elapsed()),
+                                );
+                                let submit_started = Instant::now();
+                                queue.submit(std::iter::once(command_buffer));
                                 timings.conversion_submit.set_ms(
-                                    conversion_submit_timing.record(conversion_started.elapsed()),
+                                    conversion_submit_timing.record(submit_started.elapsed()),
                                 );
                                 uploaded = true;
                             }
@@ -731,7 +738,7 @@ pub(crate) fn video_consume_thread(
                                         timings
                                             .upload
                                             .set_ms(upload_timing.record(upload_started.elapsed()));
-                                        let conversion_started = Instant::now();
+                                        let encode_started = Instant::now();
                                         let mut acquire_encoder = device.create_command_encoder(
                                             &wgpu::CommandEncoderDescriptor {
                                                 label: Some("canvas-d3d11va-acquire"),
@@ -761,14 +768,12 @@ pub(crate) fn video_consume_thread(
                                                 direct.attach_keyed_mutex(&mut acquire_encoder)
                                             },
                                         )?;
-                                        Ok((
-                                            [
-                                                acquire_encoder.finish(),
-                                                convert_encoder.finish(),
-                                                release_encoder.finish(),
-                                            ],
-                                            conversion_started,
-                                        ))
+                                        let command_buffers = [
+                                            acquire_encoder.finish(),
+                                            convert_encoder.finish(),
+                                            release_encoder.finish(),
+                                        ];
+                                        Ok((command_buffers, encode_started.elapsed()))
                                     },
                                 ) {
                                     Ok(prepared) => prepared,
@@ -777,10 +782,16 @@ pub(crate) fn video_consume_thread(
                             let epoch = rx_epoch.unwrap_or_default();
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {
-                                (Ok((command_buffers, conversion_started)), Ok(completed)) => {
+                                (Ok((command_buffers, encode_elapsed)), Ok(completed)) => {
                                     let completion = direct.clone();
                                     let callback_completed = Arc::clone(&completed);
                                     let retirement_tx = retirement_tx.clone();
+                                    // Times the whole panic-caught block, not the bare
+                                    // queue.submit: the closure is UnwindSafe, so a timer
+                                    // cannot be threaded inside it. release_to_vulkan and
+                                    // the completion-callback registration either side are
+                                    // bookkeeping, negligible against the submit itself.
+                                    let submit_started = Instant::now();
                                     let submitted = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
                                         || {
                                             direct.release_to_vulkan()?;
@@ -807,9 +818,12 @@ pub(crate) fn video_consume_thread(
                                     } else {
                                         direct_submitted = true;
                                         uploaded = true;
+                                        timings.conversion_encode.set_ms(
+                                            conversion_encode_timing.record(encode_elapsed),
+                                        );
                                         timings.conversion_submit.set_ms(
                                             conversion_submit_timing
-                                                .record(conversion_started.elapsed()),
+                                                .record(submit_started.elapsed()),
                                         );
                                     }
                                 }
@@ -854,16 +868,21 @@ pub(crate) fn video_consume_thread(
                         timings
                             .upload
                             .set_ms(upload_timing.record(upload_started.elapsed()));
-                        let conversion_started = Instant::now();
+                        let encode_started = Instant::now();
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("canvas-yuv-convert"),
                             });
                         conv.encode(&mut encoder, &c.render_view());
-                        queue.submit(std::iter::once(encoder.finish()));
+                        let command_buffer = encoder.finish();
+                        timings
+                            .conversion_encode
+                            .set_ms(conversion_encode_timing.record(encode_started.elapsed()));
+                        let submit_started = Instant::now();
+                        queue.submit(std::iter::once(command_buffer));
                         timings
                             .conversion_submit
-                            .set_ms(conversion_submit_timing.record(conversion_started.elapsed()));
+                            .set_ms(conversion_submit_timing.record(submit_started.elapsed()));
                         uploaded = true;
                     }
                 }

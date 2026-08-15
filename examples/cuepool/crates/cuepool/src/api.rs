@@ -949,6 +949,7 @@ struct VideoTimingStatus {
     hardware_transfer_ms_per_frame: f64,
     plane_copy_ms_per_frame: f64,
     upload_ms_per_frame: f64,
+    conversion_encode_ms_per_frame: f64,
     conversion_submit_ms_per_frame: f64,
 }
 
@@ -1016,6 +1017,7 @@ fn diagnostics_from(diagnostics: &Diagnostics) -> DiagnosticsResponse {
                 hardware_transfer_ms_per_frame: video.timings.hw_transfer.get_ms(),
                 plane_copy_ms_per_frame: video.timings.plane_copy.get_ms(),
                 upload_ms_per_frame: video.timings.upload.get_ms(),
+                conversion_encode_ms_per_frame: video.timings.conversion_encode.get_ms(),
                 conversion_submit_ms_per_frame: video.timings.conversion_submit.get_ms(),
             },
         }),

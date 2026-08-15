@@ -196,6 +196,7 @@ fn populate_telemetry(state: &mut SharedState) {
                 hw_transfer: crate::DecodeTiming::from_ms(0.8),
                 plane_copy: crate::DecodeTiming::from_ms(0.4),
                 upload: crate::DecodeTiming::from_ms(0.5),
+                conversion_encode: crate::DecodeTiming::from_ms(0.1),
                 conversion_submit: crate::DecodeTiming::from_ms(0.2),
             },
         }),

@@ -4396,9 +4396,10 @@ impl ApplicationHandler<AppEvent> for App {
                 // capture: delivery rates plus the per-frame timing split.
                 let timings = d.video.as_ref().map(|v| {
                     format!(
-                        " | decode {:.2} ms | upload {:.2} ms | conv-submit {:.2} ms",
+                        " | decode {:.2} ms | upload {:.2} ms | conv-encode {:.2} ms | conv-submit {:.2} ms",
                         v.timings.decode.get_ms(),
                         v.timings.upload.get_ms(),
+                        v.timings.conversion_encode.get_ms(),
                         v.timings.conversion_submit.get_ms(),
                     )
                 });
