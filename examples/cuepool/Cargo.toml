@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BlueJayLouche/rustjay-engine"
@@ -79,11 +79,12 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
-# TEMPORARY local-path pin of the wgpu-30 fork branch cuepool/frame-pacing-diag-30
-# (commit 0316ceebc): the PC02 PAT cannot push to scroix/wgpu yet. MUST be
-# flipped to the scroix/wgpu git rev before this branch is pushed for PR/CI.
+# wgpu-30 fork carrying only the frame-pacing-diag feature (branch
+# cuepool/frame-pacing-diag-30). The v29-era interop patches are gone: wgpu 30
+# provides the DX12 resource import and fence staging natively, and the #139
+# fence-lock split landed upstream (gfx-rs/wgpu#9475).
 [patch.crates-io]
-wgpu = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu" }
-wgpu-core = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-core" }
-wgpu-hal = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-hal" }
-wgpu-types = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-types" }
+wgpu = { git = "https://github.com/scroix/wgpu", rev = "0316ceebc36f89e48f71dae67144cffce3f11941" }
+wgpu-core = { git = "https://github.com/scroix/wgpu", rev = "0316ceebc36f89e48f71dae67144cffce3f11941" }
+wgpu-hal = { git = "https://github.com/scroix/wgpu", rev = "0316ceebc36f89e48f71dae67144cffce3f11941" }
+wgpu-types = { git = "https://github.com/scroix/wgpu", rev = "0316ceebc36f89e48f71dae67144cffce3f11941" }
