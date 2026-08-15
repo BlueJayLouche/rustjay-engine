@@ -112,10 +112,24 @@ camera-backed check.
 | Left | **Active Cues** — every playing cue with state, volume meter, and a progress bar (`elapsed / total  −remaining`; yellow = paused) |
 | Center | **Cue list** — the show, in playback order. The standby cue (what GO will fire) carries a chevron in the left gutter and an outlined row; playing cues are green with a ▶ marker, paused cues amber, idle standby blue |
 | Right | **Inspector** — full editor for the selected cue |
-| Bottom | Status bar |
+| Bottom | Status bar — playing-cue count, mode, cue total, unsaved marker, and the live **Video** / **Audio** indicators |
 
 The app has two modes. **Edit** mode enables all editing below; **Show** mode
 locks the cue list so a stray click can't rearrange your show mid-performance.
+
+### Video indicator
+
+The status bar names the decode path the current clip is actually using. Green
+means the GPU is doing the work and nothing was given up getting there. Amber
+with a ⚠ means the path is degraded, either because decoding fell back to the
+CPU or because a faster GPU path was abandoned. Hover it for the reason and the
+source file; Help > Status has the full picture.
+
+The path is named as the decoder reports it: `hap gpu-native`,
+`d3d12va zero-copy (<adapter>)`, `d3d11va readback`, `hardware (videotoolbox)`,
+or `software`. A hardware path still reads amber once it has fallen back,
+because a clip that lost zero-copy is running slower than it should even though
+the GPU is still decoding it.
 
 ## Editing the cue list (Edit mode)
 
