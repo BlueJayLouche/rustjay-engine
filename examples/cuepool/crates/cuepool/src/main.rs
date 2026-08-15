@@ -4134,11 +4134,11 @@ impl ApplicationHandler<AppEvent> for App {
         if identify_req {
             self.identify_until =
                 Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
-            for (i, out) in self.output_windows.iter().enumerate() {
+            for out in &self.output_windows {
                 log::warn!(
                     "Identify: '{}' = {}",
                     out.output_config.name,
-                    IDENTIFY_COLOR_NAMES[i % IDENTIFY_COLOR_NAMES.len()]
+                    IDENTIFY_COLOR_NAMES[out.configured_index % IDENTIFY_COLOR_NAMES.len()]
                 );
             }
         }

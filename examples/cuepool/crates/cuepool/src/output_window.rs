@@ -33,6 +33,7 @@ pub(crate) struct WindowIds {
 pub(crate) struct OutputWindow {
     pub(crate) id: WindowId,
     pub(crate) window: Arc<Window>,
+    pub(crate) configured_index: usize,
     /// Baked snapshot: display name (identify/diagnostics) and the fallback
     /// used when the live projection outputs list has no entry for this window.
     pub(crate) output_config: cuepool_core::ProjectorOutput,
@@ -137,6 +138,14 @@ fn output_failure_summary(total: usize, active: usize, failures: &[String]) -> S
             "Projection {noun} {failed} failed; {active} of {total} outputs remain active. See Window → Log."
         )
     }
+}
+
+fn surface_size_is_valid(width: u32, height: u32) -> bool {
+    width > 0 && height > 0
+}
+
+fn output_runtime_role(configured_index: usize, active_outputs: usize) -> (usize, bool) {
+    (configured_index, active_outputs == 0)
 }
 
 impl App {
@@ -282,6 +291,16 @@ impl App {
             };
 
             let size = window.inner_size();
+            if !surface_size_is_valid(size.width, size.height) {
+                record_output_failure(
+                    &mut failed_outputs,
+                    &output.name,
+                    "surface configuration",
+                    format_args!("window size is {}x{}", size.width, size.height),
+                    &context,
+                );
+                continue;
+            }
             let Some(mut config) =
                 surface.get_default_config(&self.adapter, size.width, size.height)
             else {
@@ -398,6 +417,8 @@ impl App {
             context,
         ) in pending_outputs
         {
+            let (configured_index, paces_video) =
+                output_runtime_role(out_idx, self.output_windows.len());
             let video_id = window.id();
             let frame_state = Arc::clone(&self.frame_state);
             let vsync_tick = Arc::clone(&self.vsync_tick);
@@ -426,7 +447,8 @@ impl App {
                         thread_stop,
                         thread_presented,
                         video_id,
-                        out_idx,
+                        configured_index,
+                        paces_video,
                         fallback_output,
                     );
                 }) {
@@ -448,6 +470,7 @@ impl App {
             self.output_windows.push(OutputWindow {
                 id: video_id,
                 window,
+                configured_index,
                 output_config,
                 size: size_atomic,
                 stop,
@@ -482,7 +505,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::output_failure_summary;
+    use super::{output_failure_summary, output_runtime_role, surface_size_is_valid};
 
     #[test]
     fn output_failure_summary_distinguishes_partial_and_total_failure() {
@@ -494,5 +517,17 @@ mod tests {
             output_failure_summary(2, 0, &["Left".into(), "Right".into()]),
             "No projection outputs could be opened (Left, Right); cues continue without picture. See Window → Log."
         );
+    }
+
+    #[test]
+    fn output_failures_reject_zero_surfaces() {
+        assert!(!surface_size_is_valid(1920, 0));
+        assert!(!surface_size_is_valid(0, 1080));
+    }
+
+    #[test]
+    fn partial_output_failure_preserves_runtime_roles() {
+        assert_eq!(output_runtime_role(1, 0), (1, true));
+        assert_eq!(output_runtime_role(2, 1), (2, false));
     }
 }

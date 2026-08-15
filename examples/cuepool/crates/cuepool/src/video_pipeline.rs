@@ -1032,6 +1032,7 @@ pub(crate) fn output_render_thread(
     presented: Arc<AtomicU32>,
     window_id: WindowId,
     out_index: usize,
+    paces_video: bool,
     fallback_output: cuepool_core::ProjectorOutput,
 ) {
     // Local snapshot of the bundle, refreshed when its generation advances.
@@ -1212,7 +1213,7 @@ pub(crate) fn output_render_thread(
 
         queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
-        if out_index == 0 {
+        if paces_video {
             {
                 let mut tick = vsync_tick.0.lock_unpoisoned();
                 *tick = tick.wrapping_add(1);
