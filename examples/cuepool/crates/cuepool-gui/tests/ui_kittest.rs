@@ -249,11 +249,15 @@ fn edit_and_show_mode_snapshots() {
     }
     let (mut harness, _) = demo_harness();
 
+    // The references are rendered on Windows/NVIDIA; llvmpipe rounds a text
+    // pixel past the intensity threshold since the egui 0.36 reshape.
+    let snapshot_options = SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(2));
+
     harness.run();
-    harness.snapshot("edit_mode");
+    harness.snapshot_options("edit_mode", &snapshot_options);
 
     harness.get_by_label("Edit Mode").click();
     harness.run();
     harness.run();
-    harness.snapshot("show_mode");
+    harness.snapshot_options("show_mode", &snapshot_options);
 }
