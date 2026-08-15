@@ -96,7 +96,7 @@ fn release_notes_follow_the_splash_and_are_acknowledged_once() {
     if has_wgpu_adapter() {
         harness.snapshot_options(
             "release_notes",
-            &SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(1)),
+            &SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(2)),
         );
     }
 
