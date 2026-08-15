@@ -4,7 +4,7 @@ use cuepool_gui::app::RELEASE_NOTES_VERSION;
 use cuepool_gui::{AppCommand, CuePoolApp, SharedStateHandle, ShowMode, build_identity, preview};
 use egui::accesskit::Role;
 use egui_kittest::{
-    Harness, OsThreshold, SnapshotOptions,
+    Harness, OsThreshold, SnapshotOptions, image_snapshot_options,
     kittest::{By, Queryable},
 };
 use rust_decimal::Decimal;
@@ -39,6 +39,41 @@ fn demo_harness() -> (Harness<'static>, SharedStateHandle) {
     app_harness(preview::demo_app())
 }
 
+fn snapshot_version_neutral_splash(
+    harness: &mut Harness<'static>,
+    name: &str,
+    options: &SnapshotOptions,
+) {
+    let donut = harness.get_by_label("Animated CuePool donut").rect();
+    let mut image = harness.render().expect("splash snapshot should render");
+    let x_range = donut.left().floor().max(0.0) as u32..donut.right().ceil() as u32;
+    let y_range = donut.top().floor().max(0.0) as u32..donut.bottom().ceil() as u32;
+    let background = *image.get_pixel(x_range.start, y_range.start);
+    let baseline_colour = [92_u8, 168, 255];
+
+    for y in y_range {
+        for x in x_range.clone() {
+            let pixel = image.get_pixel_mut(x, y);
+            let coverage = (0..3)
+                .map(|channel| {
+                    f32::from(pixel[channel].saturating_sub(background[channel]))
+                        / f32::from(255 - background[channel])
+                })
+                .fold(0.0_f32, f32::max);
+            if coverage > 0.0 {
+                for channel in 0..3 {
+                    let background = f32::from(background[channel]);
+                    pixel[channel] = (background
+                        + coverage * (f32::from(baseline_colour[channel]) - background))
+                        .round() as u8;
+                }
+            }
+        }
+    }
+
+    image_snapshot_options(&image, name, options);
+}
+
 #[test]
 fn launch_splash_shows_the_build_and_blocks_the_workspace() {
     let (mut harness, state) = app_harness(CuePoolApp::new());
@@ -54,22 +89,21 @@ fn launch_splash_shows_the_build_and_blocks_the_workspace() {
     drop(state);
     harness.remove_cursor();
     harness.step();
-    // Keep the visual baseline stable across patch-version glyph changes. The
-    // dynamic label assertion above still verifies the full build identity.
-    // GitHub's Linux WGPU backend differs by one additional edge pixel.
+    // Keep the visual baseline stable across version glyph and accent changes.
+    // Semantic and unit assertions still verify the exact dynamic values.
     let pixel_threshold = if has_wgpu_adapter() {
         OsThreshold::new(9).linux(10)
     } else {
         OsThreshold::new(9)
     };
     let snapshot_options = SnapshotOptions::new().max_failed_pixels(pixel_threshold);
-    harness.snapshot_options("launch_splash", &snapshot_options);
+    snapshot_version_neutral_splash(&mut harness, "launch_splash", &snapshot_options);
 
     let started_at = 1.0 / 60.0;
     harness.input_mut().time = Some(started_at + 2.29);
     harness.step();
     assert!(harness.query_by_label(&build_identity()).is_some());
-    harness.snapshot_options("launch_splash_fade", &snapshot_options);
+    snapshot_version_neutral_splash(&mut harness, "launch_splash_fade", &snapshot_options);
 
     harness.input_mut().time = Some(started_at + 2.5);
     harness.step();
@@ -291,12 +325,15 @@ fn edit_and_show_mode_snapshots() {
         return;
     }
     let (mut harness, _) = demo_harness();
+    // ponytail: Linux WGPU differs by one edge pixel; use per-platform
+    // baselines if the renderer drift grows beyond that.
+    let snapshot_options = SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(1));
 
     harness.run();
-    harness.snapshot("edit_mode");
+    harness.snapshot_options("edit_mode", &snapshot_options);
 
     harness.get_by_label("Edit Mode").click();
     harness.run();
     harness.run();
-    harness.snapshot("show_mode");
+    harness.snapshot_options("show_mode", &snapshot_options);
 }

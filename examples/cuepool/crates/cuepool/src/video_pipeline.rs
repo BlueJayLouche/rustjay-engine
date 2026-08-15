@@ -746,7 +746,6 @@ pub(crate) fn video_consume_thread(
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {
                                 (Ok((command_buffer, conversion_started)), Ok(completed)) => {
-                                    let completion = direct.clone();
                                     let callback_completed = Arc::clone(&completed);
                                     let retirement_tx = retirement_tx.clone();
                                     let submitted = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
@@ -761,7 +760,6 @@ pub(crate) fn video_consume_thread(
                                             )?;
                                             queue.queue().on_submitted_work_done(move || {
                                                 callback_completed.store(true, Ordering::Release);
-                                                completion.complete(Ok(()));
                                                 let _ = retirement_tx.send(());
                                             });
                                             Ok(())
@@ -776,6 +774,10 @@ pub(crate) fn video_consume_thread(
                                         direct.complete(Err(reason));
                                         frame_presented = false;
                                     } else {
+                                        // The retirement queue keeps the AVFrame leased through
+                                        // GPU completion; the decoder only needs to wait until
+                                        // the conversion has been submitted so it can queue ahead.
+                                        direct.complete(Ok(()));
                                         direct_submitted = true;
                                         uploaded = true;
                                         timings.conversion_submit.set_ms(

@@ -14,6 +14,15 @@ const OPERATOR_ALERT_DURATION: Duration = Duration::from_secs(10);
 const ASCII_TORUS_WIDTH: usize = 64;
 const ASCII_TORUS_HEIGHT: usize = 22;
 const ASCII_TORUS_RAMP: &[u8] = b".,-~:;=!*#$@";
+const LAUNCH_SPLASH_COLOURS: [egui::Color32; 7] = [
+    egui::Color32::from_rgb(76, 255, 225),
+    egui::Color32::from_rgb(255, 124, 159),
+    egui::Color32::from_rgb(255, 196, 92),
+    egui::Color32::from_rgb(92, 210, 255),
+    egui::Color32::from_rgb(154, 255, 150),
+    egui::Color32::from_rgb(92, 168, 255),
+    egui::Color32::from_rgb(183, 135, 255),
+];
 const MAX_AUTOMATION_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 pub const RELEASE_NOTES_VERSION: &str = "0.4";
 
@@ -1952,16 +1961,26 @@ impl CuePoolApp {
                     ui.set_opacity(opacity);
                     ui.set_width(680.0);
                     ui.vertical_centered(|ui| {
-                        ui.add(
+                        let donut = ui.add(
                             egui::Label::new(
                                 egui::RichText::new(ascii_torus_frame(elapsed))
                                     .monospace()
                                     .size(11.0)
-                                    .color(egui::Color32::from_rgb(92, 168, 255)),
+                                    .color(launch_splash_colour(
+                                        env!("CARGO_PKG_VERSION_MAJOR"),
+                                        env!("CARGO_PKG_VERSION_MINOR"),
+                                    )),
                             )
                             .extend()
                             .selectable(false),
                         );
+                        donut.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Label,
+                                ui.is_enabled(),
+                                "Animated CuePool donut",
+                            )
+                        });
                         ui.add_space(8.0);
                         ui.heading(egui::RichText::new("CUEPOOL").size(36.0).strong());
                         ui.add_space(4.0);
@@ -2006,6 +2025,16 @@ impl CuePoolApp {
 fn launch_splash_opacity(remaining: Duration) -> f32 {
     let remaining = (remaining.as_secs_f32() / LAUNCH_SPLASH_FADE_DURATION.as_secs_f32()).min(1.0);
     remaining * remaining
+}
+
+fn launch_splash_colour(major: &str, minor: &str) -> egui::Color32 {
+    let major = major
+        .parse::<usize>()
+        .expect("Cargo major version is numeric");
+    let minor = minor
+        .parse::<usize>()
+        .expect("Cargo minor version is numeric");
+    LAUNCH_SPLASH_COLOURS[(major + minor) % LAUNCH_SPLASH_COLOURS.len()]
 }
 
 fn ascii_torus_frame(elapsed: f32) -> String {
@@ -3220,6 +3249,18 @@ mod tests {
         assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION), 1.0);
         assert_eq!(launch_splash_opacity(LAUNCH_SPLASH_FADE_DURATION / 2), 0.25);
         assert_eq!(launch_splash_opacity(Duration::ZERO), 0.0);
+    }
+
+    #[test]
+    fn launch_splash_colour_changes_with_the_release_series() {
+        let v0_5 = launch_splash_colour("0", "5");
+        let v0_6 = launch_splash_colour("0", "6");
+        let v1_0 = launch_splash_colour("1", "0");
+
+        assert_eq!(v0_5, egui::Color32::from_rgb(92, 168, 255));
+        assert_eq!(v0_6, egui::Color32::from_rgb(183, 135, 255));
+        assert_ne!(v0_5, v0_6);
+        assert_ne!(v0_6, v1_0);
     }
 
     #[test]

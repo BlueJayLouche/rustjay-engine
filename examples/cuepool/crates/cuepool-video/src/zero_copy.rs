@@ -133,7 +133,7 @@ fn device_feature_decision(
     if !preference.enabled() {
         return (
             wgpu::Features::empty(),
-            Some("disabled; set QPLAYER_ZEROCOPY=1 to probe".into()),
+            Some("disabled; use --zero-copy or set QPLAYER_ZEROCOPY=1 to probe".into()),
         );
     }
     if !windows {

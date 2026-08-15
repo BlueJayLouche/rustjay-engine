@@ -13,6 +13,20 @@ cd examples/cuepool
 cargo run --release
 ```
 
+## Command line
+
+```text
+cuepool [--zero-copy | --no-zero-copy] [--project <path> | <path>]
+```
+
+`--zero-copy` opts into the Windows D3D12VA zero-copy video path;
+`--no-zero-copy` forces the stock readback path. The two options are mutually
+exclusive. When neither is supplied, the existing `QPLAYER_ZEROCOPY` fallback
+is used: the zero-copy path is enabled only when its value is exactly `1`.
+Either command-line option takes precedence over that environment variable.
+
+Use `--project <path>` or a single positional path to open a project at startup.
+
 ## Automation API
 
 CuePool starts a read-only HTTP API with the app at

@@ -4554,12 +4554,30 @@ fn resolve_cli_project_path(path: &Path, cwd: &Path) -> Result<PathBuf, String> 
     Ok(resolved)
 }
 
-const CLI_USAGE: &str = "Usage: cuepool [--project <path> | <path>]";
+const CLI_USAGE: &str = "Usage: cuepool [--zero-copy | --no-zero-copy] [--project <path> | <path>]";
 
-fn parse_cli_project(args: impl IntoIterator<Item = OsString>) -> Result<Option<PathBuf>, String> {
-    let mut project = None;
+#[derive(Debug, PartialEq, Eq)]
+struct CliOptions {
+    project: Option<PathBuf>,
+    zero_copy: Option<bool>,
+}
+
+fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOptions, String> {
+    let mut options = CliOptions {
+        project: None,
+        zero_copy: None,
+    };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        if arg == "--zero-copy" || arg == "--no-zero-copy" {
+            if options.zero_copy.replace(arg == "--zero-copy").is_some() {
+                return Err(format!(
+                    "Only one of --zero-copy and --no-zero-copy may be provided. {CLI_USAGE}"
+                ));
+            }
+            continue;
+        }
+
         let path = if arg == "--project" {
             args.next()
                 .ok_or_else(|| format!("Missing path after --project. {CLI_USAGE}"))?
@@ -4572,13 +4590,24 @@ fn parse_cli_project(args: impl IntoIterator<Item = OsString>) -> Result<Option<
             arg
         };
 
-        if project.replace(PathBuf::from(path)).is_some() {
+        if options.project.replace(PathBuf::from(path)).is_some() {
             return Err(format!(
                 "Only one project path may be provided. {CLI_USAGE}"
             ));
         }
     }
-    Ok(project)
+    Ok(options)
+}
+
+fn resolve_zero_copy_preference(
+    cli_override: Option<bool>,
+    env_fallback: ZeroCopyPreference,
+) -> ZeroCopyPreference {
+    match cli_override {
+        Some(true) => ZeroCopyPreference::Enabled,
+        Some(false) => ZeroCopyPreference::Disabled,
+        None => env_fallback,
+    }
 }
 
 fn load_startup_project(cuepool: &CuePoolApp, path: &Path) -> Result<(), String> {
@@ -4664,11 +4693,12 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
         cwd.display()
     );
 
-    let project_path = parse_cli_project(argv.iter().skip(1).cloned())
-        .and_then(|path| {
-            path.map(|path| resolve_cli_project_path(&path, &cwd))
-                .transpose()
-        })
+    let cli = parse_cli(argv.iter().skip(1).cloned())
+        .map_err(|message| startup_error("Could not start CuePool", message))?;
+    let project_path = cli
+        .project
+        .map(|path| resolve_cli_project_path(&path, &cwd))
+        .transpose()
         .map_err(|message| startup_error("Could not open project", message))?;
     if let Some(path) = &project_path {
         log::info!("CuePool startup: resolved_project={}", path.display());
@@ -4737,9 +4767,10 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
             apply_limit_buckets: false,
         }))
     };
-    let zero_copy_preference = ZeroCopyPreference::from_env();
+    let zero_copy_preference =
+        resolve_zero_copy_preference(cli.zero_copy, ZeroCopyPreference::from_env());
     // Zero-copy consumes FFmpeg's D3D12VA output on wgpu's own ID3D12Device,
-    // which requires the DX12 backend; QPLAYER_ZEROCOPY=1 therefore biases
+    // which requires the DX12 backend; an enabled preference therefore biases
     // adapter selection to DX12 and falls back to the stock selection (where
     // zero-copy declines with a reason) if no DX12 adapter exists.
     let (instance, adapter) = {
@@ -5009,28 +5040,40 @@ mod tests {
     }
 
     #[test]
-    fn cli_project_accepts_explicit_and_legacy_paths() {
+    fn cli_accepts_explicit_and_legacy_project_paths() {
         let path = PathBuf::from("Opening Night.qproj");
         assert_eq!(
-            parse_cli_project([OsString::from("--project"), path.clone().into_os_string()]),
-            Ok(Some(path.clone()))
+            parse_cli([OsString::from("--project"), path.clone().into_os_string()]),
+            Ok(CliOptions {
+                project: Some(path.clone()),
+                zero_copy: None,
+            })
         );
         assert_eq!(
-            parse_cli_project([path.clone().into_os_string()]),
-            Ok(Some(path))
+            parse_cli([path.clone().into_os_string()]),
+            Ok(CliOptions {
+                project: Some(path),
+                zero_copy: None,
+            })
         );
-        assert_eq!(parse_cli_project([]), Ok(None));
+        assert_eq!(
+            parse_cli([]),
+            Ok(CliOptions {
+                project: None,
+                zero_copy: None,
+            })
+        );
     }
 
     #[test]
-    fn cli_project_rejects_invalid_argument_shapes() {
-        let missing = parse_cli_project([OsString::from("--project")]).unwrap_err();
+    fn cli_rejects_invalid_argument_shapes() {
+        let missing = parse_cli([OsString::from("--project")]).unwrap_err();
         assert!(missing.contains("Missing path"), "{missing}");
 
-        let unknown = parse_cli_project([OsString::from("--wat")]).unwrap_err();
+        let unknown = parse_cli([OsString::from("--wat")]).unwrap_err();
         assert!(unknown.contains("Unknown option"), "{unknown}");
 
-        let duplicate = parse_cli_project([
+        let duplicate = parse_cli([
             OsString::from("one.qproj"),
             OsString::from("--project"),
             OsString::from("two.qproj"),
@@ -5038,9 +5081,44 @@ mod tests {
         .unwrap_err();
         assert!(duplicate.contains("Only one project"), "{duplicate}");
 
-        let extra = parse_cli_project([OsString::from("one.qproj"), OsString::from("two.qproj")])
-            .unwrap_err();
+        let extra =
+            parse_cli([OsString::from("one.qproj"), OsString::from("two.qproj")]).unwrap_err();
         assert!(extra.contains("Only one project"), "{extra}");
+    }
+
+    #[test]
+    fn cli_zero_copy_controls_override_the_environment_fallback() {
+        assert_eq!(
+            parse_cli([OsString::from("--zero-copy")])
+                .unwrap()
+                .zero_copy,
+            Some(true)
+        );
+        assert_eq!(
+            parse_cli([OsString::from("--no-zero-copy")])
+                .unwrap()
+                .zero_copy,
+            Some(false)
+        );
+        assert_eq!(
+            resolve_zero_copy_preference(Some(true), ZeroCopyPreference::Disabled),
+            ZeroCopyPreference::Enabled
+        );
+        assert_eq!(
+            resolve_zero_copy_preference(Some(false), ZeroCopyPreference::Enabled),
+            ZeroCopyPreference::Disabled
+        );
+        assert_eq!(
+            resolve_zero_copy_preference(None, ZeroCopyPreference::Enabled),
+            ZeroCopyPreference::Enabled
+        );
+
+        let conflict = parse_cli([
+            OsString::from("--zero-copy"),
+            OsString::from("--no-zero-copy"),
+        ])
+        .unwrap_err();
+        assert!(conflict.contains("Only one of"), "{conflict}");
     }
 
     #[test]

@@ -84,8 +84,10 @@ can interleave a wait pair) at the wrapper level.
 
 ## Opt-in, fallbacks, surfaces
 
-- `QPLAYER_ZEROCOPY` remains the only switch, same semantics
-  (`ZeroCopyPreference`), no new env vars, options, deps, or public API.
+- `--zero-copy` and `--no-zero-copy` control the path explicitly. When neither
+  is supplied, `QPLAYER_ZEROCOPY` retains its existing exact-`1` opt-in
+  semantics (`ZeroCopyPreference`). CLI options take precedence; there are no
+  new environment variables, dependencies, or Rust library APIs.
 - D3D11VA readback and software decode fallbacks are untouched; any decline
   (feature missing, non-NV12, import failure, canary failure, poisoned path)
   reports a reason string exactly like today and falls back.
