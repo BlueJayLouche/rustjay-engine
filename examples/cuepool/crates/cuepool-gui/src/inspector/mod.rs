@@ -707,7 +707,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         cuepool_core::Cue::Osc { base, command } => {
             ui.label(RichText::new("OSC Cue").monospace().size(12.0));
             ui.label("Command format: /address,arg1,arg2,…");
-            ui.label("Raw UDP: udp:payload → default target · udp:name:payload or udp:IP:payload → named target (Project Settings)");
+            ui.label("Raw UDP: udp:payload > default target · udp:name:payload or udp:IP:payload > named target (Project Settings)");
             ui.horizontal(|ui| {
                 ui.label("Command:");
                 let response = ui.text_edit_singleline(command);
@@ -908,7 +908,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             });
             ui.label(
                 egui::RichText::new(
-                    "Plays into the pixel-map texture (Window → Lighting → Pixel Map, source: PixelMap).",
+                    "Plays into the pixel-map texture (Window > Lighting > Pixel Map, source: PixelMap).",
                 )
                 .small()
                 .weak(),
@@ -1041,7 +1041,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             ui.add_space(4.0);
             if patched_fixtures.is_empty() {
                 ui.label(
-                    egui::RichText::new("No fixtures patched — see Window → Lighting.")
+                    egui::RichText::new("No fixtures patched — see Window > Lighting.")
                         .italics()
                         .weak(),
                 );
@@ -1540,7 +1540,7 @@ fn routing_editor(ui: &mut egui::Ui, routing: &mut cuepool_core::AudioRouting, c
                     cp.in_ch = (in_disp - 1).clamp(0, 31) as u8;
                     *changed = true;
                 }
-                ui.label("→ out");
+                ui.label("> out");
                 let mut out_disp = cp.out_ch as i32 + 1;
                 if ui
                     .add(egui::DragValue::new(&mut out_disp).range(1..=8))

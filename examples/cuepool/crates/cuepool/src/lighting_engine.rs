@@ -448,7 +448,7 @@ impl LightingEngine {
                     }
                 },
             };
-            log::info!("Lighting output: {protocol:?} → {dest:?} @ {} fps", cfg.fps);
+            log::info!("Lighting output: {protocol:?} > {dest:?} @ {} fps", cfg.fps);
             let transport: std::io::Result<Box<dyn DmxTransport>> = match protocol {
                 LightingProtocol::Sacn => {
                     SacnTransport::new(dest, 100, "CuePool").map(|t| Box::new(t) as _)

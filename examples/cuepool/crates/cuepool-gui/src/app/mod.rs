@@ -236,10 +236,68 @@ pub struct VideoDiagnostics {
     pub path: String,
     pub width: u32,
     pub height: u32,
-    /// `hardware (<api>)` or `software`, from `VideoSource::decode_path()`.
+    /// The active decode path from `VideoSource::decode_path()`: `software`,
+    /// `hap gpu-native`, `d3d12va zero-copy (<adapter>)`, `d3d11va readback`,
+    /// or `hardware (<api>)`. Classify it with [`Self::accelerated`] rather
+    /// than matching the text.
     pub decode_path: String,
     pub fallback_reason: Option<String>,
     pub timings: VideoTimings,
+}
+
+impl VideoDiagnostics {
+    /// Whether the GPU is doing the decode work.
+    ///
+    /// `software` is the only unaccelerated value — every other path names its
+    /// API instead. Matching on `"hardware"` looks equivalent and isn't: it
+    /// mis-reports the two *fastest* paths (`hap gpu-native`,
+    /// `d3d12va zero-copy`) as software.
+    pub fn accelerated(&self) -> bool {
+        self.decode_path != "software"
+    }
+}
+
+/// The status-bar video badge: label, colour, and hover detail.
+///
+/// Green only when the GPU is decoding *and* nothing was given up getting
+/// there — a hardware path that fell back from zero-copy is still degraded, so
+/// it reads amber alongside plain software decode.
+fn video_status_badge(video: Option<&VideoDiagnostics>) -> (String, egui::Color32, String) {
+    const IDLE: egui::Color32 = egui::Color32::from_rgb(120, 120, 120);
+    const HEALTHY: egui::Color32 = egui::Color32::from_rgb(100, 220, 100);
+    const DEGRADED: egui::Color32 = egui::Color32::from_rgb(240, 190, 90);
+
+    let Some(v) = video else {
+        return (
+            "Video: idle".into(),
+            IDLE,
+            "No video decoding right now.".into(),
+        );
+    };
+
+    let healthy = v.accelerated() && v.fallback_reason.is_none();
+    let label = format!(
+        "Video: {}{}",
+        v.decode_path,
+        if healthy { "" } else { " ⚠" }
+    );
+
+    let mut tip = format!(
+        "Decode path: {}\nSource: {}x{} — {}",
+        v.decode_path, v.width, v.height, v.path
+    );
+    if let Some(reason) = &v.fallback_reason {
+        tip.push_str(&format!("\n\nFell back: {reason}"));
+    }
+    if !v.accelerated() {
+        // State, not cause: a missing hwaccel, a rejected pool and a hw device
+        // whose first frame hasn't landed yet all read "software" here.
+        tip.push_str("\n\nDecoding on the CPU — expect higher load than a hardware path.");
+    }
+    // ">" not "→": the bundled egui fonts have no U+2192 and render it as tofu.
+    tip.push_str("\n\nFull detail in Help > Status…");
+
+    (label, if healthy { HEALTHY } else { DEGRADED }, tip)
 }
 
 /// Plain-data snapshot behind the Status window (Help → Status…): what a
@@ -2244,7 +2302,7 @@ impl CuePoolApp {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let (active_count, cue_count, show_mode, dirty) = {
+        let (active_count, cue_count, show_mode, dirty, video) = {
             let Ok(state) = self.state.lock() else {
                 return;
             };
@@ -2253,6 +2311,7 @@ impl CuePoolApp {
                 state.show_file.cues.len(),
                 state.show_mode,
                 state.dirty,
+                state.diagnostics.video.clone(),
             )
         };
 
@@ -2311,6 +2370,16 @@ impl CuePoolApp {
                     "Audio: Off"
                 };
                 ui.label(egui::RichText::new(audio_text).small().color(audio_color));
+
+                ui.separator();
+
+                // Video decode path — the same diagnostic Help → Status carries,
+                // put where an operator will actually notice acceleration going
+                // away. A silent fall back to CPU decode is the difference
+                // between a show that holds frame rate and one that doesn't.
+                let (video_text, video_color, video_tip) = video_status_badge(video.as_ref());
+                ui.label(egui::RichText::new(video_text).small().color(video_color))
+                    .on_hover_text(video_tip);
             });
         });
     }
@@ -2952,6 +3021,55 @@ fn common_path_prefix(paths: &[std::path::PathBuf]) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use cuepool_core::CueBase;
+
+    #[test]
+    fn video_badge_separates_acceleration_from_fallback() {
+        const HEALTHY: egui::Color32 = egui::Color32::from_rgb(100, 220, 100);
+        const DEGRADED: egui::Color32 = egui::Color32::from_rgb(240, 190, 90);
+        let diag = |decode_path: &str, fallback: Option<&str>| VideoDiagnostics {
+            path: "clip.mov".into(),
+            width: 1920,
+            height: 1080,
+            decode_path: decode_path.into(),
+            fallback_reason: fallback.map(str::to_owned),
+            timings: VideoTimings::default(),
+        };
+
+        let (label, _, tip) = video_status_badge(None);
+        assert_eq!(label, "Video: idle");
+        assert!(!tip.contains("Fell back"));
+
+        // Every accelerated path reads green — including the two fastest, which
+        // a `starts_with("hardware")` check would wrongly report as software.
+        for path in [
+            "hap gpu-native",
+            "d3d12va zero-copy (Radeon Pro W5700)",
+            "hardware (videotoolbox)",
+        ] {
+            let d = diag(path, None);
+            assert!(d.accelerated(), "{path} should count as accelerated");
+            let (label, colour, _) = video_status_badge(Some(&d));
+            assert_eq!(label, format!("Video: {path}"));
+            assert_eq!(colour, HEALTHY, "{path} should read healthy");
+        }
+
+        // Software decode is flagged even though nothing explicitly "failed".
+        let software = diag("software", None);
+        assert!(!software.accelerated());
+        let (label, colour, tip) = video_status_badge(Some(&software));
+        assert_eq!(label, "Video: software ⚠");
+        assert_eq!(colour, DEGRADED);
+        assert!(tip.contains("Decoding on the CPU"));
+
+        // Still on the GPU, but a faster path was abandoned: degraded, not green.
+        let fell_back = diag("d3d11va readback", Some("shareable D3D12VA pool rejected"));
+        assert!(fell_back.accelerated());
+        let (label, colour, tip) = video_status_badge(Some(&fell_back));
+        assert_eq!(label, "Video: d3d11va readback ⚠");
+        assert_eq!(colour, DEGRADED);
+        assert!(tip.contains("Fell back: shareable D3D12VA pool rejected"));
+        assert!(!tip.contains("Decoding on the CPU"));
+    }
 
     #[test]
     fn decode_timing_clones_share_the_latest_sample() {

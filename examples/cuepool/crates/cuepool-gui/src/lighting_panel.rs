@@ -619,7 +619,7 @@ fn profiles_editor(ui: &mut egui::Ui, lighting: &mut cuepool_core::LightingConfi
         ui.data(|d| d.get_temp(egui::Id::new("gdtf_pending")));
     if let Some(f) = pending {
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{} ({}): mode →", f.name, f.manufacturer));
+            ui.label(format!("{} ({}): mode >", f.name, f.manufacturer));
             let mut done = false;
             for (i, mode) in f.modes.iter().enumerate() {
                 if ui

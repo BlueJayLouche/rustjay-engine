@@ -158,6 +158,49 @@ fn go_button_queues_transport_command() {
 }
 
 #[test]
+fn status_bar_tracks_the_active_video_decode_path() {
+    let (mut harness, state) = demo_harness();
+
+    // Demo telemetry decodes on the GPU with nothing given up.
+    assert!(
+        harness
+            .query_by_label("Video: hardware (VideoToolbox)")
+            .is_some()
+    );
+
+    // Losing acceleration mid-show has to reach the status bar, and be marked.
+    {
+        let mut state = state.lock().unwrap();
+        let video = state.diagnostics.video.as_mut().unwrap();
+        video.decode_path = "software".into();
+        video.fallback_reason = Some("shareable D3D12VA pool rejected".into());
+    }
+    harness.run();
+    assert!(harness.query_by_label("Video: software ⚠").is_some());
+
+    // The ⚠ only flags it — the *reason* has to be one hover away. Tooltips
+    // wait out egui's delay and then self-animate, so advance the harness
+    // clock and step() rather than run() (which trips its repaint budget).
+    harness.get_by_label("Video: software ⚠").hover();
+    for _ in 0..12 {
+        let time = harness.input().time.unwrap_or_default() + 0.1;
+        harness.input_mut().time = Some(time);
+        harness.step();
+    }
+    assert!(
+        harness
+            .query_by_label_contains("shareable D3D12VA pool rejected")
+            .is_some()
+    );
+
+    // Playback ending clears the badge rather than leaving a stale claim up.
+    harness.remove_cursor();
+    state.lock().unwrap().diagnostics.video = None;
+    harness.run();
+    assert!(harness.query_by_label("Video: idle").is_some());
+}
+
+#[test]
 fn status_window_is_not_embedded_in_control_viewport() {
     let (mut harness, state) = demo_harness();
     state.lock().unwrap().show_status_window = true;
@@ -170,7 +213,7 @@ fn status_window_is_not_embedded_in_control_viewport() {
 #[test]
 fn operator_alert_is_visible_dismissible_and_expires() {
     let (mut harness, state) = demo_harness();
-    const MESSAGE: &str = "Projector 2 failed; 2 of 3 outputs remain active. See Window → Log.";
+    const MESSAGE: &str = "Projector 2 failed; 2 of 3 outputs remain active. See Window > Log.";
 
     state.lock().unwrap().report_operator_error(MESSAGE);
     harness.step();

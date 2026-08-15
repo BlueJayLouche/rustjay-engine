@@ -103,7 +103,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         );
         let mut midi = state.recorder_midi_enabled;
         if ui
-            .checkbox(&mut midi, "MIDI CC → universe")
+            .checkbox(&mut midi, "MIDI CC > universe")
             .on_hover_text("Map MIDI CC# to DMX channel (1-based) on this universe")
             .changed()
         {

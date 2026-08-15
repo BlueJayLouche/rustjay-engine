@@ -50,3 +50,6 @@ examples/decklink/src/DeckLinkAPI.h
 # Build/package output
 dist/
 /CuePool
+
+# Agent scratch planning/lessons (see ~/.claude/CLAUDE.md workflow)
+tasks/

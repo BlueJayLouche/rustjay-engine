@@ -126,7 +126,7 @@ fn output_failure_summary(total: usize, active: usize, failures: &[String]) -> S
     let failed = failures.join(", ");
     if active == 0 {
         format!(
-            "No projection outputs could be opened ({failed}); cues continue without picture. See Window → Log."
+            "No projection outputs could be opened ({failed}); cues continue without picture. See Window > Log."
         )
     } else {
         let noun = if failures.len() == 1 {
@@ -135,7 +135,7 @@ fn output_failure_summary(total: usize, active: usize, failures: &[String]) -> S
             "outputs"
         };
         format!(
-            "Projection {noun} {failed} failed; {active} of {total} outputs remain active. See Window → Log."
+            "Projection {noun} {failed} failed; {active} of {total} outputs remain active. See Window > Log."
         )
     }
 }
@@ -511,11 +511,11 @@ mod tests {
     fn output_failure_summary_distinguishes_partial_and_total_failure() {
         assert_eq!(
             output_failure_summary(3, 2, &["Projector 2".into()]),
-            "Projection output Projector 2 failed; 2 of 3 outputs remain active. See Window → Log."
+            "Projection output Projector 2 failed; 2 of 3 outputs remain active. See Window > Log."
         );
         assert_eq!(
             output_failure_summary(2, 0, &["Left".into(), "Right".into()]),
-            "No projection outputs could be opened (Left, Right); cues continue without picture. See Window → Log."
+            "No projection outputs could be opened (Left, Right); cues continue without picture. See Window > Log."
         );
     }
 
