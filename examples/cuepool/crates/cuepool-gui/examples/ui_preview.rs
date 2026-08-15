@@ -9,7 +9,7 @@ impl eframe::App for PreviewApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show_inside(ui, |ui| self.app.update(ui));
+            .show(ui, |ui| self.app.update(ui));
 
         if let Ok(mut state) = self.app.state().lock() {
             for command in state.command_queue.drain(..) {

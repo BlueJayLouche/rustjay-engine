@@ -292,7 +292,7 @@ fn update_vsync_interval(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn video_consume_thread(
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: Arc<cuepool_video::SharedQueue>,
     configure_gate: Arc<RwLock<()>>,
     control: Arc<Mutex<VideoControl>>,
     frame_state: Arc<Mutex<OutputFrameState>>,
@@ -381,7 +381,7 @@ pub(crate) fn video_consume_thread(
                         let blank = vec![0u8; (c.width * c.height * 4) as usize];
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
-                        c.upload_rgba(&queue, &blank);
+                        c.upload_rgba(queue.queue(), &blank);
                     }
                 }
                 CanvasCommand::Image(path, fit) => {
@@ -397,7 +397,7 @@ pub(crate) fn video_consume_thread(
                                 );
                                 let _configure_guard =
                                     configure_gate.read().unwrap_or_else(|e| e.into_inner());
-                                c.upload_frame(&queue, &frame, fit);
+                                c.upload_frame(queue.queue(), &frame, fit);
                             }
                             Err(e) => log::error!("Image cue failed to load '{path}': {e}"),
                         }
@@ -409,13 +409,13 @@ pub(crate) fn video_consume_thread(
                             Some((frame, fit)) => {
                                 let _configure_guard =
                                     configure_gate.read().unwrap_or_else(|e| e.into_inner());
-                                ov.upload_frame(&queue, &frame, fit);
+                                ov.upload_frame(queue.queue(), &frame, fit);
                             }
                             None => {
                                 let blank = vec![0u8; (ov.width * ov.height * 4) as usize];
                                 let _configure_guard =
                                     configure_gate.read().unwrap_or_else(|e| e.into_inner());
-                                ov.upload_rgba(&queue, &blank)
+                                ov.upload_rgba(queue.queue(), &blank)
                             }
                         }
                     }
@@ -636,7 +636,7 @@ pub(crate) fn video_consume_thread(
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         let upload_started = Instant::now();
-                        c.upload_frame(&queue, &frame, fit);
+                        c.upload_frame(queue.queue(), &frame, fit);
                         timings
                             .upload
                             .set_ms(upload_timing.record(upload_started.elapsed()));
@@ -654,7 +654,8 @@ pub(crate) fn video_consume_thread(
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         let upload_started = Instant::now();
-                        match conv.upload(&device, &queue, &frame, [c.width, c.height], fit) {
+                        match conv.upload(&device, queue.queue(), &frame, [c.width, c.height], fit)
+                        {
                             Ok(()) => {
                                 timings
                                     .upload
@@ -680,7 +681,7 @@ pub(crate) fn video_consume_thread(
                     }
                 }
                 #[cfg(windows)]
-                cuepool_video::FramePixels::D3d11Nv12(direct) => {
+                cuepool_video::FramePixels::D3d12Nv12(direct) => {
                     if let Err(reason) =
                         cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(|| {
                             if yuv_converter.is_none() {
@@ -700,7 +701,7 @@ pub(crate) fn video_consume_thread(
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(readback) = direct.take_canary_readback() {
-                            let canary_result = cuepool_video::YuvConverter::run_d3d11_canary(
+                            let canary_result = cuepool_video::YuvConverter::run_d3d12_canary(
                                 &device,
                                 &queue,
                                 &frame,
@@ -718,12 +719,12 @@ pub(crate) fn video_consume_thread(
 
                         if frame_presented {
                             let prepared =
-                                match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
+                                cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
                                     || {
                                         let upload_started = Instant::now();
                                         conv.upload(
                                             &device,
-                                            &queue,
+                                            queue.queue(),
                                             &frame,
                                             [c.width, c.height],
                                             fit,
@@ -732,63 +733,33 @@ pub(crate) fn video_consume_thread(
                                             .upload
                                             .set_ms(upload_timing.record(upload_started.elapsed()));
                                         let conversion_started = Instant::now();
-                                        let mut acquire_encoder = device.create_command_encoder(
-                                            &wgpu::CommandEncoderDescriptor {
-                                                label: Some("canvas-d3d11va-acquire"),
-                                            },
-                                        );
                                         let mut convert_encoder = device.create_command_encoder(
                                             &wgpu::CommandEncoderDescriptor {
-                                                label: Some("canvas-d3d11va-convert"),
+                                                label: Some("canvas-d3d12va-convert"),
                                             },
                                         );
-                                        let mut release_encoder = device.create_command_encoder(
-                                            &wgpu::CommandEncoderDescriptor {
-                                                label: Some("canvas-d3d11va-release"),
-                                            },
-                                        );
-                                        unsafe {
-                                            direct.record_vulkan_acquire(&mut acquire_encoder)
-                                        }
-                                        .and_then(|()| {
-                                            conv.encode(&mut convert_encoder, &c.render_view());
-                                            unsafe {
-                                                direct.record_vulkan_release(&mut release_encoder)
-                                            }
-                                        })
-                                        .and_then(
-                                            |()| unsafe {
-                                                direct.attach_keyed_mutex(&mut acquire_encoder)
-                                            },
-                                        )?;
-                                        Ok((
-                                            [
-                                                acquire_encoder.finish(),
-                                                convert_encoder.finish(),
-                                                release_encoder.finish(),
-                                            ],
-                                            conversion_started,
-                                        ))
+                                        conv.encode(&mut convert_encoder, &c.render_view());
+                                        (convert_encoder.finish(), conversion_started)
                                     },
-                                ) {
-                                    Ok(prepared) => prepared,
-                                    Err(reason) => Err(reason),
-                                };
+                                );
                             let epoch = rx_epoch.unwrap_or_default();
                             let retired = direct_retirement.submit(epoch, direct.clone());
                             match (prepared, retired) {
-                                (Ok((command_buffers, conversion_started)), Ok(completed)) => {
+                                (Ok((command_buffer, conversion_started)), Ok(completed)) => {
                                     let completion = direct.clone();
                                     let callback_completed = Arc::clone(&completed);
                                     let retirement_tx = retirement_tx.clone();
                                     let submitted = match cuepool_video::ZeroCopyAvailability::catch_direct_path_panic(
                                         || {
-                                            direct.release_to_vulkan()?;
-                                            // Vulkan pipeline barriers are queue-scoped: one
-                                            // ordered submission makes acquire and release bracket
-                                            // every access in the middle conversion command buffer.
-                                            queue.submit(command_buffers);
-                                            queue.on_submitted_work_done(move || {
+                                            // The decode fence is staged and drained by exactly
+                                            // this submission inside the serialized queue, so the
+                                            // conversion cannot sample the frame before the
+                                            // decoder signals it.
+                                            queue.submit_with_decode_wait(
+                                                direct.decode_fence(),
+                                                [command_buffer],
+                                            )?;
+                                            queue.queue().on_submitted_work_done(move || {
                                                 callback_completed.store(true, Ordering::Release);
                                                 completion.complete(Ok(()));
                                                 let _ = retirement_tx.send(());
@@ -850,7 +821,7 @@ pub(crate) fn video_consume_thread(
                         let _configure_guard =
                             configure_gate.read().unwrap_or_else(|e| e.into_inner());
                         let upload_started = Instant::now();
-                        conv.upload(&device, &queue, &frame, [c.width, c.height], fit);
+                        conv.upload(&device, queue.queue(), &frame, [c.width, c.height], fit);
                         timings
                             .upload
                             .set_ms(upload_timing.record(upload_started.elapsed()));
@@ -1090,7 +1061,7 @@ pub(crate) fn output_render_thread(
     mut config: wgpu::SurfaceConfiguration,
     renderer: cuepool_video::ProjectionRenderer,
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: Arc<cuepool_video::SharedQueue>,
     configure_gate: Arc<RwLock<()>>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<AppEvent>,
     frame_state: Arc<Mutex<OutputFrameState>>,
@@ -1233,7 +1204,7 @@ pub(crate) fn output_render_thread(
                 let output = outputs.get(out_index).unwrap_or(&fallback_output);
                 renderer.render(
                     &device,
-                    &queue,
+                    queue.queue(),
                     &mut encoder,
                     canvas_view,
                     overlay_view,
@@ -1280,7 +1251,7 @@ pub(crate) fn output_render_thread(
         }
 
         queue.submit(std::iter::once(encoder.finish()));
-        surface_texture.present();
+        queue.queue().present(surface_texture);
         if paces_video {
             {
                 let mut tick = vsync_tick.0.lock_unpoisoned();
@@ -1497,7 +1468,7 @@ pub(crate) fn video_decode_thread(
         match frame {
             Some(frame) => {
                 #[cfg(windows)]
-                let handoff = frame.d3d11_handoff();
+                let handoff = frame.d3d12_handoff();
                 if !send_video_message(&frame_tx, &stop_flag, VideoMessage::Frame(frame)) {
                     return;
                 }
@@ -1508,7 +1479,7 @@ pub(crate) fn video_decode_thread(
                             return;
                         }
                         if !source.fallback_zero_copy(format!(
-                            "serialized keyed-mutex handoff failed: {reason}"
+                            "zero-copy consume handoff failed: {reason}"
                         )) {
                             return;
                         }

@@ -448,7 +448,7 @@ mod tests {
         let slice = readback.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = slice.get_mapped_range().to_vec();
+        let data = slice.get_mapped_range().expect("mapped range").to_vec();
         readback.unmap();
         Some((data, bytes_per_row))
     }

@@ -2,9 +2,7 @@ use crate::ZeroCopyPreference;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const INTEROP_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12
-    .union(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32)
-    .union(wgpu::Features::VULKAN_WIN32_KEYED_MUTEX);
+const INTEROP_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12;
 pub(crate) const DIRECT_PATH_POISONED_REASON: &str =
     "zero-copy direct path disabled after a caught panic";
 static DIRECT_PATH_POISONED: AtomicBool = AtomicBool::new(false);
@@ -17,7 +15,7 @@ pub(crate) fn direct_path_poisoned() -> bool {
 pub struct ZeroCopyAvailability {
     reason: Option<Arc<str>>,
     #[cfg(windows)]
-    pub(crate) device: Option<Arc<crate::d3d11_zero_copy::InteropDevice>>,
+    pub(crate) device: Option<Arc<crate::d3d12_zero_copy::InteropDevice>>,
 }
 
 impl ZeroCopyAvailability {
@@ -83,7 +81,7 @@ impl ZeroCopyAvailability {
 
         #[cfg(windows)]
         {
-            match crate::d3d11_zero_copy::InteropDevice::new(adapter, _device, _queue) {
+            match crate::d3d12_zero_copy::InteropDevice::new(adapter, _device, _queue) {
                 Ok(device) => Self {
                     reason: None,
                     device: Some(Arc::new(device)),
@@ -144,10 +142,10 @@ fn device_feature_decision(
             Some("zero-copy requires Windows".into()),
         );
     }
-    if backend != wgpu::Backend::Vulkan {
+    if backend != wgpu::Backend::Dx12 {
         return (
             wgpu::Features::empty(),
-            Some("zero-copy requires the Vulkan backend".into()),
+            Some("zero-copy requires the DX12 backend".into()),
         );
     }
     let missing = INTEROP_FEATURES - available;
@@ -169,27 +167,37 @@ mod tests {
         let disabled = device_feature_decision(
             ZeroCopyPreference::Disabled,
             true,
-            wgpu::Backend::Vulkan,
+            wgpu::Backend::Dx12,
             INTEROP_FEATURES,
             false,
         );
         assert!(disabled.0.is_empty());
         assert!(disabled.1.unwrap().starts_with("disabled"));
 
-        let missing = device_feature_decision(
+        let wrong_backend = device_feature_decision(
             ZeroCopyPreference::Enabled,
             true,
             wgpu::Backend::Vulkan,
-            INTEROP_FEATURES - wgpu::Features::VULKAN_WIN32_KEYED_MUTEX,
+            INTEROP_FEATURES,
+            false,
+        );
+        assert!(wrong_backend.0.is_empty());
+        assert!(wrong_backend.1.unwrap().contains("DX12 backend"));
+
+        let missing = device_feature_decision(
+            ZeroCopyPreference::Enabled,
+            true,
+            wgpu::Backend::Dx12,
+            wgpu::Features::empty(),
             false,
         );
         assert!(missing.0.is_empty());
-        assert!(missing.1.unwrap().contains("VULKAN_WIN32_KEYED_MUTEX"));
+        assert!(missing.1.unwrap().contains("TEXTURE_FORMAT_NV12"));
 
         let ready = device_feature_decision(
             ZeroCopyPreference::Enabled,
             true,
-            wgpu::Backend::Vulkan,
+            wgpu::Backend::Dx12,
             INTEROP_FEATURES,
             false,
         );
@@ -205,7 +213,7 @@ mod tests {
         let poisoned = device_feature_decision(
             ZeroCopyPreference::Enabled,
             true,
-            wgpu::Backend::Vulkan,
+            wgpu::Backend::Dx12,
             INTEROP_FEATURES,
             direct_path_poisoned(),
         );
@@ -216,71 +224,5 @@ mod tests {
         );
         assert!(poisoned.0.is_empty());
         assert_eq!(poisoned.1.as_deref(), Some(DIRECT_PATH_POISONED_REASON));
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    #[test]
-    fn raw_and_wgpu_encoders_finish_in_one_ordered_submission() {
-        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
-            eprintln!("skipping split-encoder test: no WGPU adapter available");
-            return;
-        };
-        let mut acquire_encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let mut release_encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let acquire_is_vulkan = unsafe {
-            acquire_encoder.as_hal_mut::<wgpu::hal::api::Vulkan, _, _>(|encoder| encoder.is_some())
-        };
-        let release_is_vulkan = unsafe {
-            release_encoder.as_hal_mut::<wgpu::hal::api::Vulkan, _, _>(|encoder| encoder.is_some())
-        };
-        if !acquire_is_vulkan || !release_is_vulkan {
-            eprintln!("skipping split-encoder test: selected adapter is not Vulkan");
-            return;
-        }
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass_encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        drop(pass_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        }));
-
-        queue.submit([
-            acquire_encoder.finish(),
-            pass_encoder.finish(),
-            release_encoder.finish(),
-        ]);
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("split raw/wgpu submission should complete");
     }
 }

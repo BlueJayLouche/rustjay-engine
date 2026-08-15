@@ -43,7 +43,7 @@ enum ActiveBinding {
     Planar(PlanarBinding),
     Nv12(Nv12Binding),
     #[cfg(windows)]
-    D3d11Nv12(wgpu::BindGroup),
+    D3d12Nv12(wgpu::BindGroup),
 }
 
 pub struct YuvConverter {
@@ -312,13 +312,10 @@ impl YuvConverter {
                 );
             }
             #[cfg(windows)]
-            FramePixels::D3d11Nv12(direct) => {
-                let (y, uv) = direct
-                    .pool()
-                    .plane_views(direct.layer())
-                    .expect("validated D3D11VA array slice");
+            FramePixels::D3d12Nv12(direct) => {
+                let (y, uv) = direct.plane_views();
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("d3d11va-nv12-bg"),
+                    label: Some("d3d12va-nv12-bg"),
                     layout: &self.nv12_layout,
                     entries: &[
                         wgpu::BindGroupEntry {
@@ -339,7 +336,7 @@ impl YuvConverter {
                         },
                     ],
                 });
-                self.active = Some(ActiveBinding::D3d11Nv12(bind_group));
+                self.active = Some(ActiveBinding::D3d12Nv12(bind_group));
                 let (allocated_width, allocated_height) = direct.allocated_size();
                 let scale = [
                     frame.width as f32 / allocated_width as f32,
@@ -398,7 +395,7 @@ impl YuvConverter {
                 pass.draw(0..3, 0..1);
             }
             #[cfg(windows)]
-            Some(ActiveBinding::D3d11Nv12(bind_group)) => {
+            Some(ActiveBinding::D3d12Nv12(bind_group)) => {
                 pass.set_pipeline(&self.nv12_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..3, 0..1);
@@ -408,19 +405,19 @@ impl YuvConverter {
     }
 
     #[cfg(windows)]
-    pub fn run_d3d11_canary(
+    pub fn run_d3d12_canary(
         device: &Device,
-        queue: &Queue,
+        queue: &crate::SharedQueue,
         direct_frame: &VideoFrame,
         readback_frame: &VideoFrame,
         canvas_size: [u32; 2],
         fit: CanvasFit,
     ) -> Result<(), String> {
-        let FramePixels::D3d11Nv12(direct) = &direct_frame.pixels else {
-            return Err("canary direct frame is not D3D11 NV12".into());
+        let FramePixels::D3d12Nv12(direct) = &direct_frame.pixels else {
+            return Err("canary direct frame is not D3D12 NV12".into());
         };
         match crate::ZeroCopyAvailability::catch_direct_path_panic(|| {
-            Self::run_d3d11_canary_inner(
+            Self::run_d3d12_canary_inner(
                 device,
                 queue,
                 direct,
@@ -439,10 +436,10 @@ impl YuvConverter {
     }
 
     #[cfg(windows)]
-    fn run_d3d11_canary_inner(
+    fn run_d3d12_canary_inner(
         device: &Device,
-        queue: &Queue,
-        direct: &crate::D3d11Frame,
+        queue: &crate::SharedQueue,
+        direct: &crate::D3d12Frame,
         direct_frame: &VideoFrame,
         readback_frame: &VideoFrame,
         canvas_size: [u32; 2],
@@ -452,28 +449,21 @@ impl YuvConverter {
             return Err("canary canvas has zero dimensions".into());
         }
 
-        let direct_texture = canary_texture(device, "d3d11va-canary-direct", canvas_size);
-        let readback_texture = canary_texture(device, "d3d11va-canary-readback", canvas_size);
+        let direct_texture = canary_texture(device, "d3d12va-canary-direct", canvas_size);
+        let readback_texture = canary_texture(device, "d3d12va-canary-readback", canvas_size);
         let mut direct_converter = Self::new(device, TextureFormat::Rgba8Unorm);
         let mut readback_converter = Self::new(device, TextureFormat::Rgba8Unorm);
-        direct_converter.upload(device, queue, direct_frame, canvas_size, fit);
-        readback_converter.upload(device, queue, readback_frame, canvas_size, fit);
+        direct_converter.upload(device, queue.queue(), direct_frame, canvas_size, fit);
+        readback_converter.upload(device, queue.queue(), readback_frame, canvas_size, fit);
 
         let bytes_per_row =
             (canvas_size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer_size = u64::from(bytes_per_row) * u64::from(canvas_size[1]);
-        let direct_buffer = canary_buffer(device, "d3d11va-canary-direct-readback", buffer_size);
-        let readback_buffer = canary_buffer(device, "d3d11va-canary-cpu-readback", buffer_size);
-        let mut acquire_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("d3d11va-canary-acquire"),
-        });
+        let direct_buffer = canary_buffer(device, "d3d12va-canary-direct-readback", buffer_size);
+        let readback_buffer = canary_buffer(device, "d3d12va-canary-cpu-readback", buffer_size);
         let mut convert_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("d3d11va-canary-convert"),
+            label: Some("d3d12va-canary-convert"),
         });
-        let mut release_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("d3d11va-canary-release"),
-        });
-        unsafe { direct.record_vulkan_acquire(&mut acquire_encoder) }?;
         direct_converter.encode(
             &mut convert_encoder,
             &direct_texture.create_view(&Default::default()),
@@ -496,17 +486,10 @@ impl YuvConverter {
             canvas_size,
             bytes_per_row,
         );
-        unsafe { direct.record_vulkan_release(&mut release_encoder) }?;
-        unsafe { direct.attach_keyed_mutex(&mut acquire_encoder) }?;
-        let command_buffers = [
-            acquire_encoder.finish(),
-            convert_encoder.finish(),
-            release_encoder.finish(),
-        ];
-        direct.release_to_vulkan()?;
-        // Vulkan pipeline barriers are queue-scoped: one ordered submission makes the acquire and
-        // release command buffers bracket every conversion access between them.
-        let submission = queue.submit(command_buffers);
+        // The decode fence is paired with this exact submission; the decoder
+        // finishes writing the frame before the conversion pass samples it.
+        let submission =
+            queue.submit_with_decode_wait(direct.decode_fence(), [convert_encoder.finish()])?;
 
         let (direct_tx, direct_rx) = std::sync::mpsc::sync_channel(1);
         direct_buffer
@@ -526,28 +509,29 @@ impl YuvConverter {
         });
         if let Err(error) = wait_result {
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
-            direct.acquire_for_decoder()?;
             return Err(format!("first-frame canary GPU wait failed: {error}"));
         }
-        let direct_map = direct_rx
+        direct_rx
             .recv()
             .map_err(|_| "first-frame direct map callback was lost".to_string())
             .and_then(|result| {
                 result.map_err(|error| format!("first-frame direct map failed: {error}"))
-            });
-        let readback_map = readback_rx
+            })?;
+        readback_rx
             .recv()
             .map_err(|_| "first-frame readback map callback was lost".to_string())
             .and_then(|result| {
                 result.map_err(|error| format!("first-frame readback map failed: {error}"))
-            });
-        let reacquired = direct.acquire_for_decoder();
-        direct_map?;
-        readback_map?;
-        reacquired?;
+            })?;
 
-        let direct_data = direct_buffer.slice(..).get_mapped_range();
-        let readback_data = readback_buffer.slice(..).get_mapped_range();
+        let direct_data = direct_buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| format!("first-frame direct mapped range failed: {error}"))?;
+        let readback_data = readback_buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| format!("first-frame readback mapped range failed: {error}"))?;
         let matches = canary_pixels_match(
             &direct_data,
             &readback_data,

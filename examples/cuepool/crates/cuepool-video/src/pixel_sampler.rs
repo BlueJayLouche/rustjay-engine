@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wgpu::util::DeviceExt;
-use wgpu::{Device, Queue, TextureFormat, TextureView};
+use wgpu::{Device, TextureFormat, TextureView};
 
 const SHADER: &str = r#"
 struct VsOut {
@@ -118,11 +118,11 @@ impl PixelSampler {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 16,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-                }],
+                })],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -166,7 +166,13 @@ impl PixelSampler {
             }
             let mut data = Vec::with_capacity((seg.cols * seg.rows * 4) as usize);
             {
-                let mapped = seg.readback.get_mapped_range(..);
+                let Ok(mapped) = seg.readback.get_mapped_range(..) else {
+                    log::warn!("Pixel sampler: mapped range unavailable; dropping sample");
+                    seg.readback.unmap();
+                    seg.ready.store(false, Ordering::Release);
+                    seg.in_flight = false;
+                    continue;
+                };
                 for row in 0..seg.rows {
                     let start = (row * seg.padded_row) as usize;
                     data.extend_from_slice(&mapped[start..start + (seg.cols * 4) as usize]);
@@ -186,7 +192,7 @@ impl PixelSampler {
     pub fn sample(
         &mut self,
         device: &Device,
-        queue: &Queue,
+        queue: &crate::SharedQueue,
         segments: &[(&TextureView, u32, [f32; 4], u32, u32)],
     ) {
         // Drop state for segments that no longer exist.
@@ -217,7 +223,7 @@ impl PixelSampler {
                 continue;
             }
             if seg.region != region {
-                queue.write_buffer(
+                queue.queue().write_buffer(
                     &seg.vertices,
                     0,
                     bytemuck::cast_slice(&quad_vertices(region)),

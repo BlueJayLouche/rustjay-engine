@@ -64,8 +64,8 @@ impl FramePool {
                 self.recycle(uv.data);
             }
             #[cfg(windows)]
-            FramePixels::D3d11Nv12(frame) => {
-                frame.complete(Err("frame retired before Vulkan submission".into()))
+            FramePixels::D3d12Nv12(frame) => {
+                frame.complete(Err("frame retired before wgpu submission".into()))
             }
         }
     }

@@ -62,7 +62,7 @@ fn launch_splash_shows_the_build_and_blocks_the_workspace() {
     } else {
         OsThreshold::new(9)
     };
-    let snapshot_options = SnapshotOptions::new().failed_pixel_count_threshold(pixel_threshold);
+    let snapshot_options = SnapshotOptions::new().max_failed_pixels(pixel_threshold);
     harness.snapshot_options("launch_splash", &snapshot_options);
 
     let started_at = 1.0 / 60.0;
@@ -96,7 +96,7 @@ fn release_notes_follow_the_splash_and_are_acknowledged_once() {
     if has_wgpu_adapter() {
         harness.snapshot_options(
             "release_notes",
-            &SnapshotOptions::new().failed_pixel_count_threshold(OsThreshold::new(0).linux(1)),
+            &SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(1)),
         );
     }
 

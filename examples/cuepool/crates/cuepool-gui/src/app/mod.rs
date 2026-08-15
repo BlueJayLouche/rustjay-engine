@@ -1185,17 +1185,17 @@ impl CuePoolApp {
         });
 
         // Top menu bar
-        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
+        egui::Panel::top("menu_bar").show(ui, |ui| {
             self.menu_bar(ui);
         });
 
         // Transport controls
-        egui::Panel::top("transport").show_inside(ui, |ui| {
+        egui::Panel::top("transport").show(ui, |ui| {
             crate::transport::show(ui, &self.state);
         });
 
         // Status bar
-        egui::Panel::bottom("status_bar").show_inside(ui, |ui| {
+        egui::Panel::bottom("status_bar").show(ui, |ui| {
             self.status_bar(ui);
         });
 
@@ -1226,7 +1226,7 @@ impl CuePoolApp {
                         ))
                         .inner_margin(8),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("Projection output unavailable")
@@ -1248,21 +1248,21 @@ impl CuePoolApp {
         // Active cues panel (left side)
         egui::Panel::left("active_cues")
             .default_size(220.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 crate::active_cues::show(ui, &self.state);
             });
 
         // Cue inspector (right side)
         egui::Panel::right("inspector")
             .default_size(280.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     crate::inspector::show(ui, &self.state);
                 });
             });
 
         // Main cue list (central: fills what the panels above left over).
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             crate::cue_list::show(ui, &self.state);
         });
 

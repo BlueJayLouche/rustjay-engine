@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
-use crate::d3d11_zero_copy::DirectPoolRequest;
+use crate::d3d12_zero_copy::DirectPoolRequest;
 
 #[cfg(windows)]
 type DirectPoolOption = Option<DirectPoolRequest>;
@@ -53,7 +53,7 @@ impl OpenOptions {
         Self {
             route: OpenRoute::HardwareCandidates,
             availability: None,
-            fallback_reason: Some(format!("shareable D3D11VA pool rejected: {reason}")),
+            fallback_reason: Some(format!("shareable D3D12VA pool rejected: {reason}")),
         }
     }
 
@@ -153,6 +153,16 @@ const HW_CANDIDATES: &[HwKind] = &[
         "hardware (dxva2)",
     ),
 ];
+/// The zero-copy candidate, tried before `HW_CANDIDATES` when a wgpu DX12
+/// interop device is available. Not part of the readback list: without a
+/// direct pool a plain D3D12VA open would just be a slower readback.
+#[cfg(windows)]
+const DIRECT_HW: HwKind = (
+    ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D12VA,
+    ffi::AVPixelFormat::AV_PIX_FMT_D3D12,
+    "d3d12va zero-copy",
+);
+
 #[cfg(target_os = "macos")]
 const HW_CANDIDATES: &[HwKind] = &[(
     ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
@@ -182,7 +192,7 @@ unsafe extern "C" fn hw_get_format(
             if *f == state.want {
                 #[cfg(windows)]
                 if let Some(request) = state.direct_pool.as_ref() {
-                    return crate::d3d11_zero_copy::configure_pool(ctx, request)
+                    return crate::d3d12_zero_copy::configure_pool(ctx, request)
                         .unwrap_or(ffi::AVPixelFormat::AV_PIX_FMT_NONE);
                 }
                 return *f;
@@ -622,7 +632,7 @@ impl VideoSource {
         }
     }
 
-    pub fn decode_path(&self) -> &'static str {
+    pub fn decode_path(&self) -> &str {
         match &self.backend {
             VideoBackend::Ffmpeg(source) => source.decode_path(),
             VideoBackend::Hap(_) => "hap gpu-native",
@@ -1248,6 +1258,10 @@ struct FfmpegVideoSource {
     fallback_reason: Option<String>,
     #[cfg(windows)]
     direct_engaged: bool,
+    /// "d3d12va zero-copy (<adapter>)" when this source opened with a direct
+    /// pool; what `decode_path` reports once the canary engages.
+    #[cfg(windows)]
+    direct_label: Option<String>,
 }
 
 /// Formats that upload straight to the GPU and convert in-shader.
@@ -1444,35 +1458,33 @@ impl FfmpegVideoSource {
                 interrupt,
             );
         }
-        for &hw in HW_CANDIDATES {
-            #[cfg(windows)]
-            if hw.0 == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA
-                && let Some(device) = availability
-                    .as_ref()
-                    .and_then(|value| value.device.as_ref())
-            {
-                let request = DirectPoolRequest::new(Arc::clone(device));
-                match Self::open_with(
-                    path,
-                    Some(hw),
-                    Arc::clone(&frame_pool),
-                    Some(request.clone()),
-                    None,
-                    input_context.take(),
-                    interrupt.clone(),
-                ) {
-                    Ok(source) => return Ok(source),
-                    Err(error) => {
-                        let reason = request.failure().unwrap_or_else(|| error.to_string());
-                        fallback_reason = Some(format!("shareable D3D11VA open failed: {reason}"));
-                        log::warn!(
-                            "Video zero-copy fallback: {}; retrying readback",
-                            fallback_reason.as_deref().unwrap_or_default()
-                        );
-                    }
+        #[cfg(windows)]
+        if let Some(device) = availability
+            .as_ref()
+            .and_then(|value| value.device.as_ref())
+        {
+            let request = DirectPoolRequest::new(Arc::clone(device));
+            match Self::open_with(
+                path,
+                Some(DIRECT_HW),
+                Arc::clone(&frame_pool),
+                Some(request.clone()),
+                None,
+                input_context.take(),
+                interrupt.clone(),
+            ) {
+                Ok(source) => return Ok(source),
+                Err(error) => {
+                    let reason = request.failure().unwrap_or_else(|| error.to_string());
+                    fallback_reason = Some(format!("shareable D3D12VA open failed: {reason}"));
+                    log::warn!(
+                        "Video zero-copy fallback: {}; retrying readback",
+                        fallback_reason.as_deref().unwrap_or_default()
+                    );
                 }
             }
-
+        }
+        for &hw in HW_CANDIDATES {
             match Self::open_with(
                 path,
                 Some(hw),
@@ -1539,13 +1551,29 @@ impl FfmpegVideoSource {
             unsafe {
                 let ctx = decoder.as_mut_ptr();
                 let mut device = std::ptr::null_mut();
-                if ffi::av_hwdevice_ctx_create(
-                    &mut device,
-                    device_type,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                    0,
-                ) < 0
+                // The zero-copy candidate adopts wgpu's ID3D12Device so decoded
+                // resources are usable by the renderer without sharing; every
+                // readback candidate creates its own device as before.
+                #[cfg(windows)]
+                if let Some(request) = hw_format_state
+                    .as_ref()
+                    .and_then(|state| state.direct_pool.as_ref())
+                {
+                    device = request
+                        .interop_device()
+                        .create_hw_device_ctx()
+                        .map_err(|reason| {
+                            anyhow::anyhow!("D3D12VA device adoption failed: {reason}")
+                        })?;
+                }
+                if device.is_null()
+                    && ffi::av_hwdevice_ctx_create(
+                        &mut device,
+                        device_type,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        0,
+                    ) < 0
                 {
                     anyhow::bail!("av_hwdevice_ctx_create failed");
                 }
@@ -1597,6 +1625,16 @@ impl FfmpegVideoSource {
         rgb_frame.set_height(dst_height);
 
         let hw_label = hw.map_or("software", |(_, _, label)| label);
+        #[cfg(windows)]
+        let direct_label = hw_format_state
+            .as_ref()
+            .and_then(|state| state.direct_pool.as_ref())
+            .map(|request| {
+                format!(
+                    "d3d12va zero-copy ({})",
+                    request.interop_device().adapter_name()
+                )
+            });
         if hw.is_some() {
             // "attempting": a created device proves nothing until a hw frame
             // lands (codecs without hwaccel, e.g. Hap, never use it).
@@ -1631,6 +1669,8 @@ impl FfmpegVideoSource {
             fallback_reason,
             #[cfg(windows)]
             direct_engaged: false,
+            #[cfg(windows)]
+            direct_label,
         })
     }
 
@@ -1641,13 +1681,13 @@ impl FfmpegVideoSource {
             && self.decoded_frame.format() == format::Pixel::from(hw_fmt)
         {
             #[cfg(windows)]
-            if hw_fmt == ffi::AVPixelFormat::AV_PIX_FMT_D3D11
+            if hw_fmt == ffi::AVPixelFormat::AV_PIX_FMT_D3D12
                 && let Some(request) = self
                     ._hw_format_state
                     .as_ref()
                     .and_then(|state| state.direct_pool.clone())
             {
-                return self.handle_direct_d3d11(&request);
+                return self.handle_direct_d3d12(&request);
             }
             // hw frames live in GPU memory and aren't readable via
             // `plane()`; download into the reusable CPU frame first.
@@ -1703,7 +1743,7 @@ impl FfmpegVideoSource {
     }
 
     #[cfg(windows)]
-    fn handle_direct_d3d11(&mut self, request: &DirectPoolRequest) -> Decoded {
+    fn handle_direct_d3d12(&mut self, request: &DirectPoolRequest) -> Decoded {
         let canary_readback = if request.take_canary() {
             let transfer_started = Instant::now();
             let transfer_result = unsafe {
@@ -1877,7 +1917,10 @@ impl FfmpegVideoSource {
     pub fn mark_zero_copy_engaged(&mut self) {
         if !self.direct_engaged {
             self.direct_engaged = true;
-            log::info!("Video decode: d3d11va zero-copy engaged after canary");
+            log::info!(
+                "Video decode: {} engaged after canary",
+                self.direct_label.as_deref().unwrap_or("d3d12va zero-copy")
+            );
         }
     }
 
@@ -1962,10 +2005,10 @@ impl FfmpegVideoSource {
     /// The active decode path. Truthful once frames have flowed: a
     /// created-but-unused hw device (e.g. Hap has no hwaccel) reports
     /// "software" until the first hw frame actually downloads.
-    pub fn decode_path(&self) -> &'static str {
+    pub fn decode_path(&self) -> &str {
         #[cfg(windows)]
         if self.direct_engaged {
-            return "d3d11va zero-copy";
+            return self.direct_label.as_deref().unwrap_or("d3d12va zero-copy");
         }
         if self.hw_checked {
             self.hw_label
@@ -2454,7 +2497,7 @@ mod tests {
 
         assert_eq!(
             options.fallback_reason.as_deref(),
-            Some("shareable D3D11VA pool rejected: canary mismatch")
+            Some("shareable D3D12VA pool rejected: canary mismatch")
         );
     }
 

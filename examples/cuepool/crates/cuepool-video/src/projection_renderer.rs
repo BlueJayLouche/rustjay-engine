@@ -173,7 +173,7 @@ impl ProjectionRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -188,7 +188,7 @@ impl ProjectionRenderer {
                             format: wgpu::VertexFormat::Float32x2,
                         },
                     ],
-                }],
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -448,7 +448,7 @@ mod tests {
         slice.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().expect("mapped range");
         assert!(
             data.iter().any(|&b| b != 0),
             "projection renderer produced an all-black output"
@@ -552,7 +552,7 @@ mod tests {
         slice.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().expect("mapped range");
         // Center pixel (BGRA): red frame -> B low, R high.
         let cx = cw / 2;
         let cy = ch / 2;

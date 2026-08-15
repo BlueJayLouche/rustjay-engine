@@ -31,12 +31,12 @@ hap-parser = "0.2.0"
 # frame-pacing-diag is a fork-only feature (see [patch.crates-io]): fence-lock
 # timing for the Help → Status "Frame Pacing (wgpu)" section, built for the
 # #139 delivery-stall investigation. Trivial overhead; kept on in field builds.
-wgpu = { version = "29.0", features = ["frame-pacing-diag"] }
+wgpu = { version = "30.0", features = ["frame-pacing-diag"] }
 winit = "0.30"
-egui = "0.34"
-egui-wgpu = "0.34"
-egui-winit = "0.34"
-eframe = "0.34"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
+eframe = "0.36"
 pollster = "0.3"
 
 # Networking / Protocols
@@ -79,8 +79,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+# TEMPORARY local-path pin of the wgpu-30 fork branch cuepool/frame-pacing-diag-30
+# (commit 0316ceebc): the PC02 PAT cannot push to scroix/wgpu yet. MUST be
+# flipped to the scroix/wgpu git rev before this branch is pushed for PR/CI.
 [patch.crates-io]
-wgpu = { git = "https://github.com/scroix/wgpu", rev = "a3f84d243aca193b33111b935701a8b7521ea6b5" }
-wgpu-core = { git = "https://github.com/scroix/wgpu", rev = "a3f84d243aca193b33111b935701a8b7521ea6b5" }
-wgpu-hal = { git = "https://github.com/scroix/wgpu", rev = "a3f84d243aca193b33111b935701a8b7521ea6b5" }
-wgpu-types = { git = "https://github.com/scroix/wgpu", rev = "a3f84d243aca193b33111b935701a8b7521ea6b5" }
+wgpu = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu" }
+wgpu-core = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-core" }
+wgpu-hal = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-hal" }
+wgpu-types = { path = "C:/Users/APAdmin/AppData/Local/Temp/claude/C--Users-APAdmin-sandbox-rustjay-engine--claude-worktrees-cuepool-d3d12va-wgpu-b8ece0/1fae24c1-8bc3-4d2b-91a5-3c35d6da443b/scratchpad/wgpu-fork/wgpu-types" }

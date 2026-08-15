@@ -45,7 +45,7 @@ fn main() {
                 }
                 FramePixels::Nv12 { .. } => "GPU NV12".to_string(),
                 #[cfg(windows)]
-                FramePixels::D3d11Nv12(_) => "GPU D3D11 NV12".to_string(),
+                FramePixels::D3d12Nv12(_) => "GPU D3D12 NV12".to_string(),
             };
             println!("pixel path: {path_kind}");
         }

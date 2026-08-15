@@ -150,7 +150,7 @@ impl StatusWindow {
     fn render(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &cuepool_video::SharedQueue,
         configure_gate: &RwLock<()>,
         cuepool: &mut CuePoolApp,
     ) {
@@ -175,7 +175,7 @@ impl StatusWindow {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| cuepool.show_status(ui));
             });
         });
@@ -192,13 +192,15 @@ impl StatusWindow {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("status-encoder"),
         });
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(device, queue, *id, image_delta);
+        for (id, image_deltas) in &full_output.textures_delta.set {
+            for image_delta in image_deltas {
+                self.egui_renderer
+                    .update_texture(device, queue.queue(), *id, image_delta);
+            }
         }
         self.egui_renderer.update_buffers(
             device,
-            queue,
+            queue.queue(),
             &mut encoder,
             &paint_jobs,
             &screen_descriptor,
@@ -227,7 +229,7 @@ impl StatusWindow {
             );
         }
         queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        queue.queue().present(output);
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }
@@ -350,7 +352,9 @@ struct App {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    /// All submissions route through this serialized wrapper so a zero-copy
+    /// decode-fence wait can never attach to another thread's submission.
+    queue: Arc<cuepool_video::SharedQueue>,
     /// `Surface::configure` takes this exclusively; GPU queue/present cycles
     /// take it shared. Lock it without `VideoControl` or `frame_state` held;
     /// configure paths never take either user mutex while holding the gate.
@@ -545,7 +549,7 @@ impl App {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         device: wgpu::Device,
-        queue: wgpu::Queue,
+        queue: Arc<cuepool_video::SharedQueue>,
         proxy: winit::event_loop::EventLoopProxy<AppEvent>,
         zero_copy: ZeroCopyAvailability,
         hap_acceleration: HapAcceleration,
@@ -1211,7 +1215,7 @@ impl App {
                 .configure_gate
                 .read()
                 .unwrap_or_else(|error| error.into_inner());
-            texture.upload_rgba(&self.queue, &blank);
+            texture.upload_rgba(self.queue.queue(), &blank);
         }
         self.clear_text_overlay();
     }
@@ -1398,7 +1402,7 @@ impl App {
                 .read()
                 .unwrap_or_else(|e| e.into_inner());
             self.pixmap_texture.as_ref().unwrap().upload_frame(
-                &self.queue,
+                self.queue.queue(),
                 &VideoFrame::new(w, h, img.into_raw(), 0.0),
                 cuepool_core::CanvasFit::Stretch, // same dims → exact copy
             );
@@ -1465,7 +1469,7 @@ impl App {
         if frame.rgba().is_some() {
             self.ensure_pixmap_texture(w, h);
             let tex = self.pixmap_texture.as_ref().unwrap();
-            tex.upload_frame(&self.queue, &frame, cuepool_core::CanvasFit::Stretch);
+            tex.upload_frame(self.queue.queue(), &frame, cuepool_core::CanvasFit::Stretch);
         } else if matches!(&frame.pixels, cuepool_video::FramePixels::Hap { .. }) {
             self.ensure_pixmap_texture(w, h);
             if self.pixmap_hap.is_none() {
@@ -1477,7 +1481,7 @@ impl App {
             let conv = self.pixmap_hap.as_mut().unwrap();
             match conv.upload(
                 &self.device,
-                &self.queue,
+                self.queue.queue(),
                 &frame,
                 [w, h],
                 cuepool_core::CanvasFit::Stretch,
@@ -1506,7 +1510,7 @@ impl App {
             let conv = self.pixmap_yuv.as_mut().unwrap();
             conv.upload(
                 &self.device,
-                &self.queue,
+                self.queue.queue(),
                 &frame,
                 [w, h],
                 cuepool_core::CanvasFit::Stretch,
@@ -3671,12 +3675,14 @@ impl App {
                 label: Some("control-encoder"),
             });
 
-        for (id, image_delta) in &full_output.textures_delta.set {
-            egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+        for (id, image_deltas) in &full_output.textures_delta.set {
+            for image_delta in image_deltas {
+                egui_renderer.update_texture(&self.device, self.queue.queue(), *id, image_delta);
+            }
         }
         egui_renderer.update_buffers(
             &self.device,
-            &self.queue,
+            self.queue.queue(),
             &mut encoder,
             &paint_jobs,
             &screen_descriptor,
@@ -3707,7 +3713,7 @@ impl App {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.queue.queue().present(output);
         // Commands queued during the UI frame drain in tick_engine, which runs
         // in about_to_wait later this same iteration.
     }
@@ -4655,20 +4661,47 @@ fn run(log_file: String) -> anyhow::Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let proxy = event_loop.create_proxy();
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-
+    let make_instance = |backends| {
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        })
+    };
     // Create a headless adapter first (we'll create surfaces after windows exist)
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .map_err(|e| anyhow::anyhow!("no wgpu adapter: {e}"))?;
-
+    let request_headless_adapter = |instance: &wgpu::Instance| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        }))
+    };
     let zero_copy_preference = ZeroCopyPreference::from_env();
+    // Zero-copy consumes FFmpeg's D3D12VA output on wgpu's own ID3D12Device,
+    // which requires the DX12 backend; QPLAYER_ZEROCOPY=1 therefore biases
+    // adapter selection to DX12 and falls back to the stock selection (where
+    // zero-copy declines with a reason) if no DX12 adapter exists.
+    let (instance, adapter) = {
+        let mut selected = None;
+        if zero_copy_preference.enabled() {
+            let dx12 = make_instance(wgpu::Backends::DX12);
+            match request_headless_adapter(&dx12) {
+                Ok(adapter) => selected = Some((dx12, adapter)),
+                Err(error) => {
+                    log::warn!("Video zero-copy: no DX12 adapter ({error}); using stock selection");
+                }
+            }
+        }
+        match selected {
+            Some(selected) => selected,
+            None => {
+                let instance = make_instance(wgpu::Backends::all());
+                let adapter = request_headless_adapter(&instance)
+                    .map_err(|e| anyhow::anyhow!("no wgpu adapter: {e}"))?;
+                (instance, adapter)
+            }
+        }
+    };
     let zero_copy_features =
         ZeroCopyAvailability::required_features(&adapter, zero_copy_preference);
     let hap_features = if std::env::var("QPLAYER_NO_HWACCEL").as_deref() == Ok("1") {
@@ -4696,7 +4729,7 @@ fn run(log_file: String) -> anyhow::Result<()> {
             Err(error) => failures.push((features, error.to_string())),
         }
     }
-    let Some((device, queue, enabled_optional_features)) = selected else {
+    let Some((device, raw_queue, enabled_optional_features)) = selected else {
         let reason = failures
             .last()
             .map(|(_, reason)| reason.as_str())
@@ -4717,10 +4750,11 @@ fn run(log_file: String) -> anyhow::Result<()> {
             .join("; ");
         format!("{label} device feature request failed ({attempted})")
     };
+    let queue = Arc::new(cuepool_video::SharedQueue::new(raw_queue));
     let zero_copy = if zero_copy_features.is_empty()
         || enabled_optional_features.contains(zero_copy_features)
     {
-        ZeroCopyAvailability::finish(&adapter, &device, &queue, zero_copy_preference)
+        ZeroCopyAvailability::finish(&adapter, &device, queue.queue(), zero_copy_preference)
     } else {
         ZeroCopyAvailability::declined(negotiation_reason("zero-copy"))
     };
