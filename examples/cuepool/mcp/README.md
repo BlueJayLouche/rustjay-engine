@@ -46,6 +46,10 @@ Every control call requires an `operation_id`. Choose a unique value for the
 action and reuse it if a result is uncertain and must be retried; CuePool then
 returns the original command instead of executing it twice.
 
+`cuepool_shutdown` stops only the CuePool profile serving `CUEPOOL_API_URL`.
+CuePool returns the final acknowledgement before exiting and rejects shutdown
+while playback is active or the project has unsaved changes.
+
 Control tools mutate live show-control state and may affect connected audio,
 video, lighting, or network outputs. MCP clients should treat them as external
 side effects and apply their normal confirmation policy.

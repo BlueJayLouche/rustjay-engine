@@ -15,9 +15,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Semaphore, broadcast, mpsc};
+use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
@@ -27,6 +28,8 @@ const COMMAND_HISTORY_CAPACITY: usize = 256;
 const MAX_QID_BYTES: usize = 64;
 const STATUS_HISTORY_CAPACITY: usize = 3600;
 const MAIN_LOOP_STALE_AFTER: Duration = Duration::from_secs(2);
+const SHUTDOWN_RESULT_TIMEOUT: Duration = Duration::from_secs(8);
+const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Deserialize, ToSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -39,6 +42,7 @@ pub enum ApiCommand {
     Resume,
     Preload,
     Seek { instance_id: u64, seconds: f32 },
+    Shutdown,
 }
 
 #[derive(Debug)]
@@ -65,6 +69,7 @@ pub struct ApiRuntime {
     result_tx: mpsc::UnboundedSender<ApiCommandResult>,
     ready: Arc<AtomicBool>,
     main_loop_heartbeat: Arc<Mutex<Instant>>,
+    shutdown_response_delivered: Arc<AtomicBool>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -91,9 +96,13 @@ impl ApiRuntime {
     pub fn mark_stopping(&self) {
         self.ready.store(false, Ordering::Release);
     }
+
+    pub fn shutdown_response_delivered(&self) -> bool {
+        self.shutdown_response_delivered.load(Ordering::Acquire)
+    }
 }
 
-pub fn start(shared: SharedStateHandle) -> anyhow::Result<ApiRuntime> {
+pub fn start(shared: SharedStateHandle, profile: String) -> anyhow::Result<ApiRuntime> {
     let bind = std::env::var("CUEPOOL_API_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
     let address: SocketAddr = bind
         .parse()
@@ -114,16 +123,29 @@ pub fn start(shared: SharedStateHandle) -> anyhow::Result<ApiRuntime> {
     let (result_tx, result_rx) = mpsc::unbounded_channel();
     let ready = Arc::new(AtomicBool::new(false));
     let main_loop_heartbeat = Arc::new(Mutex::new(Instant::now()));
-    let state = ApiState::new(
+    let shutdown_response_delivered = Arc::new(AtomicBool::new(false));
+    let (state, shutdown_rx) = ApiState::new(
         shared,
+        profile,
         control_token,
         command_tx,
         Arc::clone(&ready),
         Arc::clone(&main_loop_heartbeat),
     );
+    let shutdown_requested = Arc::clone(&state.shutdown_requested);
+    let delivered = Arc::clone(&shutdown_response_delivered);
     let thread = std::thread::Builder::new()
         .name("cuepool-api".into())
-        .spawn(move || run_server(listener, state, result_rx))?;
+        .spawn(move || {
+            run_server(
+                listener,
+                state,
+                result_rx,
+                shutdown_rx,
+                shutdown_requested,
+                delivered,
+            )
+        })?;
 
     log::info!(
         "CuePool API listening on http://{local_addr}/v1 (control {})",
@@ -139,6 +161,7 @@ pub fn start(shared: SharedStateHandle) -> anyhow::Result<ApiRuntime> {
         result_tx,
         ready,
         main_loop_heartbeat,
+        shutdown_response_delivered,
         _thread: thread,
     })
 }
@@ -155,6 +178,9 @@ fn run_server(
     listener: TcpListener,
     state: ApiState,
     result_rx: mpsc::UnboundedReceiver<ApiCommandResult>,
+    shutdown_rx: watch::Receiver<bool>,
+    shutdown_requested: Arc<AtomicBool>,
+    shutdown_response_delivered: Arc<AtomicBool>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -164,18 +190,44 @@ fn run_server(
             let listener = tokio::net::TcpListener::from_std(listener)?;
             tokio::spawn(record_command_results(state.clone(), result_rx));
             tokio::spawn(sample_state(state.clone()));
-            axum::serve(listener, build_router(state)).await?;
+            let forced_shutdown_rx = shutdown_rx.clone();
+            let server = axum::serve(listener, build_router(state))
+                .with_graceful_shutdown(shutdown_signal(shutdown_rx))
+                .into_future();
+            tokio::pin!(server);
+            tokio::select! {
+                result = &mut server => result?,
+                () = async move {
+                    shutdown_signal(forced_shutdown_rx).await;
+                    tokio::time::sleep(SERVER_SHUTDOWN_GRACE).await;
+                } => log::warn!(
+                    "CuePool API forced closed after {} seconds waiting for clients",
+                    SERVER_SHUTDOWN_GRACE.as_secs()
+                ),
+            }
             Ok(())
         })
     });
+    if shutdown_requested.load(Ordering::Acquire) {
+        shutdown_response_delivered.store(true, Ordering::Release);
+    }
     if let Err(error) = result {
         log::error!("CuePool API stopped: {error}");
+    }
+}
+
+async fn shutdown_signal(mut shutdown_rx: watch::Receiver<bool>) {
+    while !*shutdown_rx.borrow_and_update() {
+        if shutdown_rx.changed().await.is_err() {
+            return;
+        }
     }
 }
 
 #[derive(Clone)]
 struct ApiState {
     shared: SharedStateHandle,
+    profile: Arc<str>,
     started_at: Instant,
     control_token: Option<Arc<str>>,
     command_tx: mpsc::Sender<ApiCommandRequest>,
@@ -183,35 +235,48 @@ struct ApiState {
     main_loop_heartbeat: Arc<Mutex<Instant>>,
     next_command_id: Arc<AtomicU64>,
     commands: Arc<Mutex<VecDeque<CommandRecord>>>,
+    command_changed: watch::Sender<()>,
     retired_idempotency_keys: Arc<Mutex<HashSet<String>>>,
     status_history: Arc<Mutex<VecDeque<StatusSample>>>,
     events: broadcast::Sender<ApiEvent>,
     project_preparation: Arc<Semaphore>,
+    server_shutdown: watch::Sender<bool>,
+    shutdown_requested: Arc<AtomicBool>,
 }
 
 impl ApiState {
     fn new(
         shared: SharedStateHandle,
+        profile: String,
         control_token: Option<String>,
         command_tx: mpsc::Sender<ApiCommandRequest>,
         ready: Arc<AtomicBool>,
         main_loop_heartbeat: Arc<Mutex<Instant>>,
-    ) -> Self {
+    ) -> (Self, watch::Receiver<bool>) {
         let (events, _) = broadcast::channel(256);
-        Self {
-            shared,
-            started_at: Instant::now(),
-            control_token: control_token.map(Arc::from),
-            command_tx,
-            ready,
-            main_loop_heartbeat,
-            next_command_id: Arc::new(AtomicU64::new(1)),
-            commands: Arc::new(Mutex::new(VecDeque::new())),
-            retired_idempotency_keys: Arc::new(Mutex::new(HashSet::new())),
-            status_history: Arc::new(Mutex::new(VecDeque::new())),
-            events,
-            project_preparation: Arc::new(Semaphore::new(2)),
-        }
+        let (command_changed, _) = watch::channel(());
+        let (server_shutdown, shutdown_rx) = watch::channel(false);
+        (
+            Self {
+                shared,
+                profile: profile.into(),
+                started_at: Instant::now(),
+                control_token: control_token.map(Arc::from),
+                command_tx,
+                ready,
+                main_loop_heartbeat,
+                next_command_id: Arc::new(AtomicU64::new(1)),
+                commands: Arc::new(Mutex::new(VecDeque::new())),
+                command_changed,
+                retired_idempotency_keys: Arc::new(Mutex::new(HashSet::new())),
+                status_history: Arc::new(Mutex::new(VecDeque::new())),
+                events,
+                project_preparation: Arc::new(Semaphore::new(2)),
+                server_shutdown,
+                shutdown_requested: Arc::new(AtomicBool::new(false)),
+            },
+            shutdown_rx,
+        )
     }
 
     fn register_command(
@@ -320,6 +385,7 @@ impl ApiState {
     fn complete_command(&self, result: ApiCommandResult) {
         let completed_at = now();
         let mut completed = None;
+        let mut shutdown = false;
         if let Ok(mut commands) = self.commands.lock()
             && let Some(command) = commands
                 .iter_mut()
@@ -329,6 +395,7 @@ impl ApiState {
                 ApiCommandOutcome::Applied(message) => {
                     command.status.state = CommandState::Applied;
                     command.status.message = Some(message);
+                    shutdown = matches!(command.command, ApiCommand::Shutdown);
                 }
                 ApiCommandOutcome::Rejected(message) => {
                     command.status.state = CommandState::Rejected;
@@ -340,7 +407,40 @@ impl ApiState {
         }
         if let Some(command) = completed {
             self.emit("command", &command);
+            self.command_changed.send_replace(());
+            if shutdown {
+                self.request_shutdown();
+            }
         }
+    }
+
+    fn command(&self, id: u64) -> Result<CommandStatus, ApiError> {
+        self.commands
+            .lock()
+            .map_err(|_| ApiError::internal("command history lock poisoned"))?
+            .iter()
+            .find(|record| record.status.id == id)
+            .map(|record| record.status.clone())
+            .ok_or_else(|| ApiError::not_found(format!("command {id} not found")))
+    }
+
+    async fn wait_for_command(&self, id: u64) -> Result<CommandStatus, ApiError> {
+        let mut changed = self.command_changed.subscribe();
+        loop {
+            let status = self.command(id)?;
+            if status.state != CommandState::Pending {
+                return Ok(status);
+            }
+            changed
+                .changed()
+                .await
+                .map_err(|_| ApiError::unavailable("command result notification is unavailable"))?;
+        }
+    }
+
+    fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+        self.server_shutdown.send_replace(true);
     }
 
     fn emit<T: Serialize>(&self, event_type: &'static str, value: &T) {
@@ -579,6 +679,7 @@ struct HealthResponse {
     commit: Option<&'static str>,
     pid: u32,
     uptime_seconds: u64,
+    profile: String,
     ready: bool,
     project_path: Option<String>,
     dirty: bool,
@@ -615,6 +716,7 @@ async fn health(State(api): State<ApiState>) -> Result<Json<HealthResponse>, Api
             commit: option_env!("CUEPOOL_BUILD_ID"),
             pid: std::process::id(),
             uptime_seconds: api.started_at.elapsed().as_secs(),
+            profile: api.profile.to_string(),
             ready,
             project_path: state
                 .project_path
@@ -1074,19 +1176,30 @@ async fn logs(Query(query): Query<LogsQuery>) -> Json<LogsResponse> {
 async fn events(
     State(api): State<ApiState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream = BroadcastStream::new(api.events.subscribe()).filter_map(|event| {
-        let event = match event {
-            Ok(event) => match Event::default()
-                .event(event.event_type)
-                .json_data(event.data)
-            {
-                Ok(event) => event,
-                Err(_) => Event::default().event("error").data("serialization failed"),
-            },
-            Err(_) => Event::default().event("lagged").data("events dropped"),
-        };
-        Some(Ok(event))
+    let shutdown = WatchStream::new(api.server_shutdown.subscribe()).filter_map(|stopping| {
+        stopping.then(|| {
+            Ok::<_, BroadcastStreamRecvError>(ApiEvent {
+                event_type: "shutdown",
+                data: serde_json::json!({ "status": "stopping" }),
+            })
+        })
     });
+    let stream = BroadcastStream::new(api.events.subscribe())
+        .merge(shutdown)
+        .take_while(|event| !matches!(event, Ok(event) if event.event_type == "shutdown"))
+        .filter_map(|event| {
+            let event = match event {
+                Ok(event) => match Event::default()
+                    .event(event.event_type)
+                    .json_data(event.data)
+                {
+                    Ok(event) => event,
+                    Err(_) => Event::default().event("error").data("serialization failed"),
+                },
+                Err(_) => Event::default().event("lagged").data("events dropped"),
+            };
+            Some(Ok(event))
+        });
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -1206,11 +1319,6 @@ async fn post_command(
     Json(command): Json<ApiCommand>,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize_control(&api, &headers)?;
-    if !api.main_loop_responsive() {
-        return Err(ApiError::unavailable(
-            "CuePool show-control loop is not ready",
-        ));
-    }
     validate_command(&command)?;
     let idempotency_key = headers
         .get("idempotency-key")
@@ -1231,9 +1339,17 @@ async fn post_command(
         ));
     }
     if let Some(key) = idempotency_key.as_deref()
-        && let Some(status) = api.idempotent_command(key, &command)?
+        && let Some(mut status) = api.idempotent_command(key, &command)?
     {
+        if matches!(command, ApiCommand::Shutdown) && status.state == CommandState::Pending {
+            status = wait_for_shutdown_result(&api, status.id).await?;
+        }
         return Ok((StatusCode::ACCEPTED, Json(status)));
+    }
+    if !api.main_loop_responsive() {
+        return Err(ApiError::unavailable(
+            "CuePool show-control loop is not ready",
+        ));
     }
     let prepared_project = match &command {
         ApiCommand::OpenProject { path } => {
@@ -1253,8 +1369,19 @@ async fn post_command(
         }
         _ => None,
     };
-    let status = api.register_command(command, prepared_project, idempotency_key)?;
+    let shutdown = matches!(command, ApiCommand::Shutdown);
+    let mut status = api.register_command(command, prepared_project, idempotency_key)?;
+    if shutdown {
+        status = wait_for_shutdown_result(&api, status.id).await?;
+    }
     Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+async fn wait_for_shutdown_result(api: &ApiState, id: u64) -> Result<CommandStatus, ApiError> {
+    match tokio::time::timeout(SHUTDOWN_RESULT_TIMEOUT, api.wait_for_command(id)).await {
+        Ok(status) => status,
+        Err(_) => api.command(id),
+    }
 }
 
 #[utoipa::path(
@@ -1271,18 +1398,7 @@ async fn command_status(
     State(api): State<ApiState>,
     Path(id): Path<u64>,
 ) -> Result<Json<CommandStatus>, ApiError> {
-    let command = api
-        .commands
-        .lock()
-        .ok()
-        .and_then(|commands| {
-            commands
-                .iter()
-                .find(|record| record.status.id == id)
-                .map(|record| record.status.clone())
-        })
-        .ok_or_else(|| ApiError::not_found(format!("command {id} not found")))?;
-    Ok(Json(command))
+    Ok(Json(api.command(id)?))
 }
 
 fn now() -> String {
@@ -1298,8 +1414,9 @@ mod tests {
 
     fn test_api(token: Option<&str>) -> (ApiState, mpsc::Receiver<ApiCommandRequest>) {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
-        let state = ApiState::new(
+        let (state, _) = ApiState::new(
             Arc::new(Mutex::new(cuepool_gui::SharedState::default())),
+            "default".into(),
             token.map(str::to_string),
             command_tx,
             Arc::new(AtomicBool::new(false)),
@@ -1326,6 +1443,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let health = json(response).await;
         assert_eq!(health["status"], "starting");
+        assert_eq!(health["profile"], "default");
         assert_eq!(health["ready"], false);
         assert_eq!(health["control_enabled"], false);
 
@@ -1380,6 +1498,84 @@ mod tests {
             document["paths"]["/v1/commands"]["post"]["security"][0]["bearer_token"],
             serde_json::json!([])
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_returns_its_final_result_before_stopping_the_api() {
+        let (state, mut command_rx) = test_api(Some("secret"));
+        state.ready.store(true, Ordering::Release);
+        let app = build_router(state.clone());
+        let response = tokio::spawn(async move {
+            app.oneshot(
+                Request::post("/v1/commands")
+                    .header("content-type", "application/json")
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .header("idempotency-key", "shutdown-1")
+                    .body(Body::from(r#"{"command":"shutdown"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        });
+
+        let request = command_rx.recv().await.unwrap();
+        assert!(matches!(request.command, ApiCommand::Shutdown));
+        state.complete_command(ApiCommandResult {
+            id: request.id,
+            outcome: ApiCommandOutcome::Applied("shutdown accepted".into()),
+        });
+
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let completed = json(response).await;
+        assert_eq!(completed["state"], "applied");
+        assert_eq!(completed["message"], "shutdown accepted");
+        assert!(*state.server_shutdown.borrow());
+    }
+
+    #[tokio::test]
+    async fn rejected_shutdown_keeps_the_api_running() {
+        let (state, mut command_rx) = test_api(Some("secret"));
+        state.ready.store(true, Ordering::Release);
+        let app = build_router(state.clone());
+        let response = tokio::spawn(async move {
+            app.oneshot(
+                Request::post("/v1/commands")
+                    .header("content-type", "application/json")
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::from(r#"{"command":"shutdown"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        });
+
+        let request = command_rx.recv().await.unwrap();
+        state.complete_command(ApiCommandResult {
+            id: request.id,
+            outcome: ApiCommandOutcome::Rejected("cues are active".into()),
+        });
+
+        let completed = json(response.await.unwrap()).await;
+        assert_eq!(completed["state"], "rejected");
+        assert!(!*state.server_shutdown.borrow());
+    }
+
+    #[tokio::test]
+    async fn event_stream_opened_after_shutdown_ends_immediately() {
+        let (state, _) = test_api(None);
+        state.request_shutdown();
+
+        let response = build_router(state)
+            .oneshot(Request::get("/v1/events").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body =
+            tokio::time::timeout(Duration::from_secs(1), to_bytes(response.into_body(), 1024))
+                .await
+                .expect("event stream remained open after shutdown")
+                .unwrap();
+        assert!(body.is_empty());
     }
 
     #[tokio::test]
@@ -1469,10 +1665,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idempotency_key_prevents_duplicate_commands() {
+    async fn idempotency_key_survives_the_stopping_state() {
         let (state, mut command_rx) = test_api(Some("secret"));
         state.ready.store(true, Ordering::Release);
-        let app = build_router(state);
+        let app = build_router(state.clone());
         let request = || {
             Request::post("/v1/commands")
                 .header("content-type", "application/json")
@@ -1483,6 +1679,7 @@ mod tests {
         };
 
         let first = app.clone().oneshot(request()).await.unwrap();
+        state.ready.store(false, Ordering::Release);
         let second = app.clone().oneshot(request()).await.unwrap();
         assert_eq!(first.status(), StatusCode::ACCEPTED);
         assert_eq!(second.status(), StatusCode::ACCEPTED);

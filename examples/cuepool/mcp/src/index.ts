@@ -371,6 +371,14 @@ function createServer(
       }),
       ({ instance_id, seconds }) => ({ command: "seek", instance_id, seconds }),
     );
+    registerControlTool(
+      server,
+      client,
+      "cuepool_shutdown",
+      "Shut down this CuePool profile when playback is stopped and the project has no unsaved changes.",
+      z.object({ operation_id: operationIdSchema }),
+      () => ({ command: "shutdown" }),
+    );
   }
 
   return server;

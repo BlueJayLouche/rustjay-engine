@@ -204,6 +204,7 @@ test("control tools preserve applied and rejected command results", async (t) =>
   const names = tools.map(({ name }) => name);
   assert.ok(names.includes("cuepool_go"));
   assert.ok(names.includes("cuepool_seek"));
+  assert.ok(names.includes("cuepool_shutdown"));
   assert.equal(
     tools.find(({ name }) => name === "cuepool_go")?.annotations
       ?.idempotentHint,
@@ -246,6 +247,43 @@ test("control tools preserve applied and rejected command results", async (t) =>
       message: "nothing is playing",
       created_at: "2026-08-14T00:00:00.000Z",
       completed_at: "2026-08-14T00:00:00.001Z",
+    },
+  });
+});
+
+test("shutdown returns CuePool's acknowledgement without polling", async (t) => {
+  const api = await mockApi(async (request, response) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/commands");
+    assert.equal(request.headers.authorization, "Bearer test-token");
+    assert.equal(request.headers["idempotency-key"], "shutdown-smoke-1");
+    assert.deepEqual(JSON.parse(await body(request)), { command: "shutdown" });
+    json(response, 202, {
+      id: 9,
+      state: "applied",
+      message: "profile 'smoke-a' accepted shutdown",
+      created_at: "2026-08-15T00:00:00.000Z",
+      completed_at: "2026-08-15T00:00:00.001Z",
+    });
+  });
+  t.after(() => api.close());
+
+  const { client, transport } = await mcpClient(api.url, "test-token");
+  t.after(() => client.close());
+  t.after(() => transport.close());
+
+  const result = await client.callTool({
+    name: "cuepool_shutdown",
+    arguments: { operation_id: "shutdown-smoke-1" },
+  });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent, {
+    data: {
+      id: 9,
+      state: "applied",
+      message: "profile 'smoke-a' accepted shutdown",
+      created_at: "2026-08-15T00:00:00.000Z",
+      completed_at: "2026-08-15T00:00:00.001Z",
     },
   });
 });
