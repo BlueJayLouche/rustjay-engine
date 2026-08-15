@@ -274,6 +274,41 @@ fn control_surface_retry_delay(failures: u32) -> Duration {
     Duration::from_millis((100_u64 << exponent).min(5_000))
 }
 
+/// Present mode for the control/status surfaces: `QPLAYER_CONTROL_PRESENT_MODE`
+/// (mailbox|immediate|fifo|fifo_relaxed, case-insensitive) when set, valid, and
+/// supported by the surface; otherwise the non-vsync preference order. `None`
+/// keeps the surface default.
+fn control_present_mode(
+    override_value: Option<&str>,
+    supported: &[wgpu::PresentMode],
+) -> Option<wgpu::PresentMode> {
+    let requested = override_value.and_then(|value| {
+        let mode = match value.to_ascii_lowercase().as_str() {
+            "mailbox" => Some(wgpu::PresentMode::Mailbox),
+            "immediate" => Some(wgpu::PresentMode::Immediate),
+            "fifo" => Some(wgpu::PresentMode::Fifo),
+            "fifo_relaxed" => Some(wgpu::PresentMode::FifoRelaxed),
+            _ => None,
+        };
+        if mode.is_none() {
+            // A typo at the rig must not read as "the knob did nothing".
+            log::warn!("QPLAYER_CONTROL_PRESENT_MODE={value:?} is not a present mode; ignoring");
+        }
+        mode
+    });
+    if let Some(mode) = requested {
+        if supported.contains(&mode) {
+            return Some(mode);
+        }
+        log::warn!(
+            "QPLAYER_CONTROL_PRESENT_MODE={mode:?} is not supported by this surface; falling back"
+        );
+    }
+    [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
+        .into_iter()
+        .find(|mode| supported.contains(mode))
+}
+
 /// User events sent to the main event loop from background threads.
 #[derive(Debug)]
 enum AppEvent {
@@ -709,6 +744,7 @@ impl App {
             for var in [
                 "RUST_LOG",
                 "QPLAYER_PRESENT_MODE",
+                "QPLAYER_CONTROL_PRESENT_MODE",
                 "QPLAYER_FPS_DEBUG",
                 "QPLAYER_NO_HWACCEL",
                 "QPLAYER_ZEROCOPY",
@@ -900,10 +936,14 @@ impl App {
         // vsync-blocked control present serializes with the output window's vsync
         // present and roughly halves the output's effective frame rate. Tearing on
         // the operator GUI is irrelevant; output windows keep Fifo for clean playback.
-        if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-            config.present_mode = wgpu::PresentMode::Mailbox;
-        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
-            config.present_mode = wgpu::PresentMode::Immediate;
+        // Override with QPLAYER_CONTROL_PRESENT_MODE=mailbox|immediate|fifo|fifo_relaxed.
+        if let Some(mode) = control_present_mode(
+            std::env::var("QPLAYER_CONTROL_PRESENT_MODE")
+                .ok()
+                .as_deref(),
+            &caps.present_modes,
+        ) {
+            config.present_mode = mode;
         }
         {
             let _configure_guard = self
@@ -1031,16 +1071,13 @@ impl App {
             .get_default_config(&self.adapter, size.width, size.height)
             .ok_or_else(|| anyhow::anyhow!("no compatible Status surface configuration"))?;
         let capabilities = surface.get_capabilities(&self.adapter);
-        if capabilities
-            .present_modes
-            .contains(&wgpu::PresentMode::Mailbox)
-        {
-            config.present_mode = wgpu::PresentMode::Mailbox;
-        } else if capabilities
-            .present_modes
-            .contains(&wgpu::PresentMode::Immediate)
-        {
-            config.present_mode = wgpu::PresentMode::Immediate;
+        if let Some(mode) = control_present_mode(
+            std::env::var("QPLAYER_CONTROL_PRESENT_MODE")
+                .ok()
+                .as_deref(),
+            &capabilities.present_modes,
+        ) {
+            config.present_mode = mode;
         }
         {
             let _configure_guard = self
@@ -4867,6 +4904,25 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_present_mode_override_falls_back_when_unsupported() {
+        use wgpu::PresentMode::*;
+        let caps = [Fifo, Mailbox];
+        // Supported override wins, case-insensitively.
+        assert_eq!(control_present_mode(Some("mailbox"), &caps), Some(Mailbox));
+        assert_eq!(control_present_mode(Some("FIFO"), &caps), Some(Fifo));
+        // Unsupported or invalid override falls back to the Mailbox > Immediate preference.
+        assert_eq!(
+            control_present_mode(Some("immediate"), &caps),
+            Some(Mailbox)
+        );
+        assert_eq!(control_present_mode(Some("nope"), &caps), Some(Mailbox));
+        // Unset keeps the default preference; when neither is supported the
+        // surface default is kept.
+        assert_eq!(control_present_mode(None, &caps), Some(Mailbox));
+        assert_eq!(control_present_mode(None, &[Fifo]), None);
+    }
 
     #[test]
     fn control_surface_retry_backoff_is_capped() {
