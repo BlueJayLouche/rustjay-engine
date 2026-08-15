@@ -248,12 +248,15 @@ fn edit_and_show_mode_snapshots() {
         return;
     }
     let (mut harness, _) = demo_harness();
+    // ponytail: Linux WGPU differs by one edge pixel; use per-platform
+    // baselines if the renderer drift grows beyond that.
+    let snapshot_options = SnapshotOptions::new().max_failed_pixels(OsThreshold::new(0).linux(1));
 
     harness.run();
-    harness.snapshot("edit_mode");
+    harness.snapshot_options("edit_mode", &snapshot_options);
 
     harness.get_by_label("Edit Mode").click();
     harness.run();
     harness.run();
-    harness.snapshot("show_mode");
+    harness.snapshot_options("show_mode", &snapshot_options);
 }
