@@ -1,3 +1,4 @@
+use cuepool_core::LockExt;
 use cuepool_gui::SharedStateHandle;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -105,13 +106,13 @@ pub(crate) fn save_settings(profile: &AppProfile, settings: &AppSettings) {
 }
 
 pub(crate) fn save_settings_from_state(profile: &AppProfile, state: &SharedStateHandle) {
-    let settings = state
-        .lock()
-        .map(|state| AppSettings {
-            recent_files: state.recent_files.clone(),
-            last_seen_release_notes: state.last_seen_release_notes.clone(),
-        })
-        .unwrap_or_default();
+    // lock_unpoisoned: a poisoned state lock must not fall back to defaults
+    // here — save_settings would overwrite the user's settings.json with them.
+    let state = state.lock_unpoisoned();
+    let settings = AppSettings {
+        recent_files: state.recent_files.clone(),
+        last_seen_release_notes: state.last_seen_release_notes.clone(),
+    };
     save_settings(profile, &settings);
 }
 
