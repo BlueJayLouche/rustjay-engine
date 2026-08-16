@@ -2290,7 +2290,11 @@ impl App {
         self.last_hard_sync = Some(Instant::now());
         let path = follow.path.clone();
         log::info!("[MTC] Hard sync Q{} to {:.2}s", follow.qid, target);
-        self.spawn_video_decode(&path, Some(target), None, false);
+        // Clamp: the timecode source is free to run past the end of the clip
+        // (a short insert against a full-length show track), and an unclamped
+        // seek past the media just puts the demuxer off the end. SeekCue and
+        // the automation API already clamp; this path was the outlier.
+        self.spawn_video_decode(&path, Some(target), None, true);
         self.mtc_reanchor(target);
         true
     }
@@ -5010,6 +5014,21 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A timecode source runs to its own length, which is routinely longer
+    /// than the clip being chased. Seeking past the media puts the demuxer off
+    /// the end of the file, so the chase target is clamped like every other
+    /// seek path.
+    #[test]
+    fn seeks_clamp_to_the_media_length() {
+        let length = Some(230.02);
+        assert_eq!(clamp_video_seek_secs(12.0, length), 12.0);
+        assert!(clamp_video_seek_secs(500.0, length) < 230.02);
+        assert!(clamp_video_seek_secs(230.02, length) < 230.02);
+        // Unknown duration cannot be clamped, only sanitised.
+        assert_eq!(clamp_video_seek_secs(500.0, None), 500.0);
+        assert_eq!(clamp_video_seek_secs(f64::INFINITY, None), 0.0);
+    }
 
     #[test]
     fn control_surface_retry_backoff_is_capped() {
