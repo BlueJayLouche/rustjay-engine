@@ -558,6 +558,14 @@ pub struct SharedState {
     /// Set on window-close with unsaved changes / running cues — shows the in-app
     /// quit-confirm modal (a native modal deadlocks the loop).
     pub pending_close_confirm: bool,
+    /// A destructive command (New / Open) parked on the in-app discard modal,
+    /// for the same reason as `pending_close_confirm`. Holds the command so it
+    /// can be re-queued once the operator confirms.
+    pub pending_discard_confirm: Option<AppCommand>,
+    /// Set by the discard modal so the re-queued command runs without asking
+    /// again. One flag is enough: only New and Open consult it, and the modal
+    /// is exclusive, so two of them cannot be in flight at once.
+    pub discard_confirmed: bool,
     /// Set by the quit-confirm modal; main.rs hard-exits on the next tick.
     pub quit: bool,
     /// Progress overlay: if Some, shows a blocking modal with message + progress.
@@ -659,6 +667,8 @@ impl Default for SharedState {
             recorder_status: RecorderStatus::default(),
             lighting_preview: std::collections::HashMap::new(),
             pending_close_confirm: false,
+            pending_discard_confirm: None,
+            discard_confirmed: false,
             quit: false,
             progress_overlay: None,
             operator_alert: None,
@@ -1818,6 +1828,50 @@ impl CuePoolApp {
             });
         }
 
+        // Discard-confirm modal for New / Open, in-app for the same reason.
+        let pending_discard = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.pending_discard_confirm.clone());
+        if let Some(command) = pending_discard {
+            let (dirty, running) = self
+                .state
+                .lock()
+                .map(|s| (s.dirty, !s.active_cues.is_empty()))
+                .unwrap_or((false, false));
+            let message = match (dirty, running) {
+                (true, true) => "There are cues playing and you have unsaved changes.",
+                (true, false) => "You have unsaved changes.",
+                (false, true) => "There are cues currently playing.",
+                (false, false) => "Discard the current project?",
+            };
+            egui::Modal::new(egui::Id::new("discard_confirm")).show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.heading(match command {
+                    AppCommand::NewProject => "New Project",
+                    _ => "Open Project",
+                });
+                ui.add_space(4.0);
+                ui.label(format!("{message} Discard and continue?"));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Discard & Continue").clicked()
+                        && let Ok(mut s) = self.state.lock()
+                    {
+                        s.pending_discard_confirm = None;
+                        s.discard_confirmed = true;
+                        s.command_queue.push(command.clone());
+                    }
+                    if ui.button("Cancel").clicked()
+                        && let Ok(mut s) = self.state.lock()
+                    {
+                        s.pending_discard_confirm = None;
+                    }
+                });
+            });
+        }
+
         // Import-from-project modal (File → Import from Project…)
         let import = self
             .state
@@ -2347,37 +2401,37 @@ impl CuePoolApp {
         });
     }
 
-    fn confirm_discard(state: &SharedStateHandle) -> bool {
-        let (dirty, has_running) = {
-            let Ok(state) = state.lock() else {
-                return false;
-            };
-            (state.dirty, !state.active_cues.is_empty())
+    /// Gate a destructive command (New / Open) behind the in-app discard modal.
+    ///
+    /// Returns true when the command may run now. Otherwise the command is
+    /// parked in `pending_discard_confirm` and re-queued once the operator
+    /// confirms. The modal is in-app for the same reason the quit-confirm one
+    /// is: a native dialog here deadlocks the winit loop, and with fullscreen
+    /// output windows up it can open behind them — the operator then sees a
+    /// frozen app waiting on a dialog they cannot find.
+    fn confirm_discard(
+        state: &SharedStateHandle,
+        command: &AppCommand,
+        ctx: &egui::Context,
+    ) -> bool {
+        let Ok(mut state) = state.lock() else {
+            return false;
         };
-        if has_running {
-            let choice = rfd::MessageDialog::new()
-                .set_title("Running Cues")
-                .set_description("There are cues currently playing. Stop them and proceed?")
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .show();
-            if !matches!(choice, rfd::MessageDialogResult::Ok) {
-                return false;
-            }
+        if state.discard_confirmed {
+            state.discard_confirmed = false;
+            return true;
         }
-        if dirty {
-            let choice = rfd::MessageDialog::new()
-                .set_title("Unsaved Changes")
-                .set_description("You have unsaved changes. Discard them?")
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .show();
-            if !matches!(choice, rfd::MessageDialogResult::Ok) {
-                return false;
-            }
+        if !state.dirty && state.active_cues.is_empty() {
+            return true;
         }
-        true
+        state.pending_discard_confirm = Some(command.clone());
+        // The modal is drawn earlier in this same update, so ask for another
+        // pass rather than leaving the operator on a stale frame.
+        ctx.request_repaint();
+        false
     }
 
-    fn process_commands(&mut self, _ctx: &egui::Context) {
+    fn process_commands(&mut self, ctx: &egui::Context) {
         let commands = {
             let Ok(mut state) = self.state.lock() else {
                 return;
@@ -2390,7 +2444,7 @@ impl CuePoolApp {
         for cmd in commands {
             match cmd {
                 AppCommand::NewProject => {
-                    if !Self::confirm_discard(&self.state) {
+                    if !Self::confirm_discard(&self.state, &AppCommand::NewProject, ctx) {
                         continue;
                     }
                     if let Ok(mut state) = self.state.lock() {
@@ -2405,7 +2459,11 @@ impl CuePoolApp {
                     }
                 }
                 AppCommand::OpenProject { path } => {
-                    if !Self::confirm_discard(&self.state) {
+                    if !Self::confirm_discard(
+                        &self.state,
+                        &AppCommand::OpenProject { path: path.clone() },
+                        ctx,
+                    ) {
                         continue;
                     }
                     log::info!(
