@@ -237,6 +237,7 @@ fn frame_pacing_decision(
     woke_on_tick: bool,
     last_tick_age: Option<Duration>,
     tick_interval: Option<Duration>,
+    peek_pts: Option<f64>,
 ) -> FramePacingDecision {
     let Some(position) = position else {
         return FramePacingDecision {
@@ -250,12 +251,28 @@ fn frame_pacing_decision(
             last_tick_age.is_some_and(|age| age < interval.saturating_mul(3).min(VSYNC_STALE_MAX))
         });
     if !stepping && let Some(interval) = healthy_interval {
+        let target = if woke_on_tick {
+            let raw = position.saturating_add(interval);
+            // Snap to the frame this tick is meant to show. `raw` is a clock read
+            // taken at wake time and jitters by a few hundred µs; when the media
+            // and display phases happen to line up on a frame boundary, that
+            // jitter flips the drain between 0 and 2 due frames on alternate
+            // ticks — one repeated frame then one dropped, i.e. the rare hitch.
+            // Presentation timestamps are exact, so picking the frame rather than
+            // a time removes the boundary entirely. Outside half an interval
+            // (seek, genuine clock drift, source rate != tick rate) fall back to
+            // `raw` and let the drain resync in one tick.
+            match peek_pts {
+                Some(pts) if (pts - raw.as_secs_f64()).abs() < interval.as_secs_f64() * 0.5 => {
+                    Duration::from_secs_f64(pts.max(0.0))
+                }
+                _ => raw,
+            }
+        } else {
+            position
+        };
         return FramePacingDecision {
-            target: Some(if woke_on_tick {
-                position.saturating_add(interval)
-            } else {
-                position
-            }),
+            target: Some(target),
             tick_paced: true,
         };
     }
@@ -543,19 +560,10 @@ pub(crate) fn video_consume_thread(
             };
             (position, ctl.fit, stepping)
         };
-        let pacing = frame_pacing_decision(
-            position,
-            stepping,
-            woke_on_vsync,
-            last_vsync_at.map(|tick| tick.elapsed()),
-            vsync_interval,
-        );
-        let target = pacing.target;
-        woke_on_vsync = false;
-
         // Keep one frame peeked while paused, and notice an immediately-following
         // EOF even without a running target clock. A future frame still holds EOF
-        // behind it until playback resumes and presents that frame.
+        // behind it until playback resumes and presents that frame. Runs before
+        // the pacing decision so that decision can snap to the peeked frame's pts.
         if peek.is_none() && terminal.is_none() {
             match rx.as_ref().map(|r| r.try_recv()) {
                 Some(Ok(VideoMessage::Frame(f))) => peek = Some(f),
@@ -574,6 +582,17 @@ pub(crate) fn video_consume_thread(
                 _ => {}
             }
         }
+
+        let pacing = frame_pacing_decision(
+            position,
+            stepping,
+            woke_on_vsync,
+            last_vsync_at.map(|tick| tick.elapsed()),
+            vsync_interval,
+            peek.as_ref().map(|f| f.pts),
+        );
+        let target = pacing.target;
+        woke_on_vsync = false;
 
         let mut consumed: Option<VideoFrame> = None;
         let mut dropped = 0u32;
@@ -1674,7 +1693,7 @@ mod tests {
         let position = Duration::from_secs(10);
         let interval = Duration::from_millis(20);
         let decide = |stepping, woke_on_tick, age, interval| {
-            frame_pacing_decision(Some(position), stepping, woke_on_tick, age, interval)
+            frame_pacing_decision(Some(position), stepping, woke_on_tick, age, interval, None)
         };
 
         let tick = decide(false, true, Some(Duration::from_millis(1)), Some(interval));
@@ -1709,6 +1728,46 @@ mod tests {
         assert_eq!(
             update_vsync_interval(None, Duration::from_millis(100), 2),
             VSYNC_INTERVAL_MAX
+        );
+    }
+
+    /// The hitch this guards: with a raw clock target, sub-ms wake jitter on a
+    /// frame boundary flips the drain between 0 and 2 due frames. Snapping to the
+    /// peeked pts must pick the same frame either side of the boundary.
+    #[test]
+    fn tick_target_snaps_to_the_peeked_frame_across_wake_jitter() {
+        let interval = Duration::from_millis(20);
+        let pts = 10.02_f64; // frame due one interval after position 10.000s
+        let snap = |position_us: u64| {
+            frame_pacing_decision(
+                Some(Duration::from_micros(position_us)),
+                false,
+                true,
+                Some(Duration::from_millis(1)),
+                Some(interval),
+                Some(pts),
+            )
+            .target
+        };
+
+        // 300µs either side of the boundary: same frame selected, exactly.
+        let want = Some(Duration::from_secs_f64(pts));
+        assert_eq!(snap(10_000_300), want);
+        assert_eq!(snap(9_999_700), want);
+
+        // Beyond half an interval the clock has genuinely moved on: fall back to
+        // the raw target so the drain resyncs.
+        assert_eq!(
+            frame_pacing_decision(
+                Some(Duration::from_millis(10_015)),
+                false,
+                true,
+                Some(Duration::from_millis(1)),
+                Some(interval),
+                Some(pts),
+            )
+            .target,
+            Some(Duration::from_millis(10_035)),
         );
     }
 
