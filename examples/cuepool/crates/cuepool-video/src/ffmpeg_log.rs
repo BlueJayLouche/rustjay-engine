@@ -20,6 +20,16 @@ use ffmpeg_next::ffi;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::Once;
 
+/// How `va_list` reaches a callback differs by ABI: Apple and Windows alias it
+/// to a pointer, while System V lowers it to `*mut __va_list_tag` in function
+/// position. `av_log_set_callback` and `av_log_format_line2` agree on the shape
+/// on any one target, so alias it once and pass it straight through — this code
+/// never inspects it.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+type VaList = *mut ffi::__va_list_tag;
+#[cfg(not(all(unix, not(target_vendor = "apple"))))]
+type VaList = ffi::va_list;
+
 /// FFmpeg log levels used here (`libavutil/log.h`).
 const AV_LOG_WARNING: c_int = 24;
 const AV_LOG_VERBOSE: c_int = 40;
@@ -44,7 +54,7 @@ unsafe extern "C" fn ffmpeg_log_callback(
     avcl: *mut c_void,
     level: c_int,
     fmt: *const c_char,
-    args: ffi::va_list,
+    args: VaList,
 ) {
     if fmt.is_null() {
         return;
