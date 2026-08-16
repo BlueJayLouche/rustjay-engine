@@ -46,6 +46,26 @@ fn next_frame(tc: &SmpteTime) -> SmpteTime {
     next
 }
 
+/// How many frames the decoder may lose before a resumed sequence counts as a
+/// relocate rather than a dropout. Three covers the bursts a marginal signal
+/// produces; a real locate lands far outside this window.
+const MAX_LOST_FRAMES: u8 = 3;
+
+/// True when `tc` continues the sequence from `expected`, allowing up to
+/// [`MAX_LOST_FRAMES`] frames the decoder failed to produce. Backwards or
+/// distant values are not continuations — those are relocates, and go through
+/// the two-strike confirmation instead.
+fn continues_sequence(expected: &SmpteTime, tc: &SmpteTime) -> bool {
+    let mut probe = *expected;
+    for _ in 0..=MAX_LOST_FRAMES {
+        if probe == *tc {
+            return true;
+        }
+        probe = next_frame(&probe);
+    }
+    false
+}
+
 /// Receives LTC on one configured audio input device.
 ///
 /// The cpal callback only queues samples; decoding happens on the engine
@@ -102,10 +122,18 @@ impl LtcReceiver {
     }
 
     /// Publish a decoded frame, dropping single-frame glitches: a frame that
-    /// breaks the +1 sequence is adopted only when a second consecutive
-    /// mismatch confirms a genuine jump (locate/shuttle at the source).
+    /// does not continue the sequence is adopted only when a second
+    /// consecutive mismatch confirms a genuine jump (locate/shuttle).
+    ///
+    /// "Continues" allows for frames the decoder lost, which is the ordinary
+    /// failure on a marginal signal. Requiring an exact +1 would discard the
+    /// next *good* frame after every loss, freezing the published position
+    /// for three frame periods (~100 ms at 30 fps) — past the follow's 40 ms
+    /// deadband, so every isolated dropout would nudge the playback rate.
     fn accept_frame(&mut self, tc: SmpteTime) {
-        if self.expected.is_some() && Some(tc) != self.expected {
+        if let Some(expected) = self.expected
+            && !continues_sequence(&expected, &tc)
+        {
             self.mismatches += 1;
             if self.mismatches < 2 {
                 return;
@@ -207,6 +235,30 @@ mod tests {
         };
         let t = next_frame(&end_of_minute_9);
         assert_eq!((t.minutes, t.seconds, t.frames), (10, 0, 0));
+    }
+
+    /// A frame the decoder loses must not cost the next good one as well: an
+    /// exact +1 rule freezes the position for three frame periods after every
+    /// dropout, which is past the follow's deadband.
+    #[test]
+    fn lost_frames_do_not_stall_the_published_position() {
+        let mut rx = LtcReceiver::new("test");
+        for frames in 10..=12 {
+            rx.accept_frame(tc(frames, MtcFrameRate::Fps25));
+        }
+        assert_eq!(rx.clone_state().position.frames, 12);
+
+        // The decoder loses 13; 14 arrives and must publish immediately.
+        rx.accept_frame(tc(14, MtcFrameRate::Fps25));
+        assert_eq!(rx.clone_state().position.frames, 14, "lost frame stalled");
+        // A burst of losses inside the window still continues the sequence.
+        rx.accept_frame(tc(17, MtcFrameRate::Fps25));
+        assert_eq!(rx.clone_state().position.frames, 17, "burst stalled");
+        // Beyond the window it is a relocate, so it needs confirming.
+        rx.accept_frame(tc(2, MtcFrameRate::Fps25));
+        assert_eq!(rx.clone_state().position.frames, 17, "unconfirmed relocate");
+        rx.accept_frame(tc(3, MtcFrameRate::Fps25));
+        assert_eq!(rx.clone_state().position.frames, 3, "confirmed relocate");
     }
 
     #[test]
