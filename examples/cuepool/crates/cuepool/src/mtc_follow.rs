@@ -28,6 +28,42 @@ pub const HARD_SYNC_SECS: f64 = 0.250;
 /// Max clock slew per unit elapsed realtime while nudging (5 %).
 pub const MAX_SLEW: f64 = 0.05;
 
+/// Floor between hard-sync media reopens. Every hard sync is a full container
+/// open (index parse included) and the follow runs each tick, so a scrubbing
+/// source would otherwise drive a back-to-back stream of opens.
+pub const HARD_SYNC_REOPEN_FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What a stopped or locating source should do this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocateAction {
+    /// Reopen the decoder at the target.
+    pub sync: bool,
+    /// Freeze the follow at the target.
+    pub hold: bool,
+}
+
+/// Decide the locate behaviour for a source that is running but not playing.
+///
+/// `may_reopen` is false while a previous hard sync is still inside
+/// [`HARD_SYNC_REOPEN_FLOOR`]. A coalesced sync must NOT hold: holding writes
+/// the target into the position the next tick compares against, so the
+/// remaining drift would disappear and the scrub's final position would never
+/// be applied. Coalescing is safe only because the next eligible tick syncs
+/// to the then-current target.
+pub fn locate_action(drift: f64, may_reopen: bool) -> LocateAction {
+    if drift.abs() <= DEADBAND_SECS {
+        // Already there — nothing to reopen, safe to freeze.
+        return LocateAction {
+            sync: false,
+            hold: true,
+        };
+    }
+    LocateAction {
+        sync: may_reopen,
+        hold: may_reopen,
+    }
+}
+
 /// Decide how to correct `drift` (target − current video position, seconds)
 /// measured over `dt` seconds of elapsed realtime.
 ///
@@ -74,6 +110,35 @@ pub struct MtcFollowState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locate_holds_only_once_the_picture_is_there() {
+        // Within the deadband: nothing to reopen, and freezing is correct.
+        assert_eq!(
+            locate_action(0.01, true),
+            LocateAction {
+                sync: false,
+                hold: true
+            }
+        );
+        // Off target and allowed: reopen and freeze there.
+        assert_eq!(
+            locate_action(2.0, true),
+            LocateAction {
+                sync: true,
+                hold: true
+            }
+        );
+        // Off target but coalesced: must not freeze, or the next tick sees no
+        // drift and the scrub's final position is never applied.
+        assert_eq!(
+            locate_action(2.0, false),
+            LocateAction {
+                sync: false,
+                hold: false
+            }
+        );
+    }
 
     #[test]
     fn deadband_does_nothing() {

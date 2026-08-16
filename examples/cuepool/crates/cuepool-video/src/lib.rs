@@ -12,6 +12,7 @@
 mod canvas_texture;
 #[cfg(windows)]
 mod d3d12_zero_copy;
+mod ffmpeg_log;
 mod frame;
 mod frame_lease;
 mod frame_pool;
@@ -26,6 +27,7 @@ mod zero_copy;
 pub use canvas_texture::CanvasTexture;
 #[cfg(windows)]
 pub use d3d12_zero_copy::{D3d12Frame, D3d12Handoff};
+pub use ffmpeg_log::install as install_ffmpeg_logging;
 pub use frame_lease::{LeaseBudget, LeasePermit, MAX_ZERO_COPY_LEASES, SubmissionRetirement};
 pub use frame_pool::FramePool;
 #[cfg(windows)]
