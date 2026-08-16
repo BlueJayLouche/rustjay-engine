@@ -4722,6 +4722,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
+    // Before anything opens media: otherwise FFmpeg writes to stderr, past the
+    // log file and past the operator's ability to tell noise from a fault.
+    cuepool_video::install_ffmpeg_logging();
     let argv: Vec<OsString> = std::env::args_os().collect();
     let cwd = std::env::current_dir().map_err(|error| {
         startup_error(
