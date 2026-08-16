@@ -246,7 +246,14 @@ impl EguiControlGui {
 
     // ── Device list sync ─────────────────────────────────────────────────────
 
-    pub fn update_device_lists(&mut self, input_manager: &rustjay_io::InputManager) {
+    // The caller holds the EngineState lock (see App::about_to_wait's
+    // FrameStateGuard), so audio devices are passed in — locking shared_state
+    // here would self-deadlock the event loop.
+    pub fn update_device_lists(
+        &mut self,
+        input_manager: &rustjay_io::InputManager,
+        audio_devices: &[String],
+    ) {
         self.webcam_devices = input_manager.webcam_devices().to_vec();
         #[cfg(feature = "ndi")]
         {
@@ -278,9 +285,7 @@ impl EguiControlGui {
                 self.selected_v4l2_capture = 0;
             }
         }
-        if let Ok(state) = self.shared_state.lock() {
-            self.audio_devices = state.audio.available_devices.clone();
-        }
+        self.audio_devices = audio_devices.to_vec();
     }
 
     // ── Main UI entry point ──────────────────────────────────────────────────

@@ -191,7 +191,14 @@ impl ControlGui {
     }
 
     /// Sync device lists after background discovery completes.
-    pub fn update_device_lists(&mut self, input_manager: &InputManager) {
+    // The caller holds the EngineState lock (see App::about_to_wait's
+    // FrameStateGuard), so audio devices are passed in — locking shared_state
+    // here would self-deadlock the event loop.
+    pub fn update_device_lists(
+        &mut self,
+        input_manager: &InputManager,
+        audio_devices: &[String],
+    ) {
         self.webcam_devices = input_manager.webcam_devices().to_vec();
         #[cfg(feature = "ndi")]
         {
@@ -226,9 +233,7 @@ impl ControlGui {
             }
         }
 
-        if let Ok(state) = self.shared_state.lock() {
-            self.audio_devices = state.audio.available_devices.clone();
-        }
+        self.audio_devices = audio_devices.to_vec();
     }
 
     /// Build the ImGui UI

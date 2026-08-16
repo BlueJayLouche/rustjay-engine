@@ -719,10 +719,10 @@ impl<P: EffectPlugin> App<P> {
             if self.use_egui {
                 #[cfg(feature = "egui")]
                 if let Some(ref mut gui) = self.egui_control_gui.as_mut() {
-                    gui.update_device_lists(manager);
+                    gui.update_device_lists(manager, &state.audio.available_devices);
                 }
             } else if let Some(ref mut gui) = self.control_gui.as_mut() {
-                gui.update_device_lists(manager);
+                gui.update_device_lists(manager, &state.audio.available_devices);
             }
         }
         if done {
