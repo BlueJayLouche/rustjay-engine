@@ -155,6 +155,18 @@ struct CurrentVideo {
     paused_position: Option<f64>,
 }
 
+impl CurrentVideo {
+    /// True when the picture reaches an end of its own accord, so an AfterLast
+    /// follow must wait for it as well as for the audio track.
+    ///
+    /// Looping and hold-last pictures never end on their own and an
+    /// MTC-followed picture is driven externally — for those the audio stays
+    /// the sole authority, or the follow would wait forever.
+    fn picture_ends_on_its_own(&self) -> bool {
+        !self.follow_mtc && matches!(self.loop_mode, LoopMode::OneShot)
+    }
+}
+
 pub struct ShowEngine {
     state: SharedStateHandle,
     audio_engine: Option<AudioEngine>,
@@ -170,6 +182,11 @@ pub struct ShowEngine {
     triggered_timecodes: HashSet<Decimal>,
     active_timecodes: Vec<(Decimal, Duration)>,
     current_video: Option<CurrentVideo>,
+    /// A one-shot video cue with an audio track ends when BOTH streams do:
+    /// picture and audio lengths routinely differ inside one container. The
+    /// half that finishes first is recorded here as (qid, instance_id); the
+    /// second one fires the AfterLast follow.
+    pending_video_half: Option<(Decimal, u64)>,
     current_picture_qid: Option<Decimal>,
     actions: VecDeque<EngineAction>,
 }
@@ -200,6 +217,7 @@ impl ShowEngine {
             triggered_timecodes: HashSet::new(),
             active_timecodes: Vec::new(),
             current_video: None,
+            pending_video_half: None,
             current_picture_qid: None,
             actions: VecDeque::new(),
         }
@@ -907,6 +925,7 @@ impl ShowEngine {
             self.actions
                 .push_back(EngineAction::StopVideo { fade_out_secs });
             self.current_video = None;
+            self.pending_video_half = None;
         }
         if self.current_picture_qid == Some(qid) && mode != StopMode::LoopEnd {
             self.current_picture_qid = None;
@@ -928,6 +947,7 @@ impl ShowEngine {
         self.delayed_cues.clear();
         self.active_timecodes.clear();
         self.current_video = None;
+        self.pending_video_half = None;
         self.current_picture_qid = None;
         self.paused = false;
         self.reset_show_clock();
@@ -1155,8 +1175,36 @@ impl ShowEngine {
         for (instance_id, qid) in finished {
             self.active_cues
                 .retain(|cue| cue.instance_id != instance_id);
+            // This instance may be the audio half of a video cue, whose picture
+            // can outlast it. Hold the follow until the picture ends too.
+            if self.audio_half_of_pending_video(qid, instance_id)
+                && !self.record_video_half(qid, instance_id)
+            {
+                continue;
+            }
             self.trace(EngineTrace::CueFinished { qid });
             self.play_after_last(qid);
+        }
+    }
+
+    /// True when `(qid, instance_id)` is the audio track of a one-shot video
+    /// cue whose picture ends on its own — either still playing, or already
+    /// ended and waiting on this half.
+    fn audio_half_of_pending_video(&self, qid: Decimal, instance_id: u64) -> bool {
+        self.current_video.as_ref().is_some_and(|video| {
+            video.instance_id == instance_id && video.has_audio && video.picture_ends_on_its_own()
+        }) || self.pending_video_half == Some((qid, instance_id))
+    }
+
+    /// Record one half (picture or audio) of a video cue finishing. Returns
+    /// true once both halves are in, i.e. when the follow should fire.
+    fn record_video_half(&mut self, qid: Decimal, instance_id: u64) -> bool {
+        if self.pending_video_half == Some((qid, instance_id)) {
+            self.pending_video_half = None;
+            true
+        } else {
+            self.pending_video_half = Some((qid, instance_id));
+            false
         }
     }
 
@@ -1266,7 +1314,14 @@ impl ShowEngine {
                 self.current_video = None;
                 self.actions
                     .push_back(EngineAction::StopVideo { fade_out_secs: 0.0 });
-                if !video.has_audio {
+                // With an audio track the follow waits for whichever stream
+                // ends last; without one the picture is the whole cue.
+                let follow_now = if video.has_audio {
+                    self.record_video_half(video.qid, video.instance_id)
+                } else {
+                    true
+                };
+                if follow_now {
                     self.trace(EngineTrace::CueFinished { qid: video.qid });
                     self.play_after_last(video.qid);
                 }
@@ -1832,6 +1887,56 @@ mod tests {
             one_shot.take_actions().as_slice(),
             [EngineAction::StopVideo { .. }]
         ));
+    }
+
+    /// Picture and audio lengths differ inside one container, so a one-shot
+    /// video cue's AfterLast follow must wait for whichever ends last.
+    #[test]
+    fn one_shot_video_follow_waits_for_the_later_of_picture_and_audio() {
+        fn arm(loop_mode: LoopMode) -> ShowEngine {
+            let (mut engine, _, _) = looped_video_engine(loop_mode);
+            engine.state.lock_unpoisoned().show_file.cues =
+                vec![dummy(1, TriggerMode::Go), dummy(2, TriggerMode::AfterLast)];
+            engine.take_actions();
+            engine
+        }
+        fn followed(engine: &mut ShowEngine) -> bool {
+            engine.take_actions().iter().any(|action| {
+                matches!(action, EngineAction::FireExternal(cue)
+                    if cue.base().qid == Decimal::TWO)
+            })
+        }
+        fn finish_audio(engine: &mut ShowEngine) {
+            engine.active_cues[0].state = CueState::Done;
+            engine.check_finished_cues();
+        }
+
+        // Audio ends first (short audio track): hold until picture EOF.
+        let mut engine = arm(LoopMode::OneShot);
+        finish_audio(&mut engine);
+        assert!(
+            !followed(&mut engine),
+            "followed while the picture was live"
+        );
+        engine.video_eof(1, 1);
+        assert!(followed(&mut engine), "no follow once both streams ended");
+
+        // Picture ends first (short picture): hold until the audio finishes.
+        let mut engine = arm(LoopMode::OneShot);
+        engine.video_eof(1, 1);
+        assert!(!followed(&mut engine), "followed while the audio was live");
+        finish_audio(&mut engine);
+        assert!(followed(&mut engine), "no follow once both streams ended");
+
+        // A looping picture never ends on its own, so the audio stays the sole
+        // authority — deferring there would strand the follow forever.
+        let mut engine = arm(LoopMode::Looped);
+        finish_audio(&mut engine);
+        assert!(
+            followed(&mut engine),
+            "looped follow waited for a picture end"
+        );
+        assert_eq!(engine.pending_video_half, None);
     }
 
     #[test]
