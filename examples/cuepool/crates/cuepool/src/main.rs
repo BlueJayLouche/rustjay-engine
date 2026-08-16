@@ -502,6 +502,9 @@ struct App {
     mtc_drift: Option<f64>,
     /// Last frame rate we warned about (rate-limits the non-25fps warning).
     mtc_warned_fps: Option<MtcFrameRate>,
+    /// When the last hard sync reopened the media, so a scrubbing source
+    /// cannot drive a continuous stream of container opens.
+    last_hard_sync: Option<Instant>,
 
     // ── lighting ──
     lighting: LightingEngine,
@@ -873,6 +876,7 @@ impl App {
             mtc_follow: None,
             mtc_drift: None,
             mtc_warned_fps: None,
+            last_hard_sync: None,
             last_window_title: String::new(),
             autosave_running,
             paused: false,
@@ -2262,14 +2266,33 @@ impl App {
     /// Big jump (locate, loop-back, drift > 250 ms): re-seek the forward-only
     /// decoder and re-anchor the clock. Needed even for forward jumps — a large
     /// one would otherwise starve the renderer while decode catches up.
-    fn mtc_hard_sync(&mut self, target: f64) {
+    /// Hard sync by reopening the media at `target`.
+    ///
+    /// Rate-limited, because every call is a full container open (index parse
+    /// included) and `drive_mtc_follow` runs each tick: while an operator
+    /// scrubs the timecode source the target moves continuously, and
+    /// unthrottled this becomes a back-to-back stream of opens on a large
+    /// master. Skipping is safe rather than lossy — the next eligible tick
+    /// syncs to the *then* current target, so scrub bursts coalesce to the
+    /// latest position instead of replaying every intermediate one.
+    /// Returns whether the reopen actually happened.
+    fn mtc_hard_sync(&mut self, target: f64) -> bool {
         let Some(follow) = self.mtc_follow.as_ref() else {
-            return;
+            return false;
         };
+        if self
+            .last_hard_sync
+            .is_some_and(|at| at.elapsed() < mtc_follow::HARD_SYNC_REOPEN_FLOOR)
+        {
+            log::trace!("[MTC] Hard sync to {target:.2}s coalesced");
+            return false;
+        }
+        self.last_hard_sync = Some(Instant::now());
         let path = follow.path.clone();
         log::info!("[MTC] Hard sync Q{} to {:.2}s", follow.qid, target);
         self.spawn_video_decode(&path, Some(target), None, false);
         self.mtc_reanchor(target);
+        true
     }
 
     /// Drive the MTC-follow cue from the latest MTC state. No-op without one.
@@ -2333,7 +2356,9 @@ impl App {
                 self.mtc_drift = Some(drift);
                 match mtc_follow::drift_action(drift, dt) {
                     mtc_follow::MtcAdjust::Nudge(d) => self.nudge_video_clock(d),
-                    mtc_follow::MtcAdjust::HardSync => self.mtc_hard_sync(target),
+                    mtc_follow::MtcAdjust::HardSync => {
+                        self.mtc_hard_sync(target);
+                    }
                     mtc_follow::MtcAdjust::None | mtc_follow::MtcAdjust::Hold => {}
                 }
             }
@@ -2344,13 +2369,19 @@ impl App {
         } else {
             // Running-but-not-playing (full-frame locate) or fully stopped:
             // snap to the target if off, then freeze there.
-            if (target - current).abs() > mtc_follow::DEADBAND_SECS {
+            let may_reopen = self
+                .last_hard_sync
+                .is_none_or(|at| at.elapsed() >= mtc_follow::HARD_SYNC_REOPEN_FLOOR);
+            let action = mtc_follow::locate_action(target - current, may_reopen);
+            if action.sync {
                 self.mtc_hard_sync(target);
             }
-            if let Some(f) = self.mtc_follow.as_mut() {
-                f.hold_position = Some(target);
+            if action.hold {
+                if let Some(f) = self.mtc_follow.as_mut() {
+                    f.hold_position = Some(target);
+                }
+                self.video_control.lock_unpoisoned().hold_position = Some(target);
             }
-            self.video_control.lock_unpoisoned().hold_position = Some(target);
         }
     }
 
