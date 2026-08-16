@@ -4281,7 +4281,16 @@ impl ApplicationHandler<AppEvent> for App {
                     .lock_unpoisoned()
                     .canvas_render_view
                     .clone();
-                let pixmap_view = self.pixmap_texture.as_ref().map(|t| t.render_view());
+                // A PixelMap-source segment owns its DMX addresses only while a
+                // PixelMap cue is running. The texture outlives the cue, so
+                // without this gate the segment keeps sampling the last (or
+                // blanked) frame and writing it over those channels forever,
+                // and no lighting cue can reach those fixtures again.
+                let pixmap_view = self
+                    .current_pixmap_qid
+                    .is_some()
+                    .then(|| self.pixmap_texture.as_ref().map(|t| t.render_view()))
+                    .flatten();
                 let batch: Vec<(&wgpu::TextureView, u32, [f32; 4], u32, u32)> = cfg
                     .active_segments()
                     .filter_map(|s| {
@@ -4292,6 +4301,16 @@ impl ApplicationHandler<AppEvent> for App {
                         Some((view, s.id, s.region, s.cols, s.rows))
                     })
                     .collect();
+                // Segments whose source went away stop owning their addresses:
+                // drop the stale pixels so the overlay skips them next render.
+                for id in cfg
+                    .active_segments()
+                    .map(|s| s.id)
+                    .filter(|id| !batch.iter().any(|(_, sampled, ..)| sampled == id))
+                    .collect::<Vec<_>>()
+                {
+                    self.lighting.clear_segment_pixels(id);
+                }
                 if !batch.is_empty() {
                     self.last_pixel_sample = Instant::now();
                     let configure_gate = Arc::clone(&self.configure_gate);

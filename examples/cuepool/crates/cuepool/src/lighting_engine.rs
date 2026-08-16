@@ -262,6 +262,14 @@ impl LightingEngine {
         self.overlay = overlay;
     }
 
+    /// Release a segment's addresses: with no cached pixels the overlay skips
+    /// it entirely, so cue looks on those channels come through again.
+    pub fn clear_segment_pixels(&mut self, id: u32) {
+        if self.segment_pixels.remove(&id).is_some() {
+            self.dirty = true;
+        }
+    }
+
     /// Feed freshly sampled canvas pixels for one pixel-map segment.
     pub fn set_segment_pixels(&mut self, id: u32, cols: u32, rows: u32, rgba: Vec<u8>) {
         self.segment_pixels.insert(id, (cols, rows, rgba));
@@ -348,8 +356,11 @@ impl LightingEngine {
 
         // Pixel-map segments overlay their channels over cue looks. They go to
         // the project-level destination (no per-segment override yet).
+        // Drop cached pixels for segments that are gone *or disabled*: a
+        // disabled segment must release its addresses back to the cue looks,
+        // and re-enabling one must not replay a frame from minutes ago.
         self.segment_pixels
-            .retain(|id, _| cfg.segments.iter().any(|s| s.id == *id));
+            .retain(|id, _| cfg.active_segments().any(|s| s.id == *id));
         for seg in cfg.active_segments() {
             let Some((cols, rows, rgba)) = self.segment_pixels.get(&seg.id) else {
                 continue;
