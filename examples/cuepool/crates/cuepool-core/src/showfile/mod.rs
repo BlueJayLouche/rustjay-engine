@@ -194,6 +194,25 @@ pub struct ShowSettings {
     /// (empty = system default input).
     #[serde(default)]
     pub ltc_input_device: String,
+
+    // LTC output (chase CuePool from external gear)
+    /// Encode the show clock as LTC on a dedicated audio output.
+    #[serde(default)]
+    pub ltc_output_enabled: bool,
+    /// Output device for generated LTC (empty = system default output).
+    /// Plays on channel 1; never routed through the programme mixer.
+    #[serde(default)]
+    pub ltc_output_device: String,
+    /// Frame rate of the generated LTC.
+    #[serde(default)]
+    pub ltc_output_fps: TimecodeFrameRate,
+    /// Timecode label of show position 0 (Pro Tools convention: one hour).
+    #[serde(default = "default_ltc_output_start")]
+    pub ltc_output_start: crate::Timespan,
+}
+
+fn default_ltc_output_start() -> crate::Timespan {
+    crate::Timespan::from_secs_f64(3600.0)
 }
 
 fn default_timecode_fps() -> f32 {
@@ -235,6 +254,10 @@ impl Default for ShowSettings {
             timecode_fps: default_timecode_fps(),
             timecode_source: TimecodeSourceKind::default(),
             ltc_input_device: String::new(),
+            ltc_output_enabled: false,
+            ltc_output_device: String::new(),
+            ltc_output_fps: TimecodeFrameRate::default(),
+            ltc_output_start: default_ltc_output_start(),
         }
     }
 }
@@ -303,6 +326,47 @@ impl TimecodeSourceKind {
 }
 
 impl std::fmt::Display for TimecodeSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Frame rate for generated timecode. Mirrors the four SMPTE rates; the
+/// codec's `MtcFrameRate` (cuepool-protocols) is converted from this at the
+/// binary seam (protocols is deliberately free of cuepool-core deps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TimecodeFrameRate {
+    Fps24,
+    #[default]
+    Fps25,
+    Fps2997Drop,
+    Fps30,
+}
+
+impl TimecodeFrameRate {
+    pub const ALL: [Self; 4] = [Self::Fps24, Self::Fps25, Self::Fps2997Drop, Self::Fps30];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fps24 => "24fps",
+            Self::Fps25 => "25fps",
+            Self::Fps2997Drop => "29.97fps DF",
+            Self::Fps30 => "30fps",
+        }
+    }
+
+    /// Nominal frames per second (display only — the codec uses exact rates).
+    pub const fn fps(self) -> f32 {
+        match self {
+            Self::Fps24 => 24.0,
+            Self::Fps25 => 25.0,
+            Self::Fps2997Drop => 29.97,
+            Self::Fps30 => 30.0,
+        }
+    }
+}
+
+impl std::fmt::Display for TimecodeFrameRate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }

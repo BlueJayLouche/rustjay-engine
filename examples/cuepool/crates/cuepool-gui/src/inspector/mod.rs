@@ -1230,7 +1230,7 @@ fn qid_edit(ui: &mut egui::Ui, salt: &str, value: &mut Decimal) -> bool {
 /// clock display; also accepts plain seconds). Same commit-on-blur scheme as
 /// [`qid_edit`] — see there for why the live text lives in egui temp storage.
 /// Returns `true` if the value changed.
-fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bool {
+pub(crate) fn timecode_edit(ui: &mut egui::Ui, salt: &str, value: &mut f64, fps: f32) -> bool {
     let id = ui.make_persistent_id(salt);
     // Pending edit: (in-progress text, model value when the edit started).
     let pending = ui.ctx().data(|d| d.get_temp::<(String, f64)>(id));

@@ -157,6 +157,124 @@ impl LtcEncoder {
     }
 }
 
+// ── Frame numbering ───────────────────────────────────────────────────────
+
+/// Actual frame count from 00:00:00:00 for a timecode label.
+///
+/// For drop-frame this counts *real* frames (dropped labels never existed);
+/// for other rates it is `elapsed_labels` at the nominal rate.
+pub fn frame_index(tc: &SmpteTime) -> u64 {
+    let h = tc.hours as u64;
+    let m = tc.minutes as u64;
+    let s = tc.seconds as u64;
+    let f = tc.frames as u64;
+    match tc.frame_rate {
+        MtcFrameRate::Fps2997Drop => {
+            let total_minutes = h * 60 + m;
+            (h * 3600 + m * 60 + s) * 30 + f - 2 * (total_minutes - total_minutes / 10)
+        }
+        other => (h * 3600 + m * 60 + s) * other.fps() as u64 + f,
+    }
+}
+
+/// The label for an actual frame count — the inverse of [`frame_index`]
+/// (wraps at 24 h, as timecode does).
+pub fn frame_label(index: u64, frame_rate: MtcFrameRate) -> SmpteTime {
+    let (hours, minutes, seconds, frames) = match frame_rate {
+        MtcFrameRate::Fps2997Drop => {
+            // 24 h = 2589408 real frames; a 10-minute block = 1800 (minute X0,
+            // no drop) + 9 × 1798 real frames.
+            let index = index % 2_589_408;
+            let tens = index / 17_982;
+            let rem = index % 17_982;
+            let (minute_in_block, seconds, frames) = if rem < 1800 {
+                (0, rem / 30, rem % 30)
+            } else {
+                let r = rem - 1800;
+                (1 + r / 1798, (r % 1798) / 30, r % 1798 % 30 + 2)
+            };
+            let total_minutes = tens * 10 + minute_in_block;
+            (total_minutes / 60, total_minutes % 60, seconds, frames)
+        }
+        other => {
+            let fps = other.fps() as u64;
+            let index = index % (86_400 * fps);
+            let total_seconds = index / fps;
+            (
+                total_seconds / 3600,
+                total_seconds / 60 % 60,
+                total_seconds % 60,
+                index % fps,
+            )
+        }
+    };
+    SmpteTime {
+        hours: hours as u8,
+        minutes: minutes as u8,
+        seconds: seconds as u8,
+        frames: frames as u8,
+        frame_rate,
+    }
+}
+
+// ── Generator ─────────────────────────────────────────────────────────────
+
+/// Turns a show-clock position into a stream of encoded LTC frames.
+///
+/// Pure and device-free: the caller feeds the current position (seconds) each
+/// tick and pushes the produced samples onto whatever output path it owns.
+/// The position may pause or stop freely (nothing is emitted while it does
+/// not advance); a backwards jump re-anchors.
+pub struct LtcGenerator {
+    encoder: LtcEncoder,
+    rate: MtcFrameRate,
+    /// Absolute frame index at show position 0.
+    start_frame: u64,
+    /// Next absolute frame index to encode.
+    next_frame: u64,
+}
+
+impl LtcGenerator {
+    /// `start_secs` is the timecode offset of show position 0 (Pro Tools
+    /// convention: the show starts at 01:00:00:00 → 3600.0).
+    pub fn new(sample_rate: u32, rate: MtcFrameRate, start_secs: f64) -> Self {
+        let start_frame = (start_secs.max(0.0) * exact_fps(rate)).round() as u64;
+        Self {
+            encoder: LtcEncoder::new(sample_rate, rate),
+            rate,
+            start_frame,
+            next_frame: start_frame,
+        }
+    }
+
+    /// Append audio for every frame up to `show_secs`. Idempotent within a
+    /// frame — repeated calls at the same position emit nothing. Returns
+    /// `true` when the position genuinely jumped backwards and the stream
+    /// re-anchored — the caller should flush any queued-but-unplayed audio so
+    /// the jump is heard immediately.
+    pub fn encode_up_to(&mut self, show_secs: f64, out: &mut Vec<f32>) -> bool {
+        let elapsed = (show_secs.max(0.0) * exact_fps(self.rate)).floor() as u64;
+        let target = self.start_frame + elapsed;
+        // `next_frame` is one past the last encoded frame, so a repeat call
+        // inside the same frame has target == next_frame - 1 — not a jump.
+        let reanchored = target + 1 < self.next_frame;
+        if reanchored {
+            self.next_frame = target;
+        }
+        while self.next_frame <= target {
+            let label = frame_label(self.next_frame, self.rate);
+            self.encoder.encode_frame(&label, out);
+            self.next_frame += 1;
+        }
+        reanchored
+    }
+
+    /// Re-start from the configured offset (e.g. after the show clock reset).
+    pub fn reset(&mut self) {
+        self.next_frame = self.start_frame;
+    }
+}
+
 // ── Decoder ───────────────────────────────────────────────────────────────
 
 /// Decodes LTC from a mono f32 signal.
@@ -351,26 +469,9 @@ mod tests {
         }
     }
 
-    /// Advance a timecode by one frame (naive: no drop-frame label skipping —
-    /// the codec round-trips labels, it does not number them).
+    /// Advance a timecode by one frame, including drop-frame label skipping.
     fn increment(tc: &mut SmpteTime) {
-        let nominal = match tc.frame_rate {
-            MtcFrameRate::Fps2997Drop => 30,
-            other => other.fps() as u8,
-        };
-        tc.frames += 1;
-        if tc.frames >= nominal {
-            tc.frames = 0;
-            tc.seconds += 1;
-            if tc.seconds >= 60 {
-                tc.seconds = 0;
-                tc.minutes += 1;
-                if tc.minutes >= 60 {
-                    tc.minutes = 0;
-                    tc.hours += 1;
-                }
-            }
-        }
+        *tc = frame_label(frame_index(tc) + 1, tc.frame_rate);
     }
 
     /// Encode `n` consecutive frames from `start`, then transform the samples.
@@ -546,5 +647,85 @@ mod tests {
         assert!(dec.feed(&[0.0; 4800]).is_empty());
         let samples = signal(start, 30, 48000, |s| s);
         assert_roundtrip(start, 30, &decode_chunked(&mut dec, &samples));
+    }
+
+    #[test]
+    fn frame_index_label_roundtrip_all_rates() {
+        for &rate in &[
+            MtcFrameRate::Fps24,
+            MtcFrameRate::Fps25,
+            MtcFrameRate::Fps2997Drop,
+            MtcFrameRate::Fps30,
+        ] {
+            // Walk several hours of labels; index ↔ label must be consistent
+            // at every frame (covers minute/hour rollover, DF label skipping,
+            // the minute-10 exception).
+            let mut t = tc(0, 0, 0, 0, rate);
+            for i in 0..200_000u64 {
+                assert_eq!(frame_index(&t), i, "index of {t} at {rate:?}");
+                assert_eq!(frame_label(i, rate), t, "label of {i} at {rate:?}");
+                increment(&mut t);
+            }
+        }
+        // 24 h wrap.
+        assert_eq!(
+            frame_label(2_589_408, MtcFrameRate::Fps2997Drop),
+            tc(0, 0, 0, 0, MtcFrameRate::Fps2997Drop)
+        );
+        assert_eq!(
+            frame_label(86_400 * 25, MtcFrameRate::Fps25),
+            tc(0, 0, 0, 0, MtcFrameRate::Fps25)
+        );
+    }
+
+    #[test]
+    fn generator_stream_decodes_to_show_position() {
+        for &rate in &[
+            MtcFrameRate::Fps24,
+            MtcFrameRate::Fps25,
+            MtcFrameRate::Fps2997Drop,
+            MtcFrameRate::Fps30,
+        ] {
+            let mut generator = LtcGenerator::new(48000, rate, 3600.0);
+            let mut audio = Vec::new();
+            // Two seconds of show clock advancing in 20 ms ticks.
+            for tick in 0..100 {
+                assert!(!generator.encode_up_to(tick as f64 * 0.02, &mut audio));
+            }
+            let mut dec = LtcDecoder::new(48000);
+            let decoded = dec.feed(&audio);
+            assert!(decoded.len() >= 45, "{} frames at {rate:?}", decoded.len());
+            // First label is at the 1-hour offset; labels increment by one.
+            let first = frame_index(&decoded[0]);
+            let one_hour = frame_index(&tc(1, 0, 0, 0, rate));
+            assert!((first - one_hour) <= 1, "first decoded: {}", decoded[0]);
+            for pair in decoded.windows(2) {
+                assert_eq!(frame_index(&pair[1]), frame_index(&pair[0]) + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn generator_reanchors_on_backwards_jump() {
+        let mut generator = LtcGenerator::new(48000, MtcFrameRate::Fps25, 3600.0);
+        let mut audio = Vec::new();
+        assert!(!generator.encode_up_to(5.0, &mut audio));
+        // Show restarts: position jumps backwards → re-anchor flagged, and
+        // the new tail decodes from the earlier position.
+        assert!(generator.encode_up_to(1.0, &mut audio));
+        audio.clear();
+        generator.encode_up_to(2.0, &mut audio);
+        let mut dec = LtcDecoder::new(48000);
+        let decoded = dec.feed(&audio);
+        assert!(!decoded.is_empty());
+        let first = frame_index(&decoded[0]);
+        let one_hour_one_sec = frame_index(&tc(1, 0, 1, 0, MtcFrameRate::Fps25));
+        // The in-progress frame at the jump was flushed with the queue, so
+        // the stream resumes up to a frame later than the jump position.
+        assert!(
+            first - one_hour_one_sec <= 2,
+            "first decoded: {}",
+            decoded[0]
+        );
     }
 }

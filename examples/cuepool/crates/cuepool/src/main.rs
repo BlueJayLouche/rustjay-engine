@@ -12,14 +12,15 @@
 //!   that submits behind vsync-blocked swapchains).
 
 use cuepool::{EngineAction, EngineCommand, EngineEvent, ShowEngine};
-use cuepool_audio::AudioEngine;
+use cuepool_audio::{AudioEngine, QueueOutput};
 use cuepool_core::{
     AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour,
-    TimecodeSourceKind, Timespan,
+    TimecodeFrameRate, TimecodeSourceKind, Timespan,
 };
 use cuepool_gui::app::CueState;
 use cuepool_gui::logging::PERSIST_TARGET;
 use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, VideoTimings};
+use cuepool_protocols::ltc::LtcGenerator;
 use cuepool_protocols::midi::mtc::MtcReceiver;
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
 use cuepool_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
@@ -47,7 +48,7 @@ use api::{ApiCommand, ApiCommandOutcome, ApiRuntime};
 mod lighting_engine;
 use lighting_engine::LightingEngine;
 mod ltc_source;
-use ltc_source::LtcReceiver;
+use ltc_source::{LtcReceiver, to_mtc_frame_rate};
 mod mtc_follow;
 use mtc_follow::MtcFollowState;
 mod output_window;
@@ -380,6 +381,33 @@ fn build_timecode_source(config: &(TimecodeSourceKind, String)) -> Box<dyn Timec
     }
 }
 
+/// Open the configured LTC output. `None` when disabled or when the device
+/// can't be opened right now (the per-tick path retries on a throttle).
+fn open_ltc_output(
+    config: &(bool, String, TimecodeFrameRate, f64),
+) -> Option<(QueueOutput, LtcGenerator)> {
+    let (enabled, device, fps, start) = config;
+    if !enabled {
+        return None;
+    }
+    match QueueOutput::start(device) {
+        Ok(out) => {
+            log::info!(
+                "[LTC-out] Generating {} on '{}' (start {:.2}s)",
+                fps.name(),
+                out.device_name(),
+                start
+            );
+            let generator = LtcGenerator::new(out.sample_rate(), to_mtc_frame_rate(*fps), *start);
+            Some((out, generator))
+        }
+        Err(e) => {
+            log::warn!("[LTC-out] Cannot open output: {e}");
+            None
+        }
+    }
+}
+
 struct App {
     // ── wgpu core ──
     instance: wgpu::Instance,
@@ -523,6 +551,16 @@ struct App {
     timecode_config: (TimecodeSourceKind, String),
     /// Last audio-input device scan for the settings window's LTC device list.
     last_input_scan: Instant,
+
+    // ── LTC generate ──
+    /// Active LTC output: queue-fed stream + show-clock encoder.
+    ltc_out: Option<(QueueOutput, LtcGenerator)>,
+    /// The settings `ltc_out` was built from: (enabled, device, fps, start).
+    ltc_out_config: (bool, String, TimecodeFrameRate, f64),
+    /// Retry throttle while the configured LTC output device is unavailable.
+    ltc_out_retry: Instant,
+    /// Encode scratch, kept out of the per-frame path.
+    ltc_scratch: Vec<f32>,
     /// The video cue currently following MTC, if any.
     mtc_follow: Option<MtcFollowState>,
     /// Last measured drift (target − video position) while following, for the GUI.
@@ -836,12 +874,21 @@ impl App {
             }
         };
 
-        let timecode_config = {
+        let (timecode_config, ltc_out_config) = {
             let state = cuepool.state().lock_unpoisoned();
             let settings = &state.show_file.show_settings;
-            (settings.timecode_source, settings.ltc_input_device.clone())
+            (
+                (settings.timecode_source, settings.ltc_input_device.clone()),
+                (
+                    settings.ltc_output_enabled,
+                    settings.ltc_output_device.clone(),
+                    settings.ltc_output_fps,
+                    settings.ltc_output_start.as_secs_f64(),
+                ),
+            )
         };
         let timecode_source = build_timecode_source(&timecode_config);
+        let ltc_out = open_ltc_output(&ltc_out_config);
 
         let mut app = Self {
             instance,
@@ -913,6 +960,11 @@ impl App {
             timecode_source,
             timecode_config,
             last_input_scan: Instant::now() - Duration::from_secs(10),
+            ltc_out,
+            ltc_out_config,
+            // Try again on the first tick if startup open failed.
+            ltc_out_retry: Instant::now() - Duration::from_secs(10),
+            ltc_scratch: Vec::new(),
             mtc_follow: None,
             mtc_drift: None,
             mtc_warned_fps: None,
@@ -4364,6 +4416,53 @@ impl ApplicationHandler<AppEvent> for App {
             if let Some(devices) = input_devices {
                 state.ltc_input_devices = devices;
             }
+        }
+
+        // LTC generate: rebuild on settings change, retry while the device is
+        // unavailable, and top up the output queue from the show clock.
+        let ltc_out_config = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            let s = &state.show_file.show_settings;
+            (
+                s.ltc_output_enabled,
+                s.ltc_output_device.clone(),
+                s.ltc_output_fps,
+                s.ltc_output_start.as_secs_f64(),
+            )
+        };
+        if ltc_out_config != self.ltc_out_config {
+            log::info!(
+                "[LTC-out] {} (device '{}')",
+                if ltc_out_config.0 {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                ltc_out_config.1
+            );
+            self.ltc_out = open_ltc_output(&ltc_out_config);
+            self.ltc_out_config = ltc_out_config;
+            self.ltc_out_retry = Instant::now();
+        }
+        if self.ltc_out_config.0
+            && self.ltc_out.is_none()
+            && self.ltc_out_retry.elapsed().as_secs() >= 5
+        {
+            self.ltc_out_retry = Instant::now();
+            self.ltc_out = open_ltc_output(&self.ltc_out_config);
+        }
+        if let Some((out, generator)) = &mut self.ltc_out
+            && let Some(show_secs) = self.show_engine.snapshot().show_elapsed_secs
+        {
+            // ~100 ms lookahead so the callback never starves between ticks;
+            // on a backwards jump flush the queue so the new position is
+            // heard immediately. Paused/stopped clocks emit nothing — the
+            // queue drains to silence and downstream gear holds.
+            if generator.encode_up_to(show_secs + 0.1, &mut self.ltc_scratch) {
+                out.clear();
+            }
+            out.push(&self.ltc_scratch);
+            self.ltc_scratch.clear();
         }
         self.process_protocol_events();
         // Preserve arrival order across control surfaces: protocol/UI commands

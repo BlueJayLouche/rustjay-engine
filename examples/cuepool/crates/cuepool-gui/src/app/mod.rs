@@ -1589,6 +1589,87 @@ impl CuePoolApp {
                                         });
                                 });
                             }
+
+                            settings_changed |= ui
+                                .checkbox(&mut settings.ltc_output_enabled, "Generate LTC out")
+                                .on_hover_text(
+                                    "Encode the show clock as LTC on channel 1 of a dedicated \
+                                     output, so external gear can chase CuePool — never mixed \
+                                     into programme audio",
+                                )
+                                .changed();
+                            if settings.ltc_output_enabled {
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC output:");
+                                    egui::ComboBox::from_id_salt("ltc_output_device")
+                                        .selected_text(if settings.ltc_output_device.is_empty() {
+                                            "System Default".to_string()
+                                        } else {
+                                            settings.ltc_output_device.clone()
+                                        })
+                                        .width(200.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    settings.ltc_output_device.is_empty(),
+                                                    "System Default",
+                                                )
+                                                .clicked()
+                                            {
+                                                settings.ltc_output_device.clear();
+                                                settings_changed = true;
+                                            }
+                                            for device in &devices {
+                                                if ui
+                                                    .selectable_label(
+                                                        settings.ltc_output_device == device.name,
+                                                        &device.name,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    settings.ltc_output_device =
+                                                        device.name.clone();
+                                                    settings_changed = true;
+                                                }
+                                            }
+                                        });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC fps:");
+                                    egui::ComboBox::from_id_salt("ltc_output_fps")
+                                        .selected_text(settings.ltc_output_fps.to_string())
+                                        .show_ui(ui, |ui| {
+                                            for rate in cuepool_core::TimecodeFrameRate::ALL {
+                                                if ui
+                                                    .selectable_label(
+                                                        rate == settings.ltc_output_fps,
+                                                        rate.to_string(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    settings.ltc_output_fps = rate;
+                                                    settings_changed = true;
+                                                }
+                                            }
+                                        });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC start:").on_hover_text(
+                                        "Timecode label at show position 0 (Pro Tools convention: 01:00:00:00)",
+                                    );
+                                    let mut secs = settings.ltc_output_start.as_secs_f64();
+                                    if crate::inspector::timecode_edit(
+                                        ui,
+                                        "ltc_output_start",
+                                        &mut secs,
+                                        settings.ltc_output_fps.fps(),
+                                    ) {
+                                        settings.ltc_output_start =
+                                            cuepool_core::Timespan::from_secs_f64(secs);
+                                        settings_changed = true;
+                                    }
+                                });
+                            }
                         });
                         ui.separator();
 

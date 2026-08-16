@@ -6,7 +6,8 @@
 //! freezes there (see `drive_mtc_follow` in main.rs).
 
 use cuepool_audio::InputCapture;
-use cuepool_protocols::ltc::LtcDecoder;
+use cuepool_core::TimecodeFrameRate;
+use cuepool_protocols::ltc::{LtcDecoder, frame_index, frame_label};
 use cuepool_protocols::timecode::{MtcFrameRate, SmpteTime, TimecodeSource, TimecodeState};
 use std::time::{Duration, Instant};
 
@@ -15,35 +16,20 @@ const PLAYING_TIMEOUT: Duration = Duration::from_millis(500);
 /// Reconnect attempts while the configured device is missing.
 const CONNECT_RETRY: Duration = Duration::from_secs(5);
 
+/// Map the settings-crate frame rate onto the codec's.
+pub fn to_mtc_frame_rate(rate: TimecodeFrameRate) -> MtcFrameRate {
+    match rate {
+        TimecodeFrameRate::Fps24 => MtcFrameRate::Fps24,
+        TimecodeFrameRate::Fps25 => MtcFrameRate::Fps25,
+        TimecodeFrameRate::Fps2997Drop => MtcFrameRate::Fps2997Drop,
+        TimecodeFrameRate::Fps30 => MtcFrameRate::Fps30,
+    }
+}
+
 /// The next timecode frame's label, including drop-frame label skipping
 /// (labels 00/01 don't exist at minute starts except every tenth minute).
 fn next_frame(tc: &SmpteTime) -> SmpteTime {
-    let nominal = match tc.frame_rate {
-        MtcFrameRate::Fps2997Drop => 30,
-        other => other.fps() as u8,
-    };
-    let mut next = *tc;
-    next.frames += 1;
-    if next.frames >= nominal {
-        next.frames = 0;
-        next.seconds += 1;
-        if next.seconds >= 60 {
-            next.seconds = 0;
-            next.minutes += 1;
-            if next.minutes >= 60 {
-                next.minutes = 0;
-                next.hours = (next.hours + 1) % 24;
-            }
-        }
-    }
-    if tc.frame_rate == MtcFrameRate::Fps2997Drop
-        && next.seconds == 0
-        && next.frames < 2
-        && !next.minutes.is_multiple_of(10)
-    {
-        next.frames = 2;
-    }
-    next
+    frame_label(frame_index(tc) + 1, tc.frame_rate)
 }
 
 /// How many frames the decoder may lose before a resumed sequence counts as a
