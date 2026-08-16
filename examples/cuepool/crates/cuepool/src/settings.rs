@@ -105,20 +105,61 @@ pub(crate) fn save_settings(profile: &AppProfile, settings: &AppSettings) {
     }
 }
 
-pub(crate) fn save_settings_from_state(profile: &AppProfile, state: &SharedStateHandle) {
+/// Snapshot the persistable settings out of shared state. Split out from
+/// [`save_settings_from_state`] so the poison behaviour is testable without
+/// touching the filesystem, and so the guard drops before the write.
+fn settings_from_state(state: &SharedStateHandle) -> AppSettings {
     // lock_unpoisoned: a poisoned state lock must not fall back to defaults
-    // here — save_settings would overwrite the user's settings.json with them.
+    // here — save_settings would overwrite the user's settings.json with them,
+    // erasing recent_files and re-showing the release notes. Recovered state
+    // may be partial (see LockExt), but a half-updated list beats an empty one.
     let state = state.lock_unpoisoned();
-    let settings = AppSettings {
+    AppSettings {
         recent_files: state.recent_files.clone(),
         last_seen_release_notes: state.last_seen_release_notes.clone(),
-    };
-    save_settings(profile, &settings);
+    }
+}
+
+pub(crate) fn save_settings_from_state(profile: &AppProfile, state: &SharedStateHandle) {
+    save_settings(profile, &settings_from_state(state));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bug this guards against wrote `AppSettings::default()` over the
+    /// user's settings.json whenever any thread had panicked while holding the
+    /// state lock, silently losing their recent files and re-showing the
+    /// release notes.
+    #[test]
+    fn a_poisoned_lock_keeps_the_real_settings() {
+        let state: SharedStateHandle =
+            std::sync::Arc::new(std::sync::Mutex::new(cuepool_gui::SharedState::default()));
+        {
+            let mut guard = state.lock().unwrap();
+            guard.recent_files = vec![std::path::PathBuf::from("/shows/gala.qproj")];
+            guard.last_seen_release_notes = Some("9.9.9".into());
+        }
+
+        // Poison it the way a real panic does: unwind while holding the guard.
+        let poisoner = std::sync::Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the state lock");
+        })
+        .join();
+        assert!(state.is_poisoned(), "the lock should be poisoned by now");
+
+        let settings = settings_from_state(&state);
+
+        assert_eq!(
+            settings.recent_files,
+            vec![std::path::PathBuf::from("/shows/gala.qproj")],
+            "a poisoned lock must not blank recent_files"
+        );
+        assert_eq!(settings.last_seen_release_notes.as_deref(), Some("9.9.9"));
+    }
 
     #[test]
     fn old_settings_leave_release_notes_unseen() {
