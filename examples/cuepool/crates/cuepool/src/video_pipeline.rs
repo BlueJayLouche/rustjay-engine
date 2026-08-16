@@ -1566,6 +1566,7 @@ pub(crate) fn pixmap_decode_thread(
     path: &str,
     loop_mode: cuepool_core::LoopMode,
     stop_flag: Arc<AtomicBool>,
+    pause_flag: Arc<AtomicBool>,
     frame_tx: std::sync::mpsc::SyncSender<VideoFrame>,
     frame_pool: Arc<FramePool>,
     hap_acceleration: HapAcceleration,
@@ -1591,7 +1592,7 @@ pub(crate) fn pixmap_decode_thread(
                 return;
             }
         };
-        let start = Instant::now();
+        let mut start = Instant::now();
         while !stop_flag.load(Ordering::Relaxed) {
             let Some(frame) = source.read_frame_cancellable(&stop_flag) else {
                 if stop_flag.load(Ordering::Relaxed) {
@@ -1618,11 +1619,30 @@ pub(crate) fn pixmap_decode_thread(
                 return; // HoldLast: exit holding the last frame
             };
             last_dims = (frame.width, frame.height);
-            // Wall-clock pacing: sleep until this frame is due.
-            let due = start + Duration::from_secs_f64(frame.pts.max(0.0));
-            while Instant::now() < due {
+            // Wall-clock pacing: sleep until this frame is due. A pause holds
+            // the clock — the paused span shifts the timeline so the remaining
+            // frames keep their original cadence on resume, and the last sent
+            // frame stays on the LEDs meanwhile.
+            let mut due = start + Duration::from_secs_f64(frame.pts.max(0.0));
+            loop {
                 if stop_flag.load(Ordering::Relaxed) {
                     return;
+                }
+                if pause_flag.load(Ordering::Relaxed) {
+                    let paused_at = Instant::now();
+                    while pause_flag.load(Ordering::Relaxed) {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let paused_for = paused_at.elapsed();
+                    start += paused_for;
+                    due += paused_for;
+                    continue;
+                }
+                if Instant::now() >= due {
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
