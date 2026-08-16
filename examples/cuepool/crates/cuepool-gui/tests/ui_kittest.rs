@@ -420,3 +420,39 @@ fn edit_and_show_mode_snapshots() {
     harness.run();
     harness.snapshot_options("show_mode", &snapshot_options);
 }
+
+/// New / Open confirm in-app. A native modal here deadlocks the winit loop and
+/// can open behind fullscreen output windows, which reads to the operator as
+/// the app soft-locking with no dialog in sight.
+#[test]
+fn discarding_changes_is_confirmed_in_app_before_a_new_project() {
+    let (mut harness, state) = demo_harness();
+    {
+        let mut state = state.lock().unwrap();
+        state.dirty = true;
+        state.command_queue.push(AppCommand::NewProject);
+    }
+    harness.run();
+
+    // Parked behind the modal: the project is untouched until the operator answers.
+    assert!(harness.query_by_label("Discard & Continue").is_some());
+    assert!(!state.lock().unwrap().show_file.cues.is_empty());
+
+    // Cancelling drops the command and leaves the project alone.
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert!(harness.query_by_label("Discard & Continue").is_none());
+    assert!(!state.lock().unwrap().show_file.cues.is_empty());
+
+    // Confirming re-queues it, and it runs without asking a second time.
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::NewProject);
+    harness.run();
+    harness.get_by_label("Discard & Continue").click();
+    harness.run();
+    assert!(harness.query_by_label("Discard & Continue").is_none());
+    assert!(state.lock().unwrap().show_file.cues.is_empty());
+}
