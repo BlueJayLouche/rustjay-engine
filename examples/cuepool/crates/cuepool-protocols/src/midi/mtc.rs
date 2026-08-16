@@ -64,7 +64,27 @@ pub struct SmpteTime {
 
 impl SmpteTime {
     /// Timecode as fractional elapsed seconds.
+    ///
+    /// For 29.97 drop-frame the label is converted through its frame number
+    /// rather than by reading H:M:S as seconds: labels 00 and 01 are skipped
+    /// at the start of every minute except every tenth, and the true rate is
+    /// 30000/1001.
+    ///
+    /// This is a precision fix, not a correctness one. Drop-frame numbering
+    /// exists precisely so the label tracks wall clock, so reading it as
+    /// seconds was already close — 3.6 ms out at 01:00:00:00 and 87 ms at
+    /// 23:59:59:29, never near the 40 ms chase deadband at show-length
+    /// timecodes. Converting through the frame number makes it exact.
     pub fn as_seconds_f64(self) -> f64 {
+        if self.frame_rate == MtcFrameRate::Fps2997Drop {
+            let total_minutes = self.hours as u64 * 60 + self.minutes as u64;
+            let dropped = 2 * (total_minutes - total_minutes / 10);
+            let frame_number =
+                (self.hours as u64 * 3600 + self.minutes as u64 * 60 + self.seconds as u64) * 30
+                    + self.frames as u64
+                    - dropped;
+            return frame_number as f64 / (30000.0 / 1001.0);
+        }
         let fps = self.frame_rate.fps() as f64;
         self.hours as f64 * 3600.0
             + self.minutes as f64 * 60.0
@@ -495,6 +515,34 @@ mod tests {
         assert_eq!(tc.frames, 4);
         assert_eq!(tc.frame_rate, MtcFrameRate::Fps25);
         assert_eq!(format!("{}", tc), "01:12:34:04");
+    }
+
+    #[test]
+    fn drop_frame_as_seconds_matches_wall_clock() {
+        let tc = |hours, minutes, seconds, frames| SmpteTime {
+            hours,
+            minutes,
+            seconds,
+            frames,
+            frame_rate: MtcFrameRate::Fps2997Drop,
+        };
+        // 01:00:00:00 DF is one wall-clock hour to within a frame (drop-frame
+        // numbering tracks realtime but is not exact: 3599.9964 s).
+        assert!((tc(1, 0, 0, 0).as_seconds_f64() - 3600.0).abs() < 1.0 / 29.97);
+        // At minute 1 labels 00/01 are dropped, so 00:01:00:02 is the first
+        // label of the minute: frame number 1800 at 30000/1001 fps.
+        assert!((tc(0, 1, 0, 2).as_seconds_f64() - 1800.0 / (30000.0 / 1001.0)).abs() < 1e-9);
+        // Minute 10 is a drop exception — no labels skipped at its start.
+        assert!((tc(0, 10, 0, 0).as_seconds_f64() - 17982.0 / (30000.0 / 1001.0)).abs() < 1e-9);
+        // Non-drop rates are untouched by the drop-frame path.
+        let ndf = SmpteTime {
+            hours: 0,
+            minutes: 1,
+            seconds: 0,
+            frames: 0,
+            frame_rate: MtcFrameRate::Fps30,
+        };
+        assert_eq!(ndf.as_seconds_f64(), 60.0);
     }
 
     #[test]
