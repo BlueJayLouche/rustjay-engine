@@ -32,7 +32,7 @@ pub use projection::{
 };
 pub use showfile::{
     AudioLimiterSettings, AudioOutputDriver, ImportSections, RemoteNode, ShowFile, ShowSettings,
-    UdpTarget, apply_import,
+    TimecodeSourceKind, UdpTarget, apply_import,
 };
 pub use sync::LockExt;
 pub use timespan::Timespan;

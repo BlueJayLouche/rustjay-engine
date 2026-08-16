@@ -140,7 +140,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 state.show_file.show_settings.timecode_fps,
             )
         };
-        let (mtc_running, mtc_playing, mtc_secs, mtc_fps, mtc_source, mtc_drift_ms) = {
+        let (mtc_running, mtc_playing, mtc_secs, mtc_fps, mtc_source, mtc_drift_ms, tc_kind) = {
             let Ok(state) = state.lock() else { return };
             (
                 state.mtc_running,
@@ -149,6 +149,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 state.mtc_fps,
                 state.mtc_source.clone(),
                 state.mtc_drift_ms,
+                state.show_file.show_settings.timecode_source,
             )
         };
         let back_btn = Button::new(RichText::new("⏮")).min_size(Vec2::new(36.0, 32.0));
@@ -219,8 +220,8 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .on_hover_text("Next armed timecode trigger");
         }
 
-        // MTC readout (timecode from e.g. Pro Tools over RTP-MIDI). Shown once
-        // an MTC source has been seen; green while the transport is playing.
+        // Chase timecode readout (MTC/LTC source per project settings). Shown
+        // once a source has been seen; green while the transport is playing.
         if mtc_running || !mtc_source.is_empty() {
             ui.separator();
             let mtc_color = if mtc_playing {
@@ -229,15 +230,19 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 Color32::from_gray(110)
             };
             ui.label(
-                RichText::new(format!("MTC {}", format_timecode(mtc_secs, mtc_fps as f32)))
-                    .monospace()
-                    .size(20.0)
-                    .color(mtc_color),
+                RichText::new(format!(
+                    "{} {}",
+                    tc_kind.name(),
+                    format_timecode(mtc_secs, mtc_fps as f32)
+                ))
+                .monospace()
+                .size(20.0)
+                .color(mtc_color),
             )
             .on_hover_text(if mtc_playing {
-                "MIDI timecode (playing)"
+                format!("{} timecode (playing)", tc_kind.name())
             } else {
-                "MIDI timecode (stopped)"
+                format!("{} timecode (stopped)", tc_kind.name())
             });
             if !mtc_source.is_empty() {
                 ui.label(RichText::new(&mtc_source).small().weak());

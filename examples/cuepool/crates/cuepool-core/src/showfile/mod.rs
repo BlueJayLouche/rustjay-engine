@@ -186,6 +186,14 @@ pub struct ShowSettings {
     /// are stored in seconds; this only affects the `.ff` formatting).
     #[serde(default = "default_timecode_fps")]
     pub timecode_fps: f32,
+    /// External timecode source the show chases (video follow, transport
+    /// readout).
+    #[serde(default)]
+    pub timecode_source: TimecodeSourceKind,
+    /// Audio input device carrying LTC when `timecode_source` is `Ltc`
+    /// (empty = system default input).
+    #[serde(default)]
+    pub ltc_input_device: String,
 }
 
 fn default_timecode_fps() -> f32 {
@@ -225,6 +233,8 @@ impl Default for ShowSettings {
             msc_executor: -1,
             msc_page: -1,
             timecode_fps: default_timecode_fps(),
+            timecode_source: TimecodeSourceKind::default(),
+            ltc_input_device: String::new(),
         }
     }
 }
@@ -268,6 +278,31 @@ impl AudioOutputDriver {
 }
 
 impl std::fmt::Display for AudioOutputDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// External timecode source the show chases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TimecodeSourceKind {
+    /// MIDI Timecode, auto-listening on all MIDI ports.
+    #[default]
+    Mtc,
+    /// Linear Timecode decoded from an audio input.
+    Ltc,
+}
+
+impl TimecodeSourceKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Mtc => "MTC",
+            Self::Ltc => "LTC",
+        }
+    }
+}
+
+impl std::fmt::Display for TimecodeSourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }

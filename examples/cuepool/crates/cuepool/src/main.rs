@@ -14,7 +14,8 @@
 use cuepool::{EngineAction, EngineCommand, EngineEvent, ShowEngine};
 use cuepool_audio::AudioEngine;
 use cuepool_core::{
-    AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour, Timespan,
+    AudioOutputDriver, CanvasFit, LockExt, MidiTrigger, MidiTriggerKind, SerializedColour,
+    TimecodeSourceKind, Timespan,
 };
 use cuepool_gui::app::CueState;
 use cuepool_gui::logging::PERSIST_TARGET;
@@ -45,6 +46,8 @@ mod api;
 use api::{ApiCommand, ApiCommandOutcome, ApiRuntime};
 mod lighting_engine;
 use lighting_engine::LightingEngine;
+mod ltc_source;
+use ltc_source::LtcReceiver;
 mod mtc_follow;
 use mtc_follow::MtcFollowState;
 mod output_window;
@@ -363,6 +366,15 @@ fn video_start_clock(
         .map(|(clock, _)| clock)
 }
 
+/// Build the chase source selected by the project settings: MTC (listens on
+/// all MIDI ports) or LTC (decodes from one audio input device).
+fn build_timecode_source(config: &(TimecodeSourceKind, String)) -> Box<dyn TimecodeSource> {
+    match config.0 {
+        TimecodeSourceKind::Mtc => Box::new(MtcReceiver::new()),
+        TimecodeSourceKind::Ltc => Box::new(LtcReceiver::new(&config.1)),
+    }
+}
+
 struct App {
     // ── wgpu core ──
     instance: wgpu::Instance,
@@ -494,9 +506,14 @@ struct App {
     last_discovery: Instant,
 
     // ── Timecode follow ──
-    /// The active timecode source the show chases (MTC today, LTC pluggable
-    /// via the same `TimecodeState` seam).
+    /// The active timecode source the show chases (MTC or LTC, selected in
+    /// project settings).
     timecode_source: Box<dyn TimecodeSource>,
+    /// The settings `timecode_source` was built from — a settings edit or a
+    /// project load rebuilds the source when this no longer matches.
+    timecode_config: (TimecodeSourceKind, String),
+    /// Last audio-input device scan for the settings window's LTC device list.
+    last_input_scan: Instant,
     /// The video cue currently following MTC, if any.
     mtc_follow: Option<MtcFollowState>,
     /// Last measured drift (target − video position) while following, for the GUI.
@@ -804,6 +821,13 @@ impl App {
             }
         };
 
+        let timecode_config = {
+            let state = cuepool.state().lock_unpoisoned();
+            let settings = &state.show_file.show_settings;
+            (settings.timecode_source, settings.ltc_input_device.clone())
+        };
+        let timecode_source = build_timecode_source(&timecode_config);
+
         let mut app = Self {
             instance,
             adapter,
@@ -870,7 +894,9 @@ impl App {
             msc_rx,
             midi_manager,
             last_discovery: Instant::now(),
-            timecode_source: Box::new(MtcReceiver::new()),
+            timecode_source,
+            timecode_config,
+            last_input_scan: Instant::now() - Duration::from_secs(10),
             mtc_follow: None,
             mtc_drift: None,
             mtc_warned_fps: None,
@@ -4196,12 +4222,31 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         self.process_midi_events(event_loop);
-        // Timecode receive (hot-plug refresh is internally throttled) → drive
-        // any timecode-follow video cue → publish status for the readout.
+        // Timecode receive → drive any timecode-follow video cue → publish
+        // status for the transport readout. A settings edit or project load
+        // rebuilds the source when the chase config changed.
+        {
+            let state = self.cuepool.state().lock_unpoisoned();
+            let settings = &state.show_file.show_settings;
+            let config = (settings.timecode_source, settings.ltc_input_device.clone());
+            if config != self.timecode_config {
+                log::info!("[timecode] Chase source: {} ({})", config.0, config.1);
+                drop(state);
+                self.timecode_source = build_timecode_source(&config);
+                self.timecode_config = config;
+            }
+        }
         self.timecode_source.refresh();
         self.timecode_source.tick();
         let tc = self.timecode_source.clone_state();
         self.drive_mtc_follow(&tc);
+        // Keep the settings window's LTC input list fresh (throttled scan).
+        let input_devices = if self.last_input_scan.elapsed().as_secs() >= 5 {
+            self.last_input_scan = Instant::now();
+            cuepool_audio::list_input_devices().ok()
+        } else {
+            None
+        };
         if let Ok(mut state) = self.cuepool.state().lock() {
             state.mtc_running = tc.running;
             state.mtc_playing = tc.playing;
@@ -4209,6 +4254,9 @@ impl ApplicationHandler<AppEvent> for App {
             state.mtc_fps = tc.position.frame_rate.fps() as f64;
             state.mtc_source = tc.source_device.clone();
             state.mtc_drift_ms = self.mtc_drift.map(|d| d * 1000.0);
+            if let Some(devices) = input_devices {
+                state.ltc_input_devices = devices;
+            }
         }
         self.process_protocol_events();
         // Preserve arrival order across control surfaces: protocol/UI commands

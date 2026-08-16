@@ -550,6 +550,9 @@ pub struct SharedState {
     pub mtc_source: String,
     /// Drift (target − video position) in ms — Some only while a follow cue runs.
     pub mtc_drift_ms: Option<f64>,
+    /// Available audio input devices for the LTC chase source (published by
+    /// the control binary on a slow scan).
+    pub ltc_input_devices: Vec<String>,
     /// Next armed timecode trigger: (cue qid, trigger seconds).
     pub next_timecode: Option<(Decimal, f64)>,
     /// Latest pixel-map sample per segment: id → (cols, rows, RGBA bytes).
@@ -655,6 +658,7 @@ impl Default for SharedState {
             mtc_fps: 25.0,
             mtc_source: String::new(),
             mtc_drift_ms: None,
+            ltc_input_devices: Vec::new(),
             next_timecode: None,
             recorder_status: RecorderStatus::default(),
             lighting_preview: std::collections::HashMap::new(),
@@ -1398,6 +1402,7 @@ impl CuePoolApp {
                     if let Ok(mut state) = self.state.lock() {
                         let devices = state.audio_devices.clone();
                         let current_device = state.audio_device_name.clone();
+                        let ltc_inputs = state.ltc_input_devices.clone();
                         let audio_error = state.audio_error.clone();
                         let threshold = state.command_queue.iter().rev().find_map(|cmd| {
                             if let AppCommand::SetLimiterThreshold(t) = cmd { Some(*t) } else { None }
@@ -1514,6 +1519,66 @@ impl CuePoolApp {
                                     .add(egui::DragValue::new(&mut settings.timecode_fps).speed(1).range(1.0..=120.0))
                                     .changed();
                             });
+                            ui.horizontal(|ui| {
+                                ui.label("Chase source:")
+                                    .on_hover_text("External timecode the show chases — video follow cues and the transport readout");
+                                egui::ComboBox::from_id_salt("timecode_source")
+                                    .selected_text(settings.timecode_source.to_string())
+                                    .show_ui(ui, |ui| {
+                                        for source in [
+                                            cuepool_core::TimecodeSourceKind::Mtc,
+                                            cuepool_core::TimecodeSourceKind::Ltc,
+                                        ] {
+                                            if ui
+                                                .selectable_label(
+                                                    source == settings.timecode_source,
+                                                    source.to_string(),
+                                                )
+                                                .clicked()
+                                            {
+                                                settings.timecode_source = source;
+                                                settings_changed = true;
+                                            }
+                                        }
+                                    });
+                            });
+                            if settings.timecode_source == cuepool_core::TimecodeSourceKind::Ltc {
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC input:")
+                                        .on_hover_text("Audio input carrying linear timecode (channel 1)");
+                                    egui::ComboBox::from_id_salt("ltc_input_device")
+                                        .selected_text(if settings.ltc_input_device.is_empty() {
+                                            "System Default".to_string()
+                                        } else {
+                                            settings.ltc_input_device.clone()
+                                        })
+                                        .width(200.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    settings.ltc_input_device.is_empty(),
+                                                    "System Default",
+                                                )
+                                                .clicked()
+                                            {
+                                                settings.ltc_input_device.clear();
+                                                settings_changed = true;
+                                            }
+                                            for device in &ltc_inputs {
+                                                if ui
+                                                    .selectable_label(
+                                                        settings.ltc_input_device == *device,
+                                                        device,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    settings.ltc_input_device = device.clone();
+                                                    settings_changed = true;
+                                                }
+                                            }
+                                        });
+                                });
+                            }
                         });
                         ui.separator();
 
