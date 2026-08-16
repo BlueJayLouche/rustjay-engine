@@ -75,6 +75,11 @@ const VIDEO_QUEUE_CAP: usize = 3;
 /// Two streams × channel/peek slack × the largest decoded plane count.
 const FRAME_POOL_CAP: usize = 2 * (VIDEO_QUEUE_CAP + 2) * 3;
 const API_SHUTDOWN_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Retries for a failed video open before the cue is given up. Attempts are
+/// immediate: a damaged file fails all of them in a few milliseconds, while a
+/// storage stall long enough to outlast them is a fault the operator has to
+/// know about anyway.
+const MAX_VIDEO_OPEN_RETRIES: u32 = 3;
 
 /// Max squared position distance (px²) for recalling an output to a saved monitor.
 /// Positions are fixed for an installed wall, so this just allows minor slop while
@@ -445,6 +450,10 @@ struct App {
     hap_acceleration: HapAcceleration,
     hap_fallback_session: HapFallbackSession,
     hap_fallback_instance_id: Option<u64>,
+    /// Consecutive failed opens of the current video. A storage hiccup or a
+    /// file briefly unavailable retries; a genuinely damaged file gives up
+    /// after MAX_VIDEO_OPEN_RETRIES and tells the operator.
+    video_open_retries: u32,
     /// QID of the cue whose video is currently playing (for loop sync).
     current_video_qid: Option<rust_decimal::Decimal>,
     current_video_instance_id: Option<u64>,
@@ -847,6 +856,7 @@ impl App {
             hap_acceleration,
             hap_fallback_session: HapFallbackSession::default(),
             hap_fallback_instance_id: None,
+            video_open_retries: 0,
             current_video_qid: None,
             current_video_instance_id: None,
             last_project_generation: 0,
@@ -1990,6 +2000,8 @@ impl App {
         duration: cuepool_core::Timespan,
         event_loop: &ActiveEventLoop,
     ) {
+        // A fresh cue gets a fresh retry budget.
+        self.video_open_retries = 0;
         if self.hap_fallback_instance_id != Some(instance_id) {
             self.hap_fallback_session = HapFallbackSession::default();
             self.hap_fallback_instance_id = Some(instance_id);
@@ -3839,8 +3851,40 @@ impl ApplicationHandler<AppEvent> for App {
                     );
                     return;
                 }
+                // A failed open is often transient — storage stalling, a
+                // volume dropping out, a file still being copied — so retry
+                // from the current position before giving the cue up. A
+                // genuinely damaged file exhausts the budget in a few fast
+                // attempts and reports.
+                if let Some(video) = self.show_engine.snapshot().video
+                    && self.video_open_retries < MAX_VIDEO_OPEN_RETRIES
+                {
+                    self.video_open_retries += 1;
+                    let attempt = self.video_open_retries;
+                    log::warn!(
+                        "Video decoder failed on '{}'; retrying from {:.2}s ({attempt}/{MAX_VIDEO_OPEN_RETRIES})",
+                        video.path,
+                        video.position_secs
+                    );
+                    let path = video.path.clone();
+                    self.spawn_video_decode(&path, Some(video.position_secs), None, false);
+                    return;
+                }
                 log::error!("Video decoder failed; stopping the current picture without looping");
                 if let Some(video) = self.show_engine.snapshot().video {
+                    // The operator needs this on screen, not only in the log:
+                    // the visible symptom is a picture that stops for no
+                    // stated reason, which reads as the show being broken.
+                    let name = std::path::Path::new(&video.path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| video.path.clone());
+                    self.cuepool
+                        .state()
+                        .lock_unpoisoned()
+                        .report_operator_error(format!(
+                            "Video stopped: '{name}' could not be read. Check the file and its storage."
+                        ));
                     let failed_diagnostics = self
                         .cuepool
                         .state()
