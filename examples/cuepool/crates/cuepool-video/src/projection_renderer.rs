@@ -50,6 +50,11 @@ struct Uniforms {
     /// Global canvas opacity (Stop-cue picture fade). Rides the pad slot, so
     /// the uniform layout is unchanged.
     opacity: f32, // offset 92
+    /// Black-level uplift (linear light) added where no edge-blend ramp is active.
+    black_uplift: f32, // offset 96
+    /// Calibration flat field: 0=off, 1=black, 2=white.
+    test_pattern: f32, // offset 100
+    _pad4: [f32; 2],       // WGSL rounds uniform struct size to 16 bytes
 }
 
 impl Uniforms {
@@ -59,6 +64,8 @@ impl Uniforms {
         output_size: [u32; 2],
         edge_blend: &EdgeBlend,
         opacity: f32,
+        black_uplift: f32,
+        test_pattern: f32,
     ) -> Self {
         let sx = source_rect[0] as f32;
         let sy = source_rect[1] as f32;
@@ -86,6 +93,9 @@ impl Uniforms {
             _pad3: 0.0,
             edge_bottom: edge_uniform(&edge_blend.bottom),
             opacity,
+            black_uplift,
+            test_pattern,
+            _pad4: [0.0; 2],
         }
     }
 }
@@ -290,6 +300,12 @@ impl ProjectionRenderer {
             [output.output_width, output.output_height],
             &output.edge_blend,
             opacity,
+            output.black_uplift,
+            match output.test_pattern {
+                cuepool_core::TestPattern::Off => 0.0,
+                cuepool_core::TestPattern::Black => 1.0,
+                cuepool_core::TestPattern::White => 2.0,
+            },
         );
 
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
@@ -393,6 +409,8 @@ mod tests {
             fullscreen_monitor: None,
             monitor_id: None,
             edge_blend: EdgeBlend::default(),
+            black_uplift: 0.0,
+            test_pattern: cuepool_core::TestPattern::Off,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -454,6 +472,114 @@ mod tests {
             data.iter().any(|&b| b != 0),
             "projection renderer produced an all-black output"
         );
+    }
+
+    /// Black-level uplift must appear in the solo interior but NOT inside an
+    /// active edge-blend ramp (that's the overlap zone, already at doubled black).
+    #[test]
+    fn test_black_uplift_gated_outside_blend_ramp() {
+        let _gpu = crate::gpu_test_lock();
+        let Some((device, queue)) = crate::test_device_queue(wgpu::Features::empty()) else {
+            return;
+        };
+
+        let (w, h) = (64u32, 4u32);
+        let canvas = CanvasTexture::new(&device, w, h);
+        // All-black frame: without uplift the output would be all zeros.
+        let frame = VideoFrame::new(w, h, vec![0; (w * h * 4) as usize], 0.0);
+        canvas.upload_frame(&queue, &frame, CanvasFit::Stretch);
+
+        let output_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test-output-uplift"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let output_view = output_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let renderer = ProjectionRenderer::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb, true);
+        let output = ProjectorOutput {
+            edge_blend: EdgeBlend {
+                left: EdgeBlendEdge {
+                    enabled: true,
+                    width: 32,
+                    gamma: 2.0,
+                },
+                ..Default::default()
+            },
+            black_uplift: 0.1,
+            ..ProjectorOutput::default_single()
+        };
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test-encoder-uplift"),
+        });
+        let overlay = CanvasTexture::new(&device, w, h);
+        renderer.render(
+            &device,
+            &queue,
+            &mut encoder,
+            &canvas.view(),
+            &overlay.view(),
+            &output_view,
+            &output,
+            [w, h],
+            1.0,
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test-readback-uplift"),
+            size: (w * h * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test-copy-encoder-uplift"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &output_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        let data = slice.get_mapped_range().expect("mapped range");
+        let y = h as usize / 2;
+        let row = &data[y * (w * 4) as usize..(y + 1) * (w * 4) as usize];
+        // Leftmost pixel sits at the dark end of the blend ramp: no uplift.
+        assert_eq!(row[0], 0, "uplift leaked into the blend ramp: {}", row[0]);
+        // Rightmost pixel is solo interior: uplift visible (0.1 linear ≈ 89 sRGB).
+        let right = row[((w - 1) * 4) as usize];
+        assert!(right > 20, "uplift missing from solo interior: {right}");
     }
 
     /// Mirrors the real runtime path: 1920x1080 canvas, `Fit`, the default

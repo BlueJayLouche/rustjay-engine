@@ -29,6 +29,12 @@ struct Uniforms {
     edge_bottom: vec3<f32>,
     // Global canvas opacity (Stop-cue picture fade).
     opacity: f32,
+    // Black-level uplift (linear light) added where no edge-blend ramp is
+    // active, to match the doubled black floor of the overlap zone.
+    black_uplift: f32,
+    // Calibration flat field replacing the canvas content: 0=off, 1=black,
+    // 2=white. Edge blend and uplift still apply on top.
+    test_pattern: f32,
 }
 
 @group(0) @binding(0)
@@ -63,6 +69,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let overlay = textureSample(overlay_texture, canvas_sampler, uv);
     color = vec4<f32>(mix(color.rgb, overlay.rgb, overlay.a), color.a);
 
+    // Calibration flat field (black for uplift calibration, white for blend
+    // width/gamma calibration), replacing canvas + overlay content.
+    if uniforms.test_pattern > 0.5 {
+        let flat = select(vec3<f32>(0.0), vec3<f32>(1.0), uniforms.test_pattern > 1.5);
+        color = vec4<f32>(flat, color.a);
+    }
+
     // Distance from each output edge in pixels.
     let left_dist = in.texcoord.x * uniforms.output_size.x;
     let right_dist = (1.0 - in.texcoord.x) * uniforms.output_size.x;
@@ -75,10 +88,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let bottom = edge_alpha(uniforms.edge_bottom.x, bottom_dist, uniforms.edge_bottom.y, uniforms.edge_bottom.z);
 
     // Modulate RGB by the product of enabled edge ramps and global opacity.
-    let blend = left * right * top * bottom * uniforms.opacity;
+    let edge = left * right * top * bottom;
+    let blend = edge * uniforms.opacity;
     color.r *= blend;
     color.g *= blend;
     color.b *= blend;
+
+    // Black-level uplift: raise the black floor where this output is not edge
+    // blended (solo area) to match the doubled black floor of the overlap zone,
+    // where both projectors' lamp leakage adds up. Hard step at the ramp
+    // boundary: leakage is not attenuated by the ramp, so neither is the uplift.
+    // Not scaled by opacity — lamp leakage doesn't fade with the picture.
+    if edge >= 1.0 {
+        color = vec4<f32>(color.rgb + vec3<f32>(uniforms.black_uplift), color.a);
+    }
 
     return color;
 }

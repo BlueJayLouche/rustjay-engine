@@ -201,6 +201,42 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             changed |= edge_editor(ui, "Right", &mut output.edge_blend.right);
             changed |= edge_editor(ui, "Top", &mut output.edge_blend.top);
             changed |= edge_editor(ui, "Bottom", &mut output.edge_blend.bottom);
+
+            ui.label(RichText::new("Calibration").strong().size(11.0));
+            ui.horizontal(|ui| {
+                ui.label("Black Uplift:");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut output.black_uplift)
+                            .speed(0.0005)
+                            .range(0.0..=0.2),
+                    )
+                    .on_hover_text(
+                        "Raises the black floor of the non-overlapped area to match the overlap zone's doubled black level. Calibrate by eye with the Black test pattern.",
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Test Pattern:");
+                for variant in [
+                    cuepool_core::TestPattern::Off,
+                    cuepool_core::TestPattern::Black,
+                    cuepool_core::TestPattern::White,
+                ] {
+                    if ui
+                        .selectable_value(&mut output.test_pattern, variant, format!("{variant:?}"))
+                        .on_hover_text(
+                            "Flat field replacing the content: Black for uplift calibration, White for edge-blend width/gamma calibration.",
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                }
+            });
         });
     }
 

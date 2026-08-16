@@ -27,7 +27,7 @@ pub use lighting::{
     FixtureId, FixtureLook, FixtureProfile, LightingConfig, LightingProtocol, PatchedFixture,
 };
 pub use projection::{
-    CanvasFit, EdgeBlend, EdgeBlendEdge, MonitorId, ProjectionConfig, ProjectorOutput,
+    CanvasFit, EdgeBlend, EdgeBlendEdge, MonitorId, ProjectionConfig, ProjectorOutput, TestPattern,
     resolve_monitor_assignment,
 };
 pub use showfile::{

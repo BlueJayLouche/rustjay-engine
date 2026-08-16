@@ -67,6 +67,8 @@ impl ProjectionConfig {
                         },
                         ..Default::default()
                     },
+                    black_uplift: 0.0,
+                    test_pattern: TestPattern::Off,
                 },
                 ProjectorOutput {
                     name: "Projector 2".into(),
@@ -91,6 +93,8 @@ impl ProjectionConfig {
                         },
                         ..Default::default()
                     },
+                    black_uplift: 0.0,
+                    test_pattern: TestPattern::Off,
                 },
                 ProjectorOutput {
                     name: "Projector 3".into(),
@@ -110,6 +114,8 @@ impl ProjectionConfig {
                         },
                         ..Default::default()
                     },
+                    black_uplift: 0.0,
+                    test_pattern: TestPattern::Off,
                 },
             ],
         }
@@ -161,6 +167,23 @@ pub struct ProjectorOutput {
     pub monitor_id: Option<MonitorId>,
     #[serde(default)]
     pub edge_blend: EdgeBlend,
+    /// Black-level uplift (linear light) added where this output is NOT edge
+    /// blended, to match the doubled black floor of the overlap zone.
+    #[serde(default)]
+    pub black_uplift: f32,
+    /// Flat-field calibration pattern replacing the canvas content.
+    #[serde(default)]
+    pub test_pattern: TestPattern,
+}
+
+/// Flat-field calibration pattern for a projector output: Black for black-uplift
+/// calibration, White for edge-blend width/gamma calibration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TestPattern {
+    #[default]
+    Off,
+    Black,
+    White,
 }
 
 impl ProjectorOutput {
@@ -176,6 +199,8 @@ impl ProjectorOutput {
             fullscreen_monitor: None,
             monitor_id: None,
             edge_blend: EdgeBlend::default(),
+            black_uplift: 0.0,
+            test_pattern: TestPattern::Off,
         }
     }
 }
