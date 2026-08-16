@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1286,12 +1286,13 @@ dependencies = [
 
 [[package]]
 name = "cuepool-audio"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "cpal",
  "crossbeam",
  "cuepool-core",
  "log",
+ "ringbuf",
  "rubato",
  "symphonia",
  "thiserror 2.0.20",
@@ -1299,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "chrono",
  "flate2",
@@ -1314,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool-gui"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "chrono",
  "cuepool-audio",
@@ -1338,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool-harness"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "cuepool",
@@ -1354,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool-protocols"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
@@ -1365,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "cuepool-video"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4216,6 +4217,17 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "ringbuf"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+dependencies = [
+ "crossbeam-utils",
+ "portable-atomic",
+ "portable-atomic-util",
 ]
 
 [[package]]

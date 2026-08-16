@@ -1,13 +1,14 @@
 //! Null audio sink — pulls the mixer exactly as `cuepool_audio::engine` does from
 //! the cpal callback, but into a plain buffer. No device, no driver, no thread.
 
-use cuepool_audio::{Mixer, SampleProvider};
+use cuepool_audio::{Mixer, RenderCache, SampleProvider};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct NullSink {
     mixer: Arc<Mixer>,
     buffer: Vec<f32>,
+    render_cache: RenderCache,
 }
 
 impl NullSink {
@@ -16,13 +17,14 @@ impl NullSink {
         Self {
             mixer,
             buffer: vec![0.0; block_frames * channels],
+            render_cache: RenderCache::new(),
         }
     }
 
     /// One audio-callback's worth of render. Returns the filled block.
     pub fn render_block(&mut self) -> &[f32] {
         self.buffer.fill(0.0);
-        self.mixer.render(&mut self.buffer);
+        self.mixer.render(&mut self.buffer, &mut self.render_cache);
         &self.buffer
     }
 }

@@ -31,7 +31,9 @@ pub use input::{InputCapture, InputError, list_input_devices};
 pub use limiter_processor::LimiterProcessor;
 pub use loop_processor::LoopProcessor;
 pub use metering_processor::{MeterData, MeteringProcessor};
-pub use mixer::{MIXER_CHANNELS, MIXER_SAMPLE_RATE, Mixer, MixerInput, db_to_linear, linear_to_db};
+pub use mixer::{
+    MIXER_CHANNELS, MIXER_SAMPLE_RATE, Mixer, MixerInput, RenderCache, db_to_linear, linear_to_db,
+};
 pub use pan_processor::PanProcessor;
 pub use resampler::ResamplerProcessor;
 pub use sample_provider::{FnSource, SampleProvider};

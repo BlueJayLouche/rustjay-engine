@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BlueJayLouche/rustjay-engine"
@@ -51,6 +51,7 @@ midir = "0.11"
 
 # Threading / Sync
 crossbeam = "0.8"
+ringbuf = "0.4"
 
 # Utils
 bitflags = "2.9"

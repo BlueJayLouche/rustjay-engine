@@ -11,7 +11,7 @@ use crate::fade_processor::FadeProcessor;
 use crate::limiter_processor::Limiter;
 use crate::loop_processor::LoopProcessor;
 use crate::metering_processor::{MeterData, MeteringProcessor};
-use crate::mixer::{Mixer, MixerInput};
+use crate::mixer::{Mixer, MixerInput, RenderCache};
 use crate::resampler::ResamplerProcessor;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample, SupportedBufferSize};
@@ -174,8 +174,9 @@ pub struct AudioEngine {
     limiter_threshold: Arc<AtomicF32>,
     /// Master metering (peak/RMS).
     metering: Arc<MeteringProcessor>,
-    /// Master limiter core, shared with the audio callback so GR is readable from main thread.
-    limiter: Arc<std::sync::Mutex<Limiter>>,
+    /// Latest limiter gain reduction in dB, published by the audio callback.
+    /// The callback owns the `Limiter` outright — no lock on the RT thread.
+    limiter_gr_db: Arc<AtomicF32>,
     /// Set by the audio callback if CPAL supplies an unexpected sample format.
     format_mismatch: Arc<std::sync::atomic::AtomicBool>,
     /// Ensures the control thread reports the callback format mismatch only once.
@@ -241,11 +242,7 @@ impl AudioEngine {
                 sample_rate,
                 channels,
             }))),
-            limiter: Arc::new(std::sync::Mutex::new(Limiter::new(
-                0.95,
-                sample_rate,
-                channels,
-            ))),
+            limiter_gr_db: Arc::new(AtomicF32::new(0.0)),
             format_mismatch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             format_mismatch_logged: std::sync::atomic::AtomicBool::new(false),
         }
@@ -452,12 +449,11 @@ impl AudioEngine {
         let limiter_threshold = Arc::new(AtomicF32::new(0.95));
         let limiter_thresh_clone = Arc::clone(&limiter_threshold);
         // Arc-shared so read_limiter_gr_db() on the main thread reads GR from the callback.
-        let limiter = Arc::new(std::sync::Mutex::new(Limiter::new(
-            0.95,
-            sample_rate,
-            channels,
-        )));
-        let limiter_clone = Arc::clone(&limiter);
+        let limiter_gr_db = Arc::new(AtomicF32::new(0.0));
+        let limiter_gr_db_clone = Arc::clone(&limiter_gr_db);
+        // Owned by the callback — never shared, never locked.
+        let mut limiter = Limiter::new(0.95, sample_rate, channels);
+        let mut render_cache = RenderCache::new();
         let format_mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let format_mismatch_clone = Arc::clone(&format_mismatch);
 
@@ -475,8 +471,10 @@ impl AudioEngine {
                     &format_mismatch_clone,
                     &mixer_clone,
                     &limiter_thresh_clone,
-                    &limiter_clone,
+                    &mut limiter,
+                    &limiter_gr_db_clone,
                     &metering_clone,
+                    &mut render_cache,
                 );
             },
             move |err| {
@@ -505,7 +503,7 @@ impl AudioEngine {
             channels,
             limiter_threshold,
             metering,
-            limiter,
+            limiter_gr_db,
             format_mismatch,
             format_mismatch_logged: std::sync::atomic::AtomicBool::new(false),
         })
@@ -555,11 +553,8 @@ impl AudioEngine {
 
     /// Read current limiter gain reduction in dB (0 = no reduction, negative = active).
     pub fn read_limiter_gr_db(&self) -> f32 {
-        if let Ok(lim) = self.limiter.lock() {
-            lim.gr_db
-        } else {
-            0.0
-        }
+        self.limiter_gr_db
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Play a sound by adding it to the mixer.
@@ -734,8 +729,10 @@ fn render_output(
     format_mismatch: &std::sync::atomic::AtomicBool,
     mixer: &Mixer,
     limiter_threshold: &AtomicF32,
-    limiter: &std::sync::Mutex<Limiter>,
+    limiter: &mut Limiter,
+    limiter_gr_db: &AtomicF32,
     metering: &MeteringProcessor,
+    cache: &mut RenderCache,
 ) {
     match sample_format {
         cpal::SampleFormat::F32 => {
@@ -744,7 +741,15 @@ fn render_output(
                 format_mismatch.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
             };
-            render_master(output, mixer, limiter_threshold, limiter, metering);
+            render_master(
+                output,
+                mixer,
+                limiter_threshold,
+                limiter,
+                limiter_gr_db,
+                metering,
+                cache,
+            );
         }
         cpal::SampleFormat::I32 => render_converted::<i32>(
             data,
@@ -754,7 +759,9 @@ fn render_output(
             mixer,
             limiter_threshold,
             limiter,
+            limiter_gr_db,
             metering,
+            cache,
         ),
         cpal::SampleFormat::I24 => render_converted::<cpal::I24>(
             data,
@@ -764,7 +771,9 @@ fn render_output(
             mixer,
             limiter_threshold,
             limiter,
+            limiter_gr_db,
             metering,
+            cache,
         ),
         cpal::SampleFormat::I16 => render_converted::<i16>(
             data,
@@ -774,25 +783,30 @@ fn render_output(
             mixer,
             limiter_threshold,
             limiter,
+            limiter_gr_db,
             metering,
+            cache,
         ),
         _ => data.bytes_mut().fill(0),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_master(
     data: &mut [f32],
     mixer: &Mixer,
     limiter_threshold: &AtomicF32,
-    limiter: &std::sync::Mutex<Limiter>,
+    limiter: &mut Limiter,
+    limiter_gr_db: &AtomicF32,
     metering: &MeteringProcessor,
+    cache: &mut RenderCache,
 ) {
-    mixer.render(data);
-    let threshold = limiter_threshold.load(std::sync::atomic::Ordering::Relaxed);
-    if let Ok(mut limiter) = limiter.lock() {
-        limiter.threshold = threshold.clamp(0.01, 1.0);
-        limiter.process(data);
-    }
+    mixer.render(data, cache);
+    limiter.threshold = limiter_threshold
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .clamp(0.01, 1.0);
+    limiter.process(data);
+    limiter_gr_db.store(limiter.gr_db, std::sync::atomic::Ordering::Relaxed);
     metering.analyze(data);
 }
 
@@ -804,8 +818,10 @@ fn render_converted<T>(
     format_mismatch: &std::sync::atomic::AtomicBool,
     mixer: &Mixer,
     limiter_threshold: &AtomicF32,
-    limiter: &std::sync::Mutex<Limiter>,
+    limiter: &mut Limiter,
+    limiter_gr_db: &AtomicF32,
     metering: &MeteringProcessor,
+    cache: &mut RenderCache,
 ) where
     T: SizedSample + FromSample<f32>,
 {
@@ -826,7 +842,15 @@ fn render_converted<T>(
         output.fill(T::EQUILIBRIUM);
         return;
     };
-    render_master(scratch, mixer, limiter_threshold, limiter, metering);
+    render_master(
+        scratch,
+        mixer,
+        limiter_threshold,
+        limiter,
+        limiter_gr_db,
+        metering,
+        cache,
+    );
     convert_samples(output, scratch);
 }
 
@@ -987,7 +1011,8 @@ mod tests {
     ) {
         let mixer = Mixer::new(2, TARGET_RATE);
         let limiter_threshold = AtomicF32::new(0.95);
-        let limiter = std::sync::Mutex::new(Limiter::new(0.95, TARGET_RATE, 2));
+        let mut limiter = Limiter::new(0.95, TARGET_RATE, 2);
+        let limiter_gr_db = AtomicF32::new(0.0);
         let metering = MeteringProcessor::new(Box::new(NullSource {
             sample_rate: TARGET_RATE,
             channels: 2,
@@ -1000,8 +1025,10 @@ mod tests {
             format_mismatch,
             &mixer,
             &limiter_threshold,
-            &limiter,
+            &mut limiter,
+            &limiter_gr_db,
             &metering,
+            &mut RenderCache::new(),
         );
     }
 
@@ -1089,7 +1116,7 @@ mod tests {
         engine.refresh();
 
         let mut output = [0.0; 16];
-        engine.mixer.render(&mut output);
+        engine.mixer.render(&mut output, &mut RenderCache::new());
 
         assert!(output.iter().any(|sample| sample.abs() > 0.1));
     }

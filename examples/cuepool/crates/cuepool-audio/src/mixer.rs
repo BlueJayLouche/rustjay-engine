@@ -4,12 +4,13 @@
 //!
 //! # Architecture
 //!
-//! - `Mixer` owns a `Vec<MixerInput>` protected by a `std::sync::Mutex`.
-//! - The audio callback calls `render()`, which iterates active inputs.
+//! - `Mixer` owns a `Vec<MixerInput>` protected by a `std::sync::Mutex`, plus a
+//!   snapshot refreshed on the main thread when the input list changes.
+//! - The audio callback calls `render()` with its own `RenderCache`, which
+//!   `try_lock`s the snapshot only when the generation changes — the callback
+//!   never blocks and never mixes a partially-updated list.
 //! - Each `MixerInput` has atomics for volume/pan/active so the main thread can
 //!   update parameters without locking.
-//! - `render()` never allocates and never locks (it reads the input vec through
-//!   a pre-cached snapshot updated only when the vec changes).
 
 use crate::SampleProvider;
 use cuepool_core::{FadeType, LockExt};
@@ -238,13 +239,42 @@ pub struct Mixer {
     channels: u16,
     /// Inputs are added/removed under this lock, but `render()` never takes it.
     inputs: Mutex<Vec<Arc<MixerInput>>>,
-    /// Snapshot of active inputs, refreshed when the input list changes.
-    /// The audio callback reads this without locking.
+    /// Snapshot of active inputs, refreshed on the main thread when the input
+    /// list changes. The audio callback only ever `try_lock`s this.
     snapshot: Mutex<Vec<Arc<MixerInput>>>,
     /// Set to true when the snapshot needs refreshing.
     dirty: AtomicBool,
+    /// Bumped each time `refresh_snapshot` rebuilds the snapshot, so the
+    /// callback's `RenderCache` knows when to re-copy.
+    snapshot_generation: AtomicU64,
     /// Total frames rendered since creation. Used as the audio master clock.
     frame_counter: AtomicU64,
+}
+
+/// Callback-owned copy of the mixer input list. `Mixer::render` refreshes it
+/// from the shared snapshot via `try_lock` when the generation changes, so the
+/// audio callback never blocks on the main thread.
+pub struct RenderCache {
+    inputs: Vec<Arc<MixerInput>>,
+    generation: u64,
+}
+
+impl RenderCache {
+    pub fn new() -> Self {
+        // ponytail: 64 covers the 64+ cue target without reallocating on the
+        // audio thread; a larger show reallocs once when the snapshot grows.
+        Self {
+            inputs: Vec::with_capacity(64),
+            // u64::MAX forces a refresh on the first render.
+            generation: u64::MAX,
+        }
+    }
+}
+
+impl Default for RenderCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Mixer {
@@ -255,6 +285,7 @@ impl Mixer {
             inputs: Mutex::new(Vec::new()),
             snapshot: Mutex::new(Vec::new()),
             dirty: AtomicBool::new(false),
+            snapshot_generation: AtomicU64::new(0),
             frame_counter: AtomicU64::new(0),
         }
     }
@@ -283,6 +314,11 @@ impl Mixer {
     /// Stop and remove all inputs. Call from the main thread.
     pub fn stop_all(&self) {
         let mut inputs = self.inputs.lock_unpoisoned();
+        // Deactivate before clearing so a stale `RenderCache` on the audio
+        // thread renders silence rather than one extra callback of audio.
+        for input in inputs.iter() {
+            input.set_active(false);
+        }
         inputs.clear();
         self.dirty.store(true, Ordering::Release);
     }
@@ -294,22 +330,34 @@ impl Mixer {
             let mut snapshot = self.snapshot.lock_unpoisoned();
             snapshot.clear();
             snapshot.extend(inputs.iter().cloned());
+            self.snapshot_generation.fetch_add(1, Ordering::Release);
         }
     }
 
     /// Render mixed output into `buffer`.
     ///
-    /// Call this from the audio callback. Never allocates, never locks.
-    pub fn render(&self, buffer: &mut [f32]) {
+    /// Call this from the audio callback with its own `RenderCache`. Never
+    /// blocks: the cache is refreshed through `try_lock`, and only when the
+    /// snapshot generation has changed. If the main thread holds the snapshot
+    /// lock at that instant, the previous cache is mixed for one callback —
+    /// additions appear one callback late, removals are silenced by their
+    /// `active` flag (`stop_all` deactivates before clearing).
+    pub fn render(&self, buffer: &mut [f32], cache: &mut RenderCache) {
         // Clear output
         buffer.fill(0.0);
 
         let frames = buffer.len() / self.channels.max(1) as usize;
 
-        // Read snapshot without locking (main thread guarantees atomic update)
-        let snapshot = self.snapshot.lock_unpoisoned();
+        let generation = self.snapshot_generation.load(Ordering::Acquire);
+        if generation != cache.generation
+            && let Ok(snapshot) = self.snapshot.try_lock()
+        {
+            cache.inputs.clear();
+            cache.inputs.extend(snapshot.iter().cloned());
+            cache.generation = generation;
+        }
 
-        for input in snapshot.iter() {
+        for input in cache.inputs.iter() {
             if !input.is_active() {
                 continue;
             }
@@ -543,7 +591,7 @@ mod tests {
         mixer.refresh_snapshot();
 
         let mut buf = vec![0.0f32; 8 * 4]; // 4 frames * 8 channels
-        mixer.render(&mut buf);
+        mixer.render(&mut buf, &mut RenderCache::new());
 
         // Frame 0: out0 = src ch3 = 0.4, out2 = src ch0 = 0.1, others silent.
         assert!(
@@ -608,7 +656,7 @@ mod tests {
         mixer.refresh_snapshot();
 
         let mut output = vec![0.0f32; 16]; // 8 stereo frames
-        mixer.render(&mut output);
+        mixer.render(&mut output, &mut RenderCache::new());
 
         // 0.5 + 0.3 = 0.8 per sample
         for s in &output {
@@ -641,7 +689,7 @@ mod tests {
         mixer.refresh_snapshot();
 
         let mut output = vec![0.0f32; 4]; // 2 stereo frames
-        mixer.render(&mut output);
+        mixer.render(&mut output, &mut RenderCache::new());
 
         assert!((output[0] - 1.0).abs() < 0.001, "L should be 1.0");
         assert!((output[1] - 0.0).abs() < 0.001, "R should be 0.0");
@@ -673,7 +721,7 @@ mod tests {
 
         // 4 stereo frames = 8 samples
         let mut output = vec![0.0f32; 8];
-        mixer.render(&mut output);
+        mixer.render(&mut output, &mut RenderCache::new());
 
         // Frame 0: gain ~1.0, Frame 1: gain ~0.75, Frame 2: gain ~0.5, Frame 3: gain ~0.25
         assert!(
@@ -726,7 +774,7 @@ mod tests {
         mixer.refresh_snapshot();
 
         let mut output = vec![0.0f32; 8];
-        mixer.render(&mut output);
+        mixer.render(&mut output, &mut RenderCache::new());
 
         // Frame 0: gain=0.5, Frame 1: gain=0.625, Frame 2: gain=0.75, Frame 3: gain=0.875
         assert!(

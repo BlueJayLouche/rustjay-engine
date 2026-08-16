@@ -17,5 +17,6 @@ cpal = { workspace = true }
 symphonia = { workspace = true }
 rubato = { workspace = true }
 crossbeam = { workspace = true }
+ringbuf = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }

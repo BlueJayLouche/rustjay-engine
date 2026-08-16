@@ -4,7 +4,8 @@
 //! The audio callback reads from the ring buffer without blocking.
 
 use crate::SampleProvider;
-use std::cell::UnsafeCell;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
@@ -16,11 +17,12 @@ struct Inner {
     sample_rate: u32,
     channels: u16,
     length: Option<usize>,
-    // Ring buffer — written only by BG thread, read only by audio thread.
-    ring: UnsafeCell<Vec<f32>>,
-    /// Write position (only advanced by background thread).
-    write_pos: AtomicUsize,
-    /// Read position (only advanced by audio callback thread).
+    /// Ring consumer — the audio callback pops via `try_lock`, so it never
+    /// blocks. The BG thread locks it only while holding the `seek_reset`
+    /// write guard, which excludes the callback, so that lock is uncontended.
+    cons: Mutex<HeapCons<f32>>,
+    /// Samples popped by the callback since `position_base` (only advanced by
+    /// the audio callback thread; reset by the BG thread during a seek reset).
     read_pos: AtomicUsize,
     /// EOF reached on source.
     eof: AtomicBool,
@@ -52,12 +54,14 @@ impl BufferedSource {
         let length = source.length();
         let ring_samples = (sr as f32 * DEFAULT_RING_SECONDS * ch as f32).ceil() as usize;
 
+        let ring = HeapRb::<f32>::new(ring_samples);
+        let (prod, cons) = ring.split();
+
         let inner = Arc::new(Inner {
             sample_rate: sr,
             channels: ch,
             length,
-            ring: UnsafeCell::new(vec![0.0f32; ring_samples]),
-            write_pos: AtomicUsize::new(0),
+            cons: Mutex::new(cons),
             read_pos: AtomicUsize::new(0),
             eof: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
@@ -71,7 +75,7 @@ impl BufferedSource {
 
         let inner2 = Arc::clone(&inner);
         let bg_thread = std::thread::spawn(move || {
-            Self::bg_loop(inner2);
+            Self::bg_loop(inner2, prod);
         });
 
         Self {
@@ -80,7 +84,7 @@ impl BufferedSource {
         }
     }
 
-    fn bg_loop(inner: Arc<Inner>) {
+    fn bg_loop(inner: Arc<Inner>, mut prod: HeapProd<f32>) {
         let mut temp = vec![0.0f32; 4096];
         loop {
             // Exit once the owning BufferedSource has been dropped (no thread leak).
@@ -96,9 +100,13 @@ impl BufferedSource {
                 if let Ok(src) = inner.source.lock() {
                     src.seek(seek);
                 }
+                // The write guard above excludes the callback, so this lock is
+                // always uncontended. Drop stale pre-seek samples.
+                if let Ok(mut cons) = inner.cons.lock() {
+                    cons.clear();
+                }
                 inner.position_base.store(seek, Ordering::Release);
                 inner.read_pos.store(0, Ordering::Release);
-                inner.write_pos.store(0, Ordering::Release);
                 inner.eof.store(false, Ordering::Relaxed);
                 inner
                     .applied_seek_generation
@@ -110,12 +118,7 @@ impl BufferedSource {
                 continue;
             }
 
-            let ring_size = unsafe { (*inner.ring.get()).len() };
-            let wp = inner.write_pos.load(Ordering::Relaxed);
-            let rp = inner.read_pos.load(Ordering::Acquire);
-            let used = wp.saturating_sub(rp);
-            let free = ring_size.saturating_sub(used);
-
+            let free = prod.vacant_len();
             if free == 0 {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 continue;
@@ -133,18 +136,8 @@ impl BufferedSource {
                 continue;
             }
 
-            // Copy into ring buffer (BG thread is the sole writer)
-            let ring = unsafe { &mut *inner.ring.get() };
-            let write_idx = wp % ring_size;
-            let end = (write_idx + n).min(ring_size);
-            let first_len = end - write_idx;
-            ring[write_idx..end].copy_from_slice(&temp[..first_len]);
-            if n > first_len {
-                let second_len = n - first_len;
-                ring[..second_len].copy_from_slice(&temp[first_len..n]);
-            }
-
-            inner.write_pos.store(wp + n, Ordering::Release);
+            // Non-blocking partial push; the BG thread is the sole producer.
+            prod.push_slice(&temp[..n]);
         }
     }
 }
@@ -167,12 +160,15 @@ impl SampleProvider for BufferedSource {
             buffer.fill(0.0);
             return buffer.len();
         }
-        let ring_size = unsafe { (*self.inner.ring.get()).len() };
-        let rp = self.inner.read_pos.load(Ordering::Relaxed);
-        let wp = self.inner.write_pos.load(Ordering::Acquire);
-        let available = wp.saturating_sub(rp);
-        let to_copy = buffer.len().min(available);
 
+        // try_lock: the callback must never block. Holding the seek_reset read
+        // guard means the BG thread is not resetting, so this is uncontended.
+        let Ok(mut cons) = self.inner.cons.try_lock() else {
+            buffer.fill(0.0);
+            return buffer.len();
+        };
+
+        let to_copy = buffer.len().min(cons.occupied_len());
         if to_copy == 0 {
             if self.inner.eof.load(Ordering::Acquire) {
                 return 0;
@@ -184,18 +180,9 @@ impl SampleProvider for BufferedSource {
             return buffer.len();
         }
 
-        let ring = unsafe { &*self.inner.ring.get() };
-        let read_idx = rp % ring_size;
-        let end = (read_idx + to_copy).min(ring_size);
-        let first_len = end - read_idx;
-        buffer[..first_len].copy_from_slice(&ring[read_idx..end]);
-        if to_copy > first_len {
-            let second_len = to_copy - first_len;
-            buffer[first_len..to_copy].copy_from_slice(&ring[..second_len]);
-        }
-
-        self.inner.read_pos.store(rp + to_copy, Ordering::Release);
-        to_copy
+        let popped = cons.pop_slice(&mut buffer[..to_copy]);
+        self.inner.read_pos.fetch_add(popped, Ordering::Release);
+        popped
     }
 
     fn seek(&self, sample: usize) {
@@ -238,7 +225,90 @@ impl Drop for BufferedSource {
     }
 }
 
-unsafe impl Send for Inner {}
-unsafe impl Sync for Inner {}
-unsafe impl Send for BufferedSource {}
-unsafe impl Sync for BufferedSource {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Seekable mono ramp source: emitted value = absolute sample index as f32.
+    struct RampSource {
+        pos: Mutex<usize>,
+    }
+
+    impl RampSource {
+        fn new() -> Self {
+            Self { pos: Mutex::new(0) }
+        }
+    }
+
+    impl SampleProvider for RampSource {
+        fn read(&self, buffer: &mut [f32]) -> usize {
+            let mut pos = self.pos.lock().unwrap();
+            for (i, s) in buffer.iter_mut().enumerate() {
+                *s = (*pos + i) as f32;
+            }
+            *pos += buffer.len();
+            buffer.len()
+        }
+        fn seek(&self, sample: usize) {
+            *self.pos.lock().unwrap() = sample;
+        }
+        fn position(&self) -> usize {
+            *self.pos.lock().unwrap()
+        }
+        fn length(&self) -> Option<usize> {
+            None
+        }
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn channels(&self) -> u16 {
+            1
+        }
+    }
+
+    /// Read into `buf` until the source delivers real samples or the deadline
+    /// passes. Returns the number of samples read on the final attempt.
+    fn read_until_data(src: &BufferedSource, buf: &mut [f32], deadline: Instant) -> usize {
+        loop {
+            let n = src.read(buf);
+            if buf.iter().any(|s| *s != 0.0) || Instant::now() > deadline {
+                return n;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn delivers_source_samples_in_order() {
+        let src = BufferedSource::new(Box::new(RampSource::new()));
+        let mut buf = vec![-1.0f32; 256];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let n = read_until_data(&src, &mut buf, deadline);
+        assert_eq!(n, 256);
+        let base = buf[0];
+        for (i, s) in buf.iter().enumerate() {
+            assert_eq!(*s, base + i as f32, "sample {i} out of order");
+        }
+    }
+
+    #[test]
+    fn seek_discards_stale_ring_contents() {
+        let src = BufferedSource::new(Box::new(RampSource::new()));
+        let mut buf = vec![0.0f32; 256];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        read_until_data(&src, &mut buf, deadline);
+
+        src.seek(100_000);
+        // First reads after a seek are silence while the BG thread re-seeks,
+        // then data resumes at the seek target — never stale pre-seek samples.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let n = read_until_data(&src, &mut buf, deadline);
+        assert_eq!(n, 256);
+        assert_eq!(
+            buf[0], 100_000.0,
+            "first post-seek sample should be the seek target"
+        );
+        assert_eq!(src.position(), 100_000 + 256);
+    }
+}
