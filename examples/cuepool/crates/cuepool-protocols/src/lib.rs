@@ -3,6 +3,7 @@
 pub mod midi;
 pub mod msc;
 pub mod osc;
+pub mod timecode;
 
 /// Lock a `Mutex` while tolerating poisoning, so a panicking protocol handler
 /// can't kill the receive thread (or stop dispatch) on its next lock. Mirrors

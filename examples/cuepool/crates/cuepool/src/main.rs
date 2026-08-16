@@ -19,10 +19,11 @@ use cuepool_core::{
 use cuepool_gui::app::CueState;
 use cuepool_gui::logging::PERSIST_TARGET;
 use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, VideoTimings};
-use cuepool_protocols::midi::mtc::{MtcFrameRate, MtcReceiver, MtcState};
+use cuepool_protocols::midi::mtc::MtcReceiver;
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
 use cuepool_protocols::msc::{MscCommandFlags, MscEvent, MscManager};
 use cuepool_protocols::osc::{OscEvent, OscManager};
+use cuepool_protocols::timecode::{MtcFrameRate, TimecodeSource, TimecodeState};
 use cuepool_video::{
     FramePool, HapAcceleration, HapFallbackSession, VideoFrame, ZeroCopyAvailability,
     ZeroCopyPreference,
@@ -492,10 +493,10 @@ struct App {
     midi_manager: Option<MidiManager>,
     last_discovery: Instant,
 
-    // ── MTC follow ──
-    /// Listens on all MIDI ports for timecode (independent of `midi_manager`,
-    /// which only handles voice-message triggers).
-    mtc_receiver: MtcReceiver,
+    // ── Timecode follow ──
+    /// The active timecode source the show chases (MTC today, LTC pluggable
+    /// via the same `TimecodeState` seam).
+    timecode_source: Box<dyn TimecodeSource>,
     /// The video cue currently following MTC, if any.
     mtc_follow: Option<MtcFollowState>,
     /// Last measured drift (target − video position) while following, for the GUI.
@@ -869,7 +870,7 @@ impl App {
             msc_rx,
             midi_manager,
             last_discovery: Instant::now(),
-            mtc_receiver: MtcReceiver::new(),
+            timecode_source: Box::new(MtcReceiver::new()),
             mtc_follow: None,
             mtc_drift: None,
             mtc_warned_fps: None,
@@ -2272,8 +2273,9 @@ impl App {
         self.mtc_reanchor(target);
     }
 
-    /// Drive the MTC-follow cue from the latest MTC state. No-op without one.
-    fn drive_mtc_follow(&mut self, mtc: &MtcState) {
+    /// Drive the timecode-follow cue from the latest source state. No-op
+    /// without one.
+    fn drive_mtc_follow(&mut self, mtc: &TimecodeState) {
         self.mtc_drift = None;
         let Some(follow) = self.mtc_follow.as_mut() else {
             return;
@@ -4194,18 +4196,18 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         self.process_midi_events(event_loop);
-        // MTC receive (hot-plug refresh is internally throttled) → drive any
-        // MTC-follow video cue → publish status for the transport readout.
-        self.mtc_receiver.refresh();
-        self.mtc_receiver.tick();
-        let mtc = self.mtc_receiver.clone_state();
-        self.drive_mtc_follow(&mtc);
+        // Timecode receive (hot-plug refresh is internally throttled) → drive
+        // any timecode-follow video cue → publish status for the readout.
+        self.timecode_source.refresh();
+        self.timecode_source.tick();
+        let tc = self.timecode_source.clone_state();
+        self.drive_mtc_follow(&tc);
         if let Ok(mut state) = self.cuepool.state().lock() {
-            state.mtc_running = mtc.running;
-            state.mtc_playing = mtc.playing;
-            state.mtc_timecode_secs = mtc.position.as_seconds_f64();
-            state.mtc_fps = mtc.position.frame_rate.fps() as f64;
-            state.mtc_source = mtc.source_device.clone();
+            state.mtc_running = tc.running;
+            state.mtc_playing = tc.playing;
+            state.mtc_timecode_secs = tc.position.as_seconds_f64();
+            state.mtc_fps = tc.position.frame_rate.fps() as f64;
+            state.mtc_source = tc.source_device.clone();
             state.mtc_drift_ms = self.mtc_drift.map(|d| d * 1000.0);
         }
         self.process_protocol_events();

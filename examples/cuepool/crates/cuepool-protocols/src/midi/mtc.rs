@@ -13,7 +13,7 @@ use midir::{Ignore, MidiInput, MidiInputConnection};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-// ── Local MTC types (stand-ins for rustjay_core::{SmpteTime, MtcFrameRate, MtcState}) ──
+// ── Local MTC types (stand-ins for rustjay_core::{SmpteTime, MtcFrameRate, TimecodeState}) ──
 
 /// MTC frame rate, as encoded in the 2 rate bits of the hour nibble/byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,16 +83,16 @@ impl std::fmt::Display for SmpteTime {
     }
 }
 
-/// Live state of MIDI Timecode (MTC) receive.
+/// Live state of a timecode source (MTC, LTC, …) being received.
 #[derive(Debug, Clone, Default)]
-pub struct MtcState {
-    /// `true` once any MTC message has been received on any MIDI port.
+pub struct TimecodeState {
+    /// `true` once any timecode message has been received from the source.
     pub running: bool,
-    /// `true` while quarter-frame messages are arriving (transport playing/shuttling).
+    /// `true` while the source is advancing (transport playing/shuttling).
     pub playing: bool,
     /// Most recently assembled SMPTE timecode position.
     pub position: SmpteTime,
-    /// Name of the MIDI port currently sending MTC (empty string if none yet).
+    /// Name of the device currently sending timecode (empty string if none yet).
     pub source_device: String,
 }
 
@@ -248,7 +248,7 @@ impl MtcPublished {
 ///
 /// Created once at startup; call [`refresh`](MtcReceiver::refresh) each frame
 /// (internally throttled to once per 5 s) to pick up devices plugged in after
-/// launch. The decoded [`MtcState`] is available via [`clone_state`](MtcReceiver::clone_state).
+/// launch. The decoded [`TimecodeState`] is available via [`clone_state`](MtcReceiver::clone_state).
 pub struct MtcReceiver {
     published: Arc<MtcPublished>,
     /// Port names we have successfully connected to.
@@ -394,7 +394,7 @@ impl MtcReceiver {
     }
 
     /// Snapshot the current MTC state.  Lock-free on the hot path.
-    pub fn clone_state(&self) -> MtcState {
+    pub fn clone_state(&self) -> TimecodeState {
         let packed = self.published.smpte.load(Ordering::Acquire);
         let (position, running, playing) = unpack_smpte(packed);
         let source_device = self
@@ -403,7 +403,7 @@ impl MtcReceiver {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
-        MtcState {
+        TimecodeState {
             position,
             running,
             playing,
