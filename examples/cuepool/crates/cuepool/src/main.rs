@@ -516,6 +516,9 @@ struct App {
     pixmap_hap: Option<cuepool_video::HapConverter>,
     pixmap_frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
     pixmap_stop_flag: Arc<AtomicBool>,
+    /// Shared with the pixmap decode thread and kept for the app's lifetime, so
+    /// a cue fired while the show is paused starts paused too.
+    pixmap_pause_flag: Arc<AtomicBool>,
     current_pixmap_qid: Option<rust_decimal::Decimal>,
 
     // ── trigger state ──
@@ -886,6 +889,7 @@ impl App {
             pixmap_hap: None,
             pixmap_frame_rx: None,
             pixmap_stop_flag: Arc::new(AtomicBool::new(false)),
+            pixmap_pause_flag: Arc::new(AtomicBool::new(false)),
             current_pixmap_qid: None,
             wall_clock_fired: std::collections::HashMap::new(),
             timecode_fired: std::collections::HashSet::new(),
@@ -1204,6 +1208,11 @@ impl App {
                     if self.current_text_qid == Some(qid) {
                         self.clear_text_overlay();
                     }
+                    if self.current_pixmap_qid == Some(qid)
+                        && mode != cuepool_core::StopMode::LoopEnd
+                    {
+                        self.stop_pixmap();
+                    }
                     if self.current_video_qid == Some(qid)
                         && self.show_engine.current_video_qid() != Some(qid)
                         && mode != cuepool_core::StopMode::LoopEnd
@@ -1236,6 +1245,9 @@ impl App {
 
     fn set_video_paused(&mut self, paused: bool) {
         self.video_pause_flag.store(paused, Ordering::Relaxed);
+        // The pixel map is a separate stream with its own clock; the show
+        // transport pauses both together.
+        self.pixmap_pause_flag.store(paused, Ordering::Relaxed);
         self.paused = paused;
         let mut ctl = self.video_control.lock_unpoisoned();
         ctl.paused = paused;
@@ -1256,8 +1268,16 @@ impl App {
         self.mtc_follow = None;
         self.lighting.stop_fade();
         self.lighting.stop_all_shows();
+        self.stop_pixmap();
+        self.clear_text_overlay();
+    }
+
+    /// End the pixel-map stream and blank its texture so the LEDs go dark,
+    /// mirroring how stopping a video cue clears the canvas.
+    fn stop_pixmap(&mut self) {
         self.pixmap_stop_flag.store(true, Ordering::Relaxed);
         self.pixmap_frame_rx = None;
+        self.current_pixmap_qid = None;
         if let Some(texture) = self.pixmap_texture.as_ref() {
             let blank = vec![0; (texture.width * texture.height * 4) as usize];
             let _configure_guard = self
@@ -1266,7 +1286,6 @@ impl App {
                 .unwrap_or_else(|error| error.into_inner());
             texture.upload_rgba(self.queue.queue(), &blank);
         }
-        self.clear_text_overlay();
     }
 
     fn apply_external_cue(
@@ -1462,12 +1481,21 @@ impl App {
         let (tx, rx) = std::sync::mpsc::sync_channel::<VideoFrame>(3);
         self.pixmap_frame_rx = Some(rx);
         let stop = Arc::clone(&self.pixmap_stop_flag);
+        let pause = Arc::clone(&self.pixmap_pause_flag);
         let frame_pool = Arc::clone(&self.frame_pool);
         let hap_acceleration = self.hap_acceleration.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("pixmap-decode".into())
             .spawn(move || {
-                pixmap_decode_thread(&resolved, loop_mode, stop, tx, frame_pool, hap_acceleration)
+                pixmap_decode_thread(
+                    &resolved,
+                    loop_mode,
+                    stop,
+                    pause,
+                    tx,
+                    frame_pool,
+                    hap_acceleration,
+                )
             })
         {
             // Drop the receiver again so the render tick sees "no stream"
