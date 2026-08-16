@@ -76,6 +76,11 @@ const VIDEO_QUEUE_CAP: usize = 3;
 /// Two streams × channel/peek slack × the largest decoded plane count.
 const FRAME_POOL_CAP: usize = 2 * (VIDEO_QUEUE_CAP + 2) * 3;
 const API_SHUTDOWN_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Retries for a failed video open before the cue is given up. Attempts are
+/// immediate: a damaged file fails all of them in a few milliseconds, while a
+/// storage stall long enough to outlast them is a fault the operator has to
+/// know about anyway.
+const MAX_VIDEO_OPEN_RETRIES: u32 = 3;
 
 /// Max squared position distance (px²) for recalling an output to a saved monitor.
 /// Positions are fixed for an installed wall, so this just allows minor slop while
@@ -446,6 +451,10 @@ struct App {
     hap_acceleration: HapAcceleration,
     hap_fallback_session: HapFallbackSession,
     hap_fallback_instance_id: Option<u64>,
+    /// Consecutive failed opens of the current video. A storage hiccup or a
+    /// file briefly unavailable retries; a genuinely damaged file gives up
+    /// after MAX_VIDEO_OPEN_RETRIES and tells the operator.
+    video_open_retries: u32,
     /// QID of the cue whose video is currently playing (for loop sync).
     current_video_qid: Option<rust_decimal::Decimal>,
     current_video_instance_id: Option<u64>,
@@ -503,6 +512,9 @@ struct App {
     mtc_drift: Option<f64>,
     /// Last frame rate we warned about (rate-limits the non-25fps warning).
     mtc_warned_fps: Option<MtcFrameRate>,
+    /// When the last hard sync reopened the media, so a scrubbing source
+    /// cannot drive a continuous stream of container opens.
+    last_hard_sync: Option<Instant>,
 
     // ── lighting ──
     lighting: LightingEngine,
@@ -517,6 +529,9 @@ struct App {
     pixmap_hap: Option<cuepool_video::HapConverter>,
     pixmap_frame_rx: Option<std::sync::mpsc::Receiver<VideoFrame>>,
     pixmap_stop_flag: Arc<AtomicBool>,
+    /// Shared with the pixmap decode thread and kept for the app's lifetime, so
+    /// a cue fired while the show is paused starts paused too.
+    pixmap_pause_flag: Arc<AtomicBool>,
     current_pixmap_qid: Option<rust_decimal::Decimal>,
 
     // ── trigger state ──
@@ -848,6 +863,7 @@ impl App {
             hap_acceleration,
             hap_fallback_session: HapFallbackSession::default(),
             hap_fallback_instance_id: None,
+            video_open_retries: 0,
             current_video_qid: None,
             current_video_instance_id: None,
             last_project_generation: 0,
@@ -874,6 +890,7 @@ impl App {
             mtc_follow: None,
             mtc_drift: None,
             mtc_warned_fps: None,
+            last_hard_sync: None,
             last_window_title: String::new(),
             autosave_running,
             paused: false,
@@ -887,6 +904,7 @@ impl App {
             pixmap_hap: None,
             pixmap_frame_rx: None,
             pixmap_stop_flag: Arc::new(AtomicBool::new(false)),
+            pixmap_pause_flag: Arc::new(AtomicBool::new(false)),
             current_pixmap_qid: None,
             wall_clock_fired: std::collections::HashMap::new(),
             timecode_fired: std::collections::HashSet::new(),
@@ -1205,6 +1223,11 @@ impl App {
                     if self.current_text_qid == Some(qid) {
                         self.clear_text_overlay();
                     }
+                    if self.current_pixmap_qid == Some(qid)
+                        && mode != cuepool_core::StopMode::LoopEnd
+                    {
+                        self.stop_pixmap();
+                    }
                     if self.current_video_qid == Some(qid)
                         && self.show_engine.current_video_qid() != Some(qid)
                         && mode != cuepool_core::StopMode::LoopEnd
@@ -1237,6 +1260,9 @@ impl App {
 
     fn set_video_paused(&mut self, paused: bool) {
         self.video_pause_flag.store(paused, Ordering::Relaxed);
+        // The pixel map is a separate stream with its own clock; the show
+        // transport pauses both together.
+        self.pixmap_pause_flag.store(paused, Ordering::Relaxed);
         self.paused = paused;
         let mut ctl = self.video_control.lock_unpoisoned();
         ctl.paused = paused;
@@ -1257,8 +1283,16 @@ impl App {
         self.mtc_follow = None;
         self.lighting.stop_fade();
         self.lighting.stop_all_shows();
+        self.stop_pixmap();
+        self.clear_text_overlay();
+    }
+
+    /// End the pixel-map stream and blank its texture so the LEDs go dark,
+    /// mirroring how stopping a video cue clears the canvas.
+    fn stop_pixmap(&mut self) {
         self.pixmap_stop_flag.store(true, Ordering::Relaxed);
         self.pixmap_frame_rx = None;
+        self.current_pixmap_qid = None;
         if let Some(texture) = self.pixmap_texture.as_ref() {
             let blank = vec![0; (texture.width * texture.height * 4) as usize];
             let _configure_guard = self
@@ -1267,7 +1301,6 @@ impl App {
                 .unwrap_or_else(|error| error.into_inner());
             texture.upload_rgba(self.queue.queue(), &blank);
         }
-        self.clear_text_overlay();
     }
 
     fn apply_external_cue(
@@ -1463,12 +1496,21 @@ impl App {
         let (tx, rx) = std::sync::mpsc::sync_channel::<VideoFrame>(3);
         self.pixmap_frame_rx = Some(rx);
         let stop = Arc::clone(&self.pixmap_stop_flag);
+        let pause = Arc::clone(&self.pixmap_pause_flag);
         let frame_pool = Arc::clone(&self.frame_pool);
         let hap_acceleration = self.hap_acceleration.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("pixmap-decode".into())
             .spawn(move || {
-                pixmap_decode_thread(&resolved, loop_mode, stop, tx, frame_pool, hap_acceleration)
+                pixmap_decode_thread(
+                    &resolved,
+                    loop_mode,
+                    stop,
+                    pause,
+                    tx,
+                    frame_pool,
+                    hap_acceleration,
+                )
             })
         {
             // Drop the receiver again so the render tick sees "no stream"
@@ -1991,6 +2033,8 @@ impl App {
         duration: cuepool_core::Timespan,
         event_loop: &ActiveEventLoop,
     ) {
+        // A fresh cue gets a fresh retry budget.
+        self.video_open_retries = 0;
         if self.hap_fallback_instance_id != Some(instance_id) {
             self.hap_fallback_session = HapFallbackSession::default();
             self.hap_fallback_instance_id = Some(instance_id);
@@ -2263,14 +2307,37 @@ impl App {
     /// Big jump (locate, loop-back, drift > 250 ms): re-seek the forward-only
     /// decoder and re-anchor the clock. Needed even for forward jumps — a large
     /// one would otherwise starve the renderer while decode catches up.
-    fn mtc_hard_sync(&mut self, target: f64) {
+    /// Hard sync by reopening the media at `target`.
+    ///
+    /// Rate-limited, because every call is a full container open (index parse
+    /// included) and `drive_mtc_follow` runs each tick: while an operator
+    /// scrubs the timecode source the target moves continuously, and
+    /// unthrottled this becomes a back-to-back stream of opens on a large
+    /// master. Skipping is safe rather than lossy — the next eligible tick
+    /// syncs to the *then* current target, so scrub bursts coalesce to the
+    /// latest position instead of replaying every intermediate one.
+    /// Returns whether the reopen actually happened.
+    fn mtc_hard_sync(&mut self, target: f64) -> bool {
         let Some(follow) = self.mtc_follow.as_ref() else {
-            return;
+            return false;
         };
+        if self
+            .last_hard_sync
+            .is_some_and(|at| at.elapsed() < mtc_follow::HARD_SYNC_REOPEN_FLOOR)
+        {
+            log::trace!("[MTC] Hard sync to {target:.2}s coalesced");
+            return false;
+        }
+        self.last_hard_sync = Some(Instant::now());
         let path = follow.path.clone();
         log::info!("[MTC] Hard sync Q{} to {:.2}s", follow.qid, target);
-        self.spawn_video_decode(&path, Some(target), None, false);
+        // Clamp: the timecode source is free to run past the end of the clip
+        // (a short insert against a full-length show track), and an unclamped
+        // seek past the media just puts the demuxer off the end. SeekCue and
+        // the automation API already clamp; this path was the outlier.
+        self.spawn_video_decode(&path, Some(target), None, true);
         self.mtc_reanchor(target);
+        true
     }
 
     /// Drive the timecode-follow cue from the latest source state. No-op
@@ -2335,7 +2402,9 @@ impl App {
                 self.mtc_drift = Some(drift);
                 match mtc_follow::drift_action(drift, dt) {
                     mtc_follow::MtcAdjust::Nudge(d) => self.nudge_video_clock(d),
-                    mtc_follow::MtcAdjust::HardSync => self.mtc_hard_sync(target),
+                    mtc_follow::MtcAdjust::HardSync => {
+                        self.mtc_hard_sync(target);
+                    }
                     mtc_follow::MtcAdjust::None | mtc_follow::MtcAdjust::Hold => {}
                 }
             }
@@ -2346,13 +2415,19 @@ impl App {
         } else {
             // Running-but-not-playing (full-frame locate) or fully stopped:
             // snap to the target if off, then freeze there.
-            if (target - current).abs() > mtc_follow::DEADBAND_SECS {
+            let may_reopen = self
+                .last_hard_sync
+                .is_none_or(|at| at.elapsed() >= mtc_follow::HARD_SYNC_REOPEN_FLOOR);
+            let action = mtc_follow::locate_action(target - current, may_reopen);
+            if action.sync {
                 self.mtc_hard_sync(target);
             }
-            if let Some(f) = self.mtc_follow.as_mut() {
-                f.hold_position = Some(target);
+            if action.hold {
+                if let Some(f) = self.mtc_follow.as_mut() {
+                    f.hold_position = Some(target);
+                }
+                self.video_control.lock_unpoisoned().hold_position = Some(target);
             }
-            self.video_control.lock_unpoisoned().hold_position = Some(target);
         }
     }
 
@@ -3841,8 +3916,40 @@ impl ApplicationHandler<AppEvent> for App {
                     );
                     return;
                 }
+                // A failed open is often transient — storage stalling, a
+                // volume dropping out, a file still being copied — so retry
+                // from the current position before giving the cue up. A
+                // genuinely damaged file exhausts the budget in a few fast
+                // attempts and reports.
+                if let Some(video) = self.show_engine.snapshot().video
+                    && self.video_open_retries < MAX_VIDEO_OPEN_RETRIES
+                {
+                    self.video_open_retries += 1;
+                    let attempt = self.video_open_retries;
+                    log::warn!(
+                        "Video decoder failed on '{}'; retrying from {:.2}s ({attempt}/{MAX_VIDEO_OPEN_RETRIES})",
+                        video.path,
+                        video.position_secs
+                    );
+                    let path = video.path.clone();
+                    self.spawn_video_decode(&path, Some(video.position_secs), None, false);
+                    return;
+                }
                 log::error!("Video decoder failed; stopping the current picture without looping");
                 if let Some(video) = self.show_engine.snapshot().video {
+                    // The operator needs this on screen, not only in the log:
+                    // the visible symptom is a picture that stops for no
+                    // stated reason, which reads as the show being broken.
+                    let name = std::path::Path::new(&video.path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| video.path.clone());
+                    self.cuepool
+                        .state()
+                        .lock_unpoisoned()
+                        .report_operator_error(format!(
+                            "Video stopped: '{name}' could not be read. Check the file and its storage."
+                        ));
                     let failed_diagnostics = self
                         .cuepool
                         .state()
@@ -4255,7 +4362,16 @@ impl ApplicationHandler<AppEvent> for App {
                     .lock_unpoisoned()
                     .canvas_render_view
                     .clone();
-                let pixmap_view = self.pixmap_texture.as_ref().map(|t| t.render_view());
+                // A PixelMap-source segment owns its DMX addresses only while a
+                // PixelMap cue is running. The texture outlives the cue, so
+                // without this gate the segment keeps sampling the last (or
+                // blanked) frame and writing it over those channels forever,
+                // and no lighting cue can reach those fixtures again.
+                let pixmap_view = self
+                    .current_pixmap_qid
+                    .is_some()
+                    .then(|| self.pixmap_texture.as_ref().map(|t| t.render_view()))
+                    .flatten();
                 let batch: Vec<(&wgpu::TextureView, u32, [f32; 4], u32, u32)> = cfg
                     .active_segments()
                     .filter_map(|s| {
@@ -4266,6 +4382,16 @@ impl ApplicationHandler<AppEvent> for App {
                         Some((view, s.id, s.region, s.cols, s.rows))
                     })
                     .collect();
+                // Segments whose source went away stop owning their addresses:
+                // drop the stale pixels so the overlay skips them next render.
+                for id in cfg
+                    .active_segments()
+                    .map(|s| s.id)
+                    .filter(|id| !batch.iter().any(|(_, sampled, ..)| sampled == id))
+                    .collect::<Vec<_>>()
+                {
+                    self.lighting.clear_segment_pixels(id);
+                }
                 if !batch.is_empty() {
                     self.last_pixel_sample = Instant::now();
                     let configure_gate = Arc::clone(&self.configure_gate);
@@ -4724,6 +4850,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
+    // Before anything opens media: otherwise FFmpeg writes to stderr, past the
+    // log file and past the operator's ability to tell noise from a fault.
+    cuepool_video::install_ffmpeg_logging();
     let argv: Vec<OsString> = std::env::args_os().collect();
     let cwd = std::env::current_dir().map_err(|error| {
         startup_error(
@@ -4981,6 +5110,21 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A timecode source runs to its own length, which is routinely longer
+    /// than the clip being chased. Seeking past the media puts the demuxer off
+    /// the end of the file, so the chase target is clamped like every other
+    /// seek path.
+    #[test]
+    fn seeks_clamp_to_the_media_length() {
+        let length = Some(230.02);
+        assert_eq!(clamp_video_seek_secs(12.0, length), 12.0);
+        assert!(clamp_video_seek_secs(500.0, length) < 230.02);
+        assert!(clamp_video_seek_secs(230.02, length) < 230.02);
+        // Unknown duration cannot be clamped, only sanitised.
+        assert_eq!(clamp_video_seek_secs(500.0, None), 500.0);
+        assert_eq!(clamp_video_seek_secs(f64::INFINITY, None), 0.0);
+    }
 
     #[test]
     fn control_surface_retry_backoff_is_capped() {
