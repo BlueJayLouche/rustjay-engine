@@ -1,5 +1,6 @@
 //! CuePool Protocols — OSC, MSC, and MIDI.
 
+pub mod ltc;
 pub mod midi;
 pub mod msc;
 pub mod osc;
