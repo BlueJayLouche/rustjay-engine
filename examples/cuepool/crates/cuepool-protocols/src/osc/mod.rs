@@ -107,18 +107,22 @@ pub struct OscDriver {
 
 impl OscDriver {
     /// Bind to a local port and prepare for RX/TX.
-    pub fn bind(
-        nic: Ipv4Addr,
-        rx_port: u16,
-        tx_port: u16,
-        subnet: Ipv4Addr,
-    ) -> anyhow::Result<Self> {
-        let broadcast = make_broadcast(nic, subnet);
+    ///
+    /// `tx_host` is the outbound destination, stated rather than derived from a
+    /// network card: a unicast address, a broadcast address, or loopback.
+    ///
+    /// RX always listens on `0.0.0.0`. Binding it to a specific address would
+    /// drop broadcast traffic entirely, and remote-node discovery arrives as a
+    /// broadcast — so a narrower bind would silently cost us every peer.
+    pub fn bind(tx_host: Ipv4Addr, rx_port: u16, tx_port: u16) -> anyhow::Result<Self> {
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, rx_port);
         let socket = UdpSocket::bind(bind_addr)?;
         socket.set_nonblocking(false)?;
+        // The destination is user-chosen and may well be a broadcast address;
+        // without this, sending to one fails EACCES rather than going nowhere.
+        socket.set_broadcast(true)?;
 
-        let tx_addr: std::net::SocketAddr = SocketAddrV4::new(broadcast, tx_port).into();
+        let tx_addr: std::net::SocketAddr = SocketAddrV4::new(tx_host, tx_port).into();
 
         Ok(Self {
             socket: Arc::new(socket),
@@ -191,12 +195,6 @@ impl Drop for OscDriver {
             let _ = t.join();
         }
     }
-}
-
-fn make_broadcast(adapter: Ipv4Addr, subnet: Ipv4Addr) -> Ipv4Addr {
-    let a = u32::from_be_bytes(adapter.octets());
-    let s = u32::from_be_bytes(subnet.octets());
-    Ipv4Addr::from(a | !s)
 }
 
 // ---------------------------------------------------------------------------
@@ -320,13 +318,12 @@ pub struct OscManager {
 
 impl OscManager {
     pub fn new(
-        nic: Ipv4Addr,
+        tx_host: Ipv4Addr,
         rx_port: u16,
         tx_port: u16,
-        subnet: Ipv4Addr,
         event_tx: std::sync::mpsc::Sender<OscEvent>,
     ) -> anyhow::Result<Self> {
-        let mut driver = OscDriver::bind(nic, rx_port, tx_port, subnet)?;
+        let mut driver = OscDriver::bind(tx_host, rx_port, tx_port)?;
         let router = Arc::new(Mutex::new(OscRouter::new()));
 
         // Build router with CuePool address patterns
@@ -705,14 +702,5 @@ mod tests {
         assert_eq!(arg_to_dmx(&OscType::Int(999)), Some(255));
         assert_eq!(arg_to_dmx(&OscType::Bool(true)), Some(255));
         assert_eq!(arg_to_dmx(&OscType::String("x".into())), None);
-    }
-
-    #[test]
-    fn test_broadcast_address() {
-        let broadcast = make_broadcast(
-            Ipv4Addr::new(192, 168, 1, 10),
-            Ipv4Addr::new(255, 255, 255, 0),
-        );
-        assert_eq!(broadcast, Ipv4Addr::new(192, 168, 1, 255));
     }
 }

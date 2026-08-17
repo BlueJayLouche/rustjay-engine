@@ -346,16 +346,15 @@ pub struct MamscDriver {
 }
 
 impl MamscDriver {
-    pub fn bind(
-        nic: Ipv4Addr,
-        rx_port: u16,
-        tx_port: u16,
-        subnet: Ipv4Addr,
-    ) -> anyhow::Result<Self> {
-        let broadcast = make_broadcast(nic, subnet);
+    /// `tx_host` is the outbound destination, shared with OSC — see
+    /// `OscDriver::bind` for why RX stays on `0.0.0.0`.
+    pub fn bind(tx_host: Ipv4Addr, rx_port: u16, tx_port: u16) -> anyhow::Result<Self> {
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, rx_port);
         let socket = UdpSocket::bind(bind_addr)?;
-        let tx_addr: std::net::SocketAddr = SocketAddrV4::new(broadcast, tx_port).into();
+        // As in OscDriver::bind: without this a broadcast destination fails
+        // EACCES instead of sending.
+        socket.set_broadcast(true)?;
+        let tx_addr: std::net::SocketAddr = SocketAddrV4::new(tx_host, tx_port).into();
 
         Ok(Self {
             socket: Arc::new(socket),
@@ -432,13 +431,12 @@ bitflags::bitflags! {
 
 impl MscManager {
     pub fn new(
-        nic: Ipv4Addr,
+        tx_host: Ipv4Addr,
         rx_port: u16,
         tx_port: u16,
-        subnet: Ipv4Addr,
         event_tx: std::sync::mpsc::Sender<MscEvent>,
     ) -> anyhow::Result<Self> {
-        let mut driver = MamscDriver::bind(nic, rx_port, tx_port, subnet)?;
+        let mut driver = MamscDriver::bind(tx_host, rx_port, tx_port)?;
         // ponytail: Match the field inline; introduce an alias when the manager API next changes.
         #[allow(clippy::type_complexity)]
         let subscribers: Arc<
@@ -483,13 +481,6 @@ fn command_to_flags(cmd: MscCommand) -> MscCommandFlags {
         MscCommand::GoOff => MscCommandFlags::GO_OFF,
         _ => MscCommandFlags::NONE,
     }
-}
-
-// Re-export broadcast helper from parent
-fn make_broadcast(adapter: Ipv4Addr, subnet: Ipv4Addr) -> Ipv4Addr {
-    let a = u32::from_be_bytes(adapter.octets());
-    let s = u32::from_be_bytes(subnet.octets());
-    Ipv4Addr::from(a | !s)
 }
 
 #[cfg(test)]

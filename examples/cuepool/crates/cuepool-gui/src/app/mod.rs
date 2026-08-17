@@ -1737,8 +1737,29 @@ impl CuePoolApp {
 
                         egui::CollapsingHeader::new("OSC / Remote").default_open(false).show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label("NIC:");
-                                settings_changed |= ui.text_edit_singleline(&mut settings.osc_nic).changed();
+                                ui.label("Destination:")
+                                    .on_hover_text(
+                                        "Where outbound OSC and MSC are sent. Pick an interface to \
+                                         use its broadcast address, or type a unicast address. \
+                                         Applies on restart.",
+                                    );
+                                settings_changed |= ui.text_edit_singleline(&mut settings.osc_tx_host).changed();
+                                egui::ComboBox::from_id_salt("osc_tx_host_pick")
+                                    .selected_text("Pick…")
+                                    .show_ui(ui, |ui| {
+                                        // ponytail: Enumerate on open rather than caching. The
+                                        // ceiling is one getifaddrs per frame while the dropdown
+                                        // is held open; cache on the panel struct if that ever
+                                        // shows up in a profile.
+                                        let nics = crate::osc_destination::local_nics();
+                                        for choice in crate::osc_destination::destination_choices(&nics) {
+                                            let picked = settings.osc_tx_host == choice.address;
+                                            if ui.selectable_label(picked, &choice.label).clicked() {
+                                                settings.osc_tx_host = choice.address;
+                                                settings_changed = true;
+                                            }
+                                        }
+                                    });
                             });
                             ui.horizontal(|ui| {
                                 ui.label("RX Port:");

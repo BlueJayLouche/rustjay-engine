@@ -20,6 +20,7 @@ pub mod inspector;
 pub mod lighting_panel;
 pub mod log_window;
 pub mod logging;
+pub mod osc_destination;
 pub mod preview;
 pub mod projection_panel;
 pub mod recorder_panel;

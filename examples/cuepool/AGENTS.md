@@ -14,7 +14,7 @@ CuePool is a standalone Cargo workspace. Run its commands from this directory, n
 
 Use `cuepool_harness::HeadlessShowRunner` for full-show behavior that does not require a window, GPU, audio device, or external I/O:
 
-1. Open a real format-v9 `.qproj` with `HeadlessShowRunner::open`.
+1. Open a real current-format `.qproj` with `HeadlessShowRunner::open`.
 2. Select a cue explicitly, then call `go`, `pause`, `resume`, `seek`, or `stop`.
 3. Advance playback with `advance_blocks`. Each block renders through `NullSink`, advances `VirtualClock`, consumes due FFmpeg frames, and ticks `ShowEngine`.
 4. Assert stable state with `snapshot`; use `take_trace` for ordered cue, frame, EOF, and side-effect events. `take_trace` drains the accumulated trace.

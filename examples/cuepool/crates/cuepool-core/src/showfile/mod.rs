@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub mod migration;
 
 /// Current file format version. Bumped when serialization schema changes.
-pub const FILE_FORMAT_VERSION: i32 = 9;
+pub const FILE_FORMAT_VERSION: i32 = 10;
 
 /// Root of every CuePool project file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,8 +132,18 @@ pub struct ShowSettings {
     pub limiter: Option<AudioLimiterSettings>,
 
     // OSC
+    /// Deprecated, superseded by `osc_tx_host`. Never read at runtime: its only
+    /// job was to derive a destination, and the destination is now stated
+    /// directly. Kept so existing show files round-trip, and read once at load
+    /// to seed `osc_tx_host` for projects saved before that field existed.
     #[serde(default)]
     pub osc_nic: String,
+    /// Where outbound OSC is sent: a unicast address, a broadcast address
+    /// (`255.255.255.255`, or a card's directed broadcast such as
+    /// `10.0.1.255`), or loopback. Defaults to loopback, so a fresh project
+    /// stays off the network until someone picks a destination.
+    #[serde(default = "default_osc_tx_host")]
+    pub osc_tx_host: String,
     #[serde(default = "default_osc_rx")]
     pub osc_rx_port: i32,
     #[serde(default = "default_osc_tx")]
@@ -252,6 +262,7 @@ impl Default for ShowSettings {
             audio_output_device: String::new(),
             limiter: None,
             osc_nic: String::new(),
+            osc_tx_host: default_osc_tx_host(),
             osc_rx_port: default_osc_rx(),
             osc_tx_port: default_osc_tx(),
             udp_tx_host: default_udp_tx_host(),
@@ -426,6 +437,11 @@ fn default_osc_rx() -> i32 {
 }
 fn default_osc_tx() -> i32 {
     8000
+}
+/// Loopback, so a project that has never chosen a destination sends nowhere
+/// but this machine rather than onto whatever network it is plugged into.
+fn default_osc_tx_host() -> String {
+    "127.0.0.1".into()
 }
 fn default_udp_tx_host() -> String {
     "255.255.255.255".into()

@@ -41,6 +41,9 @@ pollster = "0.3"
 
 # Networking / Protocols
 rosc = "0.11"
+# Enumerates local interfaces for the OSC destination picker. Posix + Windows;
+# used only to build the dropdown, never to bind a socket.
+if-addrs = "0.15"
 tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "net", "time", "fs"] }
 axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }

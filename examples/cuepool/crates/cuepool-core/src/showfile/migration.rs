@@ -26,6 +26,9 @@ pub fn upgrade_show_file(show_file: &mut ShowFile, raw: &Value) {
     if version < 9 {
         upgrade_v8_to_v9(show_file, raw);
     }
+    if version < 10 {
+        upgrade_v9_to_v10(show_file, raw);
+    }
 
     show_file.file_format_version = crate::showfile::FILE_FORMAT_VERSION;
 }
@@ -120,6 +123,30 @@ fn upgrade_v8_to_v9(_show_file: &mut ShowFile, _raw: &Value) {
     log::info!("Upgrading show file from V8 to V9...");
 }
 
+/// V9 -> V10: `osc_nic` named a network card, but selecting a card was never
+/// what it did — its only effect was to derive an outbound destination, by
+/// masking the address against a hardcoded /24. A blank field derived
+/// `127.0.0.255`, so a project that never filled it in sent OSC nowhere but its
+/// own machine (#213).
+///
+/// The destination is now stated directly in `osc_tx_host`. Carry a configured
+/// card across as the broadcast address it used to produce — same /24 as the
+/// code being replaced, so a working setup keeps working rather than silently
+/// changing where it sends. A blank card needs nothing: loopback is already
+/// `osc_tx_host`'s default, which preserves that case too.
+fn upgrade_v9_to_v10(show_file: &mut ShowFile, _raw: &Value) {
+    log::info!("Upgrading show file from V9 to V10...");
+
+    let settings = &mut show_file.show_settings;
+    let Ok(nic) = settings.osc_nic.parse::<std::net::Ipv4Addr>() else {
+        return;
+    };
+    let o = nic.octets();
+    let broadcast = std::net::Ipv4Addr::new(o[0], o[1], o[2], 255);
+    settings.osc_tx_host = broadcast.to_string();
+    log::info!("OSC destination migrated from NIC {nic} to {broadcast}");
+}
+
 #[inline]
 fn linear_to_db(linear: f32) -> f32 {
     if linear <= 0.0 {
@@ -210,5 +237,79 @@ mod tests {
             }
             _ => panic!("expected SoundCue"),
         }
+    }
+
+    /// A V9 file that predates `osc_tx_host`.
+    fn v9_show_file(osc_nic: &str) -> ShowFile {
+        let mut sf = ShowFile {
+            file_format_version: 9,
+            ..Default::default()
+        };
+        sf.show_settings.osc_nic = osc_nic.into();
+        sf
+    }
+
+    /// Someone with a working NIC must keep sending exactly where they were.
+    /// The card is masked against the same /24 the replaced code used, so the
+    /// destination is unchanged rather than merely plausible.
+    #[test]
+    fn v9_to_v10_carries_a_configured_nic_across_as_its_broadcast() {
+        let mut sf = v9_show_file("10.0.1.42");
+
+        upgrade_show_file(&mut sf, &Value::Null);
+
+        assert_eq!(sf.show_settings.osc_tx_host, "10.0.1.255");
+    }
+
+    /// The #213 case: a blank card used to derive `127.0.0.255`, and now lands
+    /// on the loopback default.
+    ///
+    /// This does **not** establish that the upgrader ran. `osc_tx_host` already
+    /// defaults to loopback, so this passes with `upgrade_v9_to_v10` deleted
+    /// outright — verified by mutation, not assumed.
+    /// `v9_to_v10_carries_a_configured_nic_across_as_its_broadcast` is the test
+    /// that pins the upgrader running at all.
+    ///
+    /// What this one pins is that the migration must not *guess* a network
+    /// destination for a card nobody filled in. Guessing is what #213 proposed
+    /// and what was deliberately declined: an upgrade must never take a machine
+    /// that was quiet and start it broadcasting onto a live show network.
+    #[test]
+    fn v9_to_v10_leaves_a_blank_nic_on_loopback() {
+        let mut sf = v9_show_file("");
+
+        upgrade_show_file(&mut sf, &Value::Null);
+
+        assert_eq!(sf.show_settings.osc_tx_host, "127.0.0.1");
+    }
+
+    /// A typo in the old field is not an address, and guessing what was meant
+    /// would be worse than the documented default. Same caveat as
+    /// `v9_to_v10_leaves_a_blank_nic_on_loopback`: this pins the absence of a
+    /// guess, not the presence of the upgrader.
+    #[test]
+    fn v9_to_v10_leaves_an_unparseable_nic_on_loopback() {
+        let mut sf = v9_show_file("the wired one");
+
+        upgrade_show_file(&mut sf, &Value::Null);
+
+        assert_eq!(sf.show_settings.osc_tx_host, "127.0.0.1");
+    }
+
+    /// The version gate is what stops the migration re-running: once a project
+    /// is at V10 its destination is a deliberate choice, and a stale `osc_nic`
+    /// left in the file must not overwrite it.
+    #[test]
+    fn a_v10_file_keeps_its_destination_despite_a_stale_nic() {
+        let mut sf = ShowFile {
+            file_format_version: 10,
+            ..Default::default()
+        };
+        sf.show_settings.osc_nic = "10.0.1.42".into();
+        sf.show_settings.osc_tx_host = "192.168.5.99".into();
+
+        upgrade_show_file(&mut sf, &Value::Null);
+
+        assert_eq!(sf.show_settings.osc_tx_host, "192.168.5.99");
     }
 }

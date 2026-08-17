@@ -670,15 +670,24 @@ impl App {
     ) -> Self {
         let show_engine = ShowEngine::new(cuepool.state().clone(), None);
         // Protocol settings from project settings (fallback to defaults)
-        let (nic, subnet, osc_rx_port, osc_tx_port, is_remote_host, enable_remote_control) = {
+        let (tx_host, osc_rx_port, osc_tx_port, is_remote_host, enable_remote_control) = {
             match cuepool.state().lock() {
                 Ok(state) => {
                     let settings = &state.show_file.show_settings;
-                    let nic_str = settings
-                        .osc_nic
+                    // An unparseable destination is a typo, not a preference —
+                    // say so rather than falling back silently, which is how
+                    // #213 stayed hidden for months.
+                    let tx_host = settings
+                        .osc_tx_host
                         .parse::<Ipv4Addr>()
-                        .unwrap_or(Ipv4Addr::new(127, 0, 0, 1));
-                    let subnet_str = Ipv4Addr::new(255, 255, 255, 0); // TODO: expose subnet in settings
+                        .unwrap_or_else(|_| {
+                            log::warn!(
+                                "OSC destination '{}' is not an IPv4 address; falling back to \
+                                 loopback. Outbound OSC will not leave this machine.",
+                                settings.osc_tx_host
+                            );
+                            Ipv4Addr::LOCALHOST
+                        });
                     let rx = settings.osc_rx_port as u16;
                     let tx = settings.osc_tx_port as u16;
                     // Port flipping: if remote control enabled and NOT host, swap ports
@@ -688,33 +697,26 @@ impl App {
                         (rx, tx)
                     };
                     (
-                        nic_str,
-                        subnet_str,
+                        tx_host,
                         rx,
                         tx,
                         settings.is_remote_host,
                         settings.enable_remote_control,
                     )
                 }
-                Err(_) => (
-                    Ipv4Addr::new(127, 0, 0, 1),
-                    Ipv4Addr::new(255, 255, 255, 0),
-                    9000u16,
-                    9001u16,
-                    true,
-                    false,
-                ),
+                Err(_) => (Ipv4Addr::LOCALHOST, 9000u16, 9001u16, true, false),
             }
         };
 
         let (osc_manager, osc_rx) = {
             let (tx, rx) = std::sync::mpsc::channel();
-            match OscManager::new(nic, osc_rx_port, osc_tx_port, subnet, tx) {
+            match OscManager::new(tx_host, osc_rx_port, osc_tx_port, tx) {
                 Ok(m) => {
                     log::info!(
-                        "OSC manager started on {}:{} (TX: {}), remote_control={} is_host={}",
-                        nic,
+                        "OSC manager listening on 0.0.0.0:{}, sending to {}:{}, \
+                         remote_control={} is_host={}",
                         osc_rx_port,
+                        tx_host,
                         osc_tx_port,
                         enable_remote_control,
                         is_remote_host
@@ -730,9 +732,9 @@ impl App {
 
         let (msc_manager, msc_rx) = {
             let (tx, rx) = std::sync::mpsc::channel();
-            match MscManager::new(nic, 7000, 7001, subnet, tx.clone()) {
+            match MscManager::new(tx_host, 7000, 7001, tx.clone()) {
                 Ok(m) => {
-                    log::info!("MSC manager started on {}:7000", nic);
+                    log::info!("MSC manager listening on 0.0.0.0:7000, sending to {tx_host}:7001");
                     // Wire default MSC subscriptions
                     m.subscribe(
                         MscCommandFlags::GO | MscCommandFlags::TIMED_GO,
