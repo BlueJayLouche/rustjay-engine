@@ -42,7 +42,7 @@ pub enum InputError {
         #[source]
         source: cpal::Error,
     },
-    #[error("input device '{device}' has no supported sample format (F32, I16, or U16)")]
+    #[error("input device '{device}' has no supported sample format (F32, I32, I24, I16, or U16)")]
     NoSupportedFormat { device: String },
     #[error("could not open an input stream on '{device}': {source}")]
     BuildStream {
@@ -148,6 +148,19 @@ impl InputCapture {
                 on_error,
                 None,
             ),
+            // ASIO interfaces (e.g. Dante Virtual Soundcard) are 32-bit.
+            cpal::SampleFormat::I32 => device.build_input_stream(
+                stream_config,
+                move |data: &[i32], _| push_mono(&writer, data, channels, channel),
+                on_error,
+                None,
+            ),
+            cpal::SampleFormat::I24 => device.build_input_stream(
+                stream_config,
+                move |data: &[cpal::I24], _| push_mono(&writer, data, channels, channel),
+                on_error,
+                None,
+            ),
             cpal::SampleFormat::I16 => device.build_input_stream(
                 stream_config,
                 move |data: &[i16], _| push_mono(&writer, data, channels, channel),
@@ -216,6 +229,10 @@ mod tests {
         push_mono(&queue, &[i16::MAX, 0, i16::MIN, 0], 2, 0);
         assert!((queue.pop().unwrap() - 1.0).abs() < 1e-4);
         assert!((queue.pop().unwrap() - -1.0).abs() < 1e-4);
+
+        push_mono(&queue, &[i32::MAX, 0, i32::MIN, 0], 2, 0);
+        assert!((queue.pop().unwrap() - 1.0).abs() < 1e-6);
+        assert!((queue.pop().unwrap() - -1.0).abs() < 1e-6);
 
         push_mono(&queue, &[u16::MAX, 0, u16::MIN, 0, 32768, 0], 2, 0);
         assert!((queue.pop().unwrap() - 1.0).abs() < 1e-4);

@@ -43,7 +43,7 @@ pub enum FeedError {
         #[source]
         source: cpal::Error,
     },
-    #[error("output device '{device}' has no supported sample format (F32, I32, I16, or U16)")]
+    #[error("output device '{device}' has no supported sample format (F32, I32, I24, I16, or U16)")]
     NoSupportedFormat { device: String },
     #[error("could not open an output stream on '{device}': {source}")]
     BuildStream {
@@ -136,6 +136,12 @@ impl QueueOutput {
             cpal::SampleFormat::I32 => device.build_output_stream(
                 stream_config,
                 move |data: &mut [i32], _| drain_into(&reader, data, channels, channel),
+                on_error,
+                None,
+            ),
+            cpal::SampleFormat::I24 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [cpal::I24], _| drain_into(&reader, data, channels, channel),
                 on_error,
                 None,
             ),
