@@ -26,6 +26,11 @@ controller rigs):
 `/qplayer/up` and `/qplayer/down` from the original QPlayer protocol are not
 supported — move the selection with `/qplayer/select` and a cue number.
 
+An incoming message whose address matches nothing CuePool subscribes to is
+discarded and reported in *Window → Log*, once per address so a fader on a
+wrong address does not fill it. A controller that appears to do nothing is
+worth checking there before the network.
+
 Outbound messages are sent by [OSC cues](cues.md#osc) — command format
 `/address,arg1,arg2,…`.
 
