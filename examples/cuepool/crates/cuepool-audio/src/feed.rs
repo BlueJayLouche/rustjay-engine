@@ -1,14 +1,17 @@
 //! Queue-fed output stream — mono samples pushed by the engine thread play
-//! out channel 1 of a chosen device; everything else stays silent.
+//! out one configured channel of a chosen device; everything else stays
+//! silent.
 //!
 //! Built for LTC generate (the only consumer today), where the signal must
 //! **not** pass through the programme mixer: cue fades would gate it and the
 //! master limiter would squash the biphase edges. A dedicated stream also
 //! lets LTC leave on a different physical device than the programme output.
 
+use crate::host::host_for_driver;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use crossbeam::queue::ArrayQueue;
+use cuepool_core::AudioOutputDriver;
 use std::sync::Arc;
 
 /// ~2 s of 48 kHz mono — the producer tops up every engine frame (~16 ms).
@@ -16,6 +19,10 @@ const FEED_QUEUE_SAMPLES: usize = 96_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FeedError {
+    // ponytail: stringified — keeps `crate::host` crate-private; the Display
+    // text already carries the driver and the underlying cpal error.
+    #[error("{0}")]
+    Host(String),
     #[error("could not enumerate output devices: {source}")]
     Enumerate {
         #[source]
@@ -52,18 +59,17 @@ pub enum FeedError {
     },
 }
 
-/// Drain `queue` into channel 1 of interleaved `output`, zero-filling the
-/// rest — including underruns, which downstream LTC gear reads as a dropout
-/// (transport stop), never as garbage.
-fn drain_into<S>(queue: &ArrayQueue<f32>, output: &mut [S], channels: usize)
+/// Drain `queue` into channel `channel` (0-based index into `channels`) of
+/// interleaved `output`, zero-filling the rest — including underruns, which
+/// downstream LTC gear reads as a dropout (transport stop), never as garbage.
+fn drain_into<S>(queue: &ArrayQueue<f32>, output: &mut [S], channels: usize, channel: usize)
 where
     S: SizedSample + FromSample<f32>,
 {
     for frame in output.chunks_mut(channels) {
         let sample = queue.pop().unwrap_or(0.0);
-        frame[0] = S::from_sample(sample);
-        for other in &mut frame[1..] {
-            *other = S::from_sample(0.0);
+        for (index, slot) in frame.iter_mut().enumerate() {
+            *slot = S::from_sample(if index == channel { sample } else { 0.0 });
         }
     }
 }
@@ -77,10 +83,16 @@ pub struct QueueOutput {
 }
 
 impl QueueOutput {
-    /// Open `device_name` (empty = the default output device) at its native
-    /// rate and start playing immediately (silence until fed).
-    pub fn start(device_name: &str) -> Result<Self, FeedError> {
-        let host = cpal::default_host();
+    /// Open `device_name` (empty = the default output device) on `driver`'s
+    /// host at its native rate and start playing immediately (silence until
+    /// fed). The signal goes out on `channel` (1-based, clamped to the
+    /// device's channel count).
+    pub fn start(
+        driver: AudioOutputDriver,
+        device_name: &str,
+        channel: u16,
+    ) -> Result<Self, FeedError> {
+        let host = host_for_driver(driver).map_err(|e| FeedError::Host(e.to_string()))?;
         let device = if device_name.is_empty() {
             host.default_output_device()
                 .ok_or(FeedError::NoDefaultDevice)?
@@ -107,6 +119,7 @@ impl QueueOutput {
             })?;
         let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
+        let channel = (channel.max(1) as usize - 1).min(channels - 1);
         let stream_config = config.config();
 
         let queue = Arc::new(ArrayQueue::new(FEED_QUEUE_SAMPLES));
@@ -116,25 +129,25 @@ impl QueueOutput {
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 stream_config,
-                move |data: &mut [f32], _| drain_into(&reader, data, channels),
+                move |data: &mut [f32], _| drain_into(&reader, data, channels, channel),
                 on_error,
                 None,
             ),
             cpal::SampleFormat::I32 => device.build_output_stream(
                 stream_config,
-                move |data: &mut [i32], _| drain_into(&reader, data, channels),
+                move |data: &mut [i32], _| drain_into(&reader, data, channels, channel),
                 on_error,
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
                 stream_config,
-                move |data: &mut [i16], _| drain_into(&reader, data, channels),
+                move |data: &mut [i16], _| drain_into(&reader, data, channels, channel),
                 on_error,
                 None,
             ),
             cpal::SampleFormat::U16 => device.build_output_stream(
                 stream_config,
-                move |data: &mut [u16], _| drain_into(&reader, data, channels),
+                move |data: &mut [u16], _| drain_into(&reader, data, channels, channel),
                 on_error,
                 None,
             ),
@@ -148,7 +161,10 @@ impl QueueOutput {
             device: name.clone(),
             source,
         })?;
-        log::info!("[feed-out] Playing '{name}' at {sample_rate} Hz (channel 1)");
+        log::info!(
+            "[feed-out] Playing '{name}' at {sample_rate} Hz (channel {})",
+            channel + 1
+        );
         Ok(Self {
             _stream: stream,
             queue,
@@ -194,13 +210,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drain_writes_channel_one_and_zeroes_the_rest() {
+    fn drain_writes_the_selected_channel_and_zeroes_the_rest() {
         let queue = ArrayQueue::new(8);
         queue.push(0.5f32).unwrap();
         queue.push(-0.5f32).unwrap();
         let mut output = [9.0f32; 8]; // 4 stereo frames
-        drain_into(&queue, &mut output, 2);
+        drain_into(&queue, &mut output, 2, 0);
         assert_eq!(output, [0.5, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+        let queue = ArrayQueue::new(8);
+        queue.push(0.5f32).unwrap();
+        queue.push(-0.5f32).unwrap();
+        let mut output = [9.0f32; 8];
+        drain_into(&queue, &mut output, 2, 1);
+        assert_eq!(output, [0.0, 0.5, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -209,11 +232,11 @@ mod tests {
         queue.push(1.0f32).unwrap();
         queue.push(-1.0f32).unwrap();
         let mut out_i16 = [0i16; 2];
-        drain_into(&queue, &mut out_i16, 1);
+        drain_into(&queue, &mut out_i16, 1, 0);
         assert_eq!(out_i16, [i16::MAX, i16::MIN]);
         queue.push(0.5f32).unwrap();
         let mut out_u16 = [0u16; 2];
-        drain_into(&queue, &mut out_u16, 1);
+        drain_into(&queue, &mut out_u16, 1, 0);
         assert_eq!(out_u16[0], 32768 + 16384);
         assert_eq!(out_u16[1], 32768); // underrun zeroes
     }

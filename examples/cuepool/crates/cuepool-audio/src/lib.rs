@@ -10,6 +10,7 @@ pub mod engine;
 pub mod eq_processor;
 pub mod fade_processor;
 pub mod feed;
+mod host;
 pub mod input;
 pub mod limiter_processor;
 pub mod loop_processor;

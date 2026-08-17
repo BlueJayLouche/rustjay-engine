@@ -373,24 +373,27 @@ fn video_start_clock(
 }
 
 /// Build the chase source selected by the project settings: MTC (listens on
-/// all MIDI ports) or LTC (decodes from one audio input device).
-fn build_timecode_source(config: &(TimecodeSourceKind, String)) -> Box<dyn TimecodeSource> {
+/// all MIDI ports) or LTC (decodes from one channel of one audio input
+/// device).
+fn build_timecode_source(
+    config: &(TimecodeSourceKind, AudioOutputDriver, String, u16),
+) -> Box<dyn TimecodeSource> {
     match config.0 {
         TimecodeSourceKind::Mtc => Box::new(MtcReceiver::new()),
-        TimecodeSourceKind::Ltc => Box::new(LtcReceiver::new(&config.1)),
+        TimecodeSourceKind::Ltc => Box::new(LtcReceiver::new(config.1, &config.2, config.3)),
     }
 }
 
 /// Open the configured LTC output. `None` when disabled or when the device
 /// can't be opened right now (the per-tick path retries on a throttle).
 fn open_ltc_output(
-    config: &(bool, String, TimecodeFrameRate, f64),
+    config: &(bool, AudioOutputDriver, String, u16, TimecodeFrameRate, f64),
 ) -> Option<(QueueOutput, LtcGenerator)> {
-    let (enabled, device, fps, start) = config;
+    let (enabled, driver, device, channel, fps, start) = config;
     if !enabled {
         return None;
     }
-    match QueueOutput::start(device) {
+    match QueueOutput::start(*driver, device, *channel) {
         Ok(out) => {
             log::info!(
                 "[LTC-out] Generating {} on '{}' (start {:.2}s)",
@@ -548,15 +551,17 @@ struct App {
     timecode_source: Box<dyn TimecodeSource>,
     /// The settings `timecode_source` was built from — a settings edit or a
     /// project load rebuilds the source when this no longer matches.
-    timecode_config: (TimecodeSourceKind, String),
+    /// (source kind, LTC driver, LTC device, LTC channel).
+    timecode_config: (TimecodeSourceKind, AudioOutputDriver, String, u16),
     /// Last audio-input device scan for the settings window's LTC device list.
     last_input_scan: Instant,
 
     // ── LTC generate ──
     /// Active LTC output: queue-fed stream + show-clock encoder.
     ltc_out: Option<(QueueOutput, LtcGenerator)>,
-    /// The settings `ltc_out` was built from: (enabled, device, fps, start).
-    ltc_out_config: (bool, String, TimecodeFrameRate, f64),
+    /// The settings `ltc_out` was built from:
+    /// (enabled, driver, device, channel, fps, start).
+    ltc_out_config: (bool, AudioOutputDriver, String, u16, TimecodeFrameRate, f64),
     /// Retry throttle while the configured LTC output device is unavailable.
     ltc_out_retry: Instant,
     /// Encode scratch, kept out of the per-frame path.
@@ -878,10 +883,17 @@ impl App {
             let state = cuepool.state().lock_unpoisoned();
             let settings = &state.show_file.show_settings;
             (
-                (settings.timecode_source, settings.ltc_input_device.clone()),
+                (
+                    settings.timecode_source,
+                    settings.ltc_input_driver,
+                    settings.ltc_input_device.clone(),
+                    settings.ltc_input_channel,
+                ),
                 (
                     settings.ltc_output_enabled,
+                    settings.ltc_output_driver,
                     settings.ltc_output_device.clone(),
+                    settings.ltc_output_channel,
                     settings.ltc_output_fps,
                     settings.ltc_output_start.as_secs_f64(),
                 ),
@@ -4387,9 +4399,14 @@ impl ApplicationHandler<AppEvent> for App {
         {
             let state = self.cuepool.state().lock_unpoisoned();
             let settings = &state.show_file.show_settings;
-            let config = (settings.timecode_source, settings.ltc_input_device.clone());
+            let config = (
+                settings.timecode_source,
+                settings.ltc_input_driver,
+                settings.ltc_input_device.clone(),
+                settings.ltc_input_channel,
+            );
             if config != self.timecode_config {
-                log::info!("[timecode] Chase source: {} ({})", config.0, config.1);
+                log::info!("[timecode] Chase source: {} ({})", config.0, config.2);
                 drop(state);
                 self.timecode_source = build_timecode_source(&config);
                 self.timecode_config = config;
@@ -4399,10 +4416,21 @@ impl ApplicationHandler<AppEvent> for App {
         self.timecode_source.tick();
         let tc = self.timecode_source.clone_state();
         self.drive_mtc_follow(&tc);
-        // Keep the settings window's LTC input list fresh (throttled scan).
-        let input_devices = if self.last_input_scan.elapsed().as_secs() >= 5 {
+        // Keep the settings window's LTC device lists fresh (throttled scan,
+        // scoped to each selected driver).
+        let (ltc_in_driver, ltc_out_driver) = {
+            let state = self.cuepool.state().lock_unpoisoned();
+            let settings = &state.show_file.show_settings;
+            (settings.ltc_input_driver, settings.ltc_output_driver)
+        };
+        let device_lists = if self.last_input_scan.elapsed().as_secs() >= 5 {
             self.last_input_scan = Instant::now();
-            cuepool_audio::list_input_devices().ok()
+            Some((
+                cuepool_audio::list_input_devices(ltc_in_driver).unwrap_or_default(),
+                AudioEngine::list_devices(ltc_out_driver)
+                    .map(|devices| devices.into_iter().map(|d| d.name).collect())
+                    .unwrap_or_default(),
+            ))
         } else {
             None
         };
@@ -4413,8 +4441,9 @@ impl ApplicationHandler<AppEvent> for App {
             state.mtc_fps = tc.position.frame_rate.fps() as f64;
             state.mtc_source = tc.source_device.clone();
             state.mtc_drift_ms = self.mtc_drift.map(|d| d * 1000.0);
-            if let Some(devices) = input_devices {
-                state.ltc_input_devices = devices;
+            if let Some((inputs, outputs)) = device_lists {
+                state.ltc_input_devices = inputs;
+                state.ltc_output_devices = outputs;
             }
         }
 
@@ -4425,7 +4454,9 @@ impl ApplicationHandler<AppEvent> for App {
             let s = &state.show_file.show_settings;
             (
                 s.ltc_output_enabled,
+                s.ltc_output_driver,
                 s.ltc_output_device.clone(),
+                s.ltc_output_channel,
                 s.ltc_output_fps,
                 s.ltc_output_start.as_secs_f64(),
             )
@@ -4438,7 +4469,7 @@ impl ApplicationHandler<AppEvent> for App {
                 } else {
                     "disabled"
                 },
-                ltc_out_config.1
+                ltc_out_config.2
             );
             self.ltc_out = open_ltc_output(&ltc_out_config);
             self.ltc_out_config = ltc_out_config;

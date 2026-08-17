@@ -52,14 +52,16 @@ fn continues_sequence(expected: &SmpteTime, tc: &SmpteTime) -> bool {
     false
 }
 
-/// Receives LTC on one configured audio input device.
+/// Receives LTC on one channel of one configured audio input device.
 ///
 /// The cpal callback only queues samples; decoding happens on the engine
 /// thread in [`refresh`](TimecodeSource::refresh), which must be called every
 /// frame (it is *not* throttled like `MtcReceiver::refresh` — only the
 /// reconnect scan is).
 pub struct LtcReceiver {
+    driver: cuepool_core::AudioOutputDriver,
     device_name: String,
+    channel: u16,
     capture: Option<InputCapture>,
     decoder: Option<LtcDecoder>,
     state: TimecodeState,
@@ -74,9 +76,11 @@ pub struct LtcReceiver {
 }
 
 impl LtcReceiver {
-    pub fn new(device_name: &str) -> Self {
+    pub fn new(driver: cuepool_core::AudioOutputDriver, device_name: &str, channel: u16) -> Self {
         Self {
+            driver,
             device_name: device_name.to_string(),
+            channel,
             capture: None,
             decoder: None,
             state: TimecodeState::default(),
@@ -90,7 +94,7 @@ impl LtcReceiver {
     }
 
     fn connect(&mut self) {
-        match InputCapture::start(&self.device_name) {
+        match InputCapture::start(self.driver, &self.device_name, self.channel) {
             Ok(capture) => {
                 log::info!(
                     "[LTC] Listening on '{}' at {} Hz",
@@ -181,6 +185,10 @@ mod tests {
         }
     }
 
+    fn test_receiver() -> LtcReceiver {
+        LtcReceiver::new(cuepool_core::AudioOutputDriver::default(), "test", 1)
+    }
+
     #[test]
     fn next_frame_rolls_over() {
         let t = next_frame(&tc(24, MtcFrameRate::Fps25));
@@ -228,7 +236,7 @@ mod tests {
     /// dropout, which is past the follow's deadband.
     #[test]
     fn lost_frames_do_not_stall_the_published_position() {
-        let mut rx = LtcReceiver::new("test");
+        let mut rx = test_receiver();
         for frames in 10..=12 {
             rx.accept_frame(tc(frames, MtcFrameRate::Fps25));
         }
@@ -249,7 +257,7 @@ mod tests {
 
     #[test]
     fn accept_frame_drops_single_glitches_but_adopts_jumps() {
-        let mut rx = LtcReceiver::new("test");
+        let mut rx = test_receiver();
         rx.accept_frame(tc(10, MtcFrameRate::Fps25));
         assert_eq!(rx.clone_state().position.frames, 10);
         // In-sequence frame publishes.

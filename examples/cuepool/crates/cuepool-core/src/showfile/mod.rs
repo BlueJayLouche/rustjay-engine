@@ -190,19 +190,34 @@ pub struct ShowSettings {
     /// readout).
     #[serde(default)]
     pub timecode_source: TimecodeSourceKind,
+    /// Audio driver hosting the LTC input (ASIO only takes effect in Windows
+    /// builds compiled with the `asio` feature; everything else maps to the
+    /// platform default host).
+    #[serde(default)]
+    pub ltc_input_driver: AudioOutputDriver,
     /// Audio input device carrying LTC when `timecode_source` is `Ltc`
     /// (empty = system default input).
     #[serde(default)]
     pub ltc_input_device: String,
+    /// 1-based channel of the LTC input device carrying timecode.
+    #[serde(default = "default_ltc_channel")]
+    pub ltc_input_channel: u16,
 
     // LTC output (chase CuePool from external gear)
     /// Encode the show clock as LTC on a dedicated audio output.
     #[serde(default)]
     pub ltc_output_enabled: bool,
+    /// Audio driver hosting the LTC output (same mapping as
+    /// `ltc_input_driver`).
+    #[serde(default)]
+    pub ltc_output_driver: AudioOutputDriver,
     /// Output device for generated LTC (empty = system default output).
-    /// Plays on channel 1; never routed through the programme mixer.
+    /// Never routed through the programme mixer.
     #[serde(default)]
     pub ltc_output_device: String,
+    /// 1-based channel of the LTC output device the signal plays on.
+    #[serde(default = "default_ltc_channel")]
+    pub ltc_output_channel: u16,
     /// Frame rate of the generated LTC.
     #[serde(default)]
     pub ltc_output_fps: TimecodeFrameRate,
@@ -213,6 +228,10 @@ pub struct ShowSettings {
 
 fn default_ltc_output_start() -> crate::Timespan {
     crate::Timespan::from_secs_f64(3600.0)
+}
+
+fn default_ltc_channel() -> u16 {
+    1
 }
 
 fn default_timecode_fps() -> f32 {
@@ -253,9 +272,13 @@ impl Default for ShowSettings {
             msc_page: -1,
             timecode_fps: default_timecode_fps(),
             timecode_source: TimecodeSourceKind::default(),
+            ltc_input_driver: AudioOutputDriver::default(),
             ltc_input_device: String::new(),
+            ltc_input_channel: default_ltc_channel(),
             ltc_output_enabled: false,
+            ltc_output_driver: AudioOutputDriver::default(),
             ltc_output_device: String::new(),
+            ltc_output_channel: default_ltc_channel(),
             ltc_output_fps: TimecodeFrameRate::default(),
             ltc_output_start: default_ltc_output_start(),
         }
@@ -280,6 +303,8 @@ pub struct UdpTarget {
     pub host: String,
 }
 
+/// Audio driver (cpal host) selection. Named for its first consumer — the
+/// programme output — but shared by the LTC input and output settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AudioOutputDriver {
     #[default]
@@ -487,6 +512,19 @@ mod tests {
             AudioOutputDriver::WASAPI
         );
         assert!(show.show_settings.audio_output_device.is_empty());
+    }
+
+    #[test]
+    fn old_show_without_ltc_driver_fields_chases_default_host_channel_one() {
+        // Old projects keep behaving as before the driver/channel pickers:
+        // default host, channel 1, both directions.
+        let show: ShowFile =
+            serde_json::from_str(r#"{"show_settings":{"title":"Old Show"}}"#).unwrap();
+        let settings = &show.show_settings;
+        assert_eq!(settings.ltc_input_driver, AudioOutputDriver::WASAPI);
+        assert_eq!(settings.ltc_input_channel, 1);
+        assert_eq!(settings.ltc_output_driver, AudioOutputDriver::WASAPI);
+        assert_eq!(settings.ltc_output_channel, 1);
     }
 
     #[test]

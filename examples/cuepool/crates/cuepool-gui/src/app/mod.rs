@@ -551,8 +551,12 @@ pub struct SharedState {
     /// Drift (target − video position) in ms — Some only while a follow cue runs.
     pub mtc_drift_ms: Option<f64>,
     /// Available audio input devices for the LTC chase source (published by
-    /// the control binary on a slow scan).
+    /// the control binary on a slow scan, scoped to the selected driver).
     pub ltc_input_devices: Vec<String>,
+    /// Available audio output devices for LTC generate (same scan, scoped to
+    /// the LTC output driver — the programme device list belongs to the
+    /// programme driver and may differ).
+    pub ltc_output_devices: Vec<String>,
     /// Next armed timecode trigger: (cue qid, trigger seconds).
     pub next_timecode: Option<(Decimal, f64)>,
     /// Latest pixel-map sample per segment: id → (cols, rows, RGBA bytes).
@@ -667,6 +671,7 @@ impl Default for SharedState {
             mtc_source: String::new(),
             mtc_drift_ms: None,
             ltc_input_devices: Vec::new(),
+            ltc_output_devices: Vec::new(),
             next_timecode: None,
             recorder_status: RecorderStatus::default(),
             lighting_preview: std::collections::HashMap::new(),
@@ -867,6 +872,37 @@ fn audio_driver_command(
     selected: cuepool_core::AudioOutputDriver,
 ) -> Option<AppCommand> {
     (current != selected).then_some(AppCommand::SetAudioDriver(selected))
+}
+
+/// Driver combo for the LTC in/out settings — same options as the programme
+/// Output Driver, but a plain settings write: the control binary rebuilds
+/// the LTC streams on change, so no AppCommand is needed. Returns true on
+/// change.
+fn ltc_driver_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    current: &mut cuepool_core::AudioOutputDriver,
+) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(current.to_string())
+        .show_ui(ui, |ui| {
+            for driver in [
+                cuepool_core::AudioOutputDriver::WASAPI,
+                cuepool_core::AudioOutputDriver::Wave,
+                cuepool_core::AudioOutputDriver::DirectSound,
+                cuepool_core::AudioOutputDriver::ASIO,
+            ] {
+                if ui
+                    .selectable_label(*current == driver, driver.to_string())
+                    .clicked()
+                {
+                    *current = driver;
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 fn queue_audio_settings_apply(state: &mut SharedState) {
@@ -1413,6 +1449,7 @@ impl CuePoolApp {
                         let devices = state.audio_devices.clone();
                         let current_device = state.audio_device_name.clone();
                         let ltc_inputs = state.ltc_input_devices.clone();
+                        let ltc_outputs = state.ltc_output_devices.clone();
                         let audio_error = state.audio_error.clone();
                         let threshold = state.command_queue.iter().rev().find_map(|cmd| {
                             if let AppCommand::SetLimiterThreshold(t) = cmd { Some(*t) } else { None }
@@ -1554,8 +1591,14 @@ impl CuePoolApp {
                             });
                             if settings.timecode_source == cuepool_core::TimecodeSourceKind::Ltc {
                                 ui.horizontal(|ui| {
+                                    ui.label("LTC driver:")
+                                        .on_hover_text("Audio driver hosting the LTC input — pick ASIO for multichannel interfaces on Windows");
+                                    settings_changed |=
+                                        ltc_driver_combo(ui, "ltc_input_driver", &mut settings.ltc_input_driver);
+                                });
+                                ui.horizontal(|ui| {
                                     ui.label("LTC input:")
-                                        .on_hover_text("Audio input carrying linear timecode (channel 1)");
+                                        .on_hover_text("Audio input carrying linear timecode");
                                     egui::ComboBox::from_id_salt("ltc_input_device")
                                         .selected_text(if settings.ltc_input_device.is_empty() {
                                             "System Default".to_string()
@@ -1588,17 +1631,30 @@ impl CuePoolApp {
                                             }
                                         });
                                 });
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC channel:")
+                                        .on_hover_text("Channel of the input device carrying timecode (clamped to the device's channel count)");
+                                    settings_changed |= ui
+                                        .add(egui::DragValue::new(&mut settings.ltc_input_channel).speed(1).range(1..=64))
+                                        .changed();
+                                });
                             }
 
                             settings_changed |= ui
                                 .checkbox(&mut settings.ltc_output_enabled, "Generate LTC out")
                                 .on_hover_text(
-                                    "Encode the show clock as LTC on channel 1 of a dedicated \
+                                    "Encode the show clock as LTC on one channel of a dedicated \
                                      output, so external gear can chase CuePool — never mixed \
                                      into programme audio",
                                 )
                                 .changed();
                             if settings.ltc_output_enabled {
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC out driver:")
+                                        .on_hover_text("Audio driver hosting the LTC output — pick ASIO for multichannel interfaces on Windows");
+                                    settings_changed |=
+                                        ltc_driver_combo(ui, "ltc_output_driver", &mut settings.ltc_output_driver);
+                                });
                                 ui.horizontal(|ui| {
                                     ui.label("LTC output:");
                                     egui::ComboBox::from_id_salt("ltc_output_device")
@@ -1619,20 +1675,26 @@ impl CuePoolApp {
                                                 settings.ltc_output_device.clear();
                                                 settings_changed = true;
                                             }
-                                            for device in &devices {
+                                            for device in &ltc_outputs {
                                                 if ui
                                                     .selectable_label(
-                                                        settings.ltc_output_device == device.name,
-                                                        &device.name,
+                                                        settings.ltc_output_device == *device,
+                                                        device,
                                                     )
                                                     .clicked()
                                                 {
-                                                    settings.ltc_output_device =
-                                                        device.name.clone();
+                                                    settings.ltc_output_device = device.clone();
                                                     settings_changed = true;
                                                 }
                                             }
                                         });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("LTC out channel:")
+                                        .on_hover_text("Channel of the output device the timecode plays on (clamped to the device's channel count)");
+                                    settings_changed |= ui
+                                        .add(egui::DragValue::new(&mut settings.ltc_output_channel).speed(1).range(1..=64))
+                                        .changed();
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label("LTC fps:");

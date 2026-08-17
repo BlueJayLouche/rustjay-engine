@@ -8,6 +8,7 @@ use crate::buffered_source::BufferedSource;
 use crate::channel_converter::MonoToStereo;
 use crate::eq_processor::EqProcessor;
 use crate::fade_processor::FadeProcessor;
+use crate::host::{HostChoice, HostError, host_choice, host_for_driver};
 use crate::limiter_processor::Limiter;
 use crate::loop_processor::LoopProcessor;
 use crate::metering_processor::{MeterData, MeteringProcessor};
@@ -24,49 +25,20 @@ const TARGET_OUTPUTS: u16 = 8;
 const TARGET_RATE: u32 = 48_000;
 const FALLBACK_MAX_BUFFER_FRAMES: usize = 16_384;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostChoice {
-    Default,
-    Asio,
-}
-
-fn host_choice(driver: AudioOutputDriver) -> HostChoice {
-    match driver {
-        AudioOutputDriver::ASIO => HostChoice::Asio,
-        AudioOutputDriver::WASAPI | AudioOutputDriver::Wave | AudioOutputDriver::DirectSound => {
-            HostChoice::Default
+/// Keep the engine's output-flavored error wording byte-identical while the
+/// host selector itself is driver-neutral (see `crate::host`).
+impl From<HostError> for AudioError {
+    fn from(error: HostError) -> Self {
+        match error {
+            HostError::NotCompiled { driver } => AudioError::DriverNotCompiled { driver },
+            HostError::UnsupportedPlatform { driver, platform } => {
+                AudioError::UnsupportedPlatform { driver, platform }
+            }
+            HostError::Unavailable { driver, source } => {
+                AudioError::HostUnavailable { driver, source }
+            }
         }
     }
-}
-
-fn host_for_driver(driver: AudioOutputDriver) -> Result<cpal::Host, AudioError> {
-    match host_choice(driver) {
-        HostChoice::Default => Ok(cpal::default_host()),
-        HostChoice::Asio => asio_host(),
-    }
-}
-
-#[cfg(all(target_os = "windows", feature = "asio"))]
-fn asio_host() -> Result<cpal::Host, AudioError> {
-    cpal::host_from_id(cpal::HostId::Asio).map_err(|source| AudioError::HostUnavailable {
-        driver: AudioOutputDriver::ASIO.name(),
-        source,
-    })
-}
-
-#[cfg(not(feature = "asio"))]
-fn asio_host() -> Result<cpal::Host, AudioError> {
-    Err(AudioError::DriverNotCompiled {
-        driver: AudioOutputDriver::ASIO.name(),
-    })
-}
-
-#[cfg(all(feature = "asio", not(target_os = "windows")))]
-fn asio_host() -> Result<cpal::Host, AudioError> {
-    Err(AudioError::UnsupportedPlatform {
-        driver: AudioOutputDriver::ASIO.name(),
-        platform: std::env::consts::OS,
-    })
 }
 
 fn named_output_devices(
@@ -270,7 +242,7 @@ impl AudioEngine {
 
     /// Build the selected host once, returning both its device diagnostics and engine result.
     pub fn configure(driver: AudioOutputDriver, configured_device: &str) -> AudioEngineSetup {
-        let host = match host_for_driver(driver) {
+        let host = match host_for_driver(driver).map_err(AudioError::from) {
             Ok(host) => host,
             Err(error) => {
                 return AudioEngineSetup {
@@ -1135,17 +1107,6 @@ mod tests {
     }
 
     #[test]
-    fn driver_selection_decision_table() {
-        assert_eq!(host_choice(AudioOutputDriver::WASAPI), HostChoice::Default);
-        assert_eq!(host_choice(AudioOutputDriver::Wave), HostChoice::Default);
-        assert_eq!(
-            host_choice(AudioOutputDriver::DirectSound),
-            HostChoice::Default
-        );
-        assert_eq!(host_choice(AudioOutputDriver::ASIO), HostChoice::Asio);
-    }
-
-    #[test]
     fn missing_device_error_names_driver_device_and_alternatives() {
         let devices = [
             AudioDeviceInfo {
@@ -1208,21 +1169,6 @@ mod tests {
             assert!(message.contains("16- or 32-bit"));
             assert!(message.contains("exclusive-mode conflicts"));
         }
-    }
-
-    #[test]
-    #[cfg(not(feature = "asio"))]
-    fn asio_request_explains_missing_feature() {
-        let message = asio_host().err().unwrap().to_string();
-        assert!(message.contains("ASIO"));
-        assert!(message.contains("--features asio"));
-    }
-
-    #[test]
-    #[cfg(all(feature = "asio", not(target_os = "windows")))]
-    fn asio_feature_is_a_documented_no_op_off_windows() {
-        let message = asio_host().err().unwrap().to_string();
-        assert!(message.contains("only supported on Windows"));
     }
 
     #[test]
