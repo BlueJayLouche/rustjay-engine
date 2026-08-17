@@ -61,12 +61,8 @@ fn an_unsubscribed_address_is_logged_once() {
     let (tx, events) = std::sync::mpsc::channel();
     // Only the RX port is bound; the TX port is a destination this test never
     // sends to, so any value does.
-    let manager = OscManager::new(Ipv4Addr::LOCALHOST, rx_port, 9001, tx)
+    let _manager = OscManager::new(Ipv4Addr::LOCALHOST, rx_port, 9001, tx)
         .expect("OSC manager binds the port the probe just released");
-    // `OscDriver::drop` joins an RX thread parked in a blocking `recv_from`, so
-    // dropping the manager here would hang the test run. Leak it instead: the
-    // process is about to exit and the socket goes with it.
-    std::mem::forget(manager);
 
     let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("loopback bind");
     let dest = (Ipv4Addr::LOCALHOST, rx_port);

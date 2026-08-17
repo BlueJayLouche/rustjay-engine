@@ -95,6 +95,10 @@ pub enum OscEvent {
     RawMessage(OscMessage),
 }
 
+/// How long the RX thread waits on an idle socket before checking whether it
+/// has been asked to stop. It bounds how long shutdown takes, so it is short.
+const RX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Low-level UDP OSC driver.
 pub struct OscDriver {
     socket: Arc<UdpSocket>,
@@ -115,7 +119,10 @@ impl OscDriver {
     pub fn bind(tx_host: Ipv4Addr, rx_port: u16, tx_port: u16) -> anyhow::Result<Self> {
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, rx_port);
         let socket = UdpSocket::bind(bind_addr)?;
-        socket.set_nonblocking(false)?;
+        // Blocking reads, but bounded: the RX loop only notices the stop flag
+        // between reads, so without a timeout `Drop` would join a thread parked
+        // in `recv_from` until the next datagram — on a quiet port, forever.
+        socket.set_read_timeout(Some(RX_POLL_INTERVAL))?;
         // The destination is user-chosen and may well be a broadcast address;
         // without this, sending to one fails EACCES rather than going nowhere.
         socket.set_broadcast(true)?;
@@ -153,9 +160,13 @@ impl OscDriver {
                             log::warn!("OSC decode error from {src}: {e}");
                         }
                     },
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+                    // An idle port: the read timeout expired with nothing to
+                    // show. Unix reports it as WouldBlock, Windows as TimedOut.
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
                     Err(e) => {
                         log::warn!("OSC recv error: {e}");
                     }
