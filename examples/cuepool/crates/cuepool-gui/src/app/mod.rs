@@ -23,7 +23,7 @@ const MAX_AUTOMATION_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 /// the previous release's copy with the new version. `release_notes_match_the_release`
 /// fails while this trails the package minor, which is the reminder to rewrite
 /// the modal body before bumping it (see AGENTS.md).
-pub const RELEASE_NOTES_VERSION: &str = "0.10";
+pub const RELEASE_NOTES_VERSION: &str = "0.11";
 
 /// A full snapshot of editable state for undo/redo.
 #[derive(Debug, Clone)]
@@ -2223,9 +2223,9 @@ impl CuePoolApp {
                         .color(egui::Color32::from_rgb(255, 184, 92)),
                 );
                 ui.add_space(4.0);
-                ui.heading("Timecode, in and out");
+                ui.heading("A live feed of your pixel map");
                 ui.label(
-                    "CuePool can now follow an incoming LTC signal, or generate one from the show clock, each on an audio device and channel you choose.",
+                    "The samples driving your LED segments can now be streamed out over a WebSocket, so a web page can show what the pixel map is doing on any screen you point at it.",
                 );
                 ui.add_space(12.0);
                 ui.separator();
@@ -2233,20 +2233,16 @@ impl CuePoolApp {
 
                 for (title, detail) in [
                     (
-                        "Chase LTC",
-                        "Lock the show clock to LTC arriving on a selected audio input, picked by driver and channel in Settings.",
+                        "Off until you ask for it",
+                        "Set CUEPOOL_PIXELS_BIND to an address and CuePool serves the feed there. Leave it unset and no extra port opens.",
                     ),
                     (
-                        "Generate LTC",
-                        "Send LTC from the show clock on its own output. Both directions accept 32- and 24-bit integer streams.",
+                        "Every segment, as it plays",
+                        "Each enabled segment streams its own grid at up to 60 frames a second. Frames go out only when the pixels change, so a held look costs nothing.",
                     ),
                     (
-                        "Faster video on Windows",
-                        "D3D12VA zero-copy decode on wgpu 30, with DX12 preferred and the active decode path shown in the status bar.",
-                    ),
-                    (
-                        "Settings that survive a crash",
-                        "A corrupt or half-written settings.json is kept and reported rather than silently replaced, and a panicked thread can no longer overwrite your recent files.",
+                        "The page works it out for itself",
+                        "The stream opens by describing every segment: grid size, region, scan order and patch. A visualiser can lay itself out without being handed your show file.",
                     ),
                 ] {
                     ui.label(
@@ -2260,7 +2256,7 @@ impl CuePoolApp {
 
                 ui.label(
                     egui::RichText::new(
-                        "Also: PixelMap cues respond to stop and pause, AfterLast waits for the end of a video's picture, the launch splash and About are one card, and OSC states its destination instead of deriving it from a NIC.",
+                        "Also: the quit-confirm dialog is reachable again and offers Save, OSC now logs messages that match no address instead of dropping them in silence, and the unimplemented /qplayer/up and /qplayer/down are gone.",
                     )
                     .small()
                     .color(egui::Color32::from_gray(180)),

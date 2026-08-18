@@ -58,6 +58,7 @@ use output_window::{
 };
 mod persist;
 use persist::{emergency_save, spawn_autosave_thread};
+mod pixels;
 mod recorder;
 use recorder::Recorder;
 mod remote_commands;
@@ -883,6 +884,11 @@ impl App {
                 None
             }
         };
+
+        // Opt-in visualiser feed; absent unless CUEPOOL_PIXELS_BIND is set.
+        if let Err(error) = pixels::start(Arc::clone(cuepool.state())) {
+            log::error!("CuePool pixel feed unavailable: {error}");
+        }
 
         let (timecode_config, ltc_out_config) = {
             let state = cuepool.state().lock_unpoisoned();

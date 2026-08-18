@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.10.2"
+version = "0.11.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/BlueJayLouche/rustjay-engine"
@@ -45,7 +45,7 @@ rosc = "0.11"
 # used only to build the dropdown, never to bind a socket.
 if-addrs = "0.15"
 tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "net", "time", "fs"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 utoipa = "5.5"
 

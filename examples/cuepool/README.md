@@ -118,6 +118,79 @@ Process launch remains outside MCP. The smoke artifact proves application and
 GPU state, but not physical projector mapping; that still needs an attended or
 camera-backed check.
 
+## Pixel feed
+
+A WebSocket mirror of the pixel-map samples, for driving an external visualiser.
+It is off unless `CUEPOOL_PIXELS_BIND` is set:
+
+```sh
+CUEPOOL_PIXELS_BIND=127.0.0.1:7134 cuepool
+```
+
+Connect to `ws://<bind>/v1/pixels`. Two optional query parameters: `fps` (1–60,
+default 30) and `segments`, a comma-separated id filter that defaults to every
+active segment.
+
+This is a **separate listener from the automation API above**, on its own port
+and thread. Pixel data is the least sensitive thing CuePool holds — it is what
+the room already sees — while `/v1/project` and `/v1/logs` are the most, so they
+do not share a door. The API keeps its loopback-only rule; this listener accepts
+any address you give it. It is unauthenticated, on the same reasoning that sACN
+and Art-Net are: the real DMX output is already on that network in clear. Prefer
+a specific interface (`192.168.10.5:7134`) over `0.0.0.0` so a dual-homed machine
+does not serve the feed on a second network. Eight concurrent connections are
+allowed; further ones get `503`.
+
+On connect, and whenever the patch changes, the server sends a JSON text frame
+describing the segments:
+
+```json
+{"type": "segments", "segments": [
+  {"id": 1, "name": "Upstage truss", "cols": 32, "rows": 8,
+   "region": [0.0, 0.0, 1.0, 0.25], "source": "PixelMap",
+   "universe": 1, "address": 1, "gamma": 2.2,
+   "order": {"start_corner": "TopLeft", "serpentine": true, "primary": "Horizontal"}}]}
+```
+
+Pixel data then arrives as binary frames, one per segment, only when that
+segment's pixels changed — static content costs nothing. Each frame is a 12-byte
+little-endian header followed by tightly packed RGBA, row-major from the
+top-left:
+
+| Offset | Type | Meaning |
+|---|---|---|
+| 0 | `u32` | Segment id |
+| 4 | `u16` | Columns |
+| 6 | `u16` | Rows |
+| 8 | `u32` | Milliseconds since the stream opened |
+| 12 | … | `cols * rows * 4` bytes RGBA |
+
+**Trust the frame header over the metadata for dimensions.** The sampler can lag
+a grid resize by a frame, so the two disagree briefly after an edit.
+
+These are raw samples, taken before `demux_tile` applies the segment's wiring and
+before the gamma, white-mode and colour correction that shape the actual DMX
+output. A visualiser showing source imagery can ignore `order`; one mirroring
+fixture wiring should apply it.
+
+```js
+const socket = new WebSocket("ws://127.0.0.1:7134/v1/pixels?fps=30");
+socket.binaryType = "arraybuffer";
+const ctx = document.querySelector("canvas").getContext("2d");
+
+socket.onmessage = (event) => {
+  if (typeof event.data === "string") {
+    console.log("segments", JSON.parse(event.data).segments);
+    return;
+  }
+  const view = new DataView(event.data);
+  const cols = view.getUint16(4, true);
+  const rows = view.getUint16(6, true);
+  const pixels = new Uint8ClampedArray(event.data, 12);
+  ctx.putImageData(new ImageData(pixels, cols, rows), 0, 0);
+};
+```
+
 ## Window layout
 
 | Area | What it is |
