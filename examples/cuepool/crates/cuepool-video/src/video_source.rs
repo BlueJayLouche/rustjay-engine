@@ -4,8 +4,6 @@ use crate::frame::{BitDepth, ChromaSubsample, VideoFrame, YuvPlane};
 use ffmpeg_next::Packet;
 use ffmpeg_next::{codec, color, ffi, format, frame, media::Type, software::scaling, threading};
 use hap_parser::{HapFrame, TextureFormat as HapFormat};
-use std::ffi::{CString, c_int, c_void};
-use std::ptr;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -900,53 +898,19 @@ fn validate_hap_packet(
     Ok(format)
 }
 
-extern "C" fn ffmpeg_interrupt_callback(opaque: *mut c_void) -> c_int {
-    if opaque.is_null() {
-        return 0;
-    }
-    // SAFETY: `open_input` points this at an AtomicBool owned by an Arc that is
-    // retained until after the corresponding AVFormatContext is closed.
-    unsafe { (&*(opaque.cast::<AtomicBool>())).load(Ordering::Relaxed) as c_int }
-}
-
 fn open_input(
     path: &str,
     interrupt: Option<&Arc<AtomicBool>>,
 ) -> Result<format::context::Input, ffmpeg_next::Error> {
-    let Some(stop) = interrupt else {
-        return format::input(path);
-    };
-    let path = CString::new(path).map_err(|_| ffmpeg_next::Error::InvalidData)?;
-    // ffmpeg-next 8.1's input_with_interrupt leaks its boxed callback. Point
-    // directly into our retained Arc instead, so there is no callback allocation
-    // to reclaim after repeated loop/fallback reopens.
-    unsafe {
-        let mut context = ffi::avformat_alloc_context();
-        if context.is_null() {
-            return Err(ffmpeg_next::Error::Unknown);
+    match interrupt {
+        // ffmpeg-next 9.0 reclaims the boxed callback on close, so the manual
+        // avformat_open_input this needed under 8.1 (which leaked the callback
+        // on every loop/fallback reopen) is gone.
+        Some(stop) => {
+            let stop = Arc::clone(stop);
+            format::input_with_interrupt(path, move || stop.load(Ordering::Relaxed))
         }
-        (*context).interrupt_callback = ffi::AVIOInterruptCB {
-            callback: Some(ffmpeg_interrupt_callback),
-            opaque: Arc::as_ptr(stop).cast_mut().cast(),
-        };
-        let opened = ffi::avformat_open_input(
-            &mut context,
-            path.as_ptr(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        );
-        if opened < 0 {
-            if !context.is_null() {
-                ffi::avformat_close_input(&mut context);
-            }
-            return Err(ffmpeg_next::Error::from(opened));
-        }
-        let streams = ffi::avformat_find_stream_info(context, ptr::null_mut());
-        if streams < 0 {
-            ffi::avformat_close_input(&mut context);
-            return Err(ffmpeg_next::Error::from(streams));
-        }
-        Ok(format::context::Input::wrap(context))
+        None => format::input(path),
     }
 }
 

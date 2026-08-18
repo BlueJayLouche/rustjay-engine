@@ -129,7 +129,8 @@ CUEPOOL_PIXELS_BIND=127.0.0.1:7134 cuepool
 
 Connect to `ws://<bind>/v1/pixels`. Two optional query parameters: `fps` (1–60,
 default 30) and `segments`, a comma-separated id filter that defaults to every
-active segment.
+active segment. Ids that do not parse are dropped; a filter with no parseable
+id at all streams nothing rather than everything.
 
 This is a **separate listener from the automation API above**, on its own port
 and thread. Pixel data is the least sensitive thing CuePool holds — it is what
@@ -139,7 +140,14 @@ any address you give it. It is unauthenticated, on the same reasoning that sACN
 and Art-Net are: the real DMX output is already on that network in clear. Prefer
 a specific interface (`192.168.10.5:7134`) over `0.0.0.0` so a dual-homed machine
 does not serve the feed on a second network. Eight concurrent connections are
-allowed; further ones get `503`.
+allowed; further ones get `503`. Idle connections are pinged every 30 seconds so
+a vanished client's slot is reclaimed.
+
+One principal can reach the feed from outside that network reasoning: a browser,
+where any web page may open a WebSocket. `CUEPOOL_PIXELS_ORIGINS` (comma-separated,
+e.g. `https://vis.example`, or `null` for a `file://` page) restricts which browser
+`Origin`s may connect; unlisted origins get `403`. Requests without an `Origin`
+header — non-browser clients — always pass. Unset, any origin is accepted.
 
 On connect, and whenever the patch changes, the server sends a JSON text frame
 describing the segments:
@@ -162,7 +170,7 @@ top-left:
 | 0 | `u32` | Segment id |
 | 4 | `u16` | Columns |
 | 6 | `u16` | Rows |
-| 8 | `u32` | Milliseconds since the stream opened |
+| 8 | `u32` | Milliseconds since the stream opened (wraps every ~49.7 days) |
 | 12 | … | `cols * rows * 4` bytes RGBA |
 
 **Trust the frame header over the metadata for dimensions.** The sampler can lag

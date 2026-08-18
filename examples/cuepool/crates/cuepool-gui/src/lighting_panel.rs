@@ -276,7 +276,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 fn segments_editor(
     ui: &mut egui::Ui,
     lighting: &mut cuepool_core::LightingConfig,
-    preview: &std::collections::HashMap<u32, (u32, u32, Vec<u8>)>,
+    preview: &std::collections::HashMap<u32, (u32, u32, std::sync::Arc<Vec<u8>>)>,
 ) -> bool {
     let mut changed = false;
     ui.label(

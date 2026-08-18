@@ -569,8 +569,10 @@ pub struct SharedState {
     /// Next armed timecode trigger: (cue qid, trigger seconds).
     pub next_timecode: Option<(Decimal, f64)>,
     /// Latest pixel-map sample per segment: id → (cols, rows, RGBA bytes).
-    /// Published by the control binary; painted by the lighting panel preview.
-    pub lighting_preview: std::collections::HashMap<u32, (u32, u32, Vec<u8>)>,
+    /// Published by the control binary; painted by the lighting panel preview
+    /// and streamed by the pixel feed. `Arc` so readers snapshot a handle
+    /// instead of copying megabytes under this lock.
+    pub lighting_preview: std::collections::HashMap<u32, (u32, u32, std::sync::Arc<Vec<u8>>)>,
     /// Set on window-close with unsaved changes / running cues — shows the in-app
     /// quit-confirm modal (a native modal deadlocks the loop).
     pub pending_close_confirm: bool,

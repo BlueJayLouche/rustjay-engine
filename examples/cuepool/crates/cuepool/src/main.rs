@@ -4603,6 +4603,15 @@ impl ApplicationHandler<AppEvent> for App {
                 {
                     self.lighting.clear_segment_pixels(id);
                 }
+                // The preview map mirrors what is actually being sampled:
+                // entries for segments that were deleted, disabled, or whose
+                // source went away would otherwise replay their last pixels
+                // forever — to the GUI grid and to the pixel feed.
+                if let Ok(mut state) = self.cuepool.state().lock() {
+                    state
+                        .lighting_preview
+                        .retain(|id, _| batch.iter().any(|(_, sampled, ..)| sampled == id));
+                }
                 if !batch.is_empty() {
                     self.last_pixel_sample = Instant::now();
                     let configure_gate = Arc::clone(&self.configure_gate);
@@ -4616,7 +4625,7 @@ impl ApplicationHandler<AppEvent> for App {
                             for (id, cols, rows, rgba) in &ready {
                                 state
                                     .lighting_preview
-                                    .insert(*id, (*cols, *rows, rgba.clone()));
+                                    .insert(*id, (*cols, *rows, Arc::new(rgba.clone())));
                             }
                         }
                         for (id, cols, rows, rgba) in ready {

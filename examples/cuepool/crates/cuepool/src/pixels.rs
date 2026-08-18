@@ -24,12 +24,15 @@
 //! a reloaded browser tab, not an attacker, so the control is
 //! [`MAX_CONNECTIONS`] — bounding how many pollers can contend the shared state
 //! lock — rather than a token. Operators wanting narrower reach should bind a
-//! specific interface rather than `0.0.0.0`.
+//! specific interface rather than `0.0.0.0`. The one principal that can cross
+//! the network boundary anyway is a browser — any web page may open a
+//! WebSocket, CORS notwithstanding — so [`ORIGINS_VAR`] can pin the `Origin`s
+//! allowed to connect.
 
 use axum::Router;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use cuepool_core::lighting::{PixelMapSegment, SegmentSource};
@@ -52,8 +55,21 @@ const BIND_VAR: &str = "CUEPOOL_PIXELS_BIND";
 const MAX_CONNECTIONS: usize = 8;
 
 /// Client frames are not part of the protocol; cap reads so a misbehaving one
-/// cannot buffer without limit.
+/// cannot buffer without limit. Applied as both the frame and the message
+/// limit: the frame cap alone would still let tungstenite reassemble
+/// fragmented messages up to its 64 MiB default.
 const MAX_CLIENT_FRAME: usize = 1024;
+
+/// Idle interval after which a Ping goes out. Not for the client's benefit:
+/// writes are what let TCP notice a vanished peer, and a held look sends
+/// nothing, so without this a dead connection would hold one of the
+/// [`MAX_CONNECTIONS`] permits forever.
+const KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// Environment variable holding a comma-separated `Origin` allowlist
+/// (e.g. `https://vis.example,null` — `null` being what a `file://` page
+/// sends). Unset means any origin may connect.
+const ORIGINS_VAR: &str = "CUEPOOL_PIXELS_ORIGINS";
 
 const DEFAULT_FPS: f32 = 30.0;
 const MIN_FPS: f32 = 1.0;
@@ -90,9 +106,20 @@ pub fn start(shared: SharedStateHandle) -> anyhow::Result<()> {
         );
     }
 
+    let origins: Vec<String> = std::env::var(ORIGINS_VAR)
+        .ok()
+        .map(|list| {
+            list.split(',')
+                .map(|origin| origin.trim().trim_end_matches('/').to_string())
+                .filter(|origin| !origin.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let state = FeedState {
         shared,
         connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+        origins: Arc::new(origins),
     };
     std::thread::Builder::new()
         .name("cuepool-pixels".into())
@@ -129,6 +156,8 @@ fn run(listener: TcpListener, state: FeedState) {
 struct FeedState {
     shared: SharedStateHandle,
     connections: Arc<Semaphore>,
+    /// Exact `Origin` values allowed to connect; empty = no restriction.
+    origins: Arc<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,31 +170,58 @@ struct FeedParams {
 
 impl FeedParams {
     fn interval(&self) -> Duration {
-        let fps = self.fps.unwrap_or(DEFAULT_FPS).clamp(MIN_FPS, MAX_FPS);
+        // Non-finite is filtered before the clamp: clamp propagates NaN, and
+        // `Duration::from_secs_f32(NaN)` panics — which the release profile's
+        // `panic = "abort"` turns into one request killing the process.
+        let fps = self
+            .fps
+            .filter(|fps| fps.is_finite())
+            .unwrap_or(DEFAULT_FPS)
+            .clamp(MIN_FPS, MAX_FPS);
         Duration::from_secs_f32(1.0 / fps)
     }
 
     /// `None` = no filter. Unparseable ids are dropped rather than failing the
     /// upgrade: a visualiser with one stale id in its list should still render
-    /// the rest.
+    /// the rest. A list with no parseable id at all fails closed — the client
+    /// asked for a subset it could not name, which must not widen to
+    /// everything.
     fn filter(&self) -> Option<Vec<u32>> {
         let raw = self.segments.as_deref()?.trim();
         if raw.is_empty() {
             return None;
         }
-        let ids: Vec<u32> = raw
-            .split(',')
-            .filter_map(|id| id.trim().parse().ok())
-            .collect();
-        (!ids.is_empty()).then_some(ids)
+        Some(
+            raw.split(',')
+                .filter_map(|id| id.trim().parse().ok())
+                .collect(),
+        )
     }
 }
 
 async fn upgrade(
     State(state): State<FeedState>,
     Query(params): Query<FeedParams>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    // Browsers attach `Origin` to every WebSocket handshake and CORS does not
+    // apply, so without this gate a drive-by page could read the feed and pin
+    // its permits. Requests without the header — non-browser clients — pass:
+    // they are covered by the network reasoning in the module doc.
+    if !state.origins.is_empty()
+        && let Some(origin) = headers.get(header::ORIGIN)
+    {
+        let origin = origin.to_str().unwrap_or_default().trim_end_matches('/');
+        if !state
+            .origins
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+        {
+            log::warn!("CuePool pixel feed refused origin '{origin}'");
+            return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+        }
+    }
     let Ok(permit) = Arc::clone(&state.connections).try_acquire_owned() else {
         log::warn!("CuePool pixel feed refused a connection: {MAX_CONNECTIONS} already open");
         return (
@@ -178,6 +234,7 @@ async fn upgrade(
     let filter = params.filter();
     upgrade
         .max_frame_size(MAX_CLIENT_FRAME)
+        .max_message_size(MAX_CLIENT_FRAME)
         .on_upgrade(move |socket| async move {
             stream(socket, state.shared, interval, filter).await;
             drop(permit);
@@ -193,8 +250,9 @@ async fn stream(
     filter: Option<Vec<u32>>,
 ) {
     let started = Instant::now();
+    let mut last_write = Instant::now();
     let mut last_meta: Option<Vec<SegmentMeta>> = None;
-    let mut last_pixels: HashMap<u32, Vec<u8>> = HashMap::new();
+    let mut last_pixels: HashMap<u32, Arc<Vec<u8>>> = HashMap::new();
 
     let mut ticker = tokio::time::interval(interval);
     // Drop-on-lag rather than queue: awaiting a slow client's `send` below
@@ -215,9 +273,16 @@ async fn stream(
             _ = ticker.tick() => {}
         }
 
+        // A held look sends nothing, so idle connections ping: the write is
+        // what lets TCP notice a vanished peer and hand its permit back.
+        if last_write.elapsed() >= KEEPALIVE {
+            if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                return;
+            }
+            last_write = Instant::now();
+        }
+
         let elapsed_ms = started.elapsed().as_millis() as u32;
-        // Snapshot under one lock, then release it before any await — the
-        // sampler and GUI need this mutex every frame.
         let Some(snapshot) = snapshot(&shared, filter.as_deref(), &last_pixels, elapsed_ms) else {
             continue;
         };
@@ -236,8 +301,13 @@ async fn stream(
             {
                 return;
             }
-            // Geometry changed, so cached payloads may be the wrong size.
-            last_pixels.clear();
+            last_write = Instant::now();
+            // Only a resized grid invalidates its cached payload; name, gamma
+            // or patch edits keep it — their pixels are unchanged, and wiping
+            // the cache would resend every grid in full.
+            if let Some(last) = &last_meta {
+                evict_resized(last, &snapshot.meta, &mut last_pixels);
+            }
             last_meta = Some(snapshot.meta);
         }
 
@@ -245,57 +315,93 @@ async fn stream(
             if socket.send(Message::Binary(frame.into())).await.is_err() {
                 return;
             }
+            last_write = Instant::now();
             last_pixels.insert(id, rgba);
+        }
+    }
+}
+
+/// Drop cached payloads for segments whose grid changed between two metadata
+/// frames: a same-length byte compare could otherwise skip the frame that
+/// carries the new header dimensions.
+fn evict_resized(
+    last: &[SegmentMeta],
+    next: &[SegmentMeta],
+    cache: &mut HashMap<u32, Arc<Vec<u8>>>,
+) {
+    for meta in next {
+        let resized = last
+            .iter()
+            .find(|previous| previous.id == meta.id)
+            .is_none_or(|previous| (previous.cols, previous.rows) != (meta.cols, meta.rows));
+        if resized {
+            cache.remove(&meta.id);
         }
     }
 }
 
 struct Snapshot {
     meta: Vec<SegmentMeta>,
-    /// `(segment id, encoded frame, raw RGBA to cache once sent)`.
-    frames: Vec<(u32, Vec<u8>, Vec<u8>)>,
+    /// `(segment id, encoded frame, sampler payload to cache once sent)`.
+    frames: Vec<(u32, Vec<u8>, Arc<Vec<u8>>)>,
 }
 
-/// Read geometry and pixels under a single lock. `None` if the lock is
+/// Copy out geometry and pixel handles under a single lock, then diff and
+/// encode after it is released — the sampler and GUI need this mutex every
+/// frame, so only cheap `Arc` clones happen inside it. `None` if the lock is
 /// poisoned — a tick is skipped rather than killing the connection.
 fn snapshot(
     shared: &SharedStateHandle,
     filter: Option<&[u32]>,
-    last_pixels: &HashMap<u32, Vec<u8>>,
+    last_pixels: &HashMap<u32, Arc<Vec<u8>>>,
     elapsed_ms: u32,
 ) -> Option<Snapshot> {
-    let state = shared.lock().ok()?;
-    let wanted = |id: u32| filter.is_none_or(|ids| ids.contains(&id));
+    let (meta, sampled) = {
+        let state = shared.lock().ok()?;
+        // The sampler is gated on the global toggle, so with lighting off the
+        // preview map is only history: advertise nothing rather than serving
+        // stale samples as live.
+        if !state.show_file.lighting.enabled {
+            return Some(Snapshot {
+                meta: Vec::new(),
+                frames: Vec::new(),
+            });
+        }
 
-    let meta: Vec<SegmentMeta> = state
-        .show_file
-        .lighting
-        .active_segments()
-        .filter(|segment| wanted(segment.id))
-        .map(SegmentMeta::from)
-        .collect();
+        let meta: Vec<SegmentMeta> = state
+            .show_file
+            .lighting
+            .active_segments()
+            .filter(|segment| filter.is_none_or(|ids| ids.contains(&segment.id)))
+            .map(SegmentMeta::from)
+            .collect();
 
-    let frames = meta
-        .iter()
-        .filter_map(|segment| {
-            let (cols, rows, rgba) = state.lighting_preview.get(&segment.id)?;
+        let sampled: Vec<(u32, u32, u32, Arc<Vec<u8>>)> = meta
+            .iter()
+            .filter_map(|segment| {
+                let (cols, rows, rgba) = state.lighting_preview.get(&segment.id)?;
+                Some((segment.id, *cols, *rows, Arc::clone(rgba)))
+            })
+            .collect();
+        (meta, sampled)
+    };
+
+    let frames = sampled
+        .into_iter()
+        .filter_map(|(id, cols, rows, rgba)| {
             // Guard the cast: `cols`/`rows` are clamped to 512 by the sampler,
             // but the preview map is public state.
-            let (cols, rows) = (u16::try_from(*cols).ok()?, u16::try_from(*rows).ok()?);
+            let (cols, rows) = (u16::try_from(cols).ok()?, u16::try_from(rows).ok()?);
             if rgba.len() != cols as usize * rows as usize * 4 {
                 return None; // mid-resize; the next tick will be consistent
             }
             if last_pixels
-                .get(&segment.id)
-                .is_some_and(|last| last == rgba)
+                .get(&id)
+                .is_some_and(|last| Arc::ptr_eq(last, &rgba) || last == &rgba)
             {
                 return None; // unchanged since last send — static content is free
             }
-            Some((
-                segment.id,
-                encode_frame(segment.id, cols, rows, elapsed_ms, rgba),
-                rgba.clone(),
-            ))
+            Some((id, encode_frame(id, cols, rows, elapsed_ms, &rgba), rgba))
         })
         .collect();
 
@@ -316,6 +422,9 @@ fn snapshot(
 /// This is the sampler's native order, before `demux_tile` applies the
 /// segment's wiring. Clients wanting fixture order apply `order` from the
 /// metadata frame themselves; clients drawing a grid ignore it.
+///
+/// The timestamp wraps about every 49.7 days on one connection; clients
+/// comparing times should subtract with wrapping arithmetic.
 pub(crate) fn encode_frame(id: u32, cols: u16, rows: u16, elapsed_ms: u32, rgba: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER_BYTES + rgba.len());
     frame.extend_from_slice(&id.to_le_bytes());
@@ -335,7 +444,7 @@ struct MetaFrame<'a> {
 
 /// Everything a visualiser needs to lay a segment out, so it never has to reach
 /// for the show-control API — which is the whole point of the separate port.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct SegmentMeta {
     id: u32,
     name: String,
@@ -347,6 +456,25 @@ pub(crate) struct SegmentMeta {
     address: u16,
     gamma: f32,
     order: ScanOrder,
+}
+
+/// Hand-written so the floats compare bitwise: change detection must see NaN
+/// as equal to itself, or one NaN gamma/region would resend metadata — and
+/// through [`evict_resized`], pixels — every tick. Keep in step with the
+/// fields above.
+impl PartialEq for SegmentMeta {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.cols == other.cols
+            && self.rows == other.rows
+            && self.region.map(f32::to_bits) == other.region.map(f32::to_bits)
+            && self.source == other.source
+            && self.universe == other.universe
+            && self.address == other.address
+            && self.gamma.to_bits() == other.gamma.to_bits()
+            && self.order == other.order
+    }
 }
 
 impl From<&PixelMapSegment> for SegmentMeta {
@@ -370,6 +498,7 @@ impl From<&PixelMapSegment> for SegmentMeta {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// A segment at `cols`x`rows` using the builtin `rgb` profile, so
     /// `active_segments` keeps it.
@@ -392,7 +521,9 @@ mod tests {
         shared.show_file.lighting.enabled = true;
         shared.show_file.lighting.segments = segments;
         for (id, cols, rows, rgba) in preview {
-            shared.lighting_preview.insert(id, (cols, rows, rgba));
+            shared
+                .lighting_preview
+                .insert(id, (cols, rows, Arc::new(rgba)));
         }
         Arc::new(Mutex::new(shared))
     }
@@ -408,7 +539,7 @@ mod tests {
         assert_eq!(snap.frames.len(), 1);
         let (id, frame, rgba) = &snap.frames[0];
         assert_eq!(*id, 7);
-        assert_eq!(rgba, &vec![9u8; 8]);
+        assert_eq!(**rgba, vec![9u8; 8]);
         assert_eq!(frame.len(), FRAME_HEADER_BYTES + 8);
         assert_eq!(&frame[0..4], &7u32.to_le_bytes());
         assert_eq!(&frame[4..6], &2u16.to_le_bytes());
@@ -418,7 +549,7 @@ mod tests {
     #[test]
     fn unchanged_pixels_send_nothing_but_still_report_geometry() {
         let shared = state(vec![segment(7, 2, 1)], vec![(7, 2, 1, vec![9u8; 8])]);
-        let cached = HashMap::from([(7, vec![9u8; 8])]);
+        let cached = HashMap::from([(7, Arc::new(vec![9u8; 8]))]);
 
         let snap = snapshot(&shared, None, &cached, 5).expect("lock held");
 
@@ -427,9 +558,24 @@ mod tests {
     }
 
     #[test]
+    fn lighting_disabled_globally_yields_no_metadata_and_no_frames() {
+        let shared = state(vec![segment(7, 2, 1)], vec![(7, 2, 1, vec![9u8; 8])]);
+        shared.lock().unwrap().show_file.lighting.enabled = false;
+        let empty = HashMap::new();
+
+        let snap = snapshot(&shared, None, &empty, 0).expect("lock held");
+
+        assert!(
+            snap.meta.is_empty(),
+            "the sampler is off; the preview map is only history"
+        );
+        assert!(snap.frames.is_empty());
+    }
+
+    #[test]
     fn changed_pixels_resend() {
         let shared = state(vec![segment(7, 2, 1)], vec![(7, 2, 1, vec![1u8; 8])]);
-        let cached = HashMap::from([(7, vec![9u8; 8])]);
+        let cached = HashMap::from([(7, Arc::new(vec![9u8; 8]))]);
 
         let snap = snapshot(&shared, None, &cached, 5).expect("lock held");
 
@@ -509,11 +655,145 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_fps_falls_back_to_the_default_instead_of_panicking() {
+        let default = Duration::from_secs_f32(1.0 / 30.0);
+        assert_eq!(params(Some(f32::NAN), None).interval(), default);
+        assert_eq!(params(Some(f32::INFINITY), None).interval(), default);
+        assert_eq!(params(Some(f32::NEG_INFINITY), None).interval(), default);
+    }
+
+    #[test]
     fn segment_filter_ignores_unparseable_ids_but_keeps_the_rest() {
         assert_eq!(params(None, None).filter(), None);
         assert_eq!(params(None, Some("")).filter(), None);
-        assert_eq!(params(None, Some("nonsense")).filter(), None);
         assert_eq!(params(None, Some("3")).filter(), Some(vec![3]));
         assert_eq!(params(None, Some("1, 2,x,3")).filter(), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn a_filter_with_no_parseable_id_fails_closed() {
+        assert_eq!(params(None, Some("nonsense")).filter(), Some(vec![]));
+        assert_eq!(params(None, Some("1;2")).filter(), Some(vec![]));
+    }
+
+    /// A [`SegmentMeta`] as `evict_resized` and the change detector see it.
+    fn meta(id: u32, cols: u32, rows: u32, gamma: f32) -> SegmentMeta {
+        SegmentMeta::from(&PixelMapSegment {
+            cols,
+            rows,
+            gamma,
+            ..PixelMapSegment::new(id)
+        })
+    }
+
+    #[test]
+    fn non_geometry_edits_keep_the_pixel_cache() {
+        let last = vec![meta(7, 2, 1, 2.2)];
+        let next = vec![meta(7, 2, 1, 1.8)];
+        let mut cache = HashMap::from([(7, Arc::new(vec![9u8; 8]))]);
+
+        evict_resized(&last, &next, &mut cache);
+
+        assert!(
+            cache.contains_key(&7),
+            "a gamma edit must not force a full resend"
+        );
+    }
+
+    #[test]
+    fn a_resize_or_a_reused_id_evicts_the_cached_payload() {
+        let last = vec![meta(7, 2, 1, 2.2)];
+        let next = vec![meta(7, 4, 1, 2.2), meta(9, 2, 1, 2.2)];
+        let mut cache = HashMap::from([(7, Arc::new(vec![9u8; 8])), (9, Arc::new(vec![9u8; 8]))]);
+
+        evict_resized(&last, &next, &mut cache);
+
+        assert!(!cache.contains_key(&7), "a resized grid must resend");
+        assert!(
+            !cache.contains_key(&9),
+            "an id absent from the last metadata must resend"
+        );
+    }
+
+    #[test]
+    fn nan_gamma_does_not_defeat_meta_change_detection() {
+        assert_eq!(
+            meta(7, 2, 1, f32::NAN),
+            meta(7, 2, 1, f32::NAN),
+            "NaN must equal itself here, or metadata resends every tick"
+        );
+        assert_ne!(meta(7, 2, 1, f32::NAN), meta(7, 2, 1, 2.2));
+    }
+
+    fn feed_router(shared: SharedStateHandle, permits: usize, origins: Vec<String>) -> Router {
+        Router::new()
+            .route("/v1/pixels", get(upgrade))
+            .with_state(FeedState {
+                shared,
+                connections: Arc::new(Semaphore::new(permits)),
+                origins: Arc::new(origins),
+            })
+    }
+
+    /// The real listener, on an ephemeral loopback port: axum's WebSocket
+    /// extractor needs hyper's genuine upgrade plumbing, which a
+    /// `tower::oneshot` request does not carry.
+    async fn serve_feed(permits: usize, origins: Vec<String>) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = feed_router(state(vec![], vec![]), permits, origins);
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        address
+    }
+
+    /// Open a raw handshake and return the HTTP status line of the reply.
+    async fn handshake(address: SocketAddr, origin: Option<&str>) -> String {
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let origin_line = origin
+            .map(|origin| format!("origin: {origin}\r\n"))
+            .unwrap_or_default();
+        let request = format!(
+            "GET /v1/pixels HTTP/1.1\r\n\
+             host: {address}\r\n\
+             connection: upgrade\r\n\
+             upgrade: websocket\r\n\
+             sec-websocket-version: 13\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             {origin_line}\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut reply = [0u8; 128];
+        let read = stream.read(&mut reply).await.unwrap();
+        String::from_utf8_lossy(&reply[..read])
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_full_house_gets_503_and_a_free_permit_gets_the_upgrade() {
+        let full = serve_feed(0, vec![]).await;
+        assert!(handshake(full, None).await.contains("503"));
+
+        let open = serve_feed(1, vec![]).await;
+        assert!(handshake(open, None).await.contains("101"));
+    }
+
+    #[tokio::test]
+    async fn the_origin_allowlist_refuses_unlisted_browsers_but_passes_native_clients() {
+        let origins = vec!["https://vis.example".to_string()];
+        let address = serve_feed(MAX_CONNECTIONS, origins).await;
+
+        let refused = handshake(address, Some("https://evil.example")).await;
+        assert!(refused.contains("403"), "unlisted origin: {refused}");
+
+        let allowed = handshake(address, Some("https://vis.example")).await;
+        assert!(allowed.contains("101"), "listed origin: {allowed}");
+
+        let native = handshake(address, None).await;
+        assert!(native.contains("101"), "no origin header: {native}");
     }
 }
