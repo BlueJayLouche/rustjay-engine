@@ -24,7 +24,7 @@ roxmltree = "0.20"
 cpal = "0.18.1"
 rubato = "0.16"
 symphonia = { version = "0.6", features = ["all"] }
-ffmpeg-next = "8.1"
+ffmpeg-next = "9.0"
 hap-parser = "0.2.0"
 
 # GPU / UI
