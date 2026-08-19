@@ -6,9 +6,28 @@ use egui::RichText;
 use rust_decimal::Decimal;
 
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
-    ui.heading("Inspector");
-    ui.separator();
+    // Show mode locks cue editing. The queue window enforces that per widget and
+    // the command handler refuses cue edits outright, but the inspector writes
+    // straight to the model — no command in between — so neither guard reaches
+    // it. Disabling the panel wholesale is what actually holds here: a disabled
+    // widget never reports `changed()`, so nothing downstream can fire. Reading
+    // still works, which is the point of having the panel open during a show.
+    let locked = state
+        .lock()
+        .is_ok_and(|state| state.show_mode == crate::app::ShowMode::Show);
 
+    // Heading and notice stay outside the disabled scope: dimming is what makes
+    // the lock real, but on its own it is easy to read as "nothing selected".
+    // The cue list says so in words for the same reason.
+    ui.heading("Inspector");
+    if locked {
+        ui.colored_label(egui::Color32::YELLOW, "● SHOW MODE — editing disabled");
+    }
+    ui.separator();
+    ui.add_enabled_ui(!locked, |ui| show_inner(ui, state));
+}
+
+fn show_inner(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // Spawn waveform generation for the selected cue at most once per path.
     // The path is marked in-flight BEFORE spawning (via HashSet::insert), and a
     // failed result is cached as an empty sentinel — so a dataless/unreadable file

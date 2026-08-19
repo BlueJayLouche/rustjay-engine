@@ -750,3 +750,477 @@ fn space_still_fires_go_in_show_mode() {
         "Space should fire GO with no field focused, got {commands:?}"
     );
 }
+
+/// Show mode hides the editing widgets, but the shortcuts and the right-click
+/// menu raise the same commands regardless — so the lock lives in the handler.
+#[test]
+fn show_mode_refuses_cue_edits_however_they_are_raised() {
+    let (mut harness, state) = demo_harness();
+    {
+        let mut state = state.lock().unwrap();
+        state.show_mode = ShowMode::Show;
+        state.selected_cue_id = Some(Decimal::new(11, 1));
+    }
+    let before = qids(&state);
+
+    // The bare Delete key reached DeleteSelectedCue with nothing in its way.
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert_eq!(
+        qids(&state),
+        before,
+        "Backspace must not delete in Show mode"
+    );
+
+    for command in [
+        AppCommand::AddCue {
+            cue_type: cuepool_gui::app::CueType::Sound,
+        },
+        AppCommand::DeleteSelectedCue,
+        AppCommand::DuplicateSelectedCue,
+        AppCommand::MoveSelectedCueUp,
+        AppCommand::UpdateCueName {
+            qid: Decimal::new(11, 1),
+            name: "Renamed mid-show".into(),
+        },
+    ] {
+        state.lock().unwrap().command_queue.push(command.clone());
+        harness.run();
+        assert_eq!(
+            qids(&state),
+            before,
+            "{command:?} must be refused in Show mode"
+        );
+    }
+    assert_eq!(
+        state.lock().unwrap().show_file.cues[1].base().name,
+        "Lobby Ambience",
+        "a refused rename must not reach the model either"
+    );
+
+    // Back in Edit mode the same command lands, so the guard is the mode and not
+    // something incidental about the harness.
+    state.lock().unwrap().show_mode = ShowMode::Edit;
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::DeleteSelectedCue);
+    harness.run();
+    assert_ne!(qids(&state), before, "Edit mode still deletes");
+}
+
+/// Snapshots hold the state *before* an edit, so a merged run has to keep its
+/// first. Keeping the last made one Cmd+Z after typing a name give the name back
+/// minus its final keystroke, with the rest of the run unreachable either way.
+#[test]
+fn a_run_of_merged_edits_undoes_as_one_step() {
+    let (mut harness, state) = demo_harness();
+    let qid = Decimal::new(11, 1);
+    state.lock().unwrap().undo_redo = Default::default();
+
+    // The queue window's Name cell commits per keystroke by design.
+    for name in ["L", "Lo", "Lob", "Lobb", "Lobby"] {
+        state
+            .lock()
+            .unwrap()
+            .command_queue
+            .push(AppCommand::UpdateCueName {
+                qid,
+                name: name.into(),
+            });
+        harness.run();
+    }
+    assert_eq!(state.lock().unwrap().show_file.cues[1].base().name, "Lobby");
+
+    state.lock().unwrap().command_queue.push(AppCommand::Undo);
+    harness.run();
+    assert_eq!(
+        state.lock().unwrap().show_file.cues[1].base().name,
+        "Lobby Ambience",
+        "one undo should rewind the whole typing run, not one keystroke"
+    );
+}
+
+/// Moving the standby playhead is not an edit. It used to push an undo entry per
+/// mouse click, which buried real edits under a 50-deep stack of selections and
+/// threw away redo — a push clears it — just for clicking a cue.
+#[test]
+fn selecting_a_cue_is_not_an_undo_step() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().undo_redo = Default::default();
+
+    for qid in [Decimal::ONE, Decimal::new(12, 1), Decimal::new(13, 1)] {
+        state
+            .lock()
+            .unwrap()
+            .command_queue
+            .push(AppCommand::SelectCue(qid));
+        harness.run();
+    }
+    assert!(
+        !state.lock().unwrap().undo_redo.can_undo(),
+        "selections must not accumulate undo entries"
+    );
+    // Keyboard navigation takes the same path.
+    harness.key_press(egui::Key::ArrowUp);
+    harness.run();
+    assert!(
+        !state.lock().unwrap().undo_redo.can_undo(),
+        "arrow-key navigation must not accumulate undo entries either"
+    );
+
+    // And redo survives a selection change.
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::UpdateCueName {
+            qid: Decimal::ONE,
+            name: "Changed".into(),
+        });
+    harness.run();
+    state.lock().unwrap().command_queue.push(AppCommand::Undo);
+    harness.run();
+    assert!(state.lock().unwrap().undo_redo.can_redo());
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::SelectCue(Decimal::new(12, 1)));
+    harness.run();
+    assert!(
+        state.lock().unwrap().undo_redo.can_redo(),
+        "selecting a cue must not discard the redo stack"
+    );
+}
+
+/// The mode is an operator stance, not project content: it is never saved, so it
+/// has no business in a snapshot or in the dirty flag.
+#[test]
+fn show_mode_is_neither_dirtying_nor_undoable() {
+    let (mut harness, state) = demo_harness();
+    {
+        let mut state = state.lock().unwrap();
+        state.dirty = false;
+        state.undo_redo = Default::default();
+    }
+
+    harness.get_by_label("Edit Mode").click(); // into Show mode
+    harness.run();
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.show_mode, ShowMode::Show);
+        assert!(
+            !state.dirty,
+            "a mode switch must not mark the project unsaved"
+        );
+        assert!(
+            !state.undo_redo.can_undo(),
+            "a mode switch must not take an undo entry"
+        );
+    }
+
+    // An edit made before the show, then undone during it: the mode must hold,
+    // and Show mode refuses the undo outright.
+    harness.get_by_label("Show Mode").click(); // back to Edit
+    harness.run();
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::UpdateCueName {
+            qid: Decimal::ONE,
+            name: "Edited before the show".into(),
+        });
+    harness.run();
+    harness.get_by_label("Edit Mode").click(); // into Show mode
+    harness.run();
+
+    state.lock().unwrap().command_queue.push(AppCommand::Undo);
+    harness.run();
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.show_mode,
+        ShowMode::Show,
+        "undo must not drop the operator out of Show mode"
+    );
+    assert_eq!(
+        state.show_file.cues[0].base().name,
+        "Edited before the show",
+        "Show mode refuses the undo, so the edit stands"
+    );
+}
+
+/// `choose_qid` numbers a new cue *after* the selection, but the cue was appended
+/// to the end of the show — so the list read Q1, Q2, Q3, Q1.11 and the number
+/// stopped meaning anything. Position, group and number now share one anchor.
+#[test]
+fn a_new_cue_lands_where_its_number_says_and_is_selected() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = Some(Decimal::new(11, 1));
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::AddCue {
+            cue_type: cuepool_gui::app::CueType::Sound,
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    let added = state.show_file.cues[2].base();
+    assert_eq!(
+        qids_of(&state.show_file.cues),
+        vec![
+            Decimal::ONE,
+            Decimal::new(11, 1),
+            Decimal::new(111, 2),
+            Decimal::new(12, 1),
+            Decimal::new(13, 1),
+            Decimal::from(2),
+            Decimal::from(3),
+            Decimal::from(4),
+            Decimal::from(5),
+        ],
+        "the new cue belongs directly after the cue it was numbered against"
+    );
+    assert_eq!(
+        added.parent,
+        Some(Decimal::ONE),
+        "adding beside a group member joins that group"
+    );
+    assert_eq!(
+        state.selected_cue_id,
+        Some(added.qid),
+        "the new cue should be selected, not left to be hunted for"
+    );
+}
+
+/// A group is drawn as a block and fires as a block, so it copies and deletes as
+/// one. Copying the header alone produced something that looked like a group and
+/// fired nothing; deleting it alone orphaned every member.
+#[test]
+fn a_group_duplicates_and_deletes_whole() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = Some(Decimal::ONE);
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::DuplicateSelectedCue);
+    harness.run();
+
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.show_file.cues.len(), 12, "header plus three members");
+        let copied_header = state.show_file.cues[4].base().qid;
+        assert_eq!(state.selected_cue_id, Some(copied_header));
+        assert!(state.show_file.cues[4].base().name.ends_with(" (copy)"));
+        for offset in 5..8 {
+            assert_eq!(
+                state.show_file.cues[offset].base().parent,
+                Some(copied_header),
+                "a copied member must follow the copied header, not the original"
+            );
+        }
+        // Every number is still unique, which is what makes delete safe.
+        let numbers = qids_of(&state.show_file.cues);
+        let unique: std::collections::HashSet<_> = numbers.iter().collect();
+        assert_eq!(
+            unique.len(),
+            numbers.len(),
+            "duplicate QIDs must be unreachable"
+        );
+    }
+
+    // Now delete the original group: it takes its members and moves the standby.
+    state.lock().unwrap().selected_cue_id = Some(Decimal::ONE);
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::DeleteSelectedCue);
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.show_file.cues.len(),
+        8,
+        "four cues went with the group"
+    );
+    assert!(
+        !state
+            .show_file
+            .cues
+            .iter()
+            .any(|cue| cue.base().parent == Some(Decimal::ONE)),
+        "no member may outlive its group"
+    );
+    assert!(
+        state.selected_cue_id.is_some(),
+        "deleting must move the standby on, not clear it"
+    );
+}
+
+/// Nudging used to be a bare `swap`, which moved a group header off its members
+/// and stepped into the middle of a neighbouring group.
+#[test]
+fn nudging_a_group_moves_it_as_a_block() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = Some(Decimal::ONE);
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::MoveSelectedCueDown);
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(
+        qids_of(&state.show_file.cues),
+        vec![
+            Decimal::from(2),
+            Decimal::ONE,
+            Decimal::new(11, 1),
+            Decimal::new(12, 1),
+            Decimal::new(13, 1),
+            Decimal::from(3),
+            Decimal::from(4),
+            Decimal::from(5),
+        ],
+        "the group and its members move together, over the whole neighbour"
+    );
+}
+
+/// Dropping a cue on the group header directly above it changes no position, only
+/// the parent — and the old "did the index change?" guard threw that away, so the
+/// commonest way to put the first cue into a group did nothing at all.
+#[test]
+fn dropping_a_cue_on_the_group_directly_above_joins_it() {
+    let (mut harness, state) = demo_harness();
+    // Free Q1.1 so joining is observable.
+    state.lock().unwrap().show_file.cues[1].base_mut().parent = None;
+    // The cue list computes `to_idx = group_idx + 1` for a drop on a group row.
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::MoveCue {
+            from_idx: 1,
+            to_idx: 1,
+            parent: Some(Decimal::ONE),
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state.show_file.cues[1].base().parent,
+        Some(Decimal::ONE),
+        "the drop must join the group even though nothing moved"
+    );
+    assert_eq!(
+        state.show_file.cues[1].base().qid,
+        Decimal::new(11, 1),
+        "and must not shuffle the list to do it"
+    );
+}
+
+fn qids_of(cues: &[cuepool_core::Cue]) -> Vec<Decimal> {
+    cues.iter().map(|cue| cue.base().qid).collect()
+}
+
+/// A duplicate inherits its original's alternate triggers, so both cues answer to
+/// the same key or note. Clearing them silently would be worse — a trigger the
+/// operator wanted and lost is a cue that does not fire during the show — so the
+/// copy keeps them and the operator is told.
+#[test]
+fn duplicating_a_triggered_cue_warns_that_the_trigger_is_shared() {
+    let (mut harness, state) = demo_harness();
+    {
+        let mut state = state.lock().unwrap();
+        state.show_file.cues[4].base_mut().triggers.hotkey =
+            Some(cuepool_core::HotkeyTrigger { key: "G".into() });
+        state.selected_cue_id = Some(Decimal::from(2));
+    }
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::DuplicateSelectedCue);
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert!(
+        state.show_file.cues[5].base().triggers.hotkey.is_some(),
+        "the copy keeps the trigger"
+    );
+    assert!(
+        state
+            .operator_alert
+            .as_ref()
+            .is_some_and(|alert| alert.message.contains("hotkey")),
+        "and the operator is told both cues now fire on it"
+    );
+}
+
+/// Dropping a group on the trailing "move to end" strip must reach the end, not
+/// snap back to the boundary of whatever group happens to sit last.
+#[test]
+fn a_group_dragged_to_the_end_lands_at_the_end() {
+    let (mut harness, state) = demo_harness();
+    let len = state.lock().unwrap().show_file.cues.len();
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::MoveCue {
+            from_idx: 0,
+            to_idx: len,
+            parent: None,
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(
+        qids_of(&state.show_file.cues),
+        vec![
+            Decimal::from(2),
+            Decimal::from(3),
+            Decimal::from(4),
+            Decimal::from(5),
+            Decimal::ONE,
+            Decimal::new(11, 1),
+            Decimal::new(12, 1),
+            Decimal::new(13, 1),
+        ],
+        "the group and its members should end up last, still contiguous"
+    );
+}
+
+/// The QID field reverts to the old number on its own when a rename is refused,
+/// which without a word on screen reads as the edit never having registered.
+#[test]
+fn a_refused_renumber_is_reported_to_the_operator() {
+    let (mut harness, state) = demo_harness();
+    let before = qids(&state);
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::UpdateCueQid {
+            qid: Decimal::new(11, 1),
+            new_qid: Decimal::new(12, 1), // taken by the Video cue
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(qids_of(&state.show_file.cues), before);
+    assert!(
+        state
+            .operator_alert
+            .as_ref()
+            .is_some_and(|alert| alert.message.contains("already in use")),
+        "a refused renumber must say so, not only log it"
+    );
+}

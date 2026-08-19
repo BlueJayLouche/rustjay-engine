@@ -31,7 +31,6 @@ pub struct Snapshot {
     pub show_file: ShowFile,
     pub project_path: Option<PathBuf>,
     pub selected_cue_id: Option<Decimal>,
-    pub show_mode: ShowMode,
     pub dirty: bool,
     /// If set, consecutive snapshots with the same key are merged into one.
     pub merge_key: Option<String>,
@@ -52,7 +51,6 @@ impl Snapshot {
             show_file: state.show_file.clone(),
             project_path: state.project_path.clone(),
             selected_cue_id: state.selected_cue_id,
-            show_mode: state.show_mode,
             dirty: state.dirty,
             merge_key: None,
         }
@@ -71,7 +69,6 @@ impl Snapshot {
         state.show_file = self.show_file;
         state.project_path = self.project_path;
         state.selected_cue_id = self.selected_cue_id;
-        state.show_mode = self.show_mode;
         state.dirty = self.dirty;
         if audio_changed {
             queue_audio_settings_apply(state);
@@ -79,6 +76,11 @@ impl Snapshot {
     }
 }
 
+/// Note what a snapshot deliberately leaves out: `show_mode`. It is an operator
+/// stance, not project content — it is never saved — so restoring it with an
+/// edit would let Cmd+Z drop the operator out of Show mode mid-show, silently
+/// unlocking every editing surface the mode exists to lock.
+///
 /// Undo/redo history with a configurable max depth.
 #[derive(Debug, Clone)]
 pub struct UndoRedo {
@@ -100,8 +102,13 @@ impl UndoRedo {
     }
 
     /// Push a snapshot onto the undo stack, clearing the redo stack.
-    /// If the new snapshot has the same merge_key as the top of the stack,
-    /// the top snapshot is replaced instead of pushing a new one.
+    ///
+    /// Snapshots hold the state *before* the edit they accompany. So when a run
+    /// of edits shares a merge key — every keystroke of a rename, every step of a
+    /// drag — the one worth keeping is the run's **first**, which rewinds the
+    /// whole run; the later ones only describe intermediate states nobody wants
+    /// to land on. Keeping the last instead made an undo after typing a name give
+    /// back the name minus its final keystroke.
     pub fn push(&mut self, snapshot: Snapshot) {
         if self.suppress {
             return;
@@ -110,8 +117,8 @@ impl UndoRedo {
             && let Some(top) = self.undo_stack.last()
             && top.merge_key.as_ref() == Some(key)
         {
-            // Replace top snapshot with new one (merge consecutive edits)
-            *self.undo_stack.last_mut().unwrap() = snapshot;
+            // Already recording this run — keep the snapshot that started it and
+            // drop this one. The redo stack was cleared by the run's first push.
             self.redo_stack.clear();
             return;
         }
@@ -881,6 +888,36 @@ pub enum AppCommand {
     },
 }
 
+impl AppCommand {
+    /// Commands that change the cue list, and so are refused in Show mode.
+    ///
+    /// The queue window already hides the widgets that raise these, but the same
+    /// commands arrive from the keyboard shortcuts (and the right-click menu),
+    /// which the mode never gated — so the lock has to be enforced where the
+    /// commands are executed, not where they are raised. Selection, transport and
+    /// project I/O are deliberately absent: none of them change the cue list.
+    ///
+    /// Undo and redo *are* here. Nothing in Show mode can create an edit to undo,
+    /// so a Cmd+Z during a show can only rewind work done before it — which is
+    /// exactly what the mode promises will not happen.
+    fn edits_cues(&self) -> bool {
+        matches!(
+            self,
+            Self::Undo
+                | Self::Redo
+                | Self::AddCue { .. }
+                | Self::DeleteSelectedCue
+                | Self::DuplicateSelectedCue
+                | Self::MoveSelectedCueUp
+                | Self::MoveSelectedCueDown
+                | Self::MoveCue { .. }
+                | Self::UpdateCueQid { .. }
+                | Self::UpdateCueName { .. }
+                | Self::UpdateCueTrigger { .. }
+        )
+    }
+}
+
 #[derive(Clone, Copy)]
 enum SelectionStep {
     Previous,
@@ -1114,11 +1151,8 @@ impl CuePoolApp {
         if !state.show_file.cues.iter().any(|cue| cue.base().qid == id) {
             return Err(format!("cue Q{id} not found"));
         }
-        if state.selected_cue_id != Some(id) {
-            let snapshot = Snapshot::from_state(&state);
-            state.undo_redo.push(snapshot);
-            state.selected_cue_id = Some(id);
-        }
+        // Not undoable — see `step_selection`'s caller for why.
+        state.selected_cue_id = Some(id);
         Ok(())
     }
 
@@ -1339,8 +1373,20 @@ impl CuePoolApp {
                 }
             }
 
-            // Go / Stop / Pause (transport shortcuts)
-            if !modifiers.command && !modifiers.alt {
+            // Go / Stop / Pause (transport shortcuts). `editing_text` gates these
+            // for the same reason it gates the keys above: Space is an ordinary
+            // character in a cue name, and Escape is the cancel key for the Q#
+            // cell and the inspector's timecode fields. Both reach here before any
+            // widget consumes them, so ungated the one keypress edited the cue
+            // *and* ran the show.
+            //
+            // Gating on any focused widget rather than only a text field costs
+            // nothing: egui does not focus a widget on a mouse click (only text
+            // fields, on click, and anything reached by Tab), so this cannot
+            // silence Space after the operator clicks Go. And where Tab has left
+            // a button focused, egui already treats Space as a click on it —
+            // firing the shortcut too would double up.
+            if !editing_text && !modifiers.command && !modifiers.alt {
                 if i.key_pressed(egui::Key::Space)
                     && let Ok(mut state) = self.state.lock()
                 {
@@ -1398,8 +1444,13 @@ impl CuePoolApp {
                 )
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // Neutral tag, not a cause: the alert channel carries
+                        // failed projection outputs, unreadable video, failed
+                        // saves and refused cue edits, and every caller writes a
+                        // complete sentence. Naming one cause here mislabelled
+                        // all the others.
                         ui.label(
-                            egui::RichText::new("Projection output unavailable")
+                            egui::RichText::new("Alert")
                                 .strong()
                                 .color(egui::Color32::LIGHT_RED),
                         );
@@ -2769,6 +2820,18 @@ impl CuePoolApp {
 
         let mut unhandled = Vec::new();
         for cmd in commands {
+            // Re-read the mode per command rather than once per drain: `Undo` can
+            // restore a different mode part-way through a batch. Only cue edits
+            // pay for the lock.
+            if cmd.edits_cues()
+                && self
+                    .state
+                    .lock()
+                    .is_ok_and(|state| state.show_mode == ShowMode::Show)
+            {
+                log::warn!("Ignored {cmd:?} — cue editing is locked in Show mode");
+                continue;
+            }
             match cmd {
                 AppCommand::NewProject => {
                     if !Self::confirm_discard(&self.state, &AppCommand::NewProject, ctx) {
@@ -2857,13 +2920,17 @@ impl CuePoolApp {
                         AppCommand::SelectLastCue => SelectionStep::Last,
                         _ => unreachable!(),
                     };
+                    // Moving the standby playhead is not an edit, so it takes no
+                    // undo entry. It used to take one per mouse click (keyboard
+                    // navigation merged, mouse did not), which both buried real
+                    // edits under a 50-deep stack of selections and — because a
+                    // push clears redo — threw redo away just for clicking a cue.
+                    // Undo still *restores* a selection, since a snapshot carries
+                    // the one in force when the edit was made.
                     if let Ok(mut state) = self.state.lock()
                         && let Some(next) =
                             step_selection(&state.show_file.cues, state.selected_cue_id, step)
-                        && state.selected_cue_id != Some(next)
                     {
-                        let snapshot = Snapshot::from_state(&state).with_merge_key("selection");
-                        state.undo_redo.push(snapshot);
                         state.selected_cue_id = Some(next);
                     }
                 }
@@ -2895,9 +2962,17 @@ impl CuePoolApp {
                         state.undo_redo.push(snapshot);
 
                         let next_qid = state.show_file.choose_qid(state.selected_cue_id);
+                        // Position and group come from the same anchor the number
+                        // does, so a cue numbered "after Q1.1" is not appended to
+                        // the end of the show reading Q1, Q2, Q3, Q1.11.
+                        let (insert_at, parent) = crate::cue_order::insertion(
+                            &state.show_file.cues,
+                            state.selected_cue_id,
+                        );
 
                         let mut base = cuepool_core::CueBase {
                             qid: next_qid,
+                            parent,
                             name: format!("New {:?} Cue", cue_type),
                             ..Default::default()
                         };
@@ -3001,64 +3076,108 @@ impl CuePoolApp {
                                 path: String::new(),
                             },
                         };
-                        state.show_file.cues.push(cue);
+                        state.show_file.cues.insert(insert_at, cue);
+                        // Select it: otherwise the operator has to go and find the
+                        // cue they just made.
+                        state.selected_cue_id = Some(next_qid);
                         state.dirty = true;
                     }
                 }
                 AppCommand::DeleteSelectedCue => {
                     if let Ok(mut state) = self.state.lock()
                         && let Some(id) = state.selected_cue_id
+                        && let Some(idx) =
+                            state.show_file.cues.iter().position(|c| c.base().qid == id)
                     {
                         let snapshot = Snapshot::from_state(&state);
                         state.undo_redo.push(snapshot);
-                        state.show_file.cues.retain(|c| c.base().qid != id);
-                        state.selected_cue_id = None;
+                        // A group deletes with its members: they are drawn inside
+                        // it, and removing the header alone left them orphaned —
+                        // pointing at a cue that no longer exists, indented for
+                        // ever, and impossible to fire as a group again.
+                        let block = crate::cue_order::span(&state.show_file.cues, idx);
+                        state.selected_cue_id = crate::cue_order::selection_after_removal(
+                            &state.show_file.cues,
+                            block.clone(),
+                        );
+                        state.show_file.cues.drain(block);
                         state.dirty = true;
                     }
                 }
                 AppCommand::DuplicateSelectedCue => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(cue) = state.selected_cue().cloned()
+                        && let Some(id) = state.selected_cue_id
+                        && let Some(idx) =
+                            state.show_file.cues.iter().position(|c| c.base().qid == id)
                     {
                         let snapshot = Snapshot::from_state(&state);
                         state.undo_redo.push(snapshot);
 
-                        let mut new_cue = cue;
-                        let original_qid = new_cue.base().qid;
-                        let next_qid = state.show_file.choose_qid(Some(original_qid));
-                        new_cue.base_mut().qid = next_qid;
-                        new_cue.base_mut().name.push_str(" (copy)");
-                        state.show_file.cues.push(new_cue);
+                        // A group copies with its members, each renumbered and
+                        // re-pointed at the copied header — a lone header would
+                        // look like a group and fire nothing.
+                        let block = crate::cue_order::span(&state.show_file.cues, idx);
+                        let copies = crate::cue_order::duplicate_span(
+                            &state.show_file.cues,
+                            block.clone(),
+                            |cues, after| {
+                                let mut probe = state.show_file.clone();
+                                probe.cues = cues.to_vec();
+                                probe.choose_qid(Some(after))
+                            },
+                        );
+                        let selected = copies.first().map(|cue| cue.base().qid);
+                        // Triggers are copied with everything else, which for a
+                        // hotkey or MIDI note means two cues now answer to one
+                        // key. Say so rather than silently clearing them: a
+                        // trigger the operator wanted and lost is a cue that does
+                        // not fire during the show, which is worse and quieter.
+                        let shared: Vec<&str> = copies
+                            .iter()
+                            .flat_map(|cue| {
+                                let triggers = &cue.base().triggers;
+                                [
+                                    triggers.hotkey.is_some().then_some("hotkey"),
+                                    triggers.midi.is_some().then_some("MIDI"),
+                                    triggers.wall_clock.is_some().then_some("wall clock"),
+                                    triggers.timecode.is_some().then_some("timecode"),
+                                ]
+                            })
+                            .flatten()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect();
+                        if !shared.is_empty() {
+                            log::warn!(
+                                "Duplicated Q{id} kept its {} trigger(s); both cues now fire on them",
+                                shared.join(", ")
+                            );
+                            state.report_operator_error(format!(
+                                "The copy of Q{id} shares its {} trigger — both cues will fire",
+                                shared.join(" and ")
+                            ));
+                        }
+                        state.show_file.cues.splice(block.end..block.end, copies);
+                        state.selected_cue_id = selected;
                         state.dirty = true;
                     }
                 }
-                AppCommand::MoveSelectedCueUp => {
+                nudge @ (AppCommand::MoveSelectedCueUp | AppCommand::MoveSelectedCueDown) => {
+                    let down = matches!(nudge, AppCommand::MoveSelectedCueDown);
                     if let Ok(mut state) = self.state.lock()
                         && let Some(id) = state.selected_cue_id
+                        && let Some(idx) =
+                            state.show_file.cues.iter().position(|c| c.base().qid == id)
                     {
-                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                        if let Some(i) = idx
-                            && i > 0
-                        {
-                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
+                        // Merge key is per cue: nudging cue A then cue B used to
+                        // collapse into one undo entry under a shared "move_cue".
+                        let snapshot =
+                            Snapshot::from_state(&state).with_merge_key(format!("cue:{id}:move"));
+                        // A plain swap moved a group header off its members and
+                        // stepped into the middle of a neighbouring group; the
+                        // helper moves whole blocks and steps over them.
+                        if crate::cue_order::nudge(&mut state.show_file.cues, idx, down) {
                             state.undo_redo.push(snapshot);
-                            state.show_file.cues.swap(i, i - 1);
-                            state.dirty = true;
-                        }
-                    }
-                }
-                AppCommand::MoveSelectedCueDown => {
-                    if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id
-                    {
-                        let len = state.show_file.cues.len();
-                        let idx = state.show_file.cues.iter().position(|c| c.base().qid == id);
-                        if let Some(i) = idx
-                            && i + 1 < len
-                        {
-                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
-                            state.undo_redo.push(snapshot);
-                            state.show_file.cues.swap(i, i + 1);
                             state.dirty = true;
                         }
                     }
@@ -3068,40 +3187,62 @@ impl CuePoolApp {
                     to_idx,
                     parent,
                 } => {
-                    if let Ok(mut state) = self.state.lock() {
-                        let len = state.show_file.cues.len();
-                        if from_idx < len && from_idx != to_idx {
-                            let snapshot = Snapshot::from_state(&state).with_merge_key("move_cue");
+                    if let Ok(mut state) = self.state.lock()
+                        && from_idx < state.show_file.cues.len()
+                    {
+                        let cues = &mut state.show_file.cues;
+                        let block = crate::cue_order::span(cues, from_idx);
+                        let dragged = &cues[from_idx];
+                        let is_group = matches!(dragged, cuepool_core::Cue::Group { .. });
+                        // Drag sets group membership: parent = the group the cue
+                        // was dropped into, or None to free it. Groups are always
+                        // top-level (no nesting / self-membership).
+                        let parent = if is_group || parent == Some(dragged.base().qid) {
+                            None
+                        } else {
+                            parent
+                        };
+                        // A group must land on a block boundary, or it would be
+                        // dropped into the middle of another group's members. Past
+                        // the end of the list is already a boundary — that is the
+                        // trailing "move to end" strip — so leave it alone.
+                        let to_idx = if is_group && to_idx < cues.len() {
+                            crate::cue_order::enclosing_span(cues, to_idx).start
+                        } else {
+                            to_idx
+                        };
+
+                        // "No position change" is not "no change". Dropping a cue
+                        // on the group header directly above it leaves it exactly
+                        // where it is and *only* changes the parent — which the old
+                        // `from_idx != to_idx` guard threw away, so the commonest
+                        // way to put the first cue in a group did nothing at all.
+                        let moves = !(block.start..=block.end).contains(&to_idx);
+                        let regroups = dragged.base().parent != parent;
+                        if moves || regroups {
+                            // No merge key: one drop is one undo step.
+                            let snapshot = Snapshot::from_state(&state);
                             state.undo_redo.push(snapshot);
-                            let mut cue = state.show_file.cues.remove(from_idx);
-                            // Drag sets group membership: parent = the group the cue
-                            // was dropped into, or None to free it. Groups are always
-                            // top-level (no nesting / self-membership).
-                            let parent = if matches!(cue, cuepool_core::Cue::Group { .. })
-                                || parent == Some(cue.base().qid)
-                            {
-                                None
-                            } else {
-                                parent
-                            };
-                            cue.base_mut().parent = parent;
-                            // Removing shifts everything after from_idx left by one.
-                            let insert_idx = if to_idx > from_idx {
-                                to_idx - 1
-                            } else {
-                                to_idx
-                            };
-                            let insert_idx = insert_idx.min(state.show_file.cues.len());
-                            state.show_file.cues.insert(insert_idx, cue);
+                            let cues = &mut state.show_file.cues;
+                            cues[block.start].base_mut().parent = parent;
+                            if moves {
+                                crate::cue_order::move_span(cues, block, to_idx);
+                            }
                             state.dirty = true;
                         }
                     }
                 }
                 AppCommand::UpdateCueQid { qid, new_qid } => {
                     if let Ok(mut state) = self.state.lock() {
-                        // Qid is the cue's identity — refuse duplicates.
+                        // Qid is the cue's identity — refuse duplicates. Say so on
+                        // screen as well as in the log: the field reverts to the old
+                        // number on its own, which without this reads as the edit
+                        // simply not having registered.
                         if state.show_file.cues.iter().any(|c| c.base().qid == new_qid) {
                             log::warn!("Cue {} already exists — keeping {}", new_qid, qid);
+                            state.report_operator_error(format!(
+                                "Q{new_qid} is already in use — Q{qid} keeps its number"
+                            ));
                             continue;
                         }
                         let idx = state

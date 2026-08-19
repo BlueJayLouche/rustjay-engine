@@ -16,6 +16,7 @@ pub fn build_identity() -> String {
 pub mod active_cues;
 pub mod app;
 pub mod cue_list;
+pub mod cue_order;
 pub mod inspector;
 pub mod lighting_panel;
 pub mod log_window;

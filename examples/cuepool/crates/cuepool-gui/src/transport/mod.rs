@@ -284,13 +284,14 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
             .clicked()
             && let Ok(mut state) = state.lock()
         {
-            let snapshot = crate::app::Snapshot::from_state(&state);
-            state.undo_redo.push(snapshot);
+            // Neither undoable nor dirtying: the mode is an operator stance, not
+            // project content — it is not saved, so marking the project unsaved
+            // made a mode switch prompt on quit, and an undo entry let Cmd+Z
+            // unlock the show.
             state.show_mode = match state.show_mode {
                 crate::app::ShowMode::Edit => crate::app::ShowMode::Show,
                 crate::app::ShowMode::Show => crate::app::ShowMode::Edit,
             };
-            state.dirty = true;
         }
     };
 
