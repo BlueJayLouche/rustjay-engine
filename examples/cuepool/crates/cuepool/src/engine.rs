@@ -391,10 +391,6 @@ impl ShowEngine {
 
     fn go(&mut self) {
         if self.show_start.is_none() {
-            self.show_start = Some(self.now);
-            self.show_paused_offset = Duration::ZERO;
-            self.show_adjustment_secs = 0.0;
-            self.show_pause_started = self.paused.then_some(self.now);
             self.triggered_timecodes.clear();
             self.active_timecodes.clear();
         }
@@ -433,6 +429,18 @@ impl ShowEngine {
 
         for cue in cues {
             self.play_cue(cue);
+        }
+
+        // Arm the show clock *after* the chain has played: shows open with a
+        // stop-all RESET cue, and a stop-all resets the clock — arming first
+        // would hand the show it just started a dead clock (no LTC output, no
+        // timecode triggers). `self.now` is fixed for the whole command, so
+        // the clock still reads zero at the instant the chain fired.
+        if self.show_start.is_none() {
+            self.show_start = Some(self.now);
+            self.show_paused_offset = Duration::ZERO;
+            self.show_adjustment_secs = 0.0;
+            self.show_pause_started = self.paused.then_some(self.now);
         }
 
         let next = {
@@ -957,7 +965,10 @@ impl ShowEngine {
         for target in self.resolve_stop_targets(qid) {
             self.stop_single(target, mode, fade_out_secs, fade_type);
         }
-        self.reset_show_clock();
+        // Deliberately no reset_show_clock(): a targeted stop is surgical
+        // (kill the pre-show loop, cut one music bed) — the show clock, and
+        // the LTC everything downstream chases, belongs to the show, not to
+        // the cue. Only stop-all ends the show.
     }
 
     /// A Stop aimed at a Group means the whole group: the target plus every
@@ -2047,6 +2058,101 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(started, vec![Decimal::ONE, Decimal::TWO]);
+    }
+
+    /// A gallery show's opening cue: Q1 RESET (stop-all) with the feature
+    /// chained `WithLast` behind it. GO must hand that show a *running*
+    /// clock — it drives LTC output and timecode triggers — not the dead
+    /// one the RESET left behind.
+    fn reset_then_feature_app(fade_out_time: f32) -> cuepool_gui::CuePoolApp {
+        let app = cuepool_gui::CuePoolApp::new();
+        {
+            let mut state = app.state().lock_unpoisoned();
+            state.selected_cue_id = Some(Decimal::ONE);
+            state.show_file.cues = vec![
+                Cue::Stop {
+                    base: cuepool_core::CueBase {
+                        qid: Decimal::ONE,
+                        ..Default::default()
+                    },
+                    stop_qid: Decimal::ZERO,
+                    stop_mode: StopMode::Immediate,
+                    fade_out_time,
+                    fade_type: Default::default(),
+                    stop_all: true,
+                },
+                dummy(2, TriggerMode::WithLast),
+            ];
+        }
+        app
+    }
+
+    #[test]
+    fn go_through_a_stop_all_reset_still_starts_the_show_clock() {
+        let app = reset_then_feature_app(0.0);
+        let mut engine = ShowEngine::new(app.state().clone(), None);
+        engine.command(EngineCommand::Go, Duration::from_secs(5));
+        assert_eq!(
+            engine.show_elapsed(),
+            Some(Duration::ZERO),
+            "the RESET cue killed the clock GO just started"
+        );
+    }
+
+    /// Same guarantee when the RESET fades instead of cutting: the faded
+    /// stop-all resets the clock at fire time, and GO re-arms it after the
+    /// chain — the fade landing later must not touch the new clock.
+    #[test]
+    fn go_through_a_faded_stop_all_reset_still_starts_the_show_clock() {
+        let app = reset_then_feature_app(2.0);
+        let mut engine = ShowEngine::new(app.state().clone(), None);
+        engine.command(EngineCommand::Go, Duration::from_secs(5));
+        assert_eq!(engine.show_elapsed(), Some(Duration::ZERO));
+    }
+
+    /// Re-running the show without a transport STOP in between (the gallery
+    /// loop): the RESET's stop-all wipes the old clock, and GO arms a fresh
+    /// one, so the second show's timecode starts from zero too.
+    #[test]
+    fn go_on_a_stop_all_mid_show_restarts_the_clock_from_zero() {
+        let app = reset_then_feature_app(0.0);
+        let mut engine = ShowEngine::new(app.state().clone(), None);
+        engine.command(EngineCommand::Go, Duration::from_secs(5));
+        app.state().lock_unpoisoned().selected_cue_id = Some(Decimal::ONE);
+        engine.command(EngineCommand::Go, Duration::from_secs(1200));
+        assert_eq!(
+            engine.show_elapsed(),
+            Some(Duration::ZERO),
+            "the second show must not inherit the first show's clock"
+        );
+    }
+
+    /// Stopping one cue mid-show is surgical (cut a music bed, kill the
+    /// pre-show loop) — the show clock, and the LTC everything downstream
+    /// chases, must keep running.
+    #[test]
+    fn a_targeted_stop_does_not_reset_the_show_clock() {
+        let state = cuepool_gui::CuePoolApp::new().state().clone();
+        let mut engine = ShowEngine::new(state, None);
+        engine.show_start = Some(Duration::from_secs(1));
+        engine.now = Duration::from_secs(9);
+        engine.stop_target(
+            Decimal::from(7),
+            StopMode::Immediate,
+            0.0,
+            Default::default(),
+        );
+        assert_eq!(engine.show_elapsed(), Some(Duration::from_secs(8)));
+    }
+
+    /// Stop-all is the "show over" verb — it alone resets the clock.
+    #[test]
+    fn stop_all_still_resets_the_show_clock() {
+        let state = cuepool_gui::CuePoolApp::new().state().clone();
+        let mut engine = ShowEngine::new(state, None);
+        engine.show_start = Some(Duration::from_secs(1));
+        engine.stop_all();
+        assert_eq!(engine.show_elapsed(), None);
     }
 
     #[test]
