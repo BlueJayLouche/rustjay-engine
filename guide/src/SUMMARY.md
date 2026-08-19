@@ -53,14 +53,6 @@
 - [videowall — HDMI-Matrix Mapper](examples/videowall.md)
 - [VP-404 — Live Video Sampler](examples/vp404.md)
 - [vjarda — Full Multi-Deck VJ App](examples/vjarda.md)
-- [CuePool — Theatre Show Control](examples/cuepool/README.md)
-  - [Getting Started](examples/cuepool/getting-started.md)
-  - [Cue Reference](examples/cuepool/cues.md)
-  - [Audio](examples/cuepool/audio.md)
-  - [Video & Projection](examples/cuepool/video.md)
-  - [Lighting & Pixel Mapping](examples/cuepool/lighting.md)
-  - [Show Control](examples/cuepool/show-control.md)
-  - [MTC Follow](examples/cuepool/mtc-follow.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
 # Deployment
