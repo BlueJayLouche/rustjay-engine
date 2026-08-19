@@ -618,7 +618,7 @@ fn show_inner(ui: &mut egui::Ui, state: &SharedStateHandle) {
         } => {
             ui.label(RichText::new("Stop Cue").monospace().size(12.0));
             if ui
-                .checkbox(stop_all, "Stop All (like transport Stop)")
+                .checkbox(stop_all, "Stop All (every active cue)")
                 .changed()
             {
                 changed = true;

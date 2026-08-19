@@ -23,7 +23,7 @@ const MAX_AUTOMATION_PROJECT_BYTES: u64 = 16 * 1024 * 1024;
 /// the previous release's copy with the new version. `release_notes_match_the_release`
 /// fails while this trails the package minor, which is the reminder to rewrite
 /// the modal body before bumping it (see AGENTS.md).
-pub const RELEASE_NOTES_VERSION: &str = "0.11";
+pub const RELEASE_NOTES_VERSION: &str = "0.12";
 
 /// A full snapshot of editable state for undo/redo.
 #[derive(Debug, Clone)]
@@ -2331,9 +2331,9 @@ impl CuePoolApp {
                         .color(egui::Color32::from_rgb(255, 184, 92)),
                 );
                 ui.add_space(4.0);
-                ui.heading("A live feed of your pixel map");
+                ui.heading("Endings that fade instead of cut");
                 ui.label(
-                    "The samples driving your LED segments can now be streamed out over a WebSocket, so a web page can show what the pixel map is doing on any screen you point at it.",
+                    "A Stop cue can now bring the whole show down gently: its fade applies to Stop All, and a stop aimed at a Group takes every member with it — video, its audio and all.",
                 );
                 ui.add_space(12.0);
                 ui.separator();
@@ -2341,16 +2341,16 @@ impl CuePoolApp {
 
                 for (title, detail) in [
                     (
-                        "Off until you ask for it",
-                        "Set CUEPOOL_PIXELS_BIND to an address and CuePool serves the feed there. Leave it unset and no extra port opens.",
+                        "Stop All honours its fade",
+                        "A Stop cue with Stop All ticked fades every playing cue and the video out together over the cue's fade time. The transport's Stop button stays an instant cut for emergencies.",
                     ),
                     (
-                        "Every segment, as it plays",
-                        "Each enabled segment streams its own grid at up to 60 frames a second. Frames go out only when the pixels change, so a held look costs nothing.",
+                        "Stopping a group stops its members",
+                        "A stop aimed at a Group cue now reaches everything inside it, nested groups included. One cue ends a whole chain smoothly.",
                     ),
                     (
-                        "The page works it out for itself",
-                        "The stream opens by describing every segment: grid size, region, scan order and patch. A visualiser can lay itself out without being handed your show file.",
+                        "A stop means stop",
+                        "Stopping a cue that is still waiting on its delay cancels it, and a faded Stop All will not fire follow-on cues once the fade lands.",
                     ),
                 ] {
                     ui.label(
@@ -2364,7 +2364,7 @@ impl CuePoolApp {
 
                 ui.label(
                     egui::RichText::new(
-                        "Also: the quit-confirm dialog is reachable again and offers Save, OSC now logs messages that match no address instead of dropping them in silence, and the unimplemented /qplayer/up and /qplayer/down are gone.",
+                        "Also: volume and pan changes land on a playing cue without restarting it, typing in a cue field no longer fires the show, Show mode locks out every editing path, and undo keeps whole edits instead of their last keystroke.",
                     )
                     .small()
                     .color(egui::Color32::from_gray(180)),

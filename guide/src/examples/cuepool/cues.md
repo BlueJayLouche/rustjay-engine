@@ -51,7 +51,12 @@ its members according to their trigger modes.
 ### Stop
 
 Stops another cue: target Q#, **Immediate** or **LoopEnd** (finish the
-current loop first), with an optional fade-out time and curve.
+current loop first), with an optional fade-out time and curve. A video cue's
+picture and its audio track fade out together. Targeting a Group stops every
+member, nested groups included, and a stop also cancels a target still
+waiting on its Delay. **Stop All** stops everything instead of one target —
+with a fade it brings the whole show down gently, while the transport's Stop
+button is always an instant cut.
 
 ### Volume
 

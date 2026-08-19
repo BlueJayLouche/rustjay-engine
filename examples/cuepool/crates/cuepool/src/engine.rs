@@ -137,6 +137,10 @@ struct ActiveCue {
     fade_type: cuepool_core::FadeType,
     fade_out_started: bool,
     pending_stop: Option<PendingStop>,
+    /// Cleared by a faded Stop All: the cues fade out rather than being
+    /// cleared, but nothing may chain off them finishing — a stop-everything
+    /// that then starts cues again is not a stop.
+    follow_after_last: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -661,7 +665,7 @@ impl ShowEngine {
                     instance_id: None,
                 });
                 if *stop_all {
-                    self.stop_all();
+                    self.stop_all_faded(*fade_out_time, *fade_type);
                 } else {
                     self.stop_target(*stop_qid, *stop_mode, *fade_out_time, *fade_type);
                 }
@@ -859,6 +863,7 @@ impl ShowEngine {
             fade_type,
             fade_out_started: false,
             pending_stop: None,
+            follow_after_last: true,
         });
         if !preload_only {
             self.trace(EngineTrace::CueStarted {
@@ -949,6 +954,47 @@ impl ShowEngine {
         fade_out_secs: f32,
         fade_type: cuepool_core::FadeType,
     ) {
+        for target in self.resolve_stop_targets(qid) {
+            self.stop_single(target, mode, fade_out_secs, fade_type);
+        }
+        self.reset_show_clock();
+    }
+
+    /// A Stop aimed at a Group means the whole group: the target plus every
+    /// member, transitively — the mirror of how playing a Group plays its
+    /// members. A non-group target resolves to itself alone.
+    fn resolve_stop_targets(&self, qid: Decimal) -> Vec<Decimal> {
+        let mut targets = vec![qid];
+        let state = self.state.lock_unpoisoned();
+        let cues = &state.show_file.cues;
+        if !cues
+            .iter()
+            .any(|cue| matches!(cue, Cue::Group { .. }) && cue.base().qid == qid)
+        {
+            return targets;
+        }
+        let mut index = 0;
+        while index < targets.len() {
+            let parent = targets[index];
+            let members = cues
+                .iter()
+                .map(|cue| cue.base())
+                .filter(|base| base.parent == Some(parent) && !targets.contains(&base.qid))
+                .map(|base| base.qid)
+                .collect::<Vec<_>>();
+            targets.extend(members);
+            index += 1;
+        }
+        targets
+    }
+
+    fn stop_single(
+        &mut self,
+        qid: Decimal,
+        mode: StopMode,
+        fade_out_secs: f32,
+        fade_type: cuepool_core::FadeType,
+    ) {
         if let Some(index) = self.active_cues.iter().position(|active| active.qid == qid) {
             if mode == StopMode::LoopEnd {
                 self.active_cues[index].pending_stop = Some(PendingStop {
@@ -966,6 +1012,13 @@ impl ShowEngine {
                 self.active_cues[index].input.set_volume(0.0);
                 self.active_cues[index].state = CueState::Done;
             }
+        }
+        if mode != StopMode::LoopEnd {
+            // A stop also cancels what has not started yet: a cue waiting on
+            // its Delay, or a timecode window armed for an AfterLast follow.
+            self.delayed_cues
+                .retain(|delayed| delayed.cue.base().qid != qid);
+            self.active_timecodes.retain(|(tc_qid, _)| *tc_qid != qid);
         }
         if self
             .current_video
@@ -986,6 +1039,47 @@ impl ShowEngine {
             mode,
             fade_out_secs,
             fade_type,
+        });
+    }
+
+    /// A Stop cue's Stop All with a fade: everything fades out together
+    /// instead of cutting. The transport's Stop (and a project change) keep
+    /// the instant [`stop_all`](Self::stop_all) — that one is the panic
+    /// button.
+    fn stop_all_faded(&mut self, fade_out_secs: f32, fade_type: cuepool_core::FadeType) {
+        // While paused nothing is rendered, so a fade could never finish.
+        if fade_out_secs <= 0.0 || self.paused {
+            self.stop_all();
+            return;
+        }
+        let frames = (fade_out_secs * self.audio_sample_rate() as f32) as u32;
+        for cue in &mut self.active_cues {
+            cue.pending_stop = None;
+            cue.follow_after_last = false;
+            if cue.input.is_active() {
+                cue.input.start_fade(0.0, frames.max(1), fade_type);
+            } else {
+                // A preloaded input is never rendered; a fade would strand it.
+                cue.input.set_volume(0.0);
+                cue.state = CueState::Done;
+            }
+        }
+        self.delayed_cues.clear();
+        self.active_timecodes.clear();
+        // Only a video can ride the canvas fade; a still picture has no fade
+        // machinery, so anything else blanks instantly, as the instant stop
+        // does.
+        let video_fade = if self.current_video.is_some() {
+            fade_out_secs
+        } else {
+            0.0
+        };
+        self.current_video = None;
+        self.pending_video_half = None;
+        self.current_picture_qid = None;
+        self.actions.push_back(EngineAction::StopAllExternal);
+        self.actions.push_back(EngineAction::StopVideo {
+            fade_out_secs: video_fade,
         });
         self.reset_show_clock();
     }
@@ -1232,9 +1326,9 @@ impl ShowEngine {
             .active_cues
             .iter()
             .filter(|cue| cue.input.is_finished() || cue.state == CueState::Done)
-            .map(|cue| (cue.instance_id, cue.qid))
+            .map(|cue| (cue.instance_id, cue.qid, cue.follow_after_last))
             .collect::<Vec<_>>();
-        for (instance_id, qid) in finished {
+        for (instance_id, qid, follow_after_last) in finished {
             self.active_cues
                 .retain(|cue| cue.instance_id != instance_id);
             // This instance may be the audio half of a video cue, whose picture
@@ -1245,7 +1339,9 @@ impl ShowEngine {
                 continue;
             }
             self.trace(EngineTrace::CueFinished { qid });
-            self.play_after_last(qid);
+            if follow_after_last {
+                self.play_after_last(qid);
+            }
         }
     }
 
@@ -1699,6 +1795,7 @@ mod tests {
             fade_type: Default::default(),
             fade_out_started: false,
             pending_stop: None,
+            follow_after_last: true,
         });
         engine.current_video = Some(CurrentVideo {
             qid: Decimal::ONE,
@@ -2115,6 +2212,220 @@ mod tests {
             !actions
                 .iter()
                 .any(|action| matches!(action, EngineAction::PlayVideo { .. }))
+        );
+    }
+
+    fn stop_cue(qid: i64, stop_qid: Decimal, stop_all: bool, fade: f32) -> Cue {
+        Cue::Stop {
+            base: cuepool_core::CueBase {
+                qid: Decimal::from(qid),
+                ..Default::default()
+            },
+            stop_qid,
+            stop_mode: StopMode::Immediate,
+            fade_out_time: fade,
+            fade_type: Default::default(),
+            stop_all,
+        }
+    }
+
+    fn active_audio(instance_id: u64, qid: Decimal) -> (ActiveCue, Arc<cuepool_audio::MixerInput>) {
+        let input = Arc::new(cuepool_audio::MixerInput::new(
+            Box::new(PositionSource {
+                position: Arc::new(AtomicUsize::new(0)),
+            }),
+            2,
+        ));
+        let cue = ActiveCue {
+            instance_id,
+            qid,
+            name: format!("audio {qid}"),
+            input: Arc::clone(&input),
+            state: CueState::Playing,
+            loop_counter: None,
+            video_loop_count: 0,
+            video_loop_limit: None,
+            loop_start_frame: 0,
+            loop_end_frame: 0,
+            fade_out: 0.0,
+            fade_type: Default::default(),
+            fade_out_started: false,
+            pending_stop: None,
+            follow_after_last: true,
+        };
+        (cue, input)
+    }
+
+    #[test]
+    fn a_stop_all_cue_with_a_fade_fades_instead_of_cutting() {
+        let (mut engine, _, _) = looped_video_engine(LoopMode::OneShot);
+        engine.state.lock_unpoisoned().show_file.cues = vec![];
+        engine.delayed_cues.push(DelayedCue {
+            cue: dummy(7, TriggerMode::Go),
+            start_at: Duration::from_secs(5),
+        });
+        let input = Arc::clone(&engine.active_cues[0].input);
+        engine.take_actions();
+
+        engine.play_cue(stop_cue(99, Decimal::ZERO, true, 2.0));
+
+        assert!(input.is_fading(), "the running cue should fade, not cut");
+        assert!(input.is_active(), "a fading input must keep rendering");
+        assert_eq!(
+            engine.active_cues.len(),
+            1,
+            "the cue is reaped by its fade completing, not cleared"
+        );
+        assert!(!engine.active_cues[0].follow_after_last);
+        assert!(engine.current_video.is_none());
+        assert!(
+            engine.delayed_cues.is_empty(),
+            "a delayed cue must not start after a stop all"
+        );
+        assert!(
+            engine.take_actions().iter().any(|action| matches!(
+                action,
+                EngineAction::StopVideo { fade_out_secs } if *fade_out_secs == 2.0
+            )),
+            "the video fades over the cue's fade time"
+        );
+    }
+
+    #[test]
+    fn a_faded_stop_all_does_not_chain_after_last() {
+        let (mut engine, _, _) = looped_video_engine(LoopMode::OneShot);
+        engine.state.lock_unpoisoned().show_file.cues =
+            vec![dummy(1, TriggerMode::Go), dummy(2, TriggerMode::AfterLast)];
+        engine.stop_all_faded(2.0, Default::default());
+        engine.take_actions();
+
+        // The fade lands: the input finishes and the reaper collects it.
+        engine.active_cues[0].state = CueState::Done;
+        engine.check_finished_cues();
+
+        let actions = engine.take_actions();
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            EngineAction::Trace(EngineTrace::CueFinished { qid }) if *qid == Decimal::ONE
+        )));
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                EngineAction::FireExternal(cue) if cue.base().qid == Decimal::TWO
+            )),
+            "a stop-everything must not start the next cue"
+        );
+    }
+
+    #[test]
+    fn the_transport_stop_remains_an_instant_cut() {
+        let (mut engine, _, _) = looped_video_engine(LoopMode::OneShot);
+        engine.take_actions();
+        let actions = engine.command(EngineCommand::Stop, Duration::ZERO);
+        assert!(
+            engine.active_cues.is_empty(),
+            "the panic stop clears, never fades"
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            EngineAction::StopVideo { fade_out_secs } if *fade_out_secs == 0.0
+        )));
+    }
+
+    #[test]
+    fn stopping_a_group_stops_its_members_with_the_fade() {
+        let group = |qid: Decimal, parent: Option<Decimal>| Cue::Group {
+            base: cuepool_core::CueBase {
+                qid,
+                parent,
+                ..Default::default()
+            },
+        };
+        let member = |qid: Decimal, parent: Decimal| Cue::Dummy {
+            base: cuepool_core::CueBase {
+                qid,
+                parent: Some(parent),
+                ..Default::default()
+            },
+        };
+        let q = |units: i64, scale: u32| Decimal::new(units, scale);
+
+        let app = cuepool_gui::CuePoolApp::new();
+        let mut engine = ShowEngine::new(app.state().clone(), None);
+        {
+            let mut state = engine.state.lock_unpoisoned();
+            state.show_file.cues = vec![
+                group(Decimal::ONE, None),
+                member(q(11, 1), Decimal::ONE), // 1.1 — playing, with the video
+                group(q(12, 1), Some(Decimal::ONE)), // 1.2 — nested group
+                member(q(121, 2), q(12, 1)),    // 1.21 — nested, playing
+                member(q(13, 1), Decimal::ONE), // 1.3 — waiting on its delay
+                member(Decimal::from(9), Decimal::TWO), // another group's member
+            ];
+        }
+        let (direct, direct_input) = active_audio(1, q(11, 1));
+        let (nested, nested_input) = active_audio(2, q(121, 2));
+        engine.active_cues.push(direct);
+        engine.active_cues.push(nested);
+        engine.current_video = Some(CurrentVideo {
+            qid: q(11, 1),
+            instance_id: 1,
+            epoch: 1,
+            path: "member.mov".into(),
+            start_time: Timespan::ZERO,
+            duration: Timespan::ZERO,
+            loop_mode: LoopMode::OneShot,
+            follow_mtc: false,
+            mtc_start: Timespan::ZERO,
+            has_audio: true,
+            clock_origin: Duration::ZERO,
+            paused_position: None,
+        });
+        engine.delayed_cues.push(DelayedCue {
+            cue: member(q(13, 1), Decimal::ONE),
+            start_at: Duration::from_secs(5),
+        });
+        engine.delayed_cues.push(DelayedCue {
+            cue: dummy(9, TriggerMode::Go),
+            start_at: Duration::from_secs(5),
+        });
+
+        engine.play_cue(stop_cue(99, Decimal::ONE, false, 2.0));
+
+        assert!(direct_input.is_fading(), "a direct member fades");
+        assert!(nested_input.is_fading(), "a nested member fades");
+        assert!(engine.current_video.is_none());
+        let delayed = engine
+            .delayed_cues
+            .iter()
+            .map(|delayed| delayed.cue.base().qid)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delayed,
+            vec![Decimal::from(9)],
+            "only the group's own delayed member is cancelled"
+        );
+        let actions = engine.take_actions();
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            EngineAction::StopVideo { fade_out_secs } if *fade_out_secs == 2.0
+        )));
+        let stopped = actions
+            .iter()
+            .filter_map(|action| match action {
+                EngineAction::StopExternal { qid, .. } => Some(*qid),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for expected in [Decimal::ONE, q(11, 1), q(12, 1), q(121, 2), q(13, 1)] {
+            assert!(
+                stopped.contains(&expected),
+                "expected a stop for Q{expected}"
+            );
+        }
+        assert!(
+            !stopped.contains(&Decimal::from(9)),
+            "another group's member is untouched"
         );
     }
 }
