@@ -23,6 +23,11 @@ controller rigs):
 | `/qplayer/select` | cue # | Move the selection |
 | `/qplayer/save` | — | Save the project |
 
+The cue number can also ride in the address instead of the argument list —
+`/qplayer/go/1.1` is the same command as `/qplayer/go` with `"1.1"` as its
+argument (likewise `stop`, `pause`, `unpause`, `preload`, `select`). Handy for
+controllers that template the address rather than the arguments.
+
 `/qplayer/up` and `/qplayer/down` from the original QPlayer protocol are not
 supported — move the selection with `/qplayer/select` and a cue number.
 

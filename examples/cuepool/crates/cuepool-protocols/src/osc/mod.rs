@@ -293,7 +293,11 @@ impl OscRouter {
         Self::route_node(&self.root, &parts, 0, msg, src)
     }
 
-    /// Fires every handler on the path and returns whether any of them ran.
+    /// Fires every handler whose pattern the address matches in full, and
+    /// returns whether any of them ran. Handlers live at the *end* of their
+    /// pattern, so a longer address must not fire a shorter subscription:
+    /// `/qplayer/go/1.1` reaching the `/qplayer/go` handler would strip the
+    /// cue number and turn a targeted GO into a bare one.
     fn route_node(
         node: &RouterNode,
         parts: &[&str],
@@ -301,16 +305,15 @@ impl OscRouter {
         msg: &OscMessage,
         src: std::net::SocketAddr,
     ) -> bool {
-        // Fire handlers at this node
-        let mut matched = !node.handlers.is_empty();
-        for h in &node.handlers {
-            h(msg, src);
-        }
-        if idx >= parts.len() {
-            return matched;
+        if idx == parts.len() {
+            for h in &node.handlers {
+                h(msg, src);
+            }
+            return !node.handlers.is_empty();
         }
         // Exact match. `|=` rather than `||` — both branches must be walked, so
         // an exact hit cannot short-circuit the wildcard one.
+        let mut matched = false;
         if let Some(child) = node.children.get(parts[idx]) {
             matched |= Self::route_node(child, parts, idx + 1, msg, src);
         }
@@ -382,6 +385,48 @@ impl OscManager {
             let tx = event_tx.clone();
             r.subscribe("/qplayer/save", move |_msg, _src| {
                 let _ = tx.send(OscEvent::Save);
+            });
+
+            // Path form: the cue number as a trailing address segment
+            // (`/qplayer/go/1.1`), QLab-style. Controllers that template the
+            // address rather than the argument list send this shape.
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/go/?", move |msg, _src| {
+                let _ = tx.send(OscEvent::Go {
+                    qid: addr_qid(&msg.addr),
+                });
+            });
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/stop/?", move |msg, _src| {
+                let _ = tx.send(OscEvent::Stop {
+                    qid: addr_qid(&msg.addr),
+                });
+            });
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/pause/?", move |msg, _src| {
+                let _ = tx.send(OscEvent::Pause {
+                    qid: addr_qid(&msg.addr),
+                });
+            });
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/unpause/?", move |msg, _src| {
+                let _ = tx.send(OscEvent::Unpause {
+                    qid: addr_qid(&msg.addr),
+                });
+            });
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/preload/?", move |msg, _src| {
+                let time = msg.args.first().and_then(arg_to_f32);
+                let _ = tx.send(OscEvent::Preload {
+                    qid: addr_qid(&msg.addr),
+                    time,
+                });
+            });
+            let tx = event_tx.clone();
+            r.subscribe("/qplayer/select/?", move |msg, _src| {
+                if let Some(qid) = addr_qid(&msg.addr) {
+                    let _ = tx.send(OscEvent::Select { qid });
+                }
             });
 
             // Remote control
@@ -549,6 +594,12 @@ fn is_first_sighting(seen: &mut std::collections::HashSet<String>, addr: &str) -
     seen.len() < UNMATCHED_ADDR_LIMIT && seen.insert(addr.to_string())
 }
 
+/// The trailing address segment — the cue number in the path form
+/// `/qplayer/go/1.1`.
+fn addr_qid(addr: &str) -> Option<String> {
+    addr.rsplit('/').find(|s| !s.is_empty()).map(str::to_string)
+}
+
 fn arg_to_string(arg: &OscType) -> Option<String> {
     match arg {
         OscType::String(s) => Some(s.clone()),
@@ -666,6 +717,33 @@ mod tests {
         assert_eq!(*received.lock().unwrap(), "/qplayer/123/go");
     }
 
+    /// The bug this guards against: `/qplayer/go/1.1` walked *through* the
+    /// `/qplayer/go` node and fired its handler with no arguments — a bare GO
+    /// on the standby cue instead of the addressed one, with nothing logged.
+    #[test]
+    fn test_router_does_not_fire_handlers_on_address_prefixes() {
+        let mut router = OscRouter::new();
+        let fired = Arc::new(Mutex::new(0));
+        let f = Arc::clone(&fired);
+        router.subscribe("/qplayer/go", move |_msg, _src| {
+            *f.lock().unwrap() += 1;
+        });
+
+        let matched = router.route(
+            &OscMessage {
+                addr: "/qplayer/go/1.1".into(),
+                args: vec![],
+            },
+            test_src(),
+        );
+
+        assert_eq!(*fired.lock().unwrap(), 0, "prefix handler must not fire");
+        assert!(
+            !matched,
+            "an over-long address is unmatched, so it gets logged"
+        );
+    }
+
     #[test]
     fn test_router_passes_source_address() {
         let mut router = OscRouter::new();
@@ -719,6 +797,17 @@ mod tests {
             !route(&router, "/qplayer"),
             "a prefix of a subscribed address has no handler of its own"
         );
+        assert!(
+            !route(&router, "/dmx/1/5/9"),
+            "an address longer than the pattern matches nothing"
+        );
+    }
+
+    #[test]
+    fn test_addr_qid_takes_the_trailing_segment() {
+        assert_eq!(addr_qid("/qplayer/go/1.1"), Some("1.1".into()));
+        assert_eq!(addr_qid("/qplayer/go/1.1/"), Some("1.1".into()));
+        assert_eq!(addr_qid("///"), None);
     }
 
     #[test]
