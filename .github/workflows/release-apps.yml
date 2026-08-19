@@ -21,7 +21,7 @@ name: Release Apps
 # Apps build with --all-features (NDI, Link, Pro DJ Link, HAP, API, ffmpeg…);
 # the NDI SDK is fetched per-OS and its runtime lib ships inside the packages.
 # Adding an app = one entry in matrix.app + optionally one include entry for
-# metadata (display name, nested manifest, ffmpeg/ndi bundling flags).
+# metadata (display name, ffmpeg/ndi bundling flags).
 
 on:
   push:
@@ -31,7 +31,7 @@ on:
       app:
         description: "App to build (all = full matrix)"
         type: choice
-        options: [all, cuepool, vjarda, vp404, shaderglass, videowall]
+        options: [all, vjarda, vp404, shaderglass, videowall]
         default: all
       release_tag:
         description: "Existing apps-v* tag to attach the packages to (empty = artifacts-only dry run)"
@@ -61,25 +61,18 @@ jobs:
           cat > matrix.json <<'JSON'
           {
             "os": ["macos-latest", "ubuntu-latest", "windows-latest"],
-            "app": ["cuepool", "vjarda", "vp404", "shaderglass", "videowall"],
+            "app": ["vjarda", "vp404", "shaderglass", "videowall"],
             "include": [
-              {"app": "cuepool", "display": "CuePool",
-               "manifest": "--manifest-path examples/cuepool/Cargo.toml",
-               "target_dir": "examples/cuepool/target", "ffmpeg": true,
-               "file_ext": "qproj"},
               {"app": "vjarda", "ffmpeg": true, "ndi": true},
               {"app": "vp404", "display": "VP-404", "ndi": true},
               {"app": "shaderglass", "display": "ShaderGlass", "ndi": true},
               {"app": "videowall", "display": "VideoWall", "ndi": true}
             ],
-            "exclude": [
-              {"os": "ubuntu-latest", "app": "cuepool"}
-            ]
+            "exclude": []
           }
           JSON
           # Notes carried over from the old inline matrix:
           #  - vjarda: --all-features enables its ffmpeg feature
-          #  - exclude: cuepool's FFmpeg closure is untested on Linux
           if [ "$APP" != "all" ]; then
             jq -c --arg app "$APP" \
               '.app = [$app]
@@ -100,17 +93,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
-        if: matrix.app != 'cuepool'
-
-      - uses: dtolnay/rust-toolchain@1.97.1
-        if: matrix.app == 'cuepool'
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.app }}
-          workspaces: |
-            .
-            examples/cuepool
 
       # The engine's macOS build scripts hunt for Syphon.framework (the
       # published syphon-core crate ships it flattened, which the linker can't
@@ -173,9 +159,8 @@ jobs:
         shell: pwsh
         run: |
           # Pinned to the immutable 8.0 SDK: it matches the FFMPEG_DIR SDK and
-          # runtime DLLs on the venue rigs, and cuepool's D3D12VA layout guard
-          # rejects the 8.1.2+ ABI (struct rework) by design. BtbN's
-          # "n8.1-latest" is a moving target that crossed that rework.
+          # runtime DLLs on the venue rigs. BtbN's "n8.1-latest" is a moving
+          # target that crossed the 8.1.2 struct rework.
           curl.exe -L -o ffmpeg.zip "https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-full_build-shared.zip"
           Expand-Archive ffmpeg.zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
           $dir = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Directory | Select-Object -First 1
@@ -204,18 +189,17 @@ jobs:
       - name: Build identity from Cargo and Git
         shell: bash
         run: |
-          package_id="$(cargo pkgid ${{ matrix.manifest }} -p ${{ matrix.app }})"
+          package_id="$(cargo pkgid -p ${{ matrix.app }})"
           echo "VERSION=${package_id##*#}" >> "$GITHUB_ENV"
-          echo "CUEPOOL_BUILD_ID=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release --locked ${{ matrix.manifest }} -p ${{ matrix.app }} --all-features
+        run: cargo build --release --locked -p ${{ matrix.app }} --all-features
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           DISPLAY_NAME="${{ matrix.display || matrix.app }}"
-          TD="${{ matrix.target_dir || 'target' }}"
+          TD="target"
           APP="dist/$DISPLAY_NAME.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" out
           cp "$TD/release/${{ matrix.app }}" "$APP/Contents/MacOS/"
@@ -256,7 +240,7 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          TD="${{ matrix.target_dir || 'target' }}"
+          TD="target"
           mkdir -p out stage
           cp "$TD/release/${{ matrix.app }}" stage/
           if [ "${{ matrix.ndi }}" = "true" ]; then
@@ -271,7 +255,7 @@ jobs:
         run: |
           $app = '${{ matrix.app }}'
           $display = '${{ matrix.display || matrix.app }}'
-          $td = '${{ matrix.target_dir || 'target' }}'
+          $td = 'target'
           $dist = "dist\$app"
           New-Item -ItemType Directory -Force $dist, out | Out-Null
           Copy-Item "$td\release\$app.exe" $dist
@@ -282,15 +266,10 @@ jobs:
             Copy-Item "$env:NDI_SDK_DIR\Bin\x64\Processing.NDI.Lib.x64.dll" $dist
           }
           Compress-Archive -Path "$dist\*" -DestinationPath "out\$app-windows-x86_64.zip"
-          # Optional Explorer file association (e.g. .qproj -> CuePool).
-          # Hashtable splat: array splats bind positionally, which assigns the
-          # '-FileExt' string itself to the FileExt slot and errors on its value.
-          $extArgs = @{}
-          if ('${{ matrix.file_ext }}') { $extArgs['FileExt'] = '${{ matrix.file_ext }}' }
           .github\scripts\make-msi.ps1 -Name $display -Version $env:VERSION `
             -SourceDir $dist -Exe "$app.exe" `
             -Icon "examples\$app\packaging\icon.ico" `
-            -Out "out\$app-windows-x86_64.msi" @extArgs
+            -Out "out\$app-windows-x86_64.msi"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
