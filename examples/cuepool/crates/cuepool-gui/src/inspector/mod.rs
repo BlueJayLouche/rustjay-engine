@@ -21,7 +21,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // The cue list says so in words for the same reason.
     ui.heading("Inspector");
     if locked {
-        ui.colored_label(egui::Color32::YELLOW, "● SHOW MODE — editing disabled");
+        ui.colored_label(egui::Color32::YELLOW, "• SHOW MODE — editing disabled");
     }
     ui.separator();
     ui.add_enabled_ui(!locked, |ui| show_inner(ui, state));
@@ -303,7 +303,7 @@ fn show_inner(ui: &mut egui::Ui, state: &SharedStateHandle) {
                     ui.label(RichText::new("No other nodes detected").weak());
                 }
                 for (name, live) in &detected_nodes {
-                    let marker = if *live { "●" } else { "○" };
+                    let marker = if *live { "•" } else { "○" };
                     if ui.button(format!("{marker} {name}")).clicked() {
                         base.remote_node = name.clone();
                         changed = true;

@@ -6,6 +6,110 @@ use cuepool_core::Cue;
 use egui::{Color32, RichText};
 use rust_decimal::Decimal;
 
+/// Which cell of a row is open for editing, if any.
+///
+/// The Q# and Name cells used to be live text fields, so a single click on a row
+/// put a caret in one and the arrow keys then walked the caret rather than the
+/// standby playhead. They are labels now; the editor opens on a double click, or
+/// on Enter for the selected row so the list stays usable from the keyboard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum EditCell {
+    #[default]
+    Qid,
+    Name,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+struct Editing {
+    qid: Decimal,
+    cell: EditCell,
+    /// Set for the one frame between opening the editor and the field existing
+    /// to take focus. Without it the field's first frame — which legitimately
+    /// has no focus yet — reads as "focus lost" and closes the editor at once.
+    arm_focus: bool,
+}
+
+const EDITING_ID: &str = "cue_list_editing_cell";
+
+fn editing_id() -> egui::Id {
+    egui::Id::new(EDITING_ID)
+}
+
+/// Stable per-cell widget id. `id_salt` would hash in the parent `Ui`, which the
+/// focus request cannot reproduce, so the field sets its id outright.
+fn cell_id(qid: Decimal, cell: EditCell) -> egui::Id {
+    egui::Id::new(("cue_cell", qid, matches!(cell, EditCell::Name)))
+}
+
+fn editing_now(editing: Option<Editing>, qid: Decimal, cell: EditCell) -> bool {
+    editing
+        == Some(Editing {
+            qid,
+            cell,
+            arm_focus: true,
+        })
+        || editing
+            == Some(Editing {
+                qid,
+                cell,
+                arm_focus: false,
+            })
+}
+
+fn open_editor(ui: &egui::Ui, qid: Decimal, cell: EditCell) {
+    ui.data_mut(|d| {
+        d.insert_temp(
+            editing_id(),
+            Editing {
+                qid,
+                cell,
+                arm_focus: true,
+            },
+        )
+    });
+}
+
+fn close_editor(ui: &egui::Ui) {
+    ui.data_mut(|d| d.remove_temp::<Editing>(editing_id()));
+}
+
+/// True once, on the frame the field first appears, so it can claim focus.
+fn take_focus_arm(ui: &egui::Ui, editing: Option<Editing>) -> bool {
+    match editing {
+        Some(state) if state.arm_focus => {
+            ui.data_mut(|d| {
+                d.insert_temp(
+                    editing_id(),
+                    Editing {
+                        arm_focus: false,
+                        ..state
+                    },
+                )
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Every cue type that can be added, in toolbar order. Shared with the row
+/// context menu so the two cannot drift.
+const CUE_TYPES: [(&str, &str, CueType); 13] = [
+    ("🎵", "Sound", CueType::Sound),
+    ("🎬", "Video", CueType::Video),
+    ("⏹", "Stop", CueType::Stop),
+    ("🔉", "Volume", CueType::Volume),
+    ("📁", "Group", CueType::Group),
+    ("▢", "Dummy", CueType::Dummy),
+    ("📡", "OSC", CueType::Osc),
+    ("🗛", "Text", CueType::Text),
+    ("🖼", "Image", CueType::Image),
+    ("↪", "Goto", CueType::Goto),
+    ("💡", "Lighting", CueType::Lighting),
+    ("🎞", "DMX Show", CueType::DmxShow),
+    ("⊞", "Pixel Map", CueType::PixelMap),
+];
+
 pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     let (cues, selected_id, show_mode, active_positions, tc_fps) = {
         let Ok(state) = state.lock() else { return };
@@ -34,21 +138,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
     // second row instead of clipping.
     if show_mode == crate::app::ShowMode::Edit {
         ui.horizontal_wrapped(|ui| {
-            for (icon, name, cue_type) in [
-                ("🎵", "Sound", CueType::Sound),
-                ("🎬", "Video", CueType::Video),
-                ("⏹", "Stop", CueType::Stop),
-                ("🔉", "Volume", CueType::Volume),
-                ("📁", "Group", CueType::Group),
-                ("▢", "Dummy", CueType::Dummy),
-                ("📡", "OSC", CueType::Osc),
-                ("🗛", "Text", CueType::Text),
-                ("🖼", "Image", CueType::Image),
-                ("↪", "Goto", CueType::Goto),
-                ("💡", "Lighting", CueType::Lighting),
-                ("🎞", "DMX Show", CueType::DmxShow),
-                ("⊞", "Pixel Map", CueType::PixelMap),
-            ] {
+            for (icon, name, cue_type) in CUE_TYPES {
                 if ui
                     .button(RichText::new(icon).size(16.0))
                     .on_hover_text(format!("Add {name} cue"))
@@ -104,6 +194,20 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
         data.insert_temp(scroll_memory_id, selected_id);
         changed
     });
+
+    // Enter opens the selected row's name for editing: double click is the mouse
+    // route in, and without this there is no keyboard one. Only when nothing
+    // already holds the keys, so Enter committing a field cannot reopen it.
+    let mut editing = ui.data(|d| d.get_temp::<Editing>(editing_id()));
+    if show_mode == crate::app::ShowMode::Edit
+        && editing.is_none()
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        && let Some(selected) = selected_id
+    {
+        open_editor(ui, selected, EditCell::Name);
+        editing = ui.data(|d| d.get_temp::<Editing>(editing_id()));
+    }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Group membership is the `parent` field: a member points at its Group
@@ -184,45 +288,65 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         .on_hover_text("Drag to reorder — drop on a Group cue to join it, on the strip below to ungroup");
                     }
 
-                    // Q# column. The TextEdit buffer is rebuilt from the model every
-                    // frame, so in-progress typing must live in egui temp memory and
-                    // only commit (parse) once focus leaves the field.
+                    // Q# column. A single click selects the row; the editor opens
+                    // on a double click, or Enter on the selected row. Leaving the
+                    // cells as live text fields meant one click put a caret in
+                    // them, and the arrow keys then walked the caret instead of
+                    // the standby playhead until you pressed Escape.
                     if show_mode == crate::app::ShowMode::Edit {
-                        let edit_id = egui::Id::new(("qid", qid));
-                        let pending = ui.data_mut(|d| d.get_temp::<String>(edit_id));
-                        let mut qid_str = pending.clone().unwrap_or_else(|| qid.to_string());
-                        let response = ui.add_sized(
-                            [COL_QID, 18.0],
-                            // Frameless so the row highlight (selected/active)
-                            // shows through the cell.
-                            egui::TextEdit::singleline(&mut qid_str)
-                                .id_salt(edit_id)
-                                .frame(egui::Frame::NONE)
-                                .font(egui::TextStyle::Monospace),
-                        );
-                        // A focused TextEdit only surrenders focus on
-                        // Enter/Tab/Esc; blur it on a click anywhere else so
-                        // the edit ends.
-                        if response.has_focus() && response.clicked_elsewhere() {
-                            ui.memory_mut(|mem| mem.surrender_focus(response.id));
-                        }
-                        if response.has_focus() {
-                            ui.data_mut(|d| d.insert_temp(edit_id, qid_str.clone()));
-                        } else if pending.is_some() {
-                            // Commit the pending edit. lost_focus() can't be
-                            // used — a text cell rendered later in the same
-                            // frame steals focus after this one was processed,
-                            // so the transition is never observed here.
-                            ui.data_mut(|d| d.remove_temp::<String>(edit_id));
-                            let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                            if !cancelled
-                                && let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>()
-                                    && new_qid != qid {
-                                        queue_cmd(state, AppCommand::UpdateCueQid { qid, new_qid });
-                                    }
-                        }
-                        if response.clicked() {
-                            queue_select(state, qid);
+                        if editing_now(editing, qid, EditCell::Qid) {
+                            // The buffer is rebuilt from the model every frame, so
+                            // in-progress typing lives in egui temp memory and
+                            // only commits (parses) once focus leaves the field.
+                            let edit_id = cell_id(qid, EditCell::Qid);
+                            let pending = ui.data_mut(|d| d.get_temp::<String>(edit_id));
+                            let mut qid_str = pending.clone().unwrap_or_else(|| qid.to_string());
+                            let response = ui.add_sized(
+                                [COL_QID, 18.0],
+                                // Frameless so the row highlight (selected/active)
+                                // shows through the cell.
+                                egui::TextEdit::singleline(&mut qid_str)
+                                    .id(edit_id)
+                                    .frame(egui::Frame::NONE)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            // A focused TextEdit only surrenders focus on
+                            // Enter/Tab/Esc; blur it on a click anywhere else so
+                            // the edit ends.
+                            if response.has_focus() && response.clicked_elsewhere() {
+                                ui.memory_mut(|mem| mem.surrender_focus(response.id));
+                            }
+                            if take_focus_arm(ui, editing) {
+                                ui.memory_mut(|mem| mem.request_focus(edit_id));
+                            } else if response.has_focus() {
+                                ui.data_mut(|d| d.insert_temp(edit_id, qid_str.clone()));
+                            } else {
+                                // Commit the pending edit. lost_focus() can't be
+                                // used — a text cell rendered later in the same
+                                // frame steals focus after this one was processed,
+                                // so the transition is never observed here.
+                                ui.data_mut(|d| d.remove_temp::<String>(edit_id));
+                                close_editor(ui);
+                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                if !cancelled
+                                    && let Ok(new_qid) = qid_str.parse::<rust_decimal::Decimal>()
+                                    && new_qid != qid
+                                {
+                                    queue_cmd(state, AppCommand::UpdateCueQid { qid, new_qid });
+                                }
+                            }
+                        } else {
+                            let response = ui.add_sized([COL_QID, 18.0], |ui: &mut egui::Ui| {
+                                ui.selectable_label(
+                                    is_selected,
+                                    RichText::new(qid.to_string()).monospace(),
+                                )
+                            });
+                            if response.double_clicked() {
+                                open_editor(ui, qid, EditCell::Qid);
+                            } else if response.clicked() {
+                                queue_select(state, qid);
+                            }
                         }
                     } else {
                         // QLab-style play marker: green ▶ for a playing cue
@@ -245,33 +369,47 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         }
                     }
 
-                    // Name column. Commit on every keystroke — the model feeds the
-                    // buffer next frame, and per-key undo snapshots merge via the
-                    // merge key. (Committing only on lost_focus never fired, since
-                    // changed() and lost_focus() happen on different frames.)
-                    if show_mode == crate::app::ShowMode::Edit {
+                    // Name column. Commits on every keystroke — the model feeds
+                    // the buffer next frame, and per-key undo snapshots merge via
+                    // the merge key. (Committing only on lost_focus never fired,
+                    // since changed() and lost_focus() happen on different frames.)
+                    if show_mode == crate::app::ShowMode::Edit
+                        && editing_now(editing, qid, EditCell::Name)
+                    {
+                        let edit_id = cell_id(qid, EditCell::Name);
                         let mut name_str = name.clone();
                         let response = ui.add_sized(
                             [name_w, 18.0],
                             // Frameless so the row highlight shows through.
                             egui::TextEdit::singleline(&mut name_str)
-                                .id_salt(egui::Id::new(("name", qid)))
+                                .id(edit_id)
                                 .frame(egui::Frame::NONE)
                                 .font(egui::TextStyle::Body),
                         );
+                        if response.has_focus() && response.clicked_elsewhere() {
+                            ui.memory_mut(|mem| mem.surrender_focus(response.id));
+                        }
+                        if take_focus_arm(ui, editing) {
+                            ui.memory_mut(|mem| mem.request_focus(edit_id));
+                        } else if !response.has_focus() {
+                            close_editor(ui);
+                        }
                         if response.changed() {
                             queue_cmd(state, AppCommand::UpdateCueName { qid, name: name_str });
                         }
-                        if response.clicked() {
-                            queue_select(state, qid);
-                        }
+                        response.on_hover_text(name);
                     } else {
                         let response = ui.add_sized([name_w, 18.0], |ui: &mut egui::Ui| {
                             ui.selectable_label(is_selected, name.as_str())
                         });
-                        if response.clicked() {
+                        if show_mode == crate::app::ShowMode::Edit && response.double_clicked() {
+                            open_editor(ui, qid, EditCell::Name);
+                        } else if response.clicked() {
                             queue_select(state, qid);
                         }
+                        // The column is a fixed 140px, so a long name is cut off
+                        // with nothing to say it was.
+                        response.on_hover_text(name);
                     }
 
                     // Trigger column — constrain width so the combo doesn't expand the row
@@ -279,7 +417,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         let mut trigger = base.trigger;
                         let response = ui.add_sized([COL_TRIGGER, 18.0], |ui: &mut egui::Ui| {
                             egui::ComboBox::from_id_salt(egui::Id::new(("trigger", qid)))
-                                .selected_text(format!("{:?}", trigger))
+                                .selected_text(trigger_label(trigger))
                                 .width(COL_TRIGGER - 4.0)
                                 .show_ui(ui, |ui| {
                                     for mode in [
@@ -287,26 +425,26 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                                         cuepool_core::TriggerMode::WithLast,
                                         cuepool_core::TriggerMode::AfterLast,
                                     ] {
-                                        if ui.selectable_label(trigger == mode, format!("{:?}", mode)).clicked() {
+                                        if ui.selectable_label(trigger == mode, trigger_label(mode)).clicked() {
                                             trigger = mode;
                                         }
                                     }
                                 })
                                 .response
                         });
-                        response.on_hover_text(
-                            "When this cue fires: Go = on Go, WithLast = with the previous cue, AfterLast = when it ends",
-                        );
+                        response.on_hover_text(trigger_help(base.trigger));
                         if trigger != base.trigger {
                             queue_cmd(state, AppCommand::UpdateCueTrigger { qid, trigger });
                         }
                     } else {
-                        let trigger_label = format!("{:?}", base.trigger);
-                        let trigger_short = &trigger_label[..trigger_label.len().min(3)];
                         ui.add_sized([COL_TRIGGER, 18.0], |ui: &mut egui::Ui| {
-                            ui.label(RichText::new(trigger_short).monospace().size(10.0))
+                            ui.label(
+                                RichText::new(trigger_label(base.trigger))
+                                    .monospace()
+                                    .size(10.0),
+                            )
                         })
-                        .on_hover_text(trigger_label);
+                        .on_hover_text(trigger_help(base.trigger));
                     }
 
                     // Fire column — badges for the cue's alternate triggers
@@ -431,59 +569,55 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
                 // the rest. (Force-closing on any primary click closed the popup
                 // before its buttons could see the click, so Delete etc. never
                 // fired.)
-                let menu_open = (over_row && secondary).then_some(egui::SetOpenCommand::Bool(true));
+                // Right-clicking any row closes every other row's menu. Each row
+                // owns a popup id, so without this a menu left open over a stale
+                // selection sat there while another opened.
+                let menu_open = if secondary {
+                    Some(egui::SetOpenCommand::Bool(over_row))
+                } else {
+                    None
+                };
                 egui::Popup::menu(&drop_response.response)
                     .id(ui.make_persistent_id(("row_menu", qid)))
                     .at_pointer_fixed()
                     .open_memory(menu_open)
                     .show(|ui| {
-                    if ui.button(format!("Move Q{qid} Up")).clicked() {
-                        queue_cmd(state, AppCommand::MoveSelectedCueUp);
-                        ui.close();
-                    }
-                    if ui.button(format!("Move Q{qid} Down")).clicked() {
-                        queue_cmd(state, AppCommand::MoveSelectedCueDown);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button(format!("Duplicate Q{qid}")).clicked() {
-                        queue_cmd(state, AppCommand::DuplicateSelectedCue);
-                        ui.close();
-                    }
-                    if ui.button(format!("Delete Q{qid}")).clicked() {
-                        queue_cmd(state, AppCommand::DeleteSelectedCue);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Add Sound Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Sound });
-                        ui.close();
-                    }
-                    if ui.button("Add Video Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Video });
-                        ui.close();
-                    }
-                    if ui.button("Add Stop Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Stop });
-                        ui.close();
-                    }
-                    if ui.button("Add Volume Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Volume });
-                        ui.close();
-                    }
-                    if ui.button("Add Text Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Text });
-                        ui.close();
-                    }
-                    if ui.button("Add Image Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Image });
-                        ui.close();
-                    }
-                    if ui.button("Add Goto Cue").clicked() {
-                        queue_cmd(state, AppCommand::AddCue { cue_type: CueType::Goto });
-                        ui.close();
-                    }
-                });
+                        // Every item names this row and acts on it. They used to
+                        // issue selection-scoped commands, which agreed with the
+                        // label only because right-click selects first.
+                        if ui.button(format!("Move Q{qid} up")).clicked() {
+                            queue_cmd(state, AppCommand::MoveCueUp { qid: Some(qid) });
+                            ui.close();
+                        }
+                        if ui.button(format!("Move Q{qid} down")).clicked() {
+                            queue_cmd(state, AppCommand::MoveCueDown { qid: Some(qid) });
+                            ui.close();
+                        }
+                        if in_group && ui.button(format!("Remove Q{qid} from group")).clicked() {
+                            queue_cmd(state, AppCommand::UngroupCue { qid });
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button(format!("Duplicate Q{qid}")).clicked() {
+                            queue_cmd(state, AppCommand::DuplicateCue { qid: Some(qid) });
+                            ui.close();
+                        }
+                        if ui.button(format!("Delete Q{qid}")).clicked() {
+                            queue_cmd(state, AppCommand::DeleteCue { qid: Some(qid) });
+                            ui.close();
+                        }
+                        ui.separator();
+                        // Same list as the toolbar. The menu used to offer seven
+                        // of the thirteen, with no rule about which.
+                        ui.menu_button("Add cue", |ui| {
+                            for (icon, name, cue_type) in CUE_TYPES {
+                                if ui.button(format!("{icon}  {name}")).clicked() {
+                                    queue_cmd(state, AppCommand::AddCue { cue_type });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
             }
 
             // Handle dropped payload for reordering. Dropping onto a row joins
@@ -533,7 +667,7 @@ pub fn show(ui: &mut egui::Ui, state: &SharedStateHandle) {
 
     if show_mode == crate::app::ShowMode::Show {
         ui.horizontal(|ui| {
-            ui.colored_label(Color32::YELLOW, "● SHOW MODE");
+            ui.colored_label(Color32::YELLOW, "• SHOW MODE");
             ui.label("Editing disabled");
         });
     }
@@ -548,6 +682,25 @@ fn queue_select(state: &SharedStateHandle, qid: Decimal) {
 fn queue_cmd(state: &SharedStateHandle, cmd: AppCommand) {
     if let Ok(mut state) = state.lock() {
         state.command_queue.push(cmd);
+    }
+}
+
+/// Trigger-column text. `{:?}` on `TriggerMode` reads "WithLast", and Show mode
+/// used to cut that to "Wit".
+fn trigger_label(mode: cuepool_core::TriggerMode) -> &'static str {
+    match mode {
+        cuepool_core::TriggerMode::Go => "Go",
+        cuepool_core::TriggerMode::WithLast => "With last",
+        cuepool_core::TriggerMode::AfterLast => "After last",
+    }
+}
+
+/// What the cue's own trigger mode means, for the column tooltip.
+fn trigger_help(mode: cuepool_core::TriggerMode) -> &'static str {
+    match mode {
+        cuepool_core::TriggerMode::Go => "Fires when you press Go",
+        cuepool_core::TriggerMode::WithLast => "Fires with the cue above it",
+        cuepool_core::TriggerMode::AfterLast => "Fires when the cue above it ends",
     }
 }
 

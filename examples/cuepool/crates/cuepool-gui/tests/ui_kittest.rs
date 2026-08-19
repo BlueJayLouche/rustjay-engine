@@ -234,11 +234,7 @@ fn release_notes_follow_the_splash_and_are_acknowledged_once() {
 fn selecting_a_cue_updates_the_inspector() {
     let (mut harness, state) = demo_harness();
 
-    harness
-        .get(By::new().role(Role::TextInput).value("Arm Projection"))
-        .click();
-    harness.run();
-    harness.step();
+    select_row(&mut harness, "Arm Projection");
 
     assert_eq!(
         state.lock().unwrap().selected_cue_id,
@@ -248,9 +244,12 @@ fn selecting_a_cue_updates_the_inspector() {
         harness
             .get_all(By::new().role(Role::TextInput).value("Arm Projection"))
             .count(),
-        2,
-        "the cue name should appear in both the list and inspector"
+        1,
+        "the inspector's name field follows the selection"
     );
+    // The list shows the name as a label until it is double-clicked; `name_cell`
+    // panics if there is no such row.
+    name_cell(&harness, "Arm Projection");
 }
 
 #[test]
@@ -535,18 +534,16 @@ fn discarding_changes_is_confirmed_in_app_before_a_new_project() {
 /// inspector panel is declared before the central list, so it comes first in
 /// the accessibility tree.
 fn retype_inspector_qid(harness: &mut Harness<'static>, name: &str, from: &str, to: &str) {
-    harness
-        .get(By::new().role(Role::TextInput).value(name))
-        .click();
-    harness.run();
-    harness.step();
+    select_row(harness, name);
 
+    // The cue list shows the number in a label until it is double-clicked, so
+    // the only text field holding it is the inspector's.
     assert_eq!(
         harness
             .get_all(By::new().role(Role::TextInput).value(from))
             .count(),
-        2,
-        "expected Q{from} in both the cue list and the inspector"
+        1,
+        "expected Q{from} in the inspector alone"
     );
     harness
         .get_all(By::new().role(Role::TextInput).value(from))
@@ -636,6 +633,56 @@ fn name_field<'t>(harness: &'t Harness<'static>, name: &'t str) -> egui_kittest:
         .unwrap_or_else(|| panic!("no cue-name field holding {name:?}"))
 }
 
+/// A synthesized click. `Node::click()` cannot produce a double click — it moves
+/// the pointer before each press, and egui does not pair the two — so the raw
+/// events go in directly, with the clock advanced between them.
+fn click_at(harness: &mut Harness<'static>, pos: egui::Pos2, at: f64) {
+    harness.input_mut().time = Some(at);
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    harness.step();
+}
+
+/// The cue list's name cell, told from the Active Cues entry of the same name by
+/// which panel it sits in: cues are the central column.
+fn name_cell(harness: &Harness<'static>, name: &str) -> egui::Rect {
+    harness
+        .get_all(By::new().label(name))
+        .map(|node| node.rect())
+        .find(|rect| rect.left() > 240.0 && rect.right() < 870.0)
+        .unwrap_or_else(|| panic!("no cue-list row named {name:?}"))
+}
+
+/// Select a cue by clicking its row. One click selects and no longer opens an
+/// editor, so this is a plain click.
+fn select_row(harness: &mut Harness<'static>, name: &str) {
+    let pos = name_cell(harness, name).center();
+    let now = harness.ctx.input(|i| i.time);
+    click_at(harness, pos, now + 0.10);
+    harness.run();
+    harness.step();
+}
+
+/// Open a cue's name for editing. A single click only selects the row; the cells
+/// are labels until double-clicked, so the arrow keys keep walking the playhead.
+fn open_name_editor(harness: &mut Harness<'static>, name: &str) {
+    let pos = name_cell(harness, name).center();
+    let now = harness.ctx.input(|i| i.time);
+    click_at(harness, pos, now + 0.10);
+    click_at(harness, pos, now + 0.18);
+    harness.run();
+}
+
 /// Renaming a cue must not operate the show. Space used to fire GO on every
 /// word break, and Escape — the gesture that closes the editor — stopped
 /// everything that was playing.
@@ -643,9 +690,11 @@ fn name_field<'t>(harness: &'t Harness<'static>, name: &'t str) -> egui_kittest:
 fn typing_into_a_cue_name_does_not_reach_the_show() {
     let (mut harness, state) = demo_harness();
 
-    name_field(&harness, "Lobby Ambience").focus();
-    harness.run();
-    assert!(harness.ctx.text_edit_focused());
+    open_name_editor(&mut harness, "Lobby Ambience");
+    assert!(
+        harness.ctx.text_edit_focused(),
+        "a double click should open the name for editing and put the caret in it"
+    );
     state.lock().unwrap().command_queue.clear();
 
     // A real space is a Key event as well as a Text event; kittest's
@@ -712,8 +761,7 @@ fn menu_shortcuts_stay_live_while_renaming() {
     let _ = std::fs::remove_file(&path);
     state.lock().unwrap().project_path = Some(path.clone());
 
-    name_field(&harness, "Lobby Ambience").focus();
-    harness.run();
+    open_name_editor(&mut harness, "Lobby Ambience");
 
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     harness.step();
@@ -776,9 +824,9 @@ fn show_mode_refuses_cue_edits_however_they_are_raised() {
         AppCommand::AddCue {
             cue_type: cuepool_gui::app::CueType::Sound,
         },
-        AppCommand::DeleteSelectedCue,
-        AppCommand::DuplicateSelectedCue,
-        AppCommand::MoveSelectedCueUp,
+        AppCommand::DeleteCue { qid: None },
+        AppCommand::DuplicateCue { qid: None },
+        AppCommand::MoveCueUp { qid: None },
         AppCommand::UpdateCueName {
             qid: Decimal::new(11, 1),
             name: "Renamed mid-show".into(),
@@ -805,7 +853,7 @@ fn show_mode_refuses_cue_edits_however_they_are_raised() {
         .lock()
         .unwrap()
         .command_queue
-        .push(AppCommand::DeleteSelectedCue);
+        .push(AppCommand::DeleteCue { qid: None });
     harness.run();
     assert_ne!(qids(&state), before, "Edit mode still deletes");
 }
@@ -1008,7 +1056,7 @@ fn a_group_duplicates_and_deletes_whole() {
         .lock()
         .unwrap()
         .command_queue
-        .push(AppCommand::DuplicateSelectedCue);
+        .push(AppCommand::DuplicateCue { qid: None });
     harness.run();
 
     {
@@ -1040,7 +1088,7 @@ fn a_group_duplicates_and_deletes_whole() {
         .lock()
         .unwrap()
         .command_queue
-        .push(AppCommand::DeleteSelectedCue);
+        .push(AppCommand::DeleteCue { qid: None });
     harness.run();
 
     let state = state.lock().unwrap();
@@ -1073,7 +1121,7 @@ fn nudging_a_group_moves_it_as_a_block() {
         .lock()
         .unwrap()
         .command_queue
-        .push(AppCommand::MoveSelectedCueDown);
+        .push(AppCommand::MoveCueDown { qid: None });
     harness.run();
 
     let state = state.lock().unwrap();
@@ -1147,7 +1195,7 @@ fn duplicating_a_triggered_cue_warns_that_the_trigger_is_shared() {
         .lock()
         .unwrap()
         .command_queue
-        .push(AppCommand::DuplicateSelectedCue);
+        .push(AppCommand::DuplicateCue { qid: None });
     harness.run();
 
     let state = state.lock().unwrap();
@@ -1283,4 +1331,173 @@ fn level_edits_queue_a_live_push_for_sound_and_video() {
             "pushed level {volume} should match the cue's stored {stored}"
         );
     }
+}
+/// "Pause at the moment, add cue" is the case the pre-filled timecode trigger
+/// exists for. Applying it from a running clock armed every cue added mid-show
+/// with a trigger nobody asked for, showing only as a 10px badge.
+#[test]
+fn a_pre_filled_timecode_trigger_needs_a_paused_clock() {
+    let (mut harness, state) = demo_harness();
+
+    for (paused, expected) in [(false, None), (true, Some(42.5))] {
+        {
+            let mut state = state.lock().unwrap();
+            state.show_time = Some(42.5);
+            state.show_paused = paused;
+            state.selected_cue_id = None;
+        }
+        state
+            .lock()
+            .unwrap()
+            .command_queue
+            .push(AppCommand::AddCue {
+                cue_type: cuepool_gui::app::CueType::Stop,
+            });
+        harness.run();
+
+        let state = state.lock().unwrap();
+        let added = state.show_file.cues.last().expect("the added cue").base();
+        assert_eq!(
+            added
+                .triggers
+                .timecode
+                .as_ref()
+                .map(|t| t.time.as_secs_f64()),
+            expected,
+            "clock paused={paused}"
+        );
+    }
+}
+
+/// The only way to leave a group was the trailing strip, which also moved the cue
+/// to the end of the show. Clearing `parent` in place is not enough on its own: a
+/// group's span stops at the first row that is not a member, so the cues after
+/// this one would fall outside it while still pointing at it.
+#[test]
+fn ungrouping_moves_the_cue_clear_of_its_group() {
+    let (mut harness, state) = demo_harness();
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::UngroupCue {
+            qid: Decimal::new(11, 1),
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert_eq!(
+        qids_of(&state.show_file.cues),
+        vec![
+            Decimal::ONE,
+            Decimal::new(12, 1),
+            Decimal::new(13, 1),
+            Decimal::new(11, 1),
+            Decimal::from(2),
+            Decimal::from(3),
+            Decimal::from(4),
+            Decimal::from(5),
+        ],
+        "the freed cue steps past the group, not to the end of the show"
+    );
+    assert_eq!(state.show_file.cues[3].base().parent, None);
+    assert!(
+        state.show_file.cues[1..3]
+            .iter()
+            .all(|cue| cue.base().parent == Some(Decimal::ONE)),
+        "the members left behind stay contiguous with their header"
+    );
+}
+
+/// The row menu labels its items "Delete Q3" but used to issue selection-scoped
+/// commands. They agreed only because right-click selects first, and two menus
+/// can be open at once.
+#[test]
+fn a_cue_command_naming_its_target_ignores_the_selection() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = Some(Decimal::from(2));
+    state
+        .lock()
+        .unwrap()
+        .command_queue
+        .push(AppCommand::DeleteCue {
+            qid: Some(Decimal::new(11, 1)),
+        });
+    harness.run();
+
+    let state = state.lock().unwrap();
+    assert!(
+        !qids_of(&state.show_file.cues).contains(&Decimal::new(11, 1)),
+        "the named cue goes"
+    );
+    assert!(
+        qids_of(&state.show_file.cues).contains(&Decimal::from(2)),
+        "the selected one stays"
+    );
+}
+
+/// The Q# and Name cells were live text fields, so one click on a row put a caret
+/// in one and the arrow keys then walked the caret rather than the standby
+/// playhead, with nothing on screen to say why.
+#[test]
+fn a_single_click_selects_without_opening_the_editor() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = None;
+    harness.run();
+
+    let pos = name_cell(&harness, "Lobby Ambience").center();
+    let now = harness.ctx.input(|i| i.time);
+    click_at(&mut harness, pos, now + 0.10);
+    harness.run();
+
+    assert_eq!(
+        state.lock().unwrap().selected_cue_id,
+        Some(Decimal::new(11, 1)),
+        "a click on the name still selects the row"
+    );
+    assert!(
+        !harness.ctx.text_edit_focused(),
+        "but it must not open the editor"
+    );
+
+    // So the arrows still belong to the list.
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(
+        state.lock().unwrap().selected_cue_id,
+        Some(Decimal::new(12, 1)),
+        "the arrow keys should still walk the playhead after a click"
+    );
+}
+
+/// Double click is the mouse route into the editor; Enter is the keyboard one,
+/// without which a keyboard-only operator could no longer rename a cue at all.
+#[test]
+fn enter_opens_the_selected_cue_for_renaming() {
+    let (mut harness, state) = demo_harness();
+    state.lock().unwrap().selected_cue_id = Some(Decimal::new(11, 1));
+    harness.run();
+    assert!(!harness.ctx.text_edit_focused());
+
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        harness.ctx.text_edit_focused(),
+        "Enter should open the selected cue's name"
+    );
+    assert_eq!(
+        name_field(&harness, "Lobby Ambience").value().as_deref(),
+        Some("Lobby Ambience")
+    );
+
+    // Escape closes it again and hands the keys back to the list.
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(!harness.ctx.text_edit_focused());
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert_eq!(
+        state.lock().unwrap().selected_cue_id,
+        Some(Decimal::new(12, 1))
+    );
 }

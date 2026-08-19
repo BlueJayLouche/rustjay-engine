@@ -813,10 +813,27 @@ pub enum AppCommand {
     AddCue {
         cue_type: CueType,
     },
-    DeleteSelectedCue,
-    DuplicateSelectedCue,
-    MoveSelectedCueUp,
-    MoveSelectedCueDown,
+    /// Cue commands name their target. `None` means the current selection, which
+    /// is what a keyboard shortcut means; the row context menu passes its own
+    /// row, so a menu left open over a stale selection cannot act on the wrong
+    /// cue.
+    DeleteCue {
+        qid: Option<Decimal>,
+    },
+    DuplicateCue {
+        qid: Option<Decimal>,
+    },
+    MoveCueUp {
+        qid: Option<Decimal>,
+    },
+    MoveCueDown {
+        qid: Option<Decimal>,
+    },
+    /// Free a cue from its group without moving it to the end of the show, which
+    /// is all the trailing drop strip could do.
+    UngroupCue {
+        qid: Decimal,
+    },
     MoveCue {
         from_idx: usize,
         to_idx: usize,
@@ -914,10 +931,11 @@ impl AppCommand {
             Self::Undo
                 | Self::Redo
                 | Self::AddCue { .. }
-                | Self::DeleteSelectedCue
-                | Self::DuplicateSelectedCue
-                | Self::MoveSelectedCueUp
-                | Self::MoveSelectedCueDown
+                | Self::DeleteCue { .. }
+                | Self::DuplicateCue { .. }
+                | Self::MoveCueUp { .. }
+                | Self::MoveCueDown { .. }
+                | Self::UngroupCue { .. }
                 | Self::MoveCue { .. }
                 | Self::UpdateCueQid { .. }
                 | Self::UpdateCueName { .. }
@@ -1308,7 +1326,9 @@ impl CuePoolApp {
                 && i.key_pressed(egui::Key::D)
                 && let Ok(mut state) = self.state.lock()
             {
-                state.command_queue.push(AppCommand::DuplicateSelectedCue);
+                state
+                    .command_queue
+                    .push(AppCommand::DuplicateCue { qid: None });
             }
 
             // Add new sound cue
@@ -1344,7 +1364,9 @@ impl CuePoolApp {
             if (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
                 && let Ok(mut state) = self.state.lock()
             {
-                state.command_queue.push(AppCommand::DeleteSelectedCue);
+                state
+                    .command_queue
+                    .push(AppCommand::DeleteCue { qid: None });
             }
 
             // Move selected cue up/down
@@ -1352,12 +1374,16 @@ impl CuePoolApp {
                 if i.key_pressed(egui::Key::ArrowUp)
                     && let Ok(mut state) = self.state.lock()
                 {
-                    state.command_queue.push(AppCommand::MoveSelectedCueUp);
+                    state
+                        .command_queue
+                        .push(AppCommand::MoveCueUp { qid: None });
                 }
                 if i.key_pressed(egui::Key::ArrowDown)
                     && let Ok(mut state) = self.state.lock()
                 {
-                    state.command_queue.push(AppCommand::MoveSelectedCueDown);
+                    state
+                        .command_queue
+                        .push(AppCommand::MoveCueDown { qid: None });
                 }
             }
 
@@ -1939,7 +1965,7 @@ impl CuePoolApp {
                                     egui::Color32::from_rgb(220, 100, 100)
                                 };
                                 ui.horizontal(|ui| {
-                                    ui.colored_label(color, if is_active { "●" } else { "○" });
+                                    ui.colored_label(color, if is_active { "•" } else { "○" });
                                     ui.label(format!("{} @ {}", node.name, node.address));
                                     if ui.button("×").clicked() {
                                         to_remove.push(idx);
@@ -2754,7 +2780,7 @@ impl CuePoolApp {
             // Dirty indicator
             if dirty {
                 ui.label(
-                    egui::RichText::new("● Unsaved changes")
+                    egui::RichText::new("• Unsaved changes")
                         .small()
                         .color(egui::Color32::YELLOW),
                 );
@@ -2815,6 +2841,26 @@ impl CuePoolApp {
         // pass rather than leaving the operator on a stale frame.
         ctx.request_repaint();
         false
+    }
+
+    /// Move a cue one step, taking a group's members with it. `qid` names the
+    /// cue, or `None` for the current selection.
+    fn nudge_cue(&self, qid: Option<Decimal>, down: bool) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(id) = qid.or(state.selected_cue_id)
+            && let Some(idx) = state.show_file.cues.iter().position(|c| c.base().qid == id)
+        {
+            // Merge key is per cue: nudging cue A then cue B used to collapse
+            // into one undo entry under a shared "move_cue".
+            let snapshot = Snapshot::from_state(&state).with_merge_key(format!("cue:{id}:move"));
+            // A plain swap moved a group header off its members and stepped into
+            // the middle of a neighbouring group; the helper moves whole blocks
+            // and steps over them.
+            if crate::cue_order::nudge(&mut state.show_file.cues, idx, down) {
+                state.undo_redo.push(snapshot);
+                state.dirty = true;
+            }
+        }
     }
 
     fn process_commands(&mut self, ctx: &egui::Context) {
@@ -2984,10 +3030,13 @@ impl CuePoolApp {
                             name: format!("New {:?} Cue", cue_type),
                             ..Default::default()
                         };
-                        // Show clock running (or paused mid-step): pre-fill the
-                        // timecode trigger with the current time, so "pause at
-                        // the moment, add cue" lands armed at the right spot.
-                        if let Some(t) = state.show_time {
+                        // "Pause at the moment, add cue": pre-fill the timecode
+                        // trigger so the new cue lands armed at the spot the
+                        // operator stopped on. Only while the clock is actually
+                        // paused — arming one from a *running* clock gave every
+                        // cue added mid-show a trigger nobody asked for, showing
+                        // up as a 10px badge and firing on the next pass.
+                        if let Some(t) = state.show_time.filter(|_| state.show_paused) {
                             base.triggers.timecode = Some(cuepool_core::TimecodeTrigger {
                                 time: cuepool_core::Timespan::from_secs_f64(t),
                             });
@@ -3091,9 +3140,9 @@ impl CuePoolApp {
                         state.dirty = true;
                     }
                 }
-                AppCommand::DeleteSelectedCue => {
+                AppCommand::DeleteCue { qid } => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id
+                        && let Some(id) = qid.or(state.selected_cue_id)
                         && let Some(idx) =
                             state.show_file.cues.iter().position(|c| c.base().qid == id)
                     {
@@ -3112,9 +3161,9 @@ impl CuePoolApp {
                         state.dirty = true;
                     }
                 }
-                AppCommand::DuplicateSelectedCue => {
+                AppCommand::DuplicateCue { qid } => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id
+                        && let Some(id) = qid.or(state.selected_cue_id)
                         && let Some(idx) =
                             state.show_file.cues.iter().position(|c| c.base().qid == id)
                     {
@@ -3170,24 +3219,29 @@ impl CuePoolApp {
                         state.dirty = true;
                     }
                 }
-                nudge @ (AppCommand::MoveSelectedCueUp | AppCommand::MoveSelectedCueDown) => {
-                    let down = matches!(nudge, AppCommand::MoveSelectedCueDown);
+                AppCommand::MoveCueUp { qid } => self.nudge_cue(qid, false),
+                AppCommand::MoveCueDown { qid } => self.nudge_cue(qid, true),
+                AppCommand::UngroupCue { qid } => {
                     if let Ok(mut state) = self.state.lock()
-                        && let Some(id) = state.selected_cue_id
-                        && let Some(idx) =
-                            state.show_file.cues.iter().position(|c| c.base().qid == id)
+                        && let Some(idx) = state
+                            .show_file
+                            .cues
+                            .iter()
+                            .position(|c| c.base().qid == qid)
+                        && state.show_file.cues[idx].base().parent.is_some()
                     {
-                        // Merge key is per cue: nudging cue A then cue B used to
-                        // collapse into one undo entry under a shared "move_cue".
-                        let snapshot =
-                            Snapshot::from_state(&state).with_merge_key(format!("cue:{id}:move"));
-                        // A plain swap moved a group header off its members and
-                        // stepped into the middle of a neighbouring group; the
-                        // helper moves whole blocks and steps over them.
-                        if crate::cue_order::nudge(&mut state.show_file.cues, idx, down) {
-                            state.undo_redo.push(snapshot);
-                            state.dirty = true;
-                        }
+                        let snapshot = Snapshot::from_state(&state);
+                        state.undo_redo.push(snapshot);
+                        // Clearing `parent` in place would strand the members
+                        // after this one: a group's span stops at the first row
+                        // that is not a member, so they would fall outside it
+                        // while still pointing at it. Step the freed cue past the
+                        // whole group instead.
+                        let cues = &mut state.show_file.cues;
+                        let group = crate::cue_order::enclosing_span(cues, idx);
+                        cues[idx].base_mut().parent = None;
+                        crate::cue_order::move_span(cues, idx..idx + 1, group.end);
+                        state.dirty = true;
                     }
                 }
                 AppCommand::MoveCue {
