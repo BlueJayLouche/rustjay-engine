@@ -1224,3 +1224,63 @@ fn a_refused_renumber_is_reported_to_the_operator() {
         "a refused renumber must say so, not only log it"
     );
 }
+
+/// The live push is the whole feature: without the queued command the slider
+/// still edits the cue and the playing cue never hears it. Covers Video too,
+/// since both cue types share `level_editor`.
+#[test]
+fn level_edits_queue_a_live_push_for_sound_and_video() {
+    let (mut harness, state) = demo_harness();
+
+    for (qid, expected_volume) in [(Decimal::new(11, 1), 0.8_f32), (Decimal::new(12, 1), 0.7)] {
+        state.lock().unwrap().selected_cue_id = Some(qid);
+        harness.run();
+        state.lock().unwrap().command_queue.clear();
+
+        // Drag the volume slider a little way left of where it sits.
+        let slider = harness.get_by_label("Volume (dB):").rect();
+        harness.drag_at(slider.center());
+        harness.step();
+        let to = egui::pos2(slider.center().x - slider.width() * 0.2, slider.center().y);
+        harness.hover_at(to);
+        harness.step();
+        harness.drop_at(to);
+        harness.run();
+
+        let commands: Vec<_> = state.lock().unwrap().command_queue.drain(..).collect();
+        let Some(AppCommand::SetCueLevel {
+            qid: pushed_qid,
+            volume,
+            ..
+        }) = commands
+            .iter()
+            .rev()
+            .find(|command| matches!(command, AppCommand::SetCueLevel { .. }))
+        else {
+            panic!("dragging Volume on Q{qid} should queue SetCueLevel");
+        };
+        assert_eq!(*pushed_qid, qid);
+        assert!(
+            *volume < expected_volume,
+            "Q{qid} dragged left should push a quieter level than {expected_volume}, got {volume}"
+        );
+        // The cue itself is edited as before, so the change survives a re-fire.
+        let stored = match state
+            .lock()
+            .unwrap()
+            .show_file
+            .cues
+            .iter()
+            .find(|cue| cue.base().qid == qid)
+        {
+            Some(
+                cuepool_core::Cue::Sound { volume, .. } | cuepool_core::Cue::Video { volume, .. },
+            ) => *volume,
+            other => panic!("expected a Sound or Video cue at Q{qid}, got {other:?}"),
+        };
+        assert!(
+            (stored - *volume).abs() < f32::EPSILON,
+            "pushed level {volume} should match the cue's stored {stored}"
+        );
+    }
+}

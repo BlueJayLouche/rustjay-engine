@@ -441,20 +441,7 @@ fn show_inner(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         .color(egui::Color32::GRAY),
                 );
             }
-            ui.horizontal(|ui| {
-                ui.label("Volume (dB):");
-                let mut db = 20.0 * volume.log10();
-                let response = ui.add(egui::Slider::new(&mut db, -60.0..=12.0));
-                if response.changed() {
-                    *volume = 10.0f32.powf(db / 20.0);
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Pan:");
-                let response = ui.add(egui::Slider::new(pan, -1.0..=1.0));
-                changed |= response.changed();
-            });
+            changed |= level_editor(ui, base.qid, volume, pan, &mut pending_commands);
             ui.horizontal(|ui| {
                 ui.label("Fade In (s):");
                 let response = ui.add(egui::DragValue::new(fade_in).speed(0.1));
@@ -549,20 +536,7 @@ fn show_inner(ui: &mut egui::Ui, state: &SharedStateHandle) {
                         .color(egui::Color32::GRAY),
                 );
             }
-            ui.horizontal(|ui| {
-                ui.label("Volume (dB):");
-                let mut db = 20.0 * volume.log10();
-                let response = ui.add(egui::Slider::new(&mut db, -60.0..=12.0));
-                if response.changed() {
-                    *volume = 10.0f32.powf(db / 20.0);
-                    changed = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Pan:");
-                let response = ui.add(egui::Slider::new(pan, -1.0..=1.0));
-                changed |= response.changed();
-            });
+            changed |= level_editor(ui, base.qid, volume, pan, &mut pending_commands);
             ui.horizontal(|ui| {
                 ui.label("Fade In (s):");
                 let response = ui.add(egui::DragValue::new(fade_in).speed(0.1));
@@ -1574,6 +1548,49 @@ fn triggers_editor(
             }
         }
     }
+}
+
+/// Volume (dB) + Pan sliders, shared by Sound and Video cues.
+///
+/// An edit is queued as a live push as well as written to the cue, so a playing
+/// cue follows the slider instead of waiting for the next fire. Video cues route
+/// their audio through the same mixer input, which is why both arms share this.
+fn level_editor(
+    ui: &mut egui::Ui,
+    qid: Decimal,
+    volume: &mut f32,
+    pan: &mut f32,
+    pending_commands: &mut Vec<crate::app::AppCommand>,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        // labelled_by: the caption is a separate widget, so without this the
+        // slider reaches assistive tech (and the UI tests) with no name at all.
+        let caption = ui.label("Volume (dB):");
+        let mut db = 20.0 * volume.log10();
+        let response = ui
+            .add(egui::Slider::new(&mut db, -60.0..=12.0))
+            .labelled_by(caption.id);
+        if response.changed() {
+            *volume = 10.0f32.powf(db / 20.0);
+            changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        let caption = ui.label("Pan:");
+        let response = ui
+            .add(egui::Slider::new(pan, -1.0..=1.0))
+            .labelled_by(caption.id);
+        changed |= response.changed();
+    });
+    if changed {
+        pending_commands.push(crate::app::AppCommand::SetCueLevel {
+            qid,
+            volume: *volume,
+            pan: *pan,
+        });
+    }
+    changed
 }
 
 /// Lightweight per-cue output routing: destination pair + send fader.

@@ -21,7 +21,17 @@ pub enum EngineCommand {
     TogglePause,
     Select(Decimal),
     Preload,
-    Seek { instance_id: u64, secs: f32 },
+    Seek {
+        instance_id: u64,
+        secs: f32,
+    },
+    /// Live level edit from the inspector: apply to a playing cue without
+    /// re-firing it.
+    SetLevel {
+        qid: Decimal,
+        volume: f32,
+        pan: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +266,7 @@ impl ShowEngine {
             EngineCommand::Select(qid) => self.state.lock_unpoisoned().selected_cue_id = Some(qid),
             EngineCommand::Preload => self.preload(),
             EngineCommand::Seek { instance_id, secs } => self.seek(instance_id, secs),
+            EngineCommand::SetLevel { qid, volume, pan } => self.set_level(qid, volume, pan),
         }
         self.take_actions()
     }
@@ -1137,6 +1148,8 @@ impl ShowEngine {
         Some(samples as f64 / channels as f64 / rate as f64)
     }
 
+    /// Every playing instance of `qid`, not just the first — a cue fired twice
+    /// has two, and a Volume cue naming that Q# means both of them.
     fn set_volume(
         &self,
         qid: Decimal,
@@ -1144,15 +1157,24 @@ impl ShowEngine {
         fade_secs: f32,
         fade_type: cuepool_core::FadeType,
     ) {
-        let Some(cue) = self.active_cues.iter().find(|cue| cue.qid == qid) else {
-            return;
-        };
-        if fade_secs > 0.0 {
-            let frames = (fade_secs * self.audio_sample_rate() as f32) as u32;
-            cue.input
-                .start_fade(target.max(0.0), frames.max(1), fade_type);
-        } else {
-            cue.input.set_volume(target.max(0.0));
+        let frames = (fade_secs * self.audio_sample_rate() as f32) as u32;
+        for cue in self.active_cues.iter().filter(|cue| cue.qid == qid) {
+            if fade_secs > 0.0 {
+                cue.input
+                    .start_fade(target.max(0.0), frames.max(1), fade_type);
+            } else {
+                cue.input.set_volume(target.max(0.0));
+            }
+        }
+    }
+
+    /// Live level edit from the inspector. No fade — the user is dragging a
+    /// slider and wants to hear it now. Video cues route their audio through
+    /// the same `MixerInput`, so this covers both cue types.
+    fn set_level(&self, qid: Decimal, volume: f32, pan: f32) {
+        for cue in self.active_cues.iter().filter(|cue| cue.qid == qid) {
+            cue.input.set_volume_live(volume.max(0.0));
+            cue.input.set_pan(pan);
         }
     }
 

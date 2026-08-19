@@ -109,6 +109,26 @@ impl MixerInput {
         self.volume.store(vol.to_bits(), Ordering::Relaxed);
     }
 
+    /// Set the level from a live edit (inspector slider on a playing cue).
+    ///
+    /// Unlike [`Self::set_volume`] this also retargets a fade already in
+    /// flight, because `render` overwrites `volume` with `fade_target` when the
+    /// fade completes — so a plain store during a Volume-cue fade is heard for
+    /// a moment and then thrown away. Fades to silence are stops (cue fade-out,
+    /// Stop cue), so those are left alone: a live edit must not resurrect a cue
+    /// on its way out.
+    ///
+    /// Fade-*ins* need no special case; they run as a `FadeProcessor` in the
+    /// source chain and multiply with this level rather than replacing it.
+    pub fn set_volume_live(&self, vol: f32) {
+        self.set_volume(vol);
+        if self.fade_active.load(Ordering::Acquire)
+            && f32::from_bits(self.fade_target.load(Ordering::Relaxed)) > 0.0
+        {
+            self.fade_target.store(vol.to_bits(), Ordering::Relaxed);
+        }
+    }
+
     #[inline]
     pub fn pan(&self) -> f32 {
         f32::from_bits(self.pan.load(Ordering::Relaxed))
@@ -804,6 +824,73 @@ mod tests {
             (src.volume() - 1.0).abs() < 0.01,
             "volume should be 1.0, got {}",
             src.volume()
+        );
+    }
+
+    fn unity_input() -> Arc<MixerInput> {
+        Arc::new(MixerInput::new(
+            Box::new(crate::FnSource::new(
+                |buf| {
+                    buf.fill(1.0);
+                    buf.len()
+                },
+                48000,
+                2,
+            )),
+            1024,
+        ))
+    }
+
+    /// A live level edit while a Volume-cue fade is in flight must survive the
+    /// fade landing. `render` writes `fade_target` into `volume` on completion,
+    /// so a plain `set_volume` here is heard briefly and then discarded.
+    #[test]
+    fn live_volume_retargets_an_active_fade() {
+        let mixer = Mixer::new(2, 48000);
+        let src = unity_input();
+        src.set_volume(1.0);
+        src.start_fade(0.25, 4, FadeType::Linear);
+
+        src.set_volume_live(0.8);
+
+        mixer.add_input(src.clone());
+        mixer.refresh_snapshot();
+        let mut output = vec![0.0f32; 8];
+        mixer.render(&mut output, &mut RenderCache::new());
+
+        assert!(!src.is_fading(), "fade should be complete");
+        assert!(
+            (src.volume() - 0.8).abs() < 0.01,
+            "live edit should have retargeted the fade to 0.8, got {}",
+            src.volume()
+        );
+    }
+
+    /// ...but a fade to silence is a stop (cue fade-out, Stop cue). A live edit
+    /// must not retarget that and leave the cue playing forever.
+    #[test]
+    fn live_volume_does_not_hijack_a_fade_to_silence() {
+        let mixer = Mixer::new(2, 48000);
+        let src = unity_input();
+        src.set_volume(1.0);
+        src.start_fade(0.0, 4, FadeType::Linear);
+
+        src.set_volume_live(0.8);
+
+        mixer.add_input(src.clone());
+        mixer.refresh_snapshot();
+        let mut output = vec![0.0f32; 8];
+        mixer.render(&mut output, &mut RenderCache::new());
+
+        assert!(!src.is_fading(), "fade should be complete");
+        assert!(
+            src.volume() <= 0.0,
+            "fade to silence must still land on silence, got {}",
+            src.volume()
+        );
+        assert!(
+            !src.is_active(),
+            "input should be inactive after fading out"
         );
     }
 }

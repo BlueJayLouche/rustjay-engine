@@ -886,6 +886,14 @@ pub enum AppCommand {
         instance_id: u64,
         secs: f32,
     },
+    /// Live volume/pan edit: apply to every playing instance of `qid` without
+    /// re-firing it. The cue model is edited as usual; this only stops the
+    /// change from waiting for the next fire.
+    SetCueLevel {
+        qid: Decimal,
+        volume: f32,
+        pan: f32,
+    },
 }
 
 impl AppCommand {

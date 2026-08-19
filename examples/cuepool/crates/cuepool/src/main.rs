@@ -3054,6 +3054,12 @@ impl App {
                         event_loop,
                     );
                 }
+                AppCommand::SetCueLevel { qid, volume, pan } => {
+                    let _ = self.run_engine_command(
+                        EngineCommand::SetLevel { qid, volume, pan },
+                        event_loop,
+                    );
+                }
                 other => return Err(other),
             }
             Ok(())
