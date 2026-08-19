@@ -27,13 +27,30 @@ jobs:
         working-directory: examples/cuepool
     steps:
       - uses: actions/checkout@v6
+      # The FFmpeg -dev packages are most of this job. Fetching them took a
+      # median of 379s across the last eleven runs and as much as 1508s, against
+      # ~110s for everything cargo does; the main workflow, which installs the
+      # same set minus FFmpeg, spends 10-17s here. Keeping the .debs means only
+      # the first run on a branch pays for the download.
+      #
+      # Bump the key's version suffix when the package list below changes.
+      - name: Cache apt packages
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-debs
+          key: apt-cuepool-x64-v1
       - name: Install system dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y \
+          # apt wants a `partial` subdirectory inside its archive dir.
+          mkdir -p ~/apt-debs/partial
+          sudo apt-get update
+          sudo apt-get install -y -o Dir::Cache::archives="$HOME/apt-debs" \
             libasound2-dev libudev-dev pkg-config clang ninja-build \
             mesa-vulkan-drivers libvulkan1 \
             libavcodec-dev libavformat-dev libavutil-dev \
             libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+          # apt runs as root; hand the archive back so the cache can save it.
+          sudo chown -R "$USER" ~/apt-debs
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
