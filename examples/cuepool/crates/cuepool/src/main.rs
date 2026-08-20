@@ -19,7 +19,7 @@ use cuepool_core::{
 };
 use cuepool_gui::app::CueState;
 use cuepool_gui::logging::PERSIST_TARGET;
-use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, VideoTimings};
+use cuepool_gui::{AppCommand, CuePoolApp, OutputDiagnostics, ShowMode, VideoTimings};
 use cuepool_protocols::ltc::LtcGenerator;
 use cuepool_protocols::midi::mtc::MtcReceiver;
 use cuepool_protocols::midi::{MidiEvent, MidiManager};
@@ -5028,21 +5028,33 @@ fn resolve_cli_project_path(path: &Path, cwd: &Path) -> Result<PathBuf, String> 
     Ok(resolved)
 }
 
-const CLI_USAGE: &str = "Usage: cuepool [--zero-copy | --no-zero-copy] [--project <path> | <path>]";
+const CLI_USAGE: &str =
+    "Usage: cuepool [--show-mode] [--zero-copy | --no-zero-copy] [--project <path> | <path>]";
 
 #[derive(Debug, PartialEq, Eq)]
 struct CliOptions {
     project: Option<PathBuf>,
     zero_copy: Option<bool>,
+    /// Start locked in Show mode instead of the default Edit mode, so an
+    /// unattended machine comes up with the editing surfaces already closed.
+    show_mode: bool,
 }
 
 fn parse_cli(args: impl IntoIterator<Item = OsString>) -> Result<CliOptions, String> {
     let mut options = CliOptions {
         project: None,
         zero_copy: None,
+        show_mode: false,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        // Repeating it is not an error the way a second project path or a
+        // conflicting zero-copy flag is: the intent stays unambiguous.
+        if arg == "--show-mode" {
+            options.show_mode = true;
+            continue;
+        }
+
         if arg == "--zero-copy" || arg == "--no-zero-copy" {
             if options.zero_copy.replace(arg == "--zero-copy").is_some() {
                 return Err(format!(
@@ -5097,6 +5109,19 @@ fn load_startup_project(cuepool: &CuePoolApp, path: &Path) -> Result<(), String>
         .map_err(|error| format!("Cannot parse startup project '{}': {error}", path.display()))?;
     state.push_recent_file(path);
     Ok(())
+}
+
+/// Settle the operator's starting stance, after any startup project load.
+///
+/// Order matters more than the one line suggests: `apply_show_file` leaves the
+/// mode alone today, so a load cannot unlock a show — running last is what
+/// keeps that true if it ever stops leaving it alone.
+fn apply_startup_show_mode(cuepool: &CuePoolApp, show_mode: bool) {
+    if !show_mode {
+        return;
+    }
+    cuepool.state().lock_unpoisoned().show_mode = ShowMode::Show;
+    log::info!(target: PERSIST_TARGET, "CuePool startup mode=show");
 }
 
 fn startup_error(title: &str, message: String) -> anyhow::Error {
@@ -5223,6 +5248,7 @@ fn run(log_file: String, profile: AppProfile) -> anyhow::Result<()> {
     } else {
         log::info!(target: PERSIST_TARGET, "CuePool startup project load result=not_requested");
     }
+    apply_startup_show_mode(&cuepool, cli.show_mode);
     cuepool.state().lock_unpoisoned().diagnostics.log_file = log_file;
 
     // 1 ms timer resolution so WaitUntil/sleep don't quantize to 15.6 ms.
@@ -5604,6 +5630,7 @@ mod tests {
             Ok(CliOptions {
                 project: Some(path.clone()),
                 zero_copy: None,
+                show_mode: false,
             })
         );
         assert_eq!(
@@ -5611,6 +5638,7 @@ mod tests {
             Ok(CliOptions {
                 project: Some(path),
                 zero_copy: None,
+                show_mode: false,
             })
         );
         assert_eq!(
@@ -5618,6 +5646,57 @@ mod tests {
             Ok(CliOptions {
                 project: None,
                 zero_copy: None,
+                show_mode: false,
+            })
+        );
+    }
+
+    #[test]
+    fn cli_show_mode_launches_locked_and_composes_with_the_other_options() {
+        assert!(
+            !parse_cli([]).unwrap().show_mode,
+            "Edit mode is the default"
+        );
+        assert!(
+            parse_cli([OsString::from("--show-mode")])
+                .unwrap()
+                .show_mode
+        );
+
+        // Repeating the flag says the same thing twice, so it is not rejected.
+        assert!(
+            parse_cli([OsString::from("--show-mode"), OsString::from("--show-mode")])
+                .unwrap()
+                .show_mode
+        );
+
+        // The unattended-gallery invocation: open a project, locked, on the
+        // readback video path.
+        assert_eq!(
+            parse_cli([
+                OsString::from("--show-mode"),
+                OsString::from("--no-zero-copy"),
+                OsString::from("--project"),
+                OsString::from("Opening Night.qproj"),
+            ]),
+            Ok(CliOptions {
+                project: Some(PathBuf::from("Opening Night.qproj")),
+                zero_copy: Some(false),
+                show_mode: true,
+            })
+        );
+
+        // A positional path still parses as the project, not as a stray value
+        // belonging to --show-mode.
+        assert_eq!(
+            parse_cli([
+                OsString::from("--show-mode"),
+                OsString::from("Opening Night.qproj"),
+            ]),
+            Ok(CliOptions {
+                project: Some(PathBuf::from("Opening Night.qproj")),
+                zero_copy: None,
+                show_mode: true,
             })
         );
     }
@@ -5726,6 +5805,34 @@ mod tests {
         let state = cuepool.state().lock_unpoisoned();
         assert_eq!(state.project_path.as_deref(), Some(path.as_path()));
         assert_eq!(state.recent_files.first(), Some(&path));
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_show_mode_survives_the_startup_project_load() {
+        let dir = cli_project_test_dir();
+        let path = dir.join("gallery.qproj");
+        let json = serde_json::to_string(&cuepool_core::ShowFile::default()).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        let cuepool = CuePoolApp::new();
+        assert_eq!(
+            cuepool.state().lock_unpoisoned().show_mode,
+            ShowMode::Edit,
+            "an unflagged launch stays in Edit mode"
+        );
+        apply_startup_show_mode(&cuepool, false);
+        assert_eq!(cuepool.state().lock_unpoisoned().show_mode, ShowMode::Edit);
+
+        // The unattended order: open the show, then lock it.
+        load_startup_project(&cuepool, &path).unwrap();
+        apply_startup_show_mode(&cuepool, true);
+
+        let state = cuepool.state().lock_unpoisoned();
+        assert_eq!(state.show_mode, ShowMode::Show);
+        assert_eq!(state.project_path.as_deref(), Some(path.as_path()));
+        assert!(!state.dirty, "launching locked is not an edit");
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }

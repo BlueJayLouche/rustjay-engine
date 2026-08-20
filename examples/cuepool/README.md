@@ -34,7 +34,7 @@ from Homebrew and runs only on the machine that built it.
 ## Command line
 
 ```text
-cuepool [--zero-copy | --no-zero-copy] [--project <path> | <path>]
+cuepool [--show-mode] [--zero-copy | --no-zero-copy] [--project <path> | <path>]
 ```
 
 `--zero-copy` opts into the Windows D3D12VA zero-copy video path;
@@ -44,6 +44,11 @@ is used: the zero-copy path is enabled only when its value is exactly `1`.
 Either command-line option takes precedence over that environment variable.
 
 Use `--project <path>` or a single positional path to open a project at startup.
+
+`--show-mode` starts the app in Show mode instead of Edit mode, so an unattended
+machine comes up with cue editing already locked. The Show/Edit button still
+works normally afterwards — the flag chooses the starting stance, it does not
+pin it. Without the flag the app starts in Edit mode as before.
 
 ## Automation API
 
