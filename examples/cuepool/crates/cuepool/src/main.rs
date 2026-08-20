@@ -340,6 +340,28 @@ fn queue_latest_video_decode(
     *pending = Some(request);
 }
 
+/// A fired timecode trigger stays latched only while the show clock sits at
+/// or past its time. Rewinding back before a trigger (frame-step back, a
+/// negative clock adjustment) re-arms it so it fires again on the next pass;
+/// a trigger whose cue was deleted or edited away drops out of the latch.
+fn unlatch_rewound_timecode_triggers(
+    fired: &mut std::collections::HashSet<rust_decimal::Decimal>,
+    cues: &[cuepool_core::Cue],
+    elapsed_secs: f64,
+) {
+    fired.retain(|qid| {
+        cues.iter().any(|cue| {
+            cue.base().qid == *qid
+                && cue
+                    .base()
+                    .triggers
+                    .timecode
+                    .as_ref()
+                    .is_some_and(|trigger| elapsed_secs >= trigger.time.as_secs_f64())
+        })
+    });
+}
+
 fn clamp_video_seek_secs(target: f64, length_secs: Option<f64>) -> f64 {
     match length_secs.filter(|length| length.is_finite() && *length > 0.0) {
         Some(length) => target.min(length.next_down()),
@@ -3312,7 +3334,13 @@ impl App {
             });
             state.pending_timecode_capture
         };
-        let Some(elapsed) = elapsed else { return };
+        let Some(elapsed) = elapsed else {
+            // Stopped clock: the show starts over on the next Go, so every
+            // trigger re-arms — otherwise a trigger fires once per app launch
+            // instead of once per run-through.
+            self.timecode_fired.clear();
+            return;
+        };
 
         // Capture current show time into a cue's timecode trigger if
         // requested — works while paused (that's the frame-step workflow).
@@ -3334,6 +3362,15 @@ impl App {
             state.pending_timecode_capture = None;
         }
 
+        let cues: Vec<_> = {
+            let Ok(state) = self.cuepool.state().lock() else {
+                return;
+            };
+            state.show_file.cues.clone()
+        };
+
+        unlatch_rewound_timecode_triggers(&mut self.timecode_fired, &cues, elapsed);
+
         // Frozen clock: never fire while paused (a just-captured or stepped-past
         // trigger would fire instantly). Anything passed by stepping fires on
         // resume.
@@ -3341,20 +3378,10 @@ impl App {
             return;
         }
 
-        let cues: Vec<_> = {
-            let Ok(state) = self.cuepool.state().lock() else {
-                return;
-            };
-            state
-                .show_file
-                .cues
-                .iter()
-                .filter(|c| c.enabled())
-                .cloned()
-                .collect()
-        };
-
         for cue in cues {
+            if !cue.enabled() {
+                continue;
+            }
             let Some(trigger) = cue.base().triggers.timecode.as_ref() else {
                 continue;
             };
@@ -5414,6 +5441,48 @@ mod tests {
         // Unknown duration cannot be clamped, only sanitised.
         assert_eq!(clamp_video_seek_secs(500.0, None), 500.0);
         assert_eq!(clamp_video_seek_secs(f64::INFINITY, None), 0.0);
+    }
+
+    fn timecode_cue(qid: i64, at_secs: f64) -> cuepool_core::Cue {
+        let mut base = cuepool_core::CueBase {
+            qid: rust_decimal::Decimal::from(qid),
+            ..Default::default()
+        };
+        base.triggers.timecode = Some(cuepool_core::TimecodeTrigger {
+            time: Timespan::from_secs_f64(at_secs),
+        });
+        cuepool_core::Cue::Dummy { base }
+    }
+
+    #[test]
+    fn timecode_triggers_rearm_on_rewind_but_stay_latched_past_their_time() {
+        let qid = rust_decimal::Decimal::from(7);
+        let cues = vec![timecode_cue(7, 7.0)];
+        let mut fired = std::collections::HashSet::from([qid]);
+
+        // At or past the trigger the latch holds — no refire every tick.
+        unlatch_rewound_timecode_triggers(&mut fired, &cues, 7.0);
+        assert!(fired.contains(&qid));
+        unlatch_rewound_timecode_triggers(&mut fired, &cues, 42.0);
+        assert!(fired.contains(&qid));
+
+        // Rewound before the trigger it re-arms for the next pass.
+        unlatch_rewound_timecode_triggers(&mut fired, &cues, 3.0);
+        assert!(fired.is_empty());
+    }
+
+    #[test]
+    fn deleted_or_untriggered_cues_drop_out_of_the_timecode_latch() {
+        let qid = rust_decimal::Decimal::from(7);
+        let mut fired = std::collections::HashSet::from([qid]);
+        let plain = cuepool_core::Cue::Dummy {
+            base: cuepool_core::CueBase {
+                qid,
+                ..Default::default()
+            },
+        };
+        unlatch_rewound_timecode_triggers(&mut fired, &[plain], 42.0);
+        assert!(fired.is_empty());
     }
 
     #[test]
