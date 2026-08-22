@@ -216,6 +216,13 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 
 Stretch goals: hot-reload plugins, timeline/sequencer, VARDA full-parity port.
 
+## Related projects
+
+- **[CuePool](https://github.com/BlueJayLouche/cuePool)** — show-control cue player. It lived in
+  `examples/cuepool/` until it was extracted into its own repository with its full history. The
+  only tie left is `rustjay-lighting`, which CuePool consumes from crates.io, so a local change
+  to `crates/rustjay-lighting` does not reach CuePool until it is published.
+
 ## License
 
 MIT
