@@ -30,10 +30,20 @@ then described different formats, and AVFoundation raised
 `NSInvalidArgumentException`.
 
 Apple's cameras rarely trip this: they list each resolution once. USB capture
-dongles routinely list one resolution several times — MJPEG at 60fps beside
-uncompressed at 5fps — and Continuity cameras list each resolution at both 30
-and 60. On a MacBook Pro with an iPhone attached, four of the iPhone camera's
-advertised modes selected a mismatched pair.
+dongles routinely list one resolution several times, and Continuity cameras
+list each resolution at both 30 and 60.
+
+Confirmed against the reporting hardware, an "AV TO USB2.0" dongle, which
+lists every resolution twice — `yuvs` and `420v`, with different frame-rate
+sets. **11 of its 13 advertised format entries produced a mismatched pair**
+under the old logic; 0 do now. Its 720x576 pair is the PAL case:
+
+    [ 8]  720x576  420v  maxFps: 60, 50, 30, 10
+    [ 9]  720x576  yuvs  maxFps: 25, 20, 10, 5
+
+Asking for 576p50 took the range from `[8]` but ended up activating `[9]`,
+which tops out at 25fps. That table is pinned as a regression test in
+`mod selection_tests`.
 
 The picking now lives in `select_format_and_range()`, a pure function over
 `(width, height, [max frame rate])`, which returns both halves together or

@@ -2561,6 +2561,62 @@ mod selection_tests {
         assert!((formats[fi].2[ri] - 30.0).abs() < 0.999);
     }
 
+    /// The device from the original report: an "AV TO USB2.0" dongle, format
+    /// table captured from the hardware. Every resolution appears twice, `yuvs`
+    /// and `420v`, with different frame-rate sets — 11 of its advertised modes
+    /// selected a mismatched pair under the old logic.
+    ///
+    /// The 720x576 pair is the PAL case that has bitten this code before: the
+    /// 420v entry offers 50fps, the yuvs entry tops out at 25, and the yuvs
+    /// entry is listed *second*, so it won the format slot while the range came
+    /// from the 420v entry.
+    #[test]
+    fn av_to_usb_dongle_modes_all_pair_correctly() {
+        let dongle: Vec<(i32, i32, Vec<f64>)> = vec![
+            (320, 240, vec![30.0, 20.0, 10.0, 5.0]),                            // [0] yuvs
+            (320, 240, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [1] 420v
+            (480, 320, vec![30.0, 20.0, 10.0, 5.0]),                            // [2] yuvs
+            (480, 320, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [3] 420v
+            (640, 480, vec![30.0, 20.0, 10.0, 5.0]),                            // [4] yuvs
+            (640, 480, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [5] 420v
+            (720, 480, vec![30.0, 20.0, 10.0, 5.0]),                            // [6] yuvs
+            (720, 480, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [7] 420v
+            (720, 576, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [8] 420v
+            (720, 576, vec![25.0, 20.0, 10.0, 5.0]),                            // [9] yuvs
+            (800, 600, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [10]
+            (1280, 720, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]),// [11]
+            (1920, 1080, vec![30.000_030_000_03, 25.0, 10.0, 5.0]),             // [12]
+        ];
+
+        // Every rate the device advertises must pair with a format that offers it.
+        for (fi, (w, h, rates)) in dongle.iter().enumerate() {
+            for fps in rates {
+                let (got_fi, got_ri) = Dev::select_format_and_range(&dongle, *w, *h, *fps)
+                    .unwrap_or_else(|| {
+                        panic!("format {fi}: {w}x{h}@{fps} advertised but not selectable")
+                    });
+                assert!(
+                    (dongle[got_fi].2[got_ri] - fps).abs() < 0.999,
+                    "{w}x{h}@{fps}: activated format {got_fi} does not offer that rate \
+                     (its rates are {:?}) -- AVFoundation would raise here",
+                    dongle[got_fi].2,
+                );
+            }
+        }
+    }
+
+    /// PAL at 50fps, spelled out: the exact mode behind the reported crash.
+    #[test]
+    fn pal_576_at_50_picks_the_format_that_offers_50() {
+        let dongle: Vec<(i32, i32, Vec<f64>)> = vec![
+            (720, 576, vec![60.0, 50.0, 30.0, 10.0]), // [0] 420v
+            (720, 576, vec![25.0, 20.0, 10.0, 5.0]),  // [1] yuvs, listed second
+        ];
+        let (fi, ri) = Dev::select_format_and_range(&dongle, 720, 576, 50.0).expect("50fps exists");
+        assert_eq!(fi, 0, "must activate the 420v entry, not the 25fps yuvs one");
+        assert!((dongle[fi].2[ri] - 50.0).abs() < 0.999);
+    }
+
     #[test]
     fn unsupported_request_is_rejected_rather_than_mispaired() {
         let formats = vec![(1920, 1080, vec![30.0])];
