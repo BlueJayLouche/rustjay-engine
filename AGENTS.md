@@ -33,13 +33,12 @@ Source: https://github.com/DietrichGebert/ponytail
 
 ## Agent skills
 
-### CuePool versioning
+### CuePool
 
-When changing CuePool (`examples/cuepool/`), bump `workspace.package.version` in
-`examples/cuepool/Cargo.toml` whenever the change affects users: patch for fixes,
-minor for backward-compatible features, and major for breaking changes. Keep
-`examples/cuepool/Cargo.lock` in sync. Pure documentation, test, or internal
-refactoring changes do not need a bump.
+CuePool now lives in its own repository: <https://github.com/BlueJayLouche/cuePool>.
+The only tie left is `rustjay-lighting`, which CuePool consumes from crates.io — a
+local change to `crates/rustjay-lighting` does not reach CuePool until it is
+published and CuePool bumps the version.
 
 ### Issue tracker
 

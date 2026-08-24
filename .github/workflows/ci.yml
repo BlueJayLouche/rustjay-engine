@@ -4,14 +4,10 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - "examples/cuepool/**"
-      - ".github/workflows/cuepool-ci.yml"
       - "guide/**"
       - "**/*.md"
   pull_request:
     paths-ignore:
-      - "examples/cuepool/**"
-      - ".github/workflows/cuepool-ci.yml"
       - "guide/**"
       - "**/*.md"
 
