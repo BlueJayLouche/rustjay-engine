@@ -26,6 +26,9 @@ pub struct WebcamFrame {
 /// Webcam capture running on dedicated thread
 pub struct WebcamCapture {
     device_index: usize,
+    /// Requested capture format. Honoured first; the fallback ladder in
+    /// [`try_open_camera`] takes over if the device cannot serve it.
+    requested: CameraFormat,
     capture_thread: Option<JoinHandle<()>>,
     stop_signal: Option<Sender<()>>,
 }
@@ -33,9 +36,9 @@ pub struct WebcamCapture {
 impl WebcamCapture {
     /// Create a new webcam capture configuration
     pub fn new(device_index: usize, width: u32, height: u32, fps: u32) -> anyhow::Result<Self> {
-        let _ = (width, height, fps); // Unused for now
         Ok(Self {
             device_index,
+            requested: CameraFormat::new(Resolution::new(width, height), FrameFormat::YUYV, fps),
             capture_thread: None,
             stop_signal: None,
         })
@@ -51,11 +54,12 @@ impl WebcamCapture {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
         let device_index = self.device_index;
+        let requested = self.requested;
 
         let thread_handle = thread::spawn(move || {
             let index = CameraIndex::Index(device_index as u32);
 
-            let mut camera = match try_open_camera(index) {
+            let mut camera = match try_open_camera(index, requested) {
                 Ok(cam) => cam,
                 Err(e) => {
                     log::error!("[Webcam] Failed to open camera {}: {:?}", device_index, e);
@@ -310,7 +314,7 @@ fn loopback_exact_format(index: &CameraIndex) -> Option<RequestedFormat<'_>> {
 /// AVFoundation (macOS) rejects `lockForConfiguration` when a specific format
 /// is requested that doesn't exactly match.  We try several strategies from
 /// most-preferred to most-permissive.
-fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
+fn try_open_camera(index: CameraIndex, requested: CameraFormat) -> anyhow::Result<Camera> {
     if !ensure_camera_authorized() {
         return Err(anyhow::anyhow!("Camera access not authorized. Grant access in System Settings > Privacy & Security > Camera."));
     }
@@ -328,14 +332,32 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
         }
     }
 
-    // Strategy 1: Let the camera decide (no format constraint)
-    log::info!("[Webcam] Trying NoPreference strategy...");
-    if let Ok(cam) = try_create_camera(
-        &index,
-        RequestedFormat::new::<RgbFormat>(RequestedFormatType::None),
-    ) {
-        log::info!("[Webcam] Success with NoPreference");
-        return Ok(cam);
+    // Strategy 1: what the caller actually asked for.
+    //
+    // This runs before NoPreference deliberately. NoPreference lets the device
+    // choose, and a capture dongle's first advertised format is often its
+    // smallest — one such device lists 320x240 first and would open there every
+    // time, ignoring the resolution the UI requested.
+    for frame_format in [requested.format(), FrameFormat::MJPEG, FrameFormat::NV12] {
+        let want = CameraFormat::new(
+            requested.resolution(),
+            frame_format,
+            requested.frame_rate(),
+        );
+        log::info!(
+            "[Webcam] Trying requested {}x{}@{} {:?}...",
+            want.width(),
+            want.height(),
+            want.frame_rate(),
+            frame_format
+        );
+        if let Ok(cam) = try_create_camera(
+            &index,
+            RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(want)),
+        ) {
+            log::info!("[Webcam] Success with requested format ({frame_format:?})");
+            return Ok(cam);
+        }
     }
 
     // Strategy 2: Highest resolution hint
@@ -350,7 +372,7 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
         return Ok(cam);
     }
 
-    // Strategy 3: Specific YUYV format (common for physical webcams)
+    // Strategy 2: Specific YUYV format (common for physical webcams)
     log::info!("[Webcam] Trying YUYV 1280x720@30...");
     if let Ok(cam) = try_create_camera(
         &index,
@@ -364,7 +386,7 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
         return Ok(cam);
     }
 
-    // Strategy 4: MJPEG format (another common format)
+    // Strategy 3: MJPEG format (another common format)
     log::info!("[Webcam] Trying MJPEG 1280x720@30...");
     if let Ok(cam) = try_create_camera(
         &index,
@@ -378,7 +400,7 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
         return Ok(cam);
     }
 
-    // Strategy 5: Low resolution fallback (640x480 is nearly universal)
+    // Strategy 4: Low resolution fallback (640x480 is nearly universal)
     log::info!("[Webcam] Trying 640x480 fallback...");
     if let Ok(cam) = try_create_camera(
         &index,
@@ -389,6 +411,21 @@ fn try_open_camera(index: CameraIndex) -> anyhow::Result<Camera> {
         ))),
     ) {
         log::info!("[Webcam] Success with 640x480");
+        return Ok(cam);
+    }
+
+    // Last resort: let the camera decide.
+    //
+    // Deliberately last. NoPreference takes the device's first advertised
+    // format, which for capture dongles is typically the smallest it offers —
+    // one such device opens at 320x240@5 this way. Reaching for it before the
+    // resolution-constrained attempts turned every miss into a thumbnail.
+    log::info!("[Webcam] Trying NoPreference (last resort)...");
+    if let Ok(cam) = try_create_camera(
+        &index,
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::None),
+    ) {
+        log::warn!("[Webcam] Fell back to NoPreference — resolution is whatever the device offered first");
         return Ok(cam);
     }
 

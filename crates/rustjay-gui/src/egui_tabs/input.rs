@@ -4,6 +4,27 @@ use crate::egui_control_gui::EguiControlGui;
 use crate::egui_theme::colors::*;
 use rustjay_core::InputCommand;
 
+/// Capture resolutions offered for webcam and capture-device inputs.
+///
+/// The device is opened with a "closest supported" request, so an entry the
+/// hardware does not offer lands on its nearest mode rather than failing.
+///
+/// ponytail: a fixed list rather than the device's real capabilities — nokhwa
+/// only exposes formats once a camera is open, so enumerating them here would
+/// mean opening every device just to populate a dropdown. Query per-device
+/// formats if a device turns out to want a mode that is not on this list.
+pub(crate) const WEBCAM_RESOLUTIONS: &[(u32, u32, &str)] = &[
+    (1920, 1080, "1920x1080 (1080p)"),
+    (1280, 720, "1280x720 (720p)"),
+    (1024, 768, "1024x768 (XGA)"),
+    (800, 600, "800x600 (SVGA)"),
+    (720, 576, "720x576 (PAL)"),
+    (720, 480, "720x480 (NTSC)"),
+    (640, 480, "640x480 (VGA)"),
+    (480, 320, "480x320"),
+    (320, 240, "320x240 (QVGA)"),
+];
+
 impl EguiControlGui {
     pub(crate) fn build_input_tab(&mut self, ui: &mut egui::Ui) {
         let (is_active, source_name, is_discovering, is_active2, source_name2) = {
@@ -104,13 +125,45 @@ impl EguiControlGui {
                             }
                         }
                     });
+                let (req_w, req_h, _) = WEBCAM_RESOLUTIONS
+                    .get(self.selected_webcam_resolution)
+                    .copied()
+                    .unwrap_or(WEBCAM_RESOLUTIONS[0]);
+                ui.horizontal(|ui| {
+                    ui.label("Resolution:");
+                    egui::ComboBox::from_id_salt("webcam_res_sel")
+                        .width(180.0)
+                        .selected_text(
+                            WEBCAM_RESOLUTIONS
+                                .get(self.selected_webcam_resolution)
+                                .map(|(_, _, label)| *label)
+                                .unwrap_or("?"),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (i, (_, _, label)) in WEBCAM_RESOLUTIONS.iter().enumerate() {
+                                if ui
+                                    .selectable_label(self.selected_webcam_resolution == i, *label)
+                                    .clicked()
+                                {
+                                    self.selected_webcam_resolution = i;
+                                }
+                            }
+                        });
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Capture devices are opened at the closest mode they support.",
+                    )
+                    .small()
+                    .color(TEXT_SECONDARY),
+                );
                 ui.horizontal(|ui| {
                     if ui.button("▶ Start Input 1").clicked() {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.input_command = InputCommand::StartWebcam {
                             device_index: self.selected_webcam,
-                            width: 1920,
-                            height: 1080,
+                            width: req_w,
+                            height: req_h,
                             fps: 30,
                         };
                     }
@@ -118,8 +171,8 @@ impl EguiControlGui {
                         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.second_input_command = InputCommand::StartWebcam {
                             device_index: self.selected_webcam,
-                            width: 1920,
-                            height: 1080,
+                            width: req_w,
+                            height: req_h,
                             fps: 30,
                         };
                     }
