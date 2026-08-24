@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use hap_wgpu::{EncodeConfig, EncodeQuality, HapFormat, HapVideoEncoder};
+use hap_wgpu::{DxtQuality, EncodeConfig, HapFormat, HapVideoEncoder};
 
 const MAP_PENDING: u8 = 0;
 const MAP_READY: u8 = 1;
@@ -420,7 +420,7 @@ fn encode_frames(
     encoder.init_gpu(width, height);
     let config = EncodeConfig::new(width, height, fps, frames.len() as u32)
         .with_format(HapFormat::Hap5)
-        .with_quality(EncodeQuality::Fast)
+        .with_quality(DxtQuality::Fast)
         .with_snappy(true);
     encoder.encode_from_frames(path, config, frames.iter().cloned())?;
     Ok(())
