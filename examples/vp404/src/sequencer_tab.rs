@@ -7,12 +7,17 @@ use crate::bank::{BankHandle, PAD_COUNT};
 const STEPS_PER_ROW: usize = 16;
 
 pub struct SequencerTab {
-    _handle: BankHandle,
+    handle: BankHandle,
+    /// Chance each step lands when rolling the dice. UI-only, not persisted.
+    density: f32,
 }
 
 impl SequencerTab {
     pub fn new(handle: BankHandle) -> Self {
-        Self { _handle: handle }
+        Self {
+            handle,
+            density: 0.25,
+        }
     }
 }
 
@@ -51,6 +56,36 @@ impl AnyEguiTab for SequencerTab {
             if ui.button("Clear").clicked() {
                 seq.clear_pattern();
             }
+
+            ui.separator();
+
+            if ui
+                .button("🎲 Random")
+                .on_hover_text("Re-roll the loaded pads' steps in this pattern")
+                .clicked()
+            {
+                // Only roll pads that have a sample — rolling empty pads just
+                // paints steps that trigger nothing.
+                let loaded: Vec<usize> = self
+                    .handle
+                    .roster()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.loaded)
+                    .map(|(i, _)| i)
+                    .collect();
+                let tracks: Vec<usize> = if loaded.is_empty() {
+                    (0..PAD_COUNT).collect()
+                } else {
+                    loaded
+                };
+                seq.randomize_pattern(self.density, &tracks);
+            }
+            ui.add(
+                egui::Slider::new(&mut self.density, 0.0..=1.0)
+                    .text("density")
+                    .fixed_decimals(2),
+            );
         });
 
         ui.horizontal(|ui| {
