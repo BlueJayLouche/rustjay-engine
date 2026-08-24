@@ -1011,7 +1011,10 @@ mod internal {
                 });
             }
             // Space these out for debug purposes
-            if !accepted == YES {
+            // `!accepted == YES` was a precedence bug: `!` is bitwise-NOT on BOOL
+            // (i8), giving -1 for NO and -2 for YES, so the guard never fired and
+            // a rejected lock fell through into the setters below.
+            if accepted != YES {
                 return Err(NokhwaError::SetPropertyError {
                     property: "lockForConfiguration".to_string(),
                     value: "Locked".to_string(),
@@ -1029,6 +1032,40 @@ mod internal {
         }
 
         // thank you ffmpeg
+        /// Pick the format to activate and the frame-rate range to take the
+        /// frame duration from.
+        ///
+        /// Both must come from the *same* format: AVFoundation raises
+        /// NSInvalidArgumentException from `activeVideoMinFrameDuration` when the
+        /// duration is not one the active format supports.
+        ///
+        /// `formats` is `(width, height, max frame rate of each range)` in device
+        /// enumeration order. Returns `(format index, range index)`.
+        pub(crate) fn select_format_and_range(
+            formats: &[(i32, i32, Vec<f64>)],
+            want_width: i32,
+            want_height: i32,
+            want_fps: f64,
+        ) -> Option<(usize, usize)> {
+            for (fi, (w, h, rates)) in formats.iter().enumerate() {
+                if *h != want_height || *w != want_width {
+                    continue;
+                }
+                for (ri, max_fps) in rates.iter().enumerate() {
+                    // Older Apple cameras (i.e. iMac 2013) return 29.97000002997 as FPS.
+                    if (want_fps - *max_fps).abs() < 0.999 {
+                        // Return both halves together. The previous version kept
+                        // them in separate variables and let a later
+                        // resolution-match overwrite the format without clearing
+                        // the range, so the two could end up describing different
+                        // formats.
+                        return Some((fi, ri));
+                    }
+                }
+            }
+            None
+        }
+
         pub fn set_all(&mut self, descriptor: CameraFormat) -> Result<(), NokhwaError> {
             self.lock()?;
             let format_list = try_ns_arr_to_vec::<AVCaptureDeviceFormat, NokhwaError>(unsafe {
@@ -1036,32 +1073,47 @@ mod internal {
             })?;
             let format_description_sel = sel!(formatDescription);
 
-            let mut selected_format: *mut Object = std::ptr::null_mut();
-            let mut selected_range: *mut Object = std::ptr::null_mut();
+            // Gather every format with its frame-rate ranges, then let
+            // select_format_and_range() choose. Doing the picking in one pure
+            // function is what keeps the activated format and the frame duration
+            // describing the same entry.
+            let mut format_ptrs: Vec<*mut Object> = Vec::new();
+            let mut range_ptrs: Vec<Vec<*mut Object>> = Vec::new();
+            let mut format_meta: Vec<(i32, i32, Vec<f64>)> = Vec::new();
 
             for format in format_list {
                 let format_desc_ref: CMFormatDescriptionRef =
                     unsafe { msg_send![format.internal, performSelector: format_description_sel] };
                 let dimensions = unsafe { CMVideoFormatDescriptionGetDimensions(format_desc_ref) };
 
-                if dimensions.height == descriptor.resolution().height() as i32
-                    && dimensions.width == descriptor.resolution().width() as i32
-                {
-                    selected_format = format.internal;
-
-                    for range in ns_arr_to_vec::<AVFrameRateRange>(unsafe {
-                        msg_send![format.internal, videoSupportedFrameRateRanges]
-                    }) {
-                        let max_fps: f64 = unsafe { msg_send![range.inner, maxFrameRate] };
-                        // Older Apple cameras (i.e. iMac 2013) return 29.97000002997 as FPS.
-                        if (f64::from(descriptor.frame_rate()) - max_fps).abs() < 0.999 {
-                            selected_range = range.inner;
-                            break;
-                        }
-                    }
+                let mut ranges: Vec<*mut Object> = Vec::new();
+                let mut rates: Vec<f64> = Vec::new();
+                for range in ns_arr_to_vec::<AVFrameRateRange>(unsafe {
+                    msg_send![format.internal, videoSupportedFrameRateRanges]
+                }) {
+                    let max_fps: f64 = unsafe { msg_send![range.inner, maxFrameRate] };
+                    ranges.push(range.inner);
+                    rates.push(max_fps);
                 }
+
+                format_ptrs.push(format.internal);
+                range_ptrs.push(ranges);
+                format_meta.push((dimensions.width, dimensions.height, rates));
             }
+
+            let (selected_format, selected_range) = match Self::select_format_and_range(
+                &format_meta,
+                descriptor.resolution().width() as i32,
+                descriptor.resolution().height() as i32,
+                f64::from(descriptor.frame_rate()),
+            ) {
+                Some((fi, ri)) => (format_ptrs[fi], range_ptrs[fi][ri]),
+                None => (std::ptr::null_mut(), std::ptr::null_mut()),
+            };
             if selected_range.is_null() || selected_format.is_null() {
+                // Release the configuration lock taken above, or the device stays
+                // locked and every later configure attempt fails.
+                self.unlock();
                 return Err(NokhwaError::SetPropertyError {
                     property: "CameraFormat".to_string(),
                     value: descriptor.to_string(),
@@ -1072,7 +1124,6 @@ mod internal {
             // activeFormat is read-only via KVC on modern macOS; use the
             // direct property setter instead. Keep KVC for frame durations
             // (KVC wraps CMTime in NSValue automatically).
-            let activefmtkey = str_to_nsstr("activeFormat");
             let min_frame_duration = str_to_nsstr("minFrameDuration");
             let active_video_min_frame_duration = str_to_nsstr("activeVideoMinFrameDuration");
             let active_video_max_frame_duration = str_to_nsstr("activeVideoMaxFrameDuration");
@@ -2471,3 +2522,105 @@ mod internal {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use crate::internal::*;
+
+#[cfg(test)]
+mod selection_tests {
+    use crate::internal::AVCaptureDevice;
+    use AVCaptureDevice as Dev;
+
+    /// A USB capture dongle exposing one resolution twice: a fast compressed
+    /// format and a slow uncompressed one. The chosen format and the chosen
+    /// frame-rate range must come from the same entry, or
+    /// `activeVideoMinFrameDuration` raises NSInvalidArgumentException.
+    #[test]
+    fn format_and_range_come_from_the_same_format() {
+        // [0] MJPEG 1080p up to 60fps, [1] 2vuy 1080p up to 5fps.
+        let formats = vec![
+            (1920, 1080, vec![60.0, 30.0]),
+            (1920, 1080, vec![5.0]),
+        ];
+        let (fi, ri) = Dev::select_format_and_range(&formats, 1920, 1080, 60.0)
+            .expect("60fps is offered by format 0");
+        assert_eq!(fi, 0, "must activate the format that actually offers 60fps");
+        assert!(
+            (formats[fi].2[ri] - 60.0).abs() < 0.999,
+            "the range must belong to the activated format"
+        );
+    }
+
+    /// Real Continuity/external camera shape: the same resolution at 30 and 60,
+    /// 30fps listed first. Requesting 30 must not activate the 60-only format.
+    #[test]
+    fn duplicate_resolution_at_two_rates_picks_the_matching_one() {
+        let formats = vec![
+            (1920, 1080, vec![30.0]),
+            (1920, 1080, vec![60.0]),
+        ];
+        let (fi, ri) = Dev::select_format_and_range(&formats, 1920, 1080, 30.0).expect("30fps exists");
+        assert_eq!(fi, 0);
+        assert!((formats[fi].2[ri] - 30.0).abs() < 0.999);
+    }
+
+    /// The device from the original report: an "AV TO USB2.0" dongle, format
+    /// table captured from the hardware. Every resolution appears twice, `yuvs`
+    /// and `420v`, with different frame-rate sets — 11 of its advertised modes
+    /// selected a mismatched pair under the old logic.
+    ///
+    /// The 720x576 pair is the PAL case that has bitten this code before: the
+    /// 420v entry offers 50fps, the yuvs entry tops out at 25, and the yuvs
+    /// entry is listed *second*, so it won the format slot while the range came
+    /// from the 420v entry.
+    #[test]
+    fn av_to_usb_dongle_modes_all_pair_correctly() {
+        let dongle: Vec<(i32, i32, Vec<f64>)> = vec![
+            (320, 240, vec![30.0, 20.0, 10.0, 5.0]),                            // [0] yuvs
+            (320, 240, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [1] 420v
+            (480, 320, vec![30.0, 20.0, 10.0, 5.0]),                            // [2] yuvs
+            (480, 320, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [3] 420v
+            (640, 480, vec![30.0, 20.0, 10.0, 5.0]),                            // [4] yuvs
+            (640, 480, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [5] 420v
+            (720, 480, vec![30.0, 20.0, 10.0, 5.0]),                            // [6] yuvs
+            (720, 480, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [7] 420v
+            (720, 576, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [8] 420v
+            (720, 576, vec![25.0, 20.0, 10.0, 5.0]),                            // [9] yuvs
+            (800, 600, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]), // [10]
+            (1280, 720, vec![60.000_240_000_96, 50.0, 30.000_030_000_03, 10.0]),// [11]
+            (1920, 1080, vec![30.000_030_000_03, 25.0, 10.0, 5.0]),             // [12]
+        ];
+
+        // Every rate the device advertises must pair with a format that offers it.
+        for (fi, (w, h, rates)) in dongle.iter().enumerate() {
+            for fps in rates {
+                let (got_fi, got_ri) = Dev::select_format_and_range(&dongle, *w, *h, *fps)
+                    .unwrap_or_else(|| {
+                        panic!("format {fi}: {w}x{h}@{fps} advertised but not selectable")
+                    });
+                assert!(
+                    (dongle[got_fi].2[got_ri] - fps).abs() < 0.999,
+                    "{w}x{h}@{fps}: activated format {got_fi} does not offer that rate \
+                     (its rates are {:?}) -- AVFoundation would raise here",
+                    dongle[got_fi].2,
+                );
+            }
+        }
+    }
+
+    /// PAL at 50fps, spelled out: the exact mode behind the reported crash.
+    #[test]
+    fn pal_576_at_50_picks_the_format_that_offers_50() {
+        let dongle: Vec<(i32, i32, Vec<f64>)> = vec![
+            (720, 576, vec![60.0, 50.0, 30.0, 10.0]), // [0] 420v
+            (720, 576, vec![25.0, 20.0, 10.0, 5.0]),  // [1] yuvs, listed second
+        ];
+        let (fi, ri) = Dev::select_format_and_range(&dongle, 720, 576, 50.0).expect("50fps exists");
+        assert_eq!(fi, 0, "must activate the 420v entry, not the 25fps yuvs one");
+        assert!((dongle[fi].2[ri] - 50.0).abs() < 0.999);
+    }
+
+    #[test]
+    fn unsupported_request_is_rejected_rather_than_mispaired() {
+        let formats = vec![(1920, 1080, vec![30.0])];
+        assert!(Dev::select_format_and_range(&formats, 1920, 1080, 120.0).is_none());
+        assert!(Dev::select_format_and_range(&formats, 640, 480, 30.0).is_none());
+    }
+}

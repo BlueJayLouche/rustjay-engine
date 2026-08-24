@@ -36,6 +36,9 @@ pub struct EguiControlGui {
     // Selection state
     #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam: usize,
+    /// Index into `WEBCAM_RESOLUTIONS` for the capture resolution to request.
+    #[allow(dead_code)] // read only by the non-Linux webcam picker
+    pub(crate) selected_webcam_resolution: usize,
     #[cfg(feature = "ndi")]
     pub(crate) selected_ndi: usize,
     #[cfg(target_os = "macos")]
@@ -140,6 +143,9 @@ impl EguiControlGui {
             syphon_servers: Vec::new(),
             audio_devices: Vec::new(),
             selected_webcam: 0,
+            // Default to 1080p, matching what this tab requested before the
+            // resolution became selectable.
+            selected_webcam_resolution: 0,
             #[cfg(feature = "ndi")]
             selected_ndi: 0,
             #[cfg(target_os = "macos")]
