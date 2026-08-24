@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::pattern::Pattern;
+use super::step::Step;
 use super::track::ActiveGate;
 use crate::bank::{BankHandle, PadCmd};
 
@@ -190,6 +191,31 @@ impl SequencerEngine {
         self.current_pattern_mut().clear();
     }
 
+    /// Re-roll the given tracks of the current pattern: every step inside the
+    /// pattern length lands with chance `density`, everything else is cleared.
+    ///
+    /// Replacing rather than adding means re-rolling stays a re-roll — hammering
+    /// the button doesn't silt the pattern up until every step is on.
+    pub fn randomize_pattern(&mut self, density: f32, tracks: &[usize]) {
+        let density = density.clamp(0.0, 1.0);
+        let len = self.current_pattern().length();
+        for &track in tracks {
+            let Some(t) = self.current_pattern_mut().get_track_mut(track) else {
+                continue;
+            };
+            for step in t.steps.iter_mut().take(len) {
+                *step = if super::step::rand::random::<f32>() < density {
+                    Step {
+                        gate_length: 1.0,
+                        ..Step::active()
+                    }
+                } else {
+                    Step::new()
+                };
+            }
+        }
+    }
+
     /// Advance the sequencer by `beat_delta` beats, posting pad commands via the
     /// shared handle. `beat` is the engine's accumulated beat count.
     pub fn tick(&mut self, clock_beat: f32, handle: &BankHandle) {
@@ -351,6 +377,24 @@ mod tests {
 
         seq.tick(0.60, &handle); // past the tied gate end → released
         assert!(seq.current_pattern().tracks[0].active_gates.is_empty());
+    }
+
+
+
+    #[test]
+    fn randomize_fills_and_clears_within_pattern_length() {
+        let mut seq = SequencerEngine::new(1);
+        seq.current_pattern_mut().set_length(16);
+        seq.current_pattern_mut().tracks[0].steps[20].active = true; // beyond length
+
+        seq.randomize_pattern(1.0, &[0]);
+        let t = &seq.current_pattern().tracks[0];
+        assert!(t.steps[..16].iter().all(|s| s.active && s.gate_length == 1.0));
+        assert!(t.steps[20].active, "steps past the pattern length were touched");
+
+        // Re-rolling at zero density wipes the lane rather than accumulating.
+        seq.randomize_pattern(0.0, &[0]);
+        assert!(seq.current_pattern().tracks[0].steps[..16].iter().all(|s| !s.active));
     }
 
     #[test]
