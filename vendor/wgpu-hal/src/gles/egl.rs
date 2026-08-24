@@ -132,7 +132,7 @@ fn choose_config(
         for &(_, tier_attr) in tiers[..=tier_max].iter() {
             let mut i = 0;
             while i < tier_attr.len() {
-                if tier_attr[i] == khronos_egl::SURFACE_TYPE as i32 && i + 1 < tier_attr.len() {
+                if tier_attr[i] == khronos_egl::SURFACE_TYPE && i + 1 < tier_attr.len() {
                     surface_bits |= tier_attr[i + 1];
                     i += 2;
                 } else {
@@ -142,7 +142,7 @@ fn choose_config(
             }
         }
         if surface_bits != 0 {
-            attributes.push(khronos_egl::SURFACE_TYPE as i32);
+            attributes.push(khronos_egl::SURFACE_TYPE);
             attributes.push(surface_bits);
         }
         attributes.extend_from_slice(&non_surface);

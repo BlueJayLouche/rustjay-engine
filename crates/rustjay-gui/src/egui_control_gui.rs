@@ -37,6 +37,7 @@ pub struct EguiControlGui {
     #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam: usize,
     /// Index into `WEBCAM_RESOLUTIONS` for the capture resolution to request.
+    #[allow(dead_code)] // read only by the non-Linux webcam picker
     pub(crate) selected_webcam_resolution: usize,
     #[cfg(feature = "ndi")]
     pub(crate) selected_ndi: usize,

@@ -13,6 +13,7 @@ use rustjay_core::InputCommand;
 /// only exposes formats once a camera is open, so enumerating them here would
 /// mean opening every device just to populate a dropdown. Query per-device
 /// formats if a device turns out to want a mode that is not on this list.
+#[allow(dead_code)] // read only by the non-Linux webcam picker
 pub(crate) const WEBCAM_RESOLUTIONS: &[(u32, u32, &str)] = &[
     (1920, 1080, "1920x1080 (1080p)"),
     (1280, 720, "1280x720 (720p)"),
