@@ -294,6 +294,15 @@ impl AnyEguiTab for PadGridTab {
             let div_label =
                 BEAT_DIVISION_NAMES[info.beat_division.clamp(0, BEAT_DIVISION_NAMES.len() - 1)];
             ui.label(format!("Speed: locked to beat ({div_label})"));
+            // Synced ignores the speed magnitude but uses its sign for direction,
+            // so the hidden slider becomes a checkbox here.
+            let speed_id = format!("ch_pad{sel}_speed");
+            let speed = engine.get_param_base(&speed_id).unwrap_or(1.0);
+            let mut reverse = speed < 0.0;
+            if ui.checkbox(&mut reverse, "Reverse").clicked() {
+                let mag = if speed.abs() > 0.0 { speed.abs() } else { 1.0 };
+                engine.set_param_base(&speed_id, if reverse { -mag } else { mag });
+            }
         }
 
         let division_id = format!("ch_pad{sel}_division");
