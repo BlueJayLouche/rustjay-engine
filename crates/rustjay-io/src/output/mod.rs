@@ -34,6 +34,9 @@ enum SlotState {
         buffer: wgpu::Buffer,
         width: u32,
         height: u32,
+        /// Row stride in the staging buffer — padded to `COPY_BYTES_PER_ROW_ALIGNMENT`,
+        /// so it is `>= width * 4`.
+        padded_bytes_per_row: u32,
         ready: std::sync::mpsc::Receiver<bool>,
     },
 }
@@ -66,6 +69,7 @@ impl ReadbackPool {
                 buffer,
                 width,
                 height,
+                padded_bytes_per_row,
                 ready,
             } => {
                 // Non-blocking check — is the map complete?
@@ -73,11 +77,28 @@ impl ReadbackPool {
                     Ok(true) => {
                         let w = *width;
                         let h = *height;
-                        let data = buffer.slice(..).get_mapped_range().expect("buffer mapped by map_async").to_vec();
+                        let stride = *padded_bytes_per_row as usize;
+                        let row = w as usize * 4;
+                        let data = {
+                            let view = buffer
+                                .slice(..)
+                                .get_mapped_range()
+                                .expect("buffer mapped by map_async");
+                            if stride == row {
+                                view.to_vec()
+                            } else {
+                                // Drop the per-row padding wgpu required for the copy.
+                                let mut tight = Vec::with_capacity(row * h as usize);
+                                for y in 0..h as usize {
+                                    tight.extend_from_slice(&view[y * stride..y * stride + row]);
+                                }
+                                tight
+                            }
+                        };
                         buffer.unmap();
                         // Return the unmapped buffer to the slot cache so submit_copy
                         // can reuse it next frame without a GPU allocator call.
-                        let buf_size = (w as u64) * 4 * (h as u64);
+                        let buf_size = stride as u64 * (h as u64);
                         let buf =
                             match std::mem::replace(slot, SlotState::Available { cached: None }) {
                                 SlotState::Pending { buffer, .. } => buffer,
@@ -105,7 +126,10 @@ impl ReadbackPool {
     fn submit_copy(&mut self, texture: &wgpu::Texture, device: &wgpu::Device, queue: &wgpu::Queue) {
         let width = texture.width();
         let height = texture.height();
-        let bytes_per_row = width * 4;
+        // wgpu requires each row to start on a 256-byte boundary; widths that
+        // aren't a multiple of 64 need padded rows (un-padded on harvest).
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes_per_row = (width * 4).div_ceil(align) * align;
         let buffer_size = (bytes_per_row * height) as u64;
 
         // Extract any cached buffer from this slot (discarding Pending if GPU is too slow).
@@ -171,6 +195,7 @@ impl ReadbackPool {
             buffer: staging_buffer,
             width,
             height,
+            padded_bytes_per_row: bytes_per_row,
             ready: rx,
         };
 
@@ -257,11 +282,12 @@ impl OutputManager {
         height: u32,
         fps: f32,
         codec: recorder::RecorderCodec,
+        audio_device: Option<&str>,
     ) -> anyhow::Result<()> {
         if self.recorder.is_some() {
             return Err(anyhow::anyhow!("Recording already in progress"));
         }
-        let rec = recorder::Recorder::start(path, width, height, fps, codec)?;
+        let rec = recorder::Recorder::start(path, width, height, fps, codec, audio_device)?;
         self.recorder = Some(rec);
         Ok(())
     }

@@ -13,6 +13,10 @@ pub struct OutputTab {
     /// Recording output path (defaults to current dir).
     record_path: String,
     record_codec: rustjay_core::RecorderCodec,
+    /// Selected audio capture device (ffmpeg device id), or `None` for silent.
+    record_audio: Option<String>,
+    /// ffmpeg's audio capture devices as `(id, label)`; listed on first use.
+    audio_devices: Option<Vec<(String, String)>>,
 }
 
 impl OutputTab {
@@ -21,6 +25,8 @@ impl OutputTab {
             sender_name: app_name.to_string(),
             record_path: format!("./{app_name}.mov"),
             record_codec: rustjay_core::RecorderCodec::ProRes422,
+            record_audio: None,
+            audio_devices: None,
         }
     }
 }
@@ -163,13 +169,39 @@ impl AnyEguiTab for OutputTab {
                 .show_ui(ui, |ui| {
                     use rustjay_core::RecorderCodec;
                     for c in [RecorderCodec::ProRes422, RecorderCodec::H264, RecorderCodec::H265, RecorderCodec::AV1] {
-                        ui.selectable_value(&mut self.record_codec, c, codec_label(c));
+                        // Keep the extension honest — ProRes only lives in .mov.
+                        if ui.selectable_value(&mut self.record_codec, c, codec_label(c)).clicked() {
+                            self.record_path = std::path::PathBuf::from(&self.record_path)
+                                .with_extension(c.extension())
+                                .display()
+                                .to_string();
+                        }
+                    }
+                });
+            // Audio is captured by ffmpeg straight from the device — pick the
+            // loopback device (e.g. BlackHole) to record what the app plays.
+            let devices = self
+                .audio_devices
+                .get_or_insert_with(rustjay_engine::list_audio_devices);
+            let selected = self
+                .record_audio
+                .as_ref()
+                .and_then(|id| devices.iter().find(|(d, _)| d == id))
+                .map(|(_, label)| label.as_str())
+                .unwrap_or("None (silent)");
+            egui::ComboBox::from_label("Audio")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.record_audio, None, "None (silent)");
+                    for (id, label) in devices.iter() {
+                        ui.selectable_value(&mut self.record_audio, Some(id.clone()), label);
                     }
                 });
             if ui.button("⏺ Record").clicked() {
                 engine.output_command = OutputCommand::StartRecording {
                     path: self.record_path.clone(),
                     codec: self.record_codec,
+                    audio_device: self.record_audio.clone(),
                 };
             }
         } else {

@@ -59,6 +59,16 @@ pub enum RecorderCodec {
     ProRes422,
 }
 
+impl RecorderCodec {
+    /// Container extension this codec records into. ProRes only lives in `.mov`.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            RecorderCodec::ProRes422 => "mov",
+            _ => "mp4",
+        }
+    }
+}
+
 /// Commands sent to the output subsystem.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum OutputCommand {
@@ -96,6 +106,8 @@ pub enum OutputCommand {
     StartRecording {
         path: String,
         codec: RecorderCodec,
+        /// Live audio capture device, or `None` for a silent recording.
+        audio_device: Option<String>,
     },
     StopRecording,
     /// Start mapped-LED (sACN) output from a ledmap.json (needs the `led` feature).
