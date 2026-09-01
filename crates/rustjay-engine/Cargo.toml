@@ -48,12 +48,11 @@ libc         = { version = "0.2", optional = true }
 [features]
 # NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
 # Webcam stays on by default. The Pi/GLES2 builds select features explicitly.
-default = ["webcam"]
+default = ["webcam", "imgui-renderer"]
 ndi     = ["rustjay-io/ndi", "rustjay-gui/ndi", "rustjay-core/ndi"]
 webcam  = ["rustjay-io/webcam"]
 egui    = ["rustjay-gui/egui"]
-# Dear ImGui renderer backend; see rustjay-gui. Off by default (imgui-wgpu is
-# still on wgpu 29). imgui *tabs* are unaffected either way.
+# Dear ImGui renderer backend; see rustjay-gui. imgui *tabs* build either way.
 imgui-renderer = ["rustjay-gui/imgui-renderer"]
 mixer   = ["dep:rustjay-mixer"]
 api     = ["dep:rustjay-api"]
