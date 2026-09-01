@@ -332,11 +332,14 @@ impl<P: EffectPlugin> App<P> {
                 }
                 lock(&self.shared_state).v4l2_output.enabled = false;
             }
-            OutputCommand::StartRecording { path, codec } => {
+            OutputCommand::StartRecording { path, codec, audio_device } => {
+                if self.output_engine.is_none() {
+                    log::error!("Cannot record: the output window isn't running");
+                }
                 if let Some(ref mut engine) = self.output_engine {
                     let fps = lock(&self.shared_state).target_fps as f32;
                     let p = std::path::PathBuf::from(path);
-                    match engine.start_recording(&p, fps, codec) { Err(e) => {
+                    match engine.start_recording(&p, fps, codec, audio_device.as_deref()) { Err(e) => {
                         log::error!("Failed to start recording: {}", e);
                     } _ => {
                         lock(&self.shared_state).recording_active = true;

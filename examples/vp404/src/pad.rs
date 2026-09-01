@@ -103,6 +103,22 @@ pub fn synced_frame(beat: f32, division: usize, in_point: u32, out_point: u32) -
     in_point as f32 + loop_phase * range
 }
 
+/// Where a trigger parks the playhead. Reverse playback (negative speed) runs
+/// out-point → in-point, so it must start at the *out* point — starting at the
+/// in point makes the first tick cross the boundary and stop dead.
+pub fn start_frame(speed: f32, in_f: f32, out_f: f32) -> f32 {
+    if speed < 0.0 {
+        out_f
+    } else {
+        in_f
+    }
+}
+
+/// Synced One-Shot boundary: has one full division elapsed since the trigger?
+pub fn synced_pass_done(beat: f32, start: f32, division: usize) -> bool {
+    beat - start >= BEAT_DIVISIONS[division.clamp(0, BEAT_DIVISIONS.len() - 1)]
+}
+
 pub struct Pad {
     pub index: usize,
     pub name: String,
@@ -124,6 +140,10 @@ pub struct Pad {
     pub current_frame: f32,
     /// 0..1, decays for UI trigger-flash animation.
     pub trigger_level: f32,
+    /// Beat at which the current Synced pass began — captured on the first
+    /// update after a trigger, so a Synced One-Shot knows when one division
+    /// has elapsed. `None` = not started.
+    sync_start: Option<f32>,
 }
 
 impl Pad {
@@ -142,6 +162,7 @@ impl Pad {
             is_triggered: false,
             current_frame: 0.0,
             trigger_level: 0.0,
+            sync_start: None,
         }
     }
 
@@ -186,6 +207,10 @@ impl Pad {
             .unwrap_or(0.0)
     }
 
+    fn start_frame(&self) -> f32 {
+        start_frame(self.speed, self.in_point(), self.out_point())
+    }
+
     /// Trigger (key down). Behaviour depends on `trigger_mode`.
     pub fn trigger(&mut self) {
         if self.sample.is_none() {
@@ -195,15 +220,16 @@ impl Pad {
         }
         self.is_triggered = true;
         self.trigger_level = 1.0;
+        self.sync_start = None;
         match self.trigger_mode {
             TriggerMode::Gate | TriggerMode::OneShot => {
                 self.is_playing = true;
-                self.current_frame = self.in_point();
+                self.current_frame = self.start_frame();
             }
             TriggerMode::Latch => {
                 self.is_playing = !self.is_playing;
                 if self.is_playing {
-                    self.current_frame = self.in_point();
+                    self.current_frame = self.start_frame();
                 }
             }
         }
@@ -221,6 +247,7 @@ impl Pad {
         self.is_playing = false;
         self.is_triggered = false;
         self.current_frame = self.in_point();
+        self.sync_start = None;
     }
 
     /// Effective speed displayed to the user. In `Synced` mode this is the
@@ -235,11 +262,12 @@ impl Pad {
                     BEAT_DIVISIONS[self.beat_division.clamp(0, BEAT_DIVISIONS.len() - 1)];
                 let loop_duration_seconds = beats_per_loop * 60.0 / bpm;
                 let native_duration_seconds = range / self.fps().max(1.0);
-                if loop_duration_seconds > 0.0 {
+                let rate = if loop_duration_seconds > 0.0 {
                     native_duration_seconds / loop_duration_seconds
                 } else {
                     1.0
-                }
+                };
+                if self.speed < 0.0 { -rate } else { rate }
             }
         }
     }
@@ -281,8 +309,30 @@ impl Pad {
                 self.is_playing = playing;
             }
             PlaybackMode::Synced => {
-                self.current_frame =
-                    synced_frame(beat, self.beat_division, sample.in_point, sample.out_point);
+                // Synced ignores speed's magnitude (the beat sets the rate) but
+                // honours its sign: negative mirrors the phase to run out → in.
+                let reverse = self.speed < 0.0;
+                let f = synced_frame(beat, self.beat_division, sample.in_point, sample.out_point);
+                self.current_frame = if reverse {
+                    (sample.in_point + sample.out_point) as f32 - f
+                } else {
+                    f
+                };
+                // One-Shot means once here too: the beat-locked playhead never
+                // ends on its own, so stop it after one division has elapsed.
+                // ponytail: measured from the trigger, so a mid-division press
+                // still gets a full pass; the frame itself stays grid-locked.
+                if self.trigger_mode == TriggerMode::OneShot {
+                    let start = *self.sync_start.get_or_insert(beat);
+                    if synced_pass_done(beat, start, self.beat_division) {
+                        self.current_frame = if reverse {
+                            sample.in_point as f32
+                        } else {
+                            sample.out_point as f32
+                        };
+                        self.is_playing = false;
+                    }
+                }
             }
         }
     }
@@ -359,6 +409,31 @@ mod tests {
     }
 
     #[test]
+    fn reverse_trigger_starts_at_out_point() {
+        assert!((start_frame(1.0, IN, OUT) - IN).abs() < 1e-3);
+        assert!((start_frame(0.0, IN, OUT) - IN).abs() < 1e-3);
+        assert!((start_frame(-1.0, IN, OUT) - OUT).abs() < 1e-3);
+        // A reverse one-shot must actually advance, not stop on frame one.
+        let (f, playing) = advance(start_frame(-1.0, IN, OUT), -1.0, FPS, 0.1, IN, OUT, false);
+        assert!((f - 7.0).abs() < 1e-3); // 10 - 3
+        assert!(playing);
+    }
+
+    #[test]
+    fn synced_one_shot_stops_after_one_division() {
+        // 1/4 note division = 1 beat per pass.
+        assert!(!synced_pass_done(0.0, 0.0, 2));
+        assert!(!synced_pass_done(0.9, 0.0, 2));
+        assert!(synced_pass_done(1.0, 0.0, 2));
+        // Anchored to the trigger, not the grid: pressed at beat 3.5, done at 4.5.
+        assert!(!synced_pass_done(4.4, 3.5, 2));
+        assert!(synced_pass_done(4.5, 3.5, 2));
+        // Whole note (4 beats) runs four times as long.
+        assert!(!synced_pass_done(3.9, 0.0, 4));
+        assert!(synced_pass_done(4.0, 0.0, 4));
+    }
+
+    #[test]
     fn playback_mode_roundtrips() {
         assert_eq!(
             PlaybackMode::from_index(PlaybackMode::Free.to_index()),
@@ -403,5 +478,14 @@ mod tests {
         assert!((f0 - 20.0).abs() < 1e-3);
         assert!((f1 - 60.0).abs() < 1e-3);
         assert!((f2 - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn synced_reverse_mirrors_the_phase() {
+        // Same mirror Pad::update applies for negative speed, over 20..100.
+        let mirror = |f: f32| (20 + 100) as f32 - f;
+        assert!((mirror(synced_frame(0.0, 3, 20, 100)) - 100.0).abs() < 1e-3);
+        assert!((mirror(synced_frame(1.0, 3, 20, 100)) - 60.0).abs() < 1e-3);
+        assert!((mirror(synced_frame(1.5, 3, 20, 100)) - 40.0).abs() < 1e-3);
     }
 }

@@ -113,6 +113,7 @@ syphon-wgpu     = "0.4.0"
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
 nokhwa-bindings-macos = { path = "vendor/nokhwa-bindings-macos" }
+imgui-wgpu = { path = "vendor/imgui-wgpu" }
 
 [profile.release]
 opt-level     = 3

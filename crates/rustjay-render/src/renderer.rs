@@ -381,6 +381,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
         path: &std::path::Path,
         fps: f32,
         codec: rustjay_core::RecorderCodec,
+        audio_device: Option<&str>,
     ) -> anyhow::Result<()> {
         let io_codec = match codec {
             rustjay_core::RecorderCodec::H264 => rustjay_io::RecorderCodec::H264,
@@ -394,6 +395,7 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             self.render_target.height,
             fps,
             io_codec,
+            audio_device,
         )
     }
 

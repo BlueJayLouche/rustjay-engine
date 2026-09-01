@@ -575,9 +575,24 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         }
                         if event.state == winit::event::ElementState::Pressed {
                             match &event.logical_key {
-                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
+                                // Escape leaves fullscreen, never quits — a
+                                // stray press mid-show must not kill the app.
+                                // Shift+Escape is the deliberate quit gesture.
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                                    if self.shift_pressed =>
+                                {
                                     self.save_settings();
                                     event_loop.exit();
+                                }
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
+                                    let fullscreen = self
+                                        .shared_state
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .output_fullscreen;
+                                    if fullscreen {
+                                        self.toggle_fullscreen();
+                                    }
                                 }
                                 winit::keyboard::Key::Character(ch) => {
                                     let key = ch.to_lowercase();
@@ -713,9 +728,13 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         }
                         if event.state == winit::event::ElementState::Pressed {
                             match &event.logical_key {
+                                // Nothing to leave here — plain Escape is
+                                // ignored; Shift+Escape is the quit gesture.
                                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
-                                    self.save_settings();
-                                    event_loop.exit();
+                                    if self.shift_pressed {
+                                        self.save_settings();
+                                        event_loop.exit();
+                                    }
                                 }
                                 winit::keyboard::Key::Character(ch) => {
                                     let key = ch.to_lowercase();

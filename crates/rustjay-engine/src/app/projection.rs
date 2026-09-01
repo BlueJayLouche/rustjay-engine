@@ -347,7 +347,7 @@ impl ProjectorOutput {
         if mgr.is_recording() {
             return Ok(());
         }
-        mgr.start_recording(path, w, h, fps, codec)?;
+        mgr.start_recording(path, w, h, fps, codec, None)?;
         log::info!(
             "Started projector recording {}x{} @ {:.2} fps → {}",
             w,
@@ -1037,7 +1037,7 @@ impl ProjectionSubsystem {
         if mgr.is_recording() {
             return Ok(());
         }
-        mgr.start_recording(path, width, height, fps, codec)?;
+        mgr.start_recording(path, width, height, fps, codec, None)?;
         log::info!(
             "Started headless recording {}x{} @ {:.2} fps → {}",
             width,

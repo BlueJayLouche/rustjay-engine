@@ -22,7 +22,7 @@ pub use input::{NdiReceiver, list_ndi_sources};
 pub use input::{SyphonInputReceiver, SyphonDiscovery};
 #[cfg(target_os = "windows")]
 pub use input::{SpoutDiscovery, SpoutInputReceiver};
-pub use output::recorder::{Recorder, RecorderCodec};
+pub use output::recorder::{list_audio_devices, Recorder, RecorderCodec};
 pub use output::OutputManager;
 #[cfg(target_os = "linux")]
 pub use v4l2_devices::V4l2DeviceInfo;

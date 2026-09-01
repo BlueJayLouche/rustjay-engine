@@ -28,6 +28,8 @@ pub use rustjay_core::{LinkCommand, LinkState};
 pub use rustjay_gui::AnyEguiTab;
 pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
 pub use rustjay_render::PreviousFrameTexture;
+/// Audio capture devices the disk recorder can record from (see `OutputCommand::StartRecording`).
+pub use rustjay_io::list_audio_devices;
 
 use anyhow::Result;
 use std::sync::{Arc, Mutex};

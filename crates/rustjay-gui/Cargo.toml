@@ -31,10 +31,11 @@ pollster        = { workspace = true }
 qrcode          = { workspace = true }
 
 [features]
-default = []
-# Dear ImGui renderer backend. Off by default: imgui-wgpu 0.28 (latest) requires
-# wgpu 29, so it cannot coexist with the engine's wgpu 30. The `imgui` crate
-# itself has no wgpu dependency, so imgui tabs build regardless of this flag.
+default = ["imgui-renderer"]
+# Dear ImGui renderer backend. Uses the vendored imgui-wgpu (see the workspace
+# `[patch.crates-io]`): upstream 0.28 pins wgpu 29, the vendored copy is the same
+# code with the one-line wgpu 30 fix. The `imgui` crate itself has no wgpu
+# dependency, so imgui tabs build regardless of this flag.
 imgui-renderer = ["dep:imgui-wgpu"]
 ndi     = ["rustjay-core/ndi"]
 egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]

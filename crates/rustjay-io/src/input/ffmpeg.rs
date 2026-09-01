@@ -29,6 +29,7 @@ pub fn detect_hap_codec(path: &Path) -> anyhow::Result<bool> {
 }
 
 use ffmpeg::format::{input, Pixel};
+use ffmpeg::color::Space;
 use ffmpeg::media::Type;
 use ffmpeg::software::scaling::{context::Context, flag::Flags};
 use ffmpeg::util::frame::video::Video;
@@ -103,6 +104,76 @@ struct DecodeContext {
     scaler: ffmpeg::software::scaling::Context,
     stream_index: usize,
     time_base: f64,
+    /// Set when the stream declares an identity colourspace, meaning its
+    /// "YUV" planes are really GBR and swscale must not touch them.
+    identity_gbr: bool,
+}
+
+impl DecodeContext {
+    /// Convert a decoded frame to RGBA.
+    ///
+    /// Normally that is swscale's job. But a stream can declare
+    /// `AVCOL_SPC_RGB` — NotchLC always does — meaning its planes are already
+    /// G, B, R rather than luma and chroma. swscale ignores that and applies a
+    /// BT.601 matrix anyway, which silently wrecks the colour: RGB(100,200,50)
+    /// comes back as (162,247,63). So for those, pack the planes directly.
+    fn to_rgba(&mut self, decoded: &Video, scratch: &mut Video) -> anyhow::Result<VideoFrame> {
+        if self.identity_gbr {
+            return Ok(pack_gbr_planes(decoded));
+        }
+        self.scaler.run(decoded, scratch)?;
+        Ok(VideoFrame {
+            width: scratch.width(),
+            height: scratch.height(),
+            data: scratch.data(0).to_vec(),
+        })
+    }
+}
+
+/// Whether this stream's planes are GBR rather than YUV, and can be packed
+/// without a colour conversion.
+///
+/// Restricted to the 12-bit 4:4:4 layouts NotchLC decodes to. Any other format
+/// claiming an identity colourspace falls through to swscale — wrong, but no
+/// more wrong than before, and it will say so in the log.
+fn is_identity_gbr(space: Space, format: Pixel) -> bool {
+    matches!(space, Space::RGB)
+        && matches!(format, Pixel::YUVA444P12LE | Pixel::YUV444P12LE)
+}
+
+/// Pack 12-bit planar GBR(A) to 8-bit RGBA. Plane 0 is G, 1 is B, 2 is R.
+fn pack_gbr_planes(frame: &Video) -> VideoFrame {
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let has_alpha = frame.planes() > 3;
+    // Row strides are in bytes and are not width * 2.
+    let plane = |i: usize| (frame.data(i), frame.stride(i));
+    let (g, gs) = plane(0);
+    let (b, bs) = plane(1);
+    let (r, rs) = plane(2);
+    let alpha = has_alpha.then(|| plane(3));
+
+    let sample = |data: &[u8], stride: usize, x: usize, y: usize| -> u8 {
+        let o = y * stride + x * 2;
+        (u16::from_le_bytes([data[o], data[o + 1]]) >> 4) as u8
+    };
+
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            out.push(sample(r, rs, x, y));
+            out.push(sample(g, gs, x, y));
+            out.push(sample(b, bs, x, y));
+            out.push(match alpha {
+                Some((a, as_)) => sample(a, as_, x, y),
+                None => 255,
+            });
+        }
+    }
+    VideoFrame {
+        width: w as u32,
+        height: h as u32,
+        data: out,
+    }
 }
 
 // ffmpeg-next's internal raw pointers are not Send by default, but the decoder
@@ -426,12 +497,23 @@ impl FfmpegDecoder {
             Flags::BILINEAR,
         )?;
 
+        let identity_gbr = is_identity_gbr(decoder.color_space(), decoder.format());
+        if matches!(decoder.color_space(), Space::RGB) && !identity_gbr {
+            log::warn!(
+                "FfmpegDecoder: {} declares an identity colourspace in {:?}, which swscale will \
+                 convert as if it were YUV; colours will be wrong",
+                self.path.display(),
+                decoder.format()
+            );
+        }
+
         self.context = Some(DecodeContext {
             input: ictx,
             decoder,
             scaler,
             stream_index,
             time_base,
+            identity_gbr,
         });
         Ok(())
     }
@@ -474,13 +556,9 @@ impl FfmpegDecoder {
                     while ctx.decoder.receive_frame(&mut decoded).is_ok() {
                         let pts = decoded.timestamp().unwrap_or(-1);
                         if pts >= target_ts || self.last_pts < 0 {
-                            ctx.scaler.run(&decoded, &mut rgba_frame)?;
+                            let frame = ctx.to_rgba(&decoded, &mut rgba_frame)?;
                             self.last_pts = pts;
-                            return Ok(VideoFrame {
-                                width: rgba_frame.width(),
-                                height: rgba_frame.height(),
-                                data: rgba_frame.data(0).to_vec(),
-                            });
+                            return Ok(frame);
                         }
                         self.last_pts = pts;
                     }
@@ -489,12 +567,7 @@ impl FfmpegDecoder {
                     // End of file: drain decoder.
                     ctx.decoder.send_eof()?;
                     if ctx.decoder.receive_frame(&mut decoded).is_ok() {
-                        ctx.scaler.run(&decoded, &mut rgba_frame)?;
-                        return Ok(VideoFrame {
-                            width: rgba_frame.width(),
-                            height: rgba_frame.height(),
-                            data: rgba_frame.data(0).to_vec(),
-                        });
+                        return ctx.to_rgba(&decoded, &mut rgba_frame);
                     }
                     return Err(anyhow::anyhow!("EOF reached without finding target frame"));
                 }
@@ -676,12 +749,23 @@ impl StreamDecoder {
             Flags::BILINEAR,
         )?;
 
+        let identity_gbr = is_identity_gbr(decoder.color_space(), decoder.format());
+        if matches!(decoder.color_space(), Space::RGB) && !identity_gbr {
+            log::warn!(
+                "StreamDecoder: {} declares an identity colourspace in {:?}, which swscale will \
+                 convert as if it were YUV; colours will be wrong",
+                self.url,
+                decoder.format()
+            );
+        }
+
         self.context = Some(DecodeContext {
             input: ictx,
             decoder,
             scaler,
             stream_index,
             time_base,
+            identity_gbr,
         });
         Ok(())
     }
@@ -690,5 +774,60 @@ impl StreamDecoder {
 impl Drop for StreamDecoder {
     fn drop(&mut self) {
         // Context drops automatically.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_gbr_is_claimed_only_for_layouts_we_can_pack() {
+        assert!(is_identity_gbr(Space::RGB, Pixel::YUVA444P12LE));
+        assert!(is_identity_gbr(Space::RGB, Pixel::YUV444P12LE));
+        // Identity colourspace in a layout we do not handle: fall through to
+        // swscale and warn, rather than pack garbage.
+        assert!(!is_identity_gbr(Space::RGB, Pixel::YUV420P));
+        // Ordinary video must never take this path.
+        assert!(!is_identity_gbr(Space::BT709, Pixel::YUV420P));
+        assert!(!is_identity_gbr(Space::SMPTE170M, Pixel::YUVA444P12LE));
+    }
+
+    /// The failure this guards against is silent: swapping the planes still
+    /// produces a plausible image, just the wrong colour. Hence three distinct
+    /// channel values.
+    #[test]
+    fn packs_planes_as_gbr_not_yuv() {
+        let mut frame = Video::new(Pixel::YUVA444P12LE, 2, 2);
+        // 12-bit samples; the packer keeps the top 8 bits.
+        for (plane, value) in [(0usize, 200u16 << 4), (1, 50 << 4), (2, 100 << 4), (3, 4095)] {
+            let stride = frame.stride(plane);
+            let data = frame.data_mut(plane);
+            for y in 0..2 {
+                for x in 0..2 {
+                    let o = y * stride + x * 2;
+                    data[o..o + 2].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+
+        let out = pack_gbr_planes(&frame);
+        assert_eq!((out.width, out.height), (2, 2));
+        // Plane 0 is G, 1 is B, 2 is R.
+        assert_eq!(&out.data[0..4], &[100, 200, 50, 255]);
+        assert_eq!(&out.data[4..8], &[100, 200, 50, 255]);
+    }
+
+    /// Without an alpha plane the packer must still produce opaque pixels.
+    #[test]
+    fn missing_alpha_plane_reads_as_opaque() {
+        let mut frame = Video::new(Pixel::YUV444P12LE, 1, 1);
+        for (plane, value) in [(0usize, 10u16 << 4), (1, 20 << 4), (2, 30 << 4)] {
+            let stride = frame.stride(plane);
+            frame.data_mut(plane)[0..2].copy_from_slice(&value.to_le_bytes());
+            let _ = stride;
+        }
+        let out = pack_gbr_planes(&frame);
+        assert_eq!(&out.data[0..4], &[30, 10, 20, 255]);
     }
 }

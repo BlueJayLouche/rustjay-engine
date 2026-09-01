@@ -3948,6 +3948,7 @@ mod egui_impl {
                     engine.output_command = rustjay_core::OutputCommand::StartRecording {
                         path: self.recording_path.clone(),
                         codec: self.recording_codec,
+                        audio_device: None,
                     };
                 }
                 if ui.add_enabled(is_recording, egui::Button::new("⏹ Stop")).clicked() {
