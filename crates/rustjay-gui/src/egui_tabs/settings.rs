@@ -171,7 +171,7 @@ impl EguiControlGui {
         );
         ui.label("• Shift+F — Toggle Fullscreen");
         ui.label("• Shift+T — Tap Tempo");
-        ui.label("• Escape — Exit Application");
+        ui.label("• Escape — Leave Fullscreen (Shift+Escape — Quit)");
         ui.label("• Shift+F1–F8 — Quick slot presets");
 
         ui.add_space(12.0);

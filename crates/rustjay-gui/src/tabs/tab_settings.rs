@@ -140,7 +140,7 @@ impl ControlGui {
         ui.text("Keyboard Shortcuts:");
         ui.bullet_text("Shift+F - Toggle Fullscreen");
         ui.bullet_text("Shift+T - Tap Tempo");
-        ui.bullet_text("Escape - Exit Application");
+        ui.bullet_text("Escape - Leave Fullscreen (Shift+Escape - Quit)");
 
         ui.separator();
 
