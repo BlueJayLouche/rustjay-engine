@@ -541,6 +541,22 @@ mod egui_impl {
         out
     }
 
+    /// Record a pre-edit graph snapshot on the undo stack.
+    ///
+    /// Mirrors `KovvbojAppState::push_undo`, but takes the stacks as separate
+    /// field borrows so it stays callable in the UI's decomposed-borrow style.
+    fn record_undo(
+        undo: &mut Vec<crate::scene::Topology>,
+        redo: &mut Vec<crate::scene::Topology>,
+        snapshot: crate::scene::Topology,
+    ) {
+        undo.push(snapshot);
+        if undo.len() > crate::KovvbojAppState::UNDO_DEPTH {
+            undo.remove(0);
+        }
+        redo.clear();
+    }
+
     /// Apply completed chain-strip drops. Library inserts are queued for
     /// `prepare()` (effect creation needs the GPU device); FX moves are
     /// applied in place via [`crate::move_effect`], which re-prefixes the slot
@@ -553,6 +569,7 @@ mod egui_impl {
         mixer: &mut rustjay_mixer::Mixer,
         engine: &mut EngineState,
         drops: Vec<ChainDrop>,
+        undo: &mut Option<crate::scene::Topology>,
     ) {
         for drop in drops {
             match drop.payload {
@@ -564,10 +581,15 @@ mod egui_impl {
                     });
                 }
                 ChainDrag::Fx { chain, slot } => {
+                    // Snapshot before the graph changes. Library inserts do not
+                    // need one here — they go through `pending_effects`, which
+                    // `prepare()` already snapshots before draining.
+                    let before = crate::scene::Topology::from_mixer(mixer);
                     if !crate::move_effect(mixer, engine, &chain, &slot, &drop.target, drop.index)
                     {
                         continue;
                     }
+                    undo.get_or_insert(before);
                     *params_dirty_request = true;
                     if let Some((sel_chain, sel_fx)) = selection.fx_location()
                         && sel_chain == chain
@@ -779,6 +801,7 @@ mod egui_impl {
             }
 
             // Master FX strip — same chip/drag affordances as the deck strips.
+            let mut undo_snapshot: Option<crate::scene::Topology> = None;
             ui.separator();
             ui.label(egui::RichText::new("Master FX").strong());
             let selected_fx = match &state.selection {
@@ -797,11 +820,12 @@ mod egui_impl {
                 mixer.master[i].enabled = !on;
             }
             if let Some(i) = out.remove {
-                let slot = mixer.master.remove(i);
-                if let Ok(mut m) = engine.modulation.lock() {
-                    m.remove_assignments_with_prefix(&format!("master_fx{}_", slot.uuid));
-                }
-                state.params_dirty_request = true;
+                // Queued like the deck and channel strips, so `prepare()`'s
+                // single pre-drain snapshot covers every removal for undo.
+                state.pending_fx_removals.push(crate::PendingFxRemoval {
+                    chain: crate::ChainRef::Master,
+                    slot: mixer.master[i].uuid.clone(),
+                });
             }
             if let Some(fx) = out.select {
                 state.selection = crate::Selection::MasterFx { fx };
@@ -822,7 +846,12 @@ mod egui_impl {
                 &mut mixer,
                 engine,
                 drops,
+                &mut undo_snapshot,
             );
+            drop(mixer);
+            if let Some(snapshot) = undo_snapshot {
+                record_undo(&mut state.undo_stack, &mut state.redo_stack, snapshot);
+            }
         }
     }
 
@@ -1012,6 +1041,8 @@ mod egui_impl {
 
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
             let mut fx_removed = false;
+            let mut undo_snapshot: Option<crate::scene::Topology> = None;
+            let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
             // Drops landed on chain-strip gaps this frame; applied after the
             // deck loop (cross-chain moves need the whole mixer).
             let mut drops: Vec<ChainDrop> = Vec::new();
@@ -1151,15 +1182,17 @@ mod egui_impl {
                                                 deck.set_effect_enabled(i, !on);
                                             }
                                             if let Some(i) = out.remove {
-                                                let slot = deck.chain.remove(i);
-                                                if let Ok(mut m) = engine.modulation.lock() {
-                                                    m.remove_assignments_with_prefix(&format!(
-                                                        "{}fx{}_",
-                                                        deck.full_prefix(),
-                                                        slot.uuid
-                                                    ));
-                                                }
-                                                fx_removed = true;
+                                                // Queued, not removed here: the
+                                                // mixer is mutably borrowed by
+                                                // this iteration, so there is no
+                                                // way to snapshot for undo.
+                                                fx_removals.push(crate::PendingFxRemoval {
+                                                    chain: crate::ChainRef::Deck {
+                                                        channel: ch_uuid.clone(),
+                                                        deck: deck_uuid.clone(),
+                                                    },
+                                                    slot: deck.chain[i].uuid.clone(),
+                                                });
                                             }
                                             if let Some(fx) = out.select {
                                                 new_selection = Some(chain_ref.selection_for(&fx));
@@ -1213,12 +1246,13 @@ mod egui_impl {
                                 ch.set_effect_enabled(i, !on);
                             }
                             if let Some(i) = out.remove {
-                                let slot = ch.chain.remove(i);
-                                if let Ok(mut m) = engine.modulation.lock() {
-                                    m.remove_assignments_with_prefix(&format!(
-                                        "ch_{}_fx{}_",
-                                        ch_uuid, slot.uuid
-                                    ));
+                                fx_removals.push(crate::PendingFxRemoval {
+                                    chain: crate::ChainRef::Channel {
+                                        channel: ch_uuid.clone(),
+                                    },
+                                    slot: ch.chain[i].uuid.clone(),
+                                });
+                                {
                                 }
                                 fx_removed = true;
                             }
@@ -1243,9 +1277,14 @@ mod egui_impl {
                     &mut mixer,
                     engine,
                     drops,
+                    &mut undo_snapshot,
                 );
             }
 
+            if let Some(snapshot) = undo_snapshot {
+                record_undo(&mut state.undo_stack, &mut state.redo_stack, snapshot);
+            }
+            state.pending_fx_removals.append(&mut fx_removals);
             if let Some(sel) = new_selection {
                 state.selection = sel;
             }

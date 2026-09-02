@@ -112,6 +112,20 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_scene: Option<Scene>,
+    /// Topology to replay on the next `prepare()` — how undo and redo land.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_topology: Option<crate::scene::Topology>,
+    /// Graph states to step back through. Structural edits only; see [`push_undo`].
+    ///
+    /// [`push_undo`]: KovvbojAppState::push_undo
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub undo_stack: Vec<crate::scene::Topology>,
+    /// States undone and not yet redone. Cleared by any fresh edit.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub redo_stack: Vec<crate::scene::Topology>,
     /// Workspace handle for save/load.
     #[serde(skip)]
     pub workspace: crate::persistence::Workspace,
@@ -147,6 +161,10 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_removals: Vec<PendingRemoval>,
+    /// FX slots queued for removal; drained in `prepare()`.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_fx_removals: Vec<PendingFxRemoval>,
     /// Runtime effect addition queue (processed in `prepare()` where GPU resources are available).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -193,9 +211,23 @@ pub struct PendingDeck {
     pub source: crate::sources::SourceEntry,
 }
 
+/// An FX slot queued for removal.
+///
+/// Deferred rather than removed in place so `prepare()` — which already
+/// snapshots the graph before draining pending edits — covers it for undo.
+/// Removing inside the strip's own draw is impossible to snapshot: the mixer is
+/// already mutably borrowed by the channel iteration.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug)]
+pub struct PendingFxRemoval {
+    /// Which chain the slot lives in.
+    pub chain: ChainRef,
+    /// UUID of the slot to remove.
+    pub slot: String,
+}
+
 /// One deck queued for removal by the UI and processed in `prepare()`.
 #[derive(Debug, Clone)]
-#[cfg(feature = "mixer")]
 pub struct PendingRemoval {
     /// Target channel UUID.
     pub channel_uuid: String,
@@ -465,6 +497,78 @@ impl KovvbojAppState {
 
     /// Manually save the current workspace (scene + stage).
     #[cfg(feature = "mixer")]
+/// How many structural edits you can step back through.
+    ///
+    /// Deep enough to cover a run of mistakes, shallow enough that the stack is
+    /// never worth thinking about — each entry is a whole graph description.
+    pub const UNDO_DEPTH: usize = 32;
+
+    /// Record the current graph so the next structural edit can be undone.
+    ///
+    /// Call this *before* mutating, with the mixer already locked. Param edits
+    /// deliberately do not push: they are continuous and driven by MIDI, LFO and
+    /// OSC, so an undo stack of them would be noise rather than history.
+    #[cfg(feature = "mixer")]
+    pub fn push_undo_from(&mut self, mixer: &Mixer) {
+        self.undo_stack
+            .push(crate::scene::Topology::from_mixer(mixer));
+        if self.undo_stack.len() > Self::UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+        // A fresh edit invalidates anything that was undone.
+        self.redo_stack.clear();
+    }
+
+    /// [`push_undo_from`](Self::push_undo_from) for callers that do not already
+    /// hold the mixer lock.
+    #[cfg(feature = "mixer")]
+    pub fn push_undo(&mut self) {
+        let snapshot = {
+            let Ok(mixer) = self.mixer.lock() else {
+                return;
+            };
+            crate::scene::Topology::from_mixer(&mixer)
+        };
+        self.undo_stack.push(snapshot);
+        if self.undo_stack.len() > Self::UNDO_DEPTH {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Step back one structural edit. Takes effect on the next `prepare()`.
+    ///
+    /// ponytail: replaying a whole topology rebuilds every source, so an undo
+    /// costs a hitch and restarts video playback. Acceptable for structural
+    /// edits; the upgrade path is a diff-based apply that only touches the nodes
+    /// that actually changed.
+    #[cfg(feature = "mixer")]
+    pub fn undo(&mut self) -> bool {
+        let Some(previous) = self.undo_stack.pop() else {
+            return false;
+        };
+        if let Ok(mixer) = self.mixer.lock() {
+            self.redo_stack
+                .push(crate::scene::Topology::from_mixer(&mixer));
+        }
+        self.pending_topology = Some(previous);
+        true
+    }
+
+    /// Step forward again after an undo.
+    #[cfg(feature = "mixer")]
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        if let Ok(mixer) = self.mixer.lock() {
+            self.undo_stack
+                .push(crate::scene::Topology::from_mixer(&mixer));
+        }
+        self.pending_topology = Some(next);
+        true
+    }
+
     pub fn save_workspace(&self) {
         if let Ok(mixer) = self.mixer.lock() {
             let scene = self.scene_snapshot(&mixer);
@@ -507,6 +611,12 @@ impl Default for KovvbojAppState {
             #[cfg(feature = "mixer")]
             pending_scene: None,
             #[cfg(feature = "mixer")]
+            pending_topology: None,
+            #[cfg(feature = "mixer")]
+            undo_stack: Vec::new(),
+            #[cfg(feature = "mixer")]
+            redo_stack: Vec::new(),
+            #[cfg(feature = "mixer")]
             engine_modulation: None,
             #[cfg(feature = "mixer")]
             param_snapshot: std::collections::HashMap::new(),
@@ -527,6 +637,8 @@ impl Default for KovvbojAppState {
             pending_decks: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_removals: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_fx_removals: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_effects: Vec::new(),
             #[cfg(feature = "mixer")]
@@ -1496,6 +1608,14 @@ impl EffectPlugin for KovvbojRootPlugin {
 
         #[cfg(feature = "mixer")]
         {
+            // Undo / redo land here: replay the recorded graph, then let the
+            // usual params_dirty pass re-register everything under the restored
+            // uuids.
+            if let Some(topo) = state.pending_topology.take() {
+                self.apply_topology(&topo, device, queue);
+                state.params_dirty_request = true;
+            }
+
             // Apply pending scene from preset load or runtime restore.
             if let Some(scene) = state.pending_scene.take() {
                 // Rebuild the routing graph when the scene carries topology, so
@@ -1686,6 +1806,36 @@ impl EffectPlugin for KovvbojRootPlugin {
                     .zip(engine.custom_param_bases.iter())
                     .map(|(d, &v)| (d.id.clone(), v))
                     .collect();
+            }
+
+            // One snapshot for whatever structural edits this frame carries —
+            // deck removals, new decks, new FX. Taken before any of them are
+            // applied, so undo steps back to the graph as it was.
+            if !state.pending_removals.is_empty()
+                || !state.pending_decks.is_empty()
+                || !state.pending_effects.is_empty()
+                || !state.pending_fx_removals.is_empty()
+            {
+                state.push_undo();
+            }
+
+            // Drain queued FX removals, purging each slot's modulation.
+            let fx_removals: Vec<PendingFxRemoval> =
+                std::mem::take(&mut state.pending_fx_removals);
+            if !fx_removals.is_empty() {
+                if let Ok(mut mixer) = state.mixer.lock() {
+                    for req in fx_removals {
+                        let Some((chain, base)) = chain_parts(&mut mixer, &req.chain) else {
+                            continue;
+                        };
+                        chain.retain(|s| s.uuid != req.slot);
+                        let prefix = format!("{base}fx{}_", req.slot);
+                        if let Ok(mut m) = engine.modulation.lock() {
+                            m.remove_assignments_with_prefix(&prefix);
+                        }
+                    }
+                }
+                state.params_dirty_request = true;
             }
 
             // Process pending deck removals first.
@@ -3081,5 +3231,49 @@ mod tests {
         let d = deck_ref(&mixer, "ch1", "d1");
         assert_eq!(d.chain.len(), 2, "slot restored, not lost");
         assert!(d.chain.iter().any(|s| s.uuid == uuid));
+    }
+
+    #[test]
+    fn undo_stack_caps_depth_and_redo_clears_on_a_fresh_edit() {
+        let mut state = KovvbojAppState::default();
+
+        // More pushes than the cap: the oldest entries fall off the bottom.
+        for _ in 0..(KovvbojAppState::UNDO_DEPTH + 5) {
+            state.push_undo();
+        }
+        assert_eq!(
+            state.undo_stack.len(),
+            KovvbojAppState::UNDO_DEPTH,
+            "the stack must stay capped"
+        );
+
+        assert!(state.undo(), "an undo should be available");
+        assert_eq!(state.redo_stack.len(), 1, "undo feeds the redo stack");
+        assert!(
+            state.pending_topology.is_some(),
+            "undo queues a topology for the next prepare()"
+        );
+
+        state.pending_topology = None;
+        assert!(state.redo(), "a redo should be available");
+        assert!(state.redo_stack.is_empty());
+        assert!(state.pending_topology.is_some());
+
+        // Any fresh edit invalidates the redo history.
+        state.undo();
+        assert_eq!(state.redo_stack.len(), 1);
+        state.push_undo();
+        assert!(
+            state.redo_stack.is_empty(),
+            "a new edit must drop what was undone"
+        );
+    }
+
+    #[test]
+    fn undo_and_redo_report_false_when_there_is_nothing_to_do() {
+        let mut state = KovvbojAppState::default();
+        assert!(!state.undo());
+        assert!(!state.redo());
+        assert!(state.pending_topology.is_none());
     }
 }

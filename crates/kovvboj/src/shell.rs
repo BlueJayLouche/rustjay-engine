@@ -198,6 +198,27 @@ impl AnyEguiShell for KovvbojShell {
         // Cloned once so nothing below has to keep `host` borrowed to reach the
         // engine — `host` is needed mutably for `draw_builtin_tab`.
         self.initialise(ui.ctx());
+
+        // ⌘Z / ⇧⌘Z. Structural edits only — see `KovvbojAppState::push_undo_from`.
+        let (undo_pressed, redo_pressed) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
+                i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                ),
+            )
+        });
+        if (undo_pressed || redo_pressed)
+            && let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
+        {
+            if redo_pressed {
+                state.redo();
+            } else {
+                state.undo();
+            }
+        }
+
         let engine = host.engine().clone();
 
         self.menu_and_status_row(ui, app_state, &engine);
@@ -345,7 +366,27 @@ impl KovvbojShell {
                     });
 
                     ui.menu_button("Edit", |ui| {
-                        // Undo/Redo arrive with the structural-edit stack.
+                        let (can_undo, can_redo) = app_state
+                            .downcast_ref::<crate::KovvbojAppState>()
+                            .map(|s| (!s.undo_stack.is_empty(), !s.redo_stack.is_empty()))
+                            .unwrap_or((false, false));
+                        if ui
+                            .add_enabled(can_undo, egui::Button::new("Undo").shortcut_text("⌘Z"))
+                            .clicked()
+                            && let Some(state) =
+                                app_state.downcast_mut::<crate::KovvbojAppState>()
+                        {
+                            state.undo();
+                        }
+                        if ui
+                            .add_enabled(can_redo, egui::Button::new("Redo").shortcut_text("⇧⌘Z"))
+                            .clicked()
+                            && let Some(state) =
+                                app_state.downcast_mut::<crate::KovvbojAppState>()
+                        {
+                            state.redo();
+                        }
+                        ui.separator();
                         if ui.button("Settings").clicked() {
                             self.show_settings = true;
                         }
