@@ -1364,10 +1364,25 @@ mod egui_impl {
             // ISF shaders are grouped by role: a filter (header declares an
             // `inputImage` input) can be dragged onto any FX strip; a generator
             // is only meaningful as a deck source.
-            ui.label(egui::RichText::new("Library").strong());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Library").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("⟳")
+                        .on_hover_text("Rescan cameras, NDI, Syphon/Spout")
+                        .clicked()
+                    {
+                        state.registry.refresh_builtins();
+                    }
+                });
+            });
             let target_uuid = self.selected_channel_uuid.clone();
+            // Fill the panel, leaving room for the two buttons below. The old
+            // fixed 140px was sized for the pre-shell layout and now hides most
+            // of the library while the panel beneath it sits empty.
+            let list_height = (ui.available_height() - 90.0).max(120.0);
             egui::ScrollArea::vertical()
-                .max_height(140.0)
+                .max_height(list_height)
                 .show(ui, |ui| {
                     let mut queue_deck: Option<crate::PendingDeck> = None;
                     // One library row: label (optionally a drag source for FX
@@ -1404,6 +1419,22 @@ mod egui_impl {
                             );
                         });
                     };
+
+                    // Live inputs first — cameras, NDI, Syphon/Spout, solid
+                    // colour. These are discovered devices, not files, so they
+                    // are the one group that needs a rescan button: servers and
+                    // senders come and go while the app is running.
+                    if !state.registry.builtins.is_empty() {
+                        ui.label(
+                            egui::RichText::new("INPUTS")
+                                .monospace()
+                                .size(10.0)
+                                .color(rustjay_gui::egui_theme::colors::ink_3()),
+                        );
+                    }
+                    for entry in &state.registry.builtins {
+                        row(ui, entry, false);
+                    }
 
                     for (heading, want_filter) in [("FILTERS", true), ("GENERATORS", false)] {
                         let mut any = false;
