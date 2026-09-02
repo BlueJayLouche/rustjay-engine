@@ -1107,9 +1107,12 @@ mod egui_impl {
         ui.separator();
         param_slider(ui, engine, super::MASTER_DIM, "Dimmer", 0.0, 1.0);
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new("Select a layer, source or effect to edit it.")
-                .color(rustjay_gui::egui_theme::colors::ink_3()),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("Select a layer, source or effect to edit it.")
+                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+            )
+            .wrap(),
         );
     }
 

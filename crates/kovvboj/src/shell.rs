@@ -367,6 +367,7 @@ impl AnyEguiShell for KovvbojShell {
                 });
         }
 
+        let mut inspector_left = None;
         if self.show_preview {
             #[allow(deprecated)]
             let mut new_width = None;
@@ -374,6 +375,7 @@ impl AnyEguiShell for KovvbojShell {
                 .exact_size(self.prefs.inspector_width)
                 .resizable(false)
                 .show(ui, |ui| {
+                    inspector_left = Some(ui.clip_rect().left());
                     Self::preview(ui, host.output_preview_texture_id, &engine);
                     egui::ScrollArea::vertical()
                         .id_salt("inspector_scroll")
@@ -402,8 +404,21 @@ impl AnyEguiShell for KovvbojShell {
             }
         }
 
-        #[allow(deprecated)]
-        egui::CentralPanel::default().show(ui, |ui| {
+        // Not a `CentralPanel`: nested inside `run_ui`'s root Ui it is handed
+        // ~34px more width than the right panel left free, and paints over the
+        // inspector's left edge — burying the resize grip and clipping
+        // "MASTER" to "TER". It cannot simply be narrowed either, because a
+        // CentralPanel stores its size in egui memory, so constraining it feeds
+        // back and it shrinks again every frame. A plain child Ui keeps no such
+        // memory, so the bound holds.
+        let mut central = ui.available_rect_before_wrap();
+        if let Some(x) = inspector_left {
+            central.max.x = central.max.x.min(x);
+        }
+        ui.painter()
+            .rect_filled(central, 0.0, ui.style().visuals.panel_fill);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(central), |ui| {
+            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             self.mode_switcher(ui);
             ui.separator();
 
@@ -439,6 +454,7 @@ impl AnyEguiShell for KovvbojShell {
                     ui.label("LED mapping needs the `webcam` feature.");
                 }
             }
+            });
         });
     }
 }
