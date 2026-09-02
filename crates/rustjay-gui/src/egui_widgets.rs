@@ -67,13 +67,27 @@ pub fn hud_frame<R>(
 // Section header — ▌ TITLE · 03 CH · 01/04
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Ceiling for a widget that fills its row.
+///
+/// `available_width` is unbounded inside an auto-sizing `egui::Window`: it
+/// reports the widest egui would allow, not the window's width. A widget that
+/// allocates it outright therefore asks for the whole screen, and any window
+/// hosting one opens at full width. These widgets were written for the host's
+/// fixed-width sidebar, where the ceiling never bites.
+const MAX_ROW_WIDTH: f32 = 560.0;
+
+/// Width for a widget that fills its row. See [`MAX_ROW_WIDTH`].
+fn row_width(ui: &Ui) -> f32 {
+    ui.available_width().min(MAX_ROW_WIDTH)
+}
+
 /// HUD section header: amber tick glyph, uppercase title, dashed rule, optional counter.
 /// Use instead of `ui.heading(...)` / `ui.separator()`.
 pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
     ui.add_space(8.0);
     let row_height = 18.0;
     let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::hover());
+        ui.allocate_exact_size(Vec2::new(row_width(ui), row_height), Sense::hover());
     let painter = ui.painter();
 
     // Amber tick glyph ▌
@@ -141,7 +155,7 @@ pub fn hud_collapsible_section_header(
     ui.add_space(8.0);
     let row_height = 18.0;
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+        ui.allocate_exact_size(Vec2::new(row_width(ui), row_height), Sense::click());
     let painter = ui.painter();
 
     // Subtle hover feedback
@@ -250,7 +264,7 @@ pub fn segmented_select(
         return None;
     }
     let height = 28.0;
-    let total_w = ui.available_width();
+    let total_w = row_width(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total_w, height), Sense::hover());
     let seg_w = total_w / options.len() as f32;
     let painter = ui.painter();
@@ -420,6 +434,12 @@ pub fn parameter_card_f32(
         .inner_margin(egui::Margin::symmetric(12, 10));
 
     let frame_resp = frame.show(ui, |ui| {
+        // The right-to-left layouts below claim the whole available width in
+        // order to pin the value to the right edge. Inside an auto-sizing
+        // window that width is the screen, so the card — and the window
+        // holding it — opens as wide as egui allows.
+        ui.set_max_width(row_width(ui));
+
         // Left accent bar — amber when "active" (value != min)
         let accent_color = if *value != min { amber() } else { ink_4() };
         let panel_rect = ui.max_rect();
@@ -484,7 +504,7 @@ pub fn parameter_card_f32(
 
         // Tick row under the slider
         let tick_rect = ui
-            .allocate_exact_size(Vec2::new(ui.available_width(), 4.0), Sense::hover())
+            .allocate_exact_size(Vec2::new(row_width(ui), 4.0), Sense::hover())
             .0;
         let painter = ui.painter();
         let tick_count = 20;

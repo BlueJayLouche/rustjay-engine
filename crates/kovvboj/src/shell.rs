@@ -652,6 +652,12 @@ impl KovvbojShell {
             egui::Window::new(t.name())
                 .open(&mut self.builtin_open[i])
                 .default_width(420.0)
+                // These tab bodies were laid out for the host's fixed-width
+                // sidebar. Their widgets are bounded now, but a window that
+                // auto-sizes still creeps outward over the first frames as the
+                // content settles; the ceiling stops it at the width the
+                // widgets themselves top out at.
+                .max_width(560.0)
                 .vscroll(true)
                 .show(&ctx, |ui| host.draw_builtin_tab(ui, *t));
         }
