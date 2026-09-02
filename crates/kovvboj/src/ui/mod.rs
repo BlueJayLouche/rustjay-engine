@@ -1352,8 +1352,6 @@ mod egui_impl {
                     state.pending_effects.push(req);
                 }
 
-            ui.heading("Library");
-            ui.separator();
 
             // No target selector: a source's ➕ makes a new layer, and an
             // effect's ➕ goes to the selected one.
@@ -1400,38 +1398,21 @@ mod egui_impl {
                                    entry: &crate::sources::SourceEntry,
                                    is_effect: bool| {
                         ui.horizontal(|ui| {
-                            let text = format!("{} {}", source_icon(entry.kind), entry.name);
-                            match (is_effect, &entry.path) {
-                                (true, Some(path)) => {
-                                    ui.dnd_drag_source(
-                                        ui.id().with(("libfx", &entry.id)),
-                                        ChainDrag::LibraryIsf { path: path.clone() },
-                                        |ui| {
-                                            ui.label(text);
-                                        },
-                                    )
-                                    .response
-                                    .on_hover_text("Drag onto a layer's chain");
-                                }
-                                _ => {
-                                    ui.label(text);
-                                }
-                            }
+                            // Right-to-left so ➕ claims its space first and a
+                            // long name truncates. Laid out the other way round,
+                            // an NDI source named after a hostname pushed the
+                            // button off the panel entirely.
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if is_effect {
                                         let enabled = selected_layer.is_some();
-                                        let btn = ui.add_enabled(
-                                            enabled,
-                                            egui::Button::new("➕").small(),
-                                        );
+                                        let btn = ui
+                                            .add_enabled(enabled, egui::Button::new("➕").small());
                                         let btn = if enabled {
                                             btn.on_hover_text("Add to the selected layer")
                                         } else {
-                                            btn.on_disabled_hover_text(
-                                                "Select a layer first",
-                                            )
+                                            btn.on_disabled_hover_text("Select a layer first")
                                         };
                                         if btn.clicked()
                                             && let (Some(layer), Some(path)) =
@@ -1454,6 +1435,43 @@ mod egui_impl {
                                             source: entry.clone(),
                                         });
                                     }
+
+                                    // Whatever width is left goes to the name,
+                                    // filled and left-aligned so short names do
+                                    // not float over against the button.
+                                    let text =
+                                        format!("{} {}", source_icon(entry.kind), entry.name);
+                                    let size = egui::vec2(
+                                        ui.available_width(),
+                                        ui.spacing().interact_size.y,
+                                    );
+                                    ui.allocate_ui_with_layout(
+                                        size,
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let label = egui::Label::new(text).truncate();
+                                            match (is_effect, &entry.path) {
+                                                (true, Some(path)) => {
+                                                    ui.dnd_drag_source(
+                                                        ui.id().with(("libfx", &entry.id)),
+                                                        ChainDrag::LibraryIsf {
+                                                            path: path.clone(),
+                                                        },
+                                                        |ui| {
+                                                            ui.add(label);
+                                                        },
+                                                    )
+                                                    .response
+                                                    .on_hover_text("Drag onto a layer's chain");
+                                                }
+                                                _ => {
+                                                    // Truncation is common here, so
+                                                    // the full name is a hover away.
+                                                    ui.add(label).on_hover_text(&entry.name);
+                                                }
+                                            }
+                                        },
+                                    );
                                 },
                             );
                         });

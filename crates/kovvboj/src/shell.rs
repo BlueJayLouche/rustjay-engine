@@ -292,7 +292,6 @@ impl AnyEguiShell for KovvbojShell {
                             self.prefs.library_open = false;
                             self.save_prefs();
                         }
-                        ui.label(egui::RichText::new("LIBRARY").monospace().size(10.0));
                     });
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| tab(&mut self.library, ui, app_state, &engine));
