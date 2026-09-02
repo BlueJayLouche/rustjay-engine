@@ -241,6 +241,10 @@ impl AnyEguiShell for KovvbojShell {
             egui::Panel::right("kovvboj_inspector")
                 .default_size(300.0)
                 .min_size(200.0)
+                // Capped: an ISF parameter can be named anything, and a long
+                // one used to widen this panel until the layer stack had no
+                // room left. Labels truncate inside it instead.
+                .max_size(460.0)
                 .resizable(true)
                 .show(ui, |ui| {
                     Self::preview(ui, host.output_preview_texture_id, &engine);

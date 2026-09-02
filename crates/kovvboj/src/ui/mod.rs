@@ -637,6 +637,16 @@ mod egui_impl {
         }
     }
 
+    /// The parameter's own name, without the `[node]` suffix the mixer appends
+    /// for flat listings. The inspector already names the node in its heading,
+    /// and the suffix is long enough to blow out the panel.
+    fn short_param_name(desc: &ParameterDescriptor) -> &str {
+        match desc.name.rfind(" [") {
+            Some(i) if desc.name.ends_with(']') => &desc.name[..i],
+            _ => desc.name.as_str(),
+        }
+    }
+
     fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
         let current = engine.get_param_base(&desc.id).unwrap_or(desc.default);
         // In MIDI-learn / LFO-assign map mode the slider is shown disabled with a
@@ -648,7 +658,7 @@ mod egui_impl {
                 if map_mode {
                     let scope = ui.scope(|ui| {
                         ui.disable();
-                        ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).text(&desc.name));
+                        ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).text(short_param_name(desc)));
                     });
                     let midi_path =
                         format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
@@ -657,13 +667,13 @@ mod egui_impl {
                         engine,
                         scope.response.rect,
                         &desc.id,
-                        &desc.name,
+                        short_param_name(desc),
                         &midi_path,
                         desc.min,
                         desc.max,
                     );
                 } else if ui
-                    .add(egui::Slider::new(&mut v, desc.min..=desc.max).text(&desc.name))
+                    .add(egui::Slider::new(&mut v, desc.min..=desc.max).text(short_param_name(desc)))
                     .changed()
                 {
                     engine.set_param_base(&desc.id, v);
@@ -676,7 +686,7 @@ mod egui_impl {
                         ui.disable();
                         ui.add(
                             egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
-                                .text(&desc.name),
+                                .text(short_param_name(desc)),
                         );
                     });
                     let midi_path =
@@ -686,7 +696,7 @@ mod egui_impl {
                         engine,
                         scope.response.rect,
                         &desc.id,
-                        &desc.name,
+                        short_param_name(desc),
                         &midi_path,
                         desc.min,
                         desc.max,
@@ -694,7 +704,7 @@ mod egui_impl {
                 } else if ui
                     .add(
                         egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
-                            .text(&desc.name),
+                            .text(short_param_name(desc)),
                     )
                     .changed()
                 {
@@ -703,7 +713,7 @@ mod egui_impl {
             }
             ParamType::Bool => {
                 let mut on = current >= 0.5;
-                if ui.checkbox(&mut on, &desc.name).changed() {
+                if ui.checkbox(&mut on, short_param_name(desc)).changed() {
                     engine.set_param_base(&desc.id, if on { 1.0 } else { 0.0 });
                 }
             }
@@ -894,6 +904,11 @@ mod egui_impl {
         state: &mut KovvbojAppState,
         engine: &mut EngineState,
     ) {
+        // Long labels ellipsize rather than widening the panel. ISF parameter
+        // names are arbitrary text — "Shape (0=Circle 1=Rect 2=Diamond …)" is a
+        // real one — and one of them used to squeeze the layer stack off screen.
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+
         let selection = state.selection.clone();
 
         // Resolve the selection to a parameter prefix and a heading. Returning
@@ -4482,6 +4497,37 @@ mod egui_impl {
                 });
             harness.run();
             harness
+        }
+
+        /// The mixer appends `[node]` to a parameter's display name so flat
+        /// listings can tell two channels apart. The inspector already names the
+        /// node, and the suffix is long enough to widen the panel until the
+        /// layer stack has no room — so it is stripped for display only.
+        #[test]
+        fn param_labels_drop_the_node_suffix_the_mixer_appends() {
+            let desc = |name: &str| ParameterDescriptor {
+                id: "ch_cb77b4c2_fxc2aeb164_shape".to_string(),
+                name: name.to_string(),
+                param_type: rustjay_core::ParamType::Float,
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                step: 0.01,
+                category: rustjay_core::ParamCategory::Color,
+            };
+
+            assert_eq!(
+                short_param_name(&desc("Position X [ch_cb77b4c2_fxc2aeb164]")),
+                "Position X"
+            );
+            // A name that legitimately ends in a bracketed phrase keeps it.
+            assert_eq!(short_param_name(&desc("Position X")), "Position X");
+            // Only the trailing suffix goes; interior brackets are part of the
+            // name, as in "Shape (0=Circle …)".
+            assert_eq!(
+                short_param_name(&desc("Shape (0=Circle 1=Rect) [ch_a_fxb]")),
+                "Shape (0=Circle 1=Rect)"
+            );
         }
 
         /// A device layer offers a source picker at all — a plain generator
