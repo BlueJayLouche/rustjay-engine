@@ -26,6 +26,7 @@ rustjay-engine = { workspace = true }
 rustjay-gui    = { workspace = true, optional = true }
 rustjay-mixer  = { workspace = true, optional = true }
 rustjay-isf    = { workspace = true }
+isf            = { workspace = true }
 rustjay-core   = { workspace = true }
 rustjay-render = { workspace = true }
 rustjay-io     = { workspace = true }

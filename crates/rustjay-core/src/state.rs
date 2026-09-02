@@ -1515,6 +1515,33 @@ impl Default for EngineState {
     }
 }
 
+/// Re-key every engine store that references a parameter prefix after a
+/// structural move (e.g. an FX dragged to another chain changes its prefix).
+///
+/// The two stores are NOT the same shape:
+/// - `ModulationEngine::assignments` is keyed by the **raw parameter id**
+///   (`ch_A_deck_7_fx3_angle`) — a straight prefix swap.
+/// - `EngineState::midi_mappings` stores a `param_path` of the form
+///   `"<category>/<param_id>"` (`color/ch_A_deck_7_fx3_angle`) — only the
+///   segment after the first `/` carries the prefix; the category is left
+///   alone even when its name happens to contain the prefix text.
+pub fn rekey_prefix(state: &mut EngineState, old_prefix: &str, new_prefix: &str) {
+    if old_prefix == new_prefix {
+        return;
+    }
+    if let Ok(mut modulation) = state.modulation.lock() {
+        modulation.rekey_assignments(old_prefix, new_prefix);
+    }
+    for mapping in &mut state.midi_mappings {
+        let Some((category, param_id)) = mapping.param_path.split_once('/') else {
+            continue;
+        };
+        if let Some(rest) = param_id.strip_prefix(old_prefix) {
+            mapping.param_path = format!("{category}/{new_prefix}{rest}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1584,5 +1611,82 @@ mod tests {
     fn registered_param_ids_empty_by_default() {
         let state = EngineState::new();
         assert!(state.registered_param_ids.is_empty());
+    }
+
+    fn midi_snapshot(param_path: &str) -> MidiMappingSnapshot {
+        MidiMappingSnapshot {
+            name: param_path.to_string(),
+            param_path: param_path.to_string(),
+            kind: MidiMsgKind::Cc,
+            selector: 1,
+            channel: 0,
+            min_value: 0.0,
+            max_value: 1.0,
+        }
+    }
+
+    #[test]
+    fn rekey_prefix_rekeys_modulation_assignments_by_raw_id() {
+        let mut state = EngineState::new();
+        {
+            let mut m = state.modulation.lock().unwrap();
+            m.assignments.insert(
+                "ch_A_deck_7_fx3_angle".to_string(),
+                vec![crate::modulation::ParamModulation {
+                    source_id: "lfo_0".to_string(),
+                    amount: 1.0,
+                    component: None,
+                }],
+            );
+            m.assignments.insert("master_fx9_angle".to_string(), Vec::new());
+        }
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        let m = state.modulation.lock().unwrap();
+        assert!(m.assignments.contains_key("ch_B_deck_2_fx5_angle"));
+        assert!(!m.assignments.contains_key("ch_A_deck_7_fx3_angle"));
+        assert!(m.assignments.contains_key("master_fx9_angle"));
+    }
+
+    #[test]
+    fn rekey_prefix_rewrites_midi_param_path_after_first_slash() {
+        let mut state = EngineState::new();
+        state.midi_mappings = vec![
+            midi_snapshot("color/ch_A_deck_7_fx3_angle"),
+            midi_snapshot("motion/master_fx9_speed"),
+        ];
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        assert_eq!(
+            state.midi_mappings[0].param_path,
+            "color/ch_B_deck_2_fx5_angle"
+        );
+        assert_eq!(state.midi_mappings[1].param_path, "motion/master_fx9_speed");
+    }
+
+    #[test]
+    fn rekey_prefix_leaves_category_containing_prefix_text_alone() {
+        // The category segment may itself contain the prefix text — only the
+        // segment after the first '/' is the param id.
+        let mut state = EngineState::new();
+        state.midi_mappings =
+            vec![midi_snapshot("ch_A_deck_7_fx3_color/ch_A_deck_7_fx3_angle")];
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_");
+
+        assert_eq!(
+            state.midi_mappings[0].param_path,
+            "ch_A_deck_7_fx3_color/ch_B_angle"
+        );
+    }
+
+    #[test]
+    fn rekey_prefix_same_prefix_is_noop() {
+        let mut state = EngineState::new();
+        state.midi_mappings = vec![midi_snapshot("color/fx_angle")];
+        rekey_prefix(&mut state, "fx_", "fx_");
+        assert_eq!(state.midi_mappings[0].param_path, "color/fx_angle");
     }
 }

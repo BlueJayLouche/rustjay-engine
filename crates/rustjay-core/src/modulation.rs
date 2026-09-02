@@ -852,6 +852,33 @@ impl ModulationEngine {
         self.invalidate_evaluation_cache();
     }
 
+    /// Re-key every assignment whose key starts with `old_prefix` to start with
+    /// `new_prefix` instead. Used when an FX moves between chains and its
+    /// parameter prefix changes: the modulation routing must follow it.
+    /// Assignments landing on an already-keyed target are merged into it.
+    pub fn rekey_assignments(&mut self, old_prefix: &str, new_prefix: &str) {
+        if old_prefix == new_prefix {
+            return;
+        }
+        let old_keys: Vec<String> = self
+            .assignments
+            .keys()
+            .filter(|k| k.starts_with(old_prefix))
+            .cloned()
+            .collect();
+        if old_keys.is_empty() {
+            return;
+        }
+        for old_key in old_keys {
+            let new_key = format!("{new_prefix}{}", &old_key[old_prefix.len()..]);
+            if let Some(mods) = self.assignments.remove(&old_key) {
+                self.assignments.entry(new_key).or_default().extend(mods);
+            }
+        }
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
+    }
+
     /// Assign a source to modulate a parameter.
     pub fn assign(
         &mut self,
@@ -1725,6 +1752,51 @@ mod tests {
         assert!(engine.has_modulation("brightness"));
         engine.clear_assignments("brightness");
         assert!(!engine.has_modulation("brightness"));
+    }
+
+    #[test]
+    fn engine_rekey_assignments_swaps_prefix() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("ch_A_deck_7_fx3_angle", &uuid, 1.0, None);
+        engine.assign("ch_A_deck_7_fx3_speed", &uuid, 0.5, None);
+        // Same prefix text appearing mid-key is not a prefix — must not move.
+        engine.assign("master_fx9_ch_A_deck_7_fx3_angle", &uuid, 0.25, None);
+
+        engine.rekey_assignments("ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        assert!(engine.has_modulation("ch_B_deck_2_fx5_angle"));
+        assert!(engine.has_modulation("ch_B_deck_2_fx5_speed"));
+        assert!(engine.has_modulation("master_fx9_ch_A_deck_7_fx3_angle"));
+        assert!(!engine.has_modulation("ch_A_deck_7_fx3_angle"));
+        assert_eq!(engine.assignments.len(), 3);
+        // The assignment payload travels with the key.
+        let mods = &engine.assignments["ch_B_deck_2_fx5_angle"];
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].source_id, uuid);
+    }
+
+    #[test]
+    fn engine_rekey_assignments_merges_existing_target() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("old_fx_angle", &uuid, 1.0, None);
+        engine.assign("new_fx_angle", &uuid, 0.5, None);
+
+        engine.rekey_assignments("old_fx_", "new_fx_");
+
+        assert_eq!(engine.assignments["new_fx_angle"].len(), 2);
+        assert!(!engine.has_modulation("old_fx_angle"));
+    }
+
+    #[test]
+    fn engine_rekey_assignments_noop_on_same_prefix() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("fx_angle", &uuid, 1.0, None);
+        engine.rekey_assignments("fx_", "fx_");
+        assert_eq!(engine.assignments.len(), 1);
+        assert!(engine.has_modulation("fx_angle"));
     }
 
     #[test]

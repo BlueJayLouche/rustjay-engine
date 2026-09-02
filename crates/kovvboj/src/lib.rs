@@ -226,8 +226,226 @@ pub enum EffectTarget {
 pub struct PendingEffect {
     /// Path to the `.fs` ISF shader file.
     pub path: std::path::PathBuf,
-    /// Where to append the effect.
+    /// Where to add the effect.
     pub target: EffectTarget,
+    /// Insertion position within the target chain (`None` = append). Set by
+    /// library drag-and-drop, which lands on a specific gap in a strip.
+    pub index: Option<usize>,
+}
+
+/// Which FX chain in the mixer graph a slot belongs to. Deck chains are keyed
+/// by channel + deck UUID, matching how [`Selection`] addresses nodes.
+#[cfg(feature = "mixer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainRef {
+    /// A deck's post-source chain.
+    Deck { channel: String, deck: String },
+    /// A channel's post-compositor chain.
+    Channel { channel: String },
+    /// The master chain.
+    Master,
+}
+
+#[cfg(feature = "mixer")]
+impl ChainRef {
+    /// The equivalent [`EffectTarget`] for queueing a new effect.
+    pub fn effect_target(&self) -> EffectTarget {
+        match self {
+            ChainRef::Deck { channel, deck } => EffectTarget::Deck {
+                channel_uuid: channel.clone(),
+                deck_uuid: deck.clone(),
+            },
+            ChainRef::Channel { channel } => EffectTarget::Channel {
+                channel_uuid: channel.clone(),
+            },
+            ChainRef::Master => EffectTarget::Master,
+        }
+    }
+
+    /// The [`Selection`] that addresses `fx` (a slot UUID) in this chain.
+    pub fn selection_for(&self, fx: &str) -> Selection {
+        match self {
+            ChainRef::Deck { channel, deck } => Selection::DeckFx {
+                channel: channel.clone(),
+                deck: deck.clone(),
+                fx: fx.to_string(),
+            },
+            ChainRef::Channel { channel } => Selection::ChannelFx {
+                channel: channel.clone(),
+                fx: fx.to_string(),
+            },
+            ChainRef::Master => Selection::MasterFx { fx: fx.to_string() },
+        }
+    }
+}
+
+#[cfg(feature = "mixer")]
+impl Selection {
+    /// The chain and slot UUID this selection points at, if it selects an FX.
+    pub fn fx_location(&self) -> Option<(ChainRef, &str)> {
+        match self {
+            Selection::DeckFx { channel, deck, fx } => Some((
+                ChainRef::Deck {
+                    channel: channel.clone(),
+                    deck: deck.clone(),
+                },
+                fx,
+            )),
+            Selection::ChannelFx { channel, fx } => Some((
+                ChainRef::Channel {
+                    channel: channel.clone(),
+                },
+                fx,
+            )),
+            Selection::MasterFx { fx } => Some((ChainRef::Master, fx)),
+            _ => None,
+        }
+    }
+}
+
+/// Move the just-appended slot (last) to `index` when a drop specified an
+/// insertion position; returns the slot's final index.
+#[cfg(feature = "mixer")]
+fn position_new_slot(chain: &mut Vec<rustjay_mixer::EffectSlot>, index: Option<usize>) -> usize {
+    match index {
+        Some(i) if i + 1 < chain.len() => {
+            let slot = chain.pop().expect("chain just grew");
+            let pos = i.min(chain.len());
+            chain.insert(pos, slot);
+            pos
+        }
+        _ => chain.len() - 1,
+    }
+}
+
+/// The chain's slot list plus the base of its per-slot parameter prefixes, so
+/// a slot's full prefix is always `format!("{base}fx{slot_uuid}_")`.
+#[cfg(feature = "mixer")]
+fn chain_parts<'m>(
+    mixer: &'m mut Mixer,
+    chain: &ChainRef,
+) -> Option<(&'m mut Vec<rustjay_mixer::EffectSlot>, String)> {
+    match chain {
+        ChainRef::Master => Some((&mut mixer.master, "master_".to_string())),
+        ChainRef::Channel { channel } => {
+            let ch = mixer.channels.iter_mut().find(|c| c.uuid == *channel)?;
+            let base = format!("ch_{}_", ch.uuid);
+            Some((&mut ch.chain, base))
+        }
+        ChainRef::Deck { channel, deck } => {
+            let ch = mixer.channels.iter_mut().find(|c| c.uuid == *channel)?;
+            let compositor = ch.effect.as_any_mut()?.downcast_mut::<DeckCompositor>()?;
+            let d = compositor.decks.iter_mut().find(|d| d.uuid == *deck)?;
+            let base = d.full_prefix().to_string();
+            Some((&mut d.chain, base))
+        }
+    }
+}
+
+/// Move an FX slot (by UUID) to a gap position in a chain — the drag-and-drop
+/// primitive behind the chain strips.
+///
+/// A same-chain drop is a pure reorder (prefixes are UUID-stable, so nothing
+/// is re-keyed). A cross-chain move re-prefixes the slot at the destination
+/// and calls [`rustjay_core::rekey_prefix`] so modulation assignments and MIDI
+/// mappings follow it; the slot's current param values are queued onto
+/// `engine.param_restore` under the new ids so the re-registration the prefix
+/// change triggers doesn't reset them to defaults. `index` is a gap position
+/// (`0..=len`); dropping a slot on its own gap is a no-op. Returns `true` when
+/// the graph changed.
+#[cfg(feature = "mixer")]
+pub fn move_effect(
+    mixer: &mut Mixer,
+    engine: &mut EngineState,
+    from: &ChainRef,
+    slot_uuid: &str,
+    to: &ChainRef,
+    index: usize,
+) -> bool {
+    if from == to {
+        let from_idx = {
+            let Some((chain, _)) = chain_parts(mixer, from) else {
+                return false;
+            };
+            let Some(pos) = chain.iter().position(|s| s.uuid == slot_uuid) else {
+                return false;
+            };
+            pos
+        };
+        // `index` is a gap position; removing the slot first shifts every
+        // later gap down by one.
+        let to_idx = if index > from_idx { index - 1 } else { index };
+        if to_idx == from_idx {
+            return false;
+        }
+        match from {
+            ChainRef::Deck { channel, deck } => {
+                let Some(ch) = mixer.channels.iter_mut().find(|c| &c.uuid == channel) else {
+                    return false;
+                };
+                let Some(compositor) = ch
+                    .effect
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<DeckCompositor>())
+                else {
+                    return false;
+                };
+                let Some(d) = compositor.decks.iter_mut().find(|d| &d.uuid == deck) else {
+                    return false;
+                };
+                d.reorder_effect(from_idx, to_idx);
+            }
+            ChainRef::Channel { channel } => {
+                let Some(ch) = mixer.channels.iter_mut().find(|c| &c.uuid == channel) else {
+                    return false;
+                };
+                ch.reorder_effect(from_idx, to_idx);
+            }
+            ChainRef::Master => {
+                mixer.reorder_master_effect(from_idx, to_idx);
+            }
+        }
+        return true;
+    }
+
+    // Bail before touching the source if either end is gone.
+    let (mut slot, old_prefix) = {
+        let Some((chain, base)) = chain_parts(mixer, from) else {
+            return false;
+        };
+        let Some(idx) = chain.iter().position(|s| s.uuid == slot_uuid) else {
+            return false;
+        };
+        (chain.remove(idx), format!("{base}fx{slot_uuid}_"))
+    };
+    let Some((dst_chain, dst_base)) = chain_parts(mixer, to) else {
+        // Destination vanished — restore the slot rather than drop it.
+        if let Some((src_chain, _)) = chain_parts(mixer, from) {
+            src_chain.push(slot);
+        }
+        return false;
+    };
+
+    let new_prefix = format!("{dst_base}fx{}_", slot.uuid);
+
+    // Preserve current param values across the prefix change: re-registration
+    // keys base values by param id, so queue the re-keyed values for the
+    // engine to apply right after the next registration.
+    if let Ok(mut restore) = engine.param_restore.lock() {
+        let descriptors = engine.param_descriptors.clone();
+        for d in descriptors.iter() {
+            if let Some(rest) = d.id.strip_prefix(old_prefix.as_str()) {
+                let value = engine.get_param_base(&d.id).unwrap_or(d.default);
+                restore.push((format!("{new_prefix}{rest}"), value));
+            }
+        }
+    }
+
+    slot.effect.set_param_prefix(&new_prefix);
+    let at = index.min(dst_chain.len());
+    dst_chain.insert(at, slot);
+    rustjay_core::rekey_prefix(engine, &old_prefix, &new_prefix);
+    true
 }
 
 impl KovvbojAppState {
@@ -1568,9 +1786,8 @@ impl EffectPlugin for KovvbojRootPlugin {
                                 let name = isf.shader_name.clone();
                                 let node = EffectNode::new(isf, &name, device, queue, engine);
                                 mixer.add_master_effect(Box::new(node));
-                                if let Some(slot) = mixer.master.last_mut() {
-                                    slot.source_path = Some(req.path.clone());
-                                }
+                                let pos = position_new_slot(&mut mixer.master, req.index);
+                                mixer.master[pos].source_path = Some(req.path.clone());
                                 self.params_dirty = true;
                                 engine.notify(
                                     format!("Added master FX '{}'", name),
@@ -1605,9 +1822,8 @@ impl EffectPlugin for KovvbojRootPlugin {
                                 let name = isf.shader_name.clone();
                                 let node = EffectNode::new(isf, &name, device, queue, engine);
                                 channel.add_effect(Box::new(node));
-                                if let Some(slot) = channel.chain.last_mut() {
-                                    slot.source_path = Some(req.path.clone());
-                                }
+                                let pos = position_new_slot(&mut channel.chain, req.index);
+                                channel.chain[pos].source_path = Some(req.path.clone());
                                 self.params_dirty = true;
                                 engine.notify(
                                     format!("Added FX '{}' to channel '{}'", name, channel.name),
@@ -1670,9 +1886,8 @@ impl EffectPlugin for KovvbojRootPlugin {
                                 let name = isf.shader_name.clone();
                                 let node = EffectNode::new(isf, &name, device, queue, engine);
                                 deck.add_effect(Box::new(node));
-                                if let Some(slot) = deck.chain.last_mut() {
-                                    slot.source_path = Some(req.path.clone());
-                                }
+                                let pos = position_new_slot(&mut deck.chain, req.index);
+                                deck.chain[pos].source_path = Some(req.path.clone());
                                 self.params_dirty = true;
                                 engine.notify(
                                     format!("Added FX '{}' to deck '{}'", name, deck.name),
@@ -2626,5 +2841,245 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> KovvbojSourceEntry {
         .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
         device_index: e.device_index,
+    }
+}
+
+
+#[cfg(all(test, feature = "mixer"))]
+mod tests {
+    use super::*;
+
+    /// Minimal `EffectInstance` that records its param prefix.
+    struct DummyFx {
+        prefix: String,
+    }
+
+    impl DummyFx {
+        fn new() -> Self {
+            Self {
+                prefix: String::new(),
+            }
+        }
+    }
+
+    impl EffectInstance for DummyFx {
+        fn label(&self) -> &str {
+            "dummy"
+        }
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+        fn set_param_prefix(&mut self, prefix: &str) {
+            self.prefix = prefix.to_string();
+        }
+        fn render_to(
+            &mut self,
+            _ctx: &mut RenderCtx<'_>,
+            _inputs: &[EffectInput<'_>],
+            _target: RenderTarget<'_>,
+            _engine: &EngineState,
+        ) {
+        }
+    }
+
+    /// Two channels with one deck each; each deck carries two FX slots.
+    fn test_mixer() -> Mixer {
+        let mut mixer = Mixer::new();
+        for (ch_uuid, ch_name, deck_uuid) in [("ch1", "CH 1", "d1"), ("ch2", "CH 2", "d2")] {
+            let mut comp = DeckCompositor::new();
+            let mut deck = Deck::new(
+                deck_uuid,
+                deck_uuid,
+                Box::new(DummyFx::new()),
+                SourceKind::SolidColor,
+            );
+            deck.add_effect(Box::new(DummyFx::new()));
+            deck.add_effect(Box::new(DummyFx::new()));
+            comp.decks.push(deck);
+            mixer
+                .add_channel(Channel::new(ch_uuid, ch_name, Box::new(comp)))
+                .unwrap();
+        }
+        mixer
+    }
+
+    fn deck_ref<'m>(mixer: &'m Mixer, channel: &str, deck: &str) -> &'m Deck {
+        let ch = mixer.channels.iter().find(|c| c.uuid == channel).unwrap();
+        let comp = ch
+            .effect
+            .as_any()
+            .and_then(|a| a.downcast_ref::<DeckCompositor>())
+            .unwrap();
+        comp.decks.iter().find(|d| d.uuid == deck).unwrap()
+    }
+
+    #[test]
+    fn same_chain_drop_reorders_and_keeps_prefixes() {
+        let mut mixer = test_mixer();
+        let mut engine = EngineState::new();
+        let chain = ChainRef::Deck {
+            channel: "ch1".into(),
+            deck: "d1".into(),
+        };
+        let first_uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
+        let second_uuid = deck_ref(&mixer, "ch1", "d1").chain[1].uuid.clone();
+        let first_prefix = format!(
+            "{}fx{}_",
+            deck_ref(&mixer, "ch1", "d1").full_prefix(),
+            first_uuid
+        );
+
+        // Dropping on the slot's own gaps is a no-op.
+        assert!(!move_effect(&mut mixer, &mut engine, &chain, &first_uuid, &chain, 0));
+        assert!(!move_effect(&mut mixer, &mut engine, &chain, &first_uuid, &chain, 1));
+
+        // Dropping on the trailing gap moves the slot to the end.
+        assert!(move_effect(&mut mixer, &mut engine, &chain, &first_uuid, &chain, 2));
+        let d = deck_ref(&mixer, "ch1", "d1");
+        assert_eq!(d.chain[0].uuid, second_uuid);
+        assert_eq!(d.chain[1].uuid, first_uuid);
+        // Prefixes are UUID-stable: a reorder re-keys nothing.
+        let fx = d.chain[1]
+            .effect
+            .as_any()
+            .and_then(|a| a.downcast_ref::<DummyFx>())
+            .unwrap();
+        assert_eq!(fx.prefix, first_prefix);
+    }
+
+    #[test]
+    fn cross_chain_move_reprefixes_and_rekeys_engine_stores() {
+        let mut mixer = test_mixer();
+        let mut engine = EngineState::new();
+        let from = ChainRef::Deck {
+            channel: "ch1".into(),
+            deck: "d1".into(),
+        };
+        let d = deck_ref(&mixer, "ch1", "d1");
+        let uuid = d.chain[0].uuid.clone();
+        let old_prefix = format!("{}fx{}_", d.full_prefix(), uuid);
+
+        // Wire a modulation assignment, a MIDI mapping and a param value to
+        // the slot's old prefix.
+        engine.modulation.lock().unwrap().assignments.insert(
+            format!("{old_prefix}angle"),
+            vec![rustjay_core::modulation::ParamModulation {
+                source_id: "lfo_0".into(),
+                amount: 1.0,
+                component: None,
+            }],
+        );
+        engine.midi_mappings.push(rustjay_core::MidiMappingSnapshot {
+            name: "angle".into(),
+            param_path: format!("color/{old_prefix}angle"),
+            kind: rustjay_core::MidiMsgKind::Cc,
+            selector: 20,
+            channel: 0,
+            min_value: 0.0,
+            max_value: 1.0,
+        });
+        engine.param_descriptors = std::sync::Arc::new(vec![
+            rustjay_core::ParameterDescriptor::float(
+                format!("{old_prefix}angle"),
+                "angle",
+                rustjay_core::ParamCategory::Color,
+                0.0,
+                1.0,
+                0.0,
+                0.01,
+            ),
+        ]);
+        engine.custom_param_bases = vec![0.7];
+        engine.custom_params = vec![0.7];
+
+        assert!(move_effect(
+            &mut mixer,
+            &mut engine,
+            &from,
+            &uuid,
+            &ChainRef::Master,
+            0
+        ));
+
+        // The slot moved; the deck chain shrank.
+        assert_eq!(mixer.master.len(), 1);
+        assert_eq!(mixer.master[0].uuid, uuid);
+        assert_eq!(deck_ref(&mixer, "ch1", "d1").chain.len(), 1);
+
+        // The slot was re-prefixed at the destination.
+        let new_prefix = format!("master_fx{uuid}_");
+        let fx = mixer.master[0]
+            .effect
+            .as_any()
+            .and_then(|a| a.downcast_ref::<DummyFx>())
+            .unwrap();
+        assert_eq!(fx.prefix, new_prefix);
+
+        // Modulation and MIDI follow the slot.
+        assert!(
+            engine
+                .modulation
+                .lock()
+                .unwrap()
+                .assignments
+                .contains_key(&format!("{new_prefix}angle"))
+        );
+        assert_eq!(
+            engine.midi_mappings[0].param_path,
+            format!("color/{new_prefix}angle")
+        );
+
+        // The param value is queued for restore under the new id.
+        assert!(
+            engine
+                .param_restore
+                .lock()
+                .unwrap()
+                .contains(&(format!("{new_prefix}angle"), 0.7))
+        );
+    }
+
+    #[test]
+    fn cross_deck_move_inserts_at_drop_index() {
+        let mut mixer = test_mixer();
+        let mut engine = EngineState::new();
+        let from = ChainRef::Deck {
+            channel: "ch1".into(),
+            deck: "d1".into(),
+        };
+        let to = ChainRef::Deck {
+            channel: "ch2".into(),
+            deck: "d2".into(),
+        };
+        let uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
+        let existing = deck_ref(&mixer, "ch2", "d2").chain[0].uuid.clone();
+
+        assert!(move_effect(&mut mixer, &mut engine, &from, &uuid, &to, 0));
+
+        let d2 = deck_ref(&mixer, "ch2", "d2");
+        assert_eq!(d2.chain.len(), 3);
+        assert_eq!(d2.chain[0].uuid, uuid, "inserted at gap 0");
+        assert_eq!(d2.chain[1].uuid, existing);
+        assert_eq!(deck_ref(&mixer, "ch1", "d1").chain.len(), 1);
+    }
+
+    #[test]
+    fn move_to_missing_chain_keeps_slot_in_source() {
+        let mut mixer = test_mixer();
+        let mut engine = EngineState::new();
+        let from = ChainRef::Deck {
+            channel: "ch1".into(),
+            deck: "d1".into(),
+        };
+        let uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
+        let missing = ChainRef::Channel {
+            channel: "nope".into(),
+        };
+
+        assert!(!move_effect(&mut mixer, &mut engine, &from, &uuid, &missing, 0));
+
+        let d = deck_ref(&mixer, "ch1", "d1");
+        assert_eq!(d.chain.len(), 2, "slot restored, not lost");
+        assert!(d.chain.iter().any(|s| s.uuid == uuid));
     }
 }

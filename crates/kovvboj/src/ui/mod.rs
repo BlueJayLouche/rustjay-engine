@@ -54,6 +54,9 @@ pub struct EffectsTab {
     stream_name: String,
     /// Async result from the native file picker (effect shaders).
     pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
+    /// ISF path → is-a-filter cache (header declares an `inputImage` input).
+    /// Lazily parsed once per file; the shader watcher re-scans on change.
+    isf_filters: std::collections::HashMap<std::path::PathBuf, bool>,
 }
 
 impl Default for EffectsTab {
@@ -64,6 +67,7 @@ impl Default for EffectsTab {
             stream_url: String::new(),
             stream_name: String::new(),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            isf_filters: std::collections::HashMap::new(),
         }
     }
 }
@@ -279,6 +283,22 @@ mod egui_impl {
         }
     }
 
+    /// True when the ISF header declares an `inputImage` image input — i.e.
+    /// the shader filters an upstream frame rather than generating one. Uses
+    /// the same parser the runtime loads shaders with.
+    fn isf_is_filter(path: &std::path::Path) -> bool {
+        let Ok(src) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(parsed) = isf::parse(&src) else {
+            return false;
+        };
+        parsed
+            .inputs
+            .iter()
+            .any(|i| i.name == "inputImage" && matches!(i.ty, isf::InputType::Image))
+    }
+
     /// One node in a signal strip: a source or an FX slot.
     ///
     /// Returns `(clicked, toggled)` — a click selects the node, a click on the
@@ -368,6 +388,154 @@ mod egui_impl {
             ],
             egui::Stroke::new(1.0, hair_3()),
         );
+    }
+
+    /// Drag payload for chain strips: an existing FX slot being moved, or a
+    /// library ISF filter being inserted. One payload type for the whole app
+    /// so a drag from the library can land on any strip.
+    #[derive(Clone)]
+    enum ChainDrag {
+        /// An FX slot already in a chain — reorder or cross-chain move.
+        Fx { chain: crate::ChainRef, slot: String },
+        /// A library ISF filter, inserted at the drop gap.
+        LibraryIsf { path: std::path::PathBuf },
+    }
+
+    /// A completed drop on a chain-strip gap.
+    struct ChainDrop {
+        target: crate::ChainRef,
+        index: usize,
+        payload: ChainDrag,
+    }
+
+    /// A drop gap between chips in a chain strip. While a drag is in flight
+    /// this is a `dnd_drop_zone` whose hover highlight (plus an amber insertion
+    /// line) marks the drop point; at rest it draws the plain link dash so the
+    /// idle strip is unchanged.
+    fn strip_gap(ui: &mut egui::Ui) -> Option<std::sync::Arc<ChainDrag>> {
+        use rustjay_gui::egui_theme::colors::*;
+        if !egui::DragAndDrop::has_any_payload(ui.ctx()) {
+            strip_link(ui);
+            return None;
+        }
+        let (inner, payload) = ui.dnd_drop_zone::<ChainDrag, _>(egui::Frame::NONE, |ui| {
+            ui.allocate_exact_size(egui::vec2(12.0, 22.0), egui::Sense::hover());
+        });
+        if inner.response.dnd_hover_payload::<ChainDrag>().is_some() {
+            let rect = inner.response.rect;
+            ui.painter().vline(
+                rect.center().x,
+                rect.y_range(),
+                egui::Stroke::new(2.0, amber()),
+            );
+        }
+        payload
+    }
+
+    /// What one chain strip wants the caller to do, applied once borrows allow.
+    #[derive(Default)]
+    struct StripOutcome {
+        toggle: Option<usize>,
+        remove: Option<usize>,
+        /// UUID of the FX chip clicked for selection.
+        select: Option<String>,
+        /// `(gap index, payload)` drops landed on the strip.
+        drops: Vec<(usize, ChainDrag)>,
+    }
+
+    /// Draw one FX chain strip: drop gaps between draggable chips, a remove ✖
+    /// per chip, and a trailing "+" that opens the ISF picker. Shared by deck,
+    /// channel and master chains. Source chips are deliberately NOT draggable —
+    /// they own decoders/cameras/receivers and stay put.
+    fn fx_strip(
+        ui: &mut egui::Ui,
+        chain: &[rustjay_mixer::EffectSlot],
+        chain_ref: &crate::ChainRef,
+        selected_fx: Option<&str>,
+        picker: &std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
+    ) -> StripOutcome {
+        let mut out = StripOutcome::default();
+        if let Some(p) = strip_gap(ui) {
+            out.drops.push((0, (*p).clone()));
+        }
+        for (i, slot) in chain.iter().enumerate() {
+            let payload = ChainDrag::Fx {
+                chain: chain_ref.clone(),
+                slot: slot.uuid.clone(),
+            };
+            let (clicked, toggled) = ui
+                .dnd_drag_source(
+                    ui.id().with(("fxchip", &slot.uuid)),
+                    payload,
+                    |ui| {
+                        chip(
+                            ui,
+                            slot.effect.label(),
+                            selected_fx == Some(slot.uuid.as_str()),
+                            Some(slot.enabled),
+                        )
+                    },
+                )
+                .inner;
+            if toggled {
+                out.toggle = Some(i);
+            } else if clicked {
+                out.select = Some(slot.uuid.clone());
+            }
+            if ui
+                .small_button("✖")
+                .on_hover_text("Remove effect")
+                .clicked()
+            {
+                out.remove = Some(i);
+            }
+            if let Some(p) = strip_gap(ui) {
+                out.drops.push((i + 1, (*p).clone()));
+            }
+        }
+        if ui.small_button("+").on_hover_text("Add FX…").clicked() {
+            spawn_effect_picker(picker, ui.ctx(), chain_ref.effect_target());
+        }
+        out
+    }
+
+    /// Apply completed chain-strip drops. Library inserts are queued for
+    /// `prepare()` (effect creation needs the GPU device); FX moves are
+    /// applied in place via [`crate::move_effect`], which re-prefixes the slot
+    /// and re-keys the engine stores. Keeps the inspector attached to a slot
+    /// that moved chains.
+    fn apply_chain_drops(
+        pending_effects: &mut Vec<crate::PendingEffect>,
+        params_dirty_request: &mut bool,
+        selection: &mut crate::Selection,
+        mixer: &mut rustjay_mixer::Mixer,
+        engine: &mut EngineState,
+        drops: Vec<ChainDrop>,
+    ) {
+        for drop in drops {
+            match drop.payload {
+                ChainDrag::LibraryIsf { path } => {
+                    pending_effects.push(crate::PendingEffect {
+                        path,
+                        target: drop.target.effect_target(),
+                        index: Some(drop.index),
+                    });
+                }
+                ChainDrag::Fx { chain, slot } => {
+                    if !crate::move_effect(mixer, engine, &chain, &slot, &drop.target, drop.index)
+                    {
+                        continue;
+                    }
+                    *params_dirty_request = true;
+                    if let Some((sel_chain, sel_fx)) = selection.fx_location()
+                        && sel_chain == chain
+                        && sel_fx == slot
+                    {
+                        *selection = drop.target.selection_for(&slot);
+                    }
+                }
+            }
+        }
     }
 
     fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
@@ -478,7 +646,11 @@ mod egui_impl {
                 .pick_file()
             {
                 if let Ok(mut guard) = pending.lock() {
-                    *guard = Some(crate::PendingEffect { path, target });
+                    *guard = Some(crate::PendingEffect {
+                        path,
+                        target,
+                        index: None,
+                    });
                 }
                 ctx.request_repaint();
             }
@@ -515,47 +687,6 @@ mod egui_impl {
             std::time::Duration::from_secs(3),
         );
         Ok(())
-    }
-
-    /// Helper: render an FX chain as an enable-checkbox + remove-button list,
-    /// applying removals in place. Returns `true` if a slot was removed — a
-    /// structural edit the caller should surface via `params_dirty_request` so
-    /// the plugin re-registers parameters and drops the orphaned descriptors.
-    ///
-    /// On removal it also purges any orphaned modulation assignments targeting
-    /// the removed FX's params, keyed by `<chain_prefix>fx<uuid>_` (where
-    /// `chain_prefix` is `master_`, `ch_<uuid>_`, or a deck's full prefix).
-    fn fx_chain_ui(
-        ui: &mut egui::Ui,
-        chain: &mut Vec<rustjay_mixer::EffectSlot>,
-        chain_prefix: &str,
-        engine: &mut EngineState,
-    ) -> bool {
-        let mut removals: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i < chain.len() {
-            let mut enabled = chain[i].enabled;
-            let label = chain[i].effect.label().to_string();
-            ui.push_id(i, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut enabled, &label).changed() {
-                        chain[i].enabled = enabled;
-                    }
-                    if ui.small_button("✖").clicked() {
-                        removals.push(i);
-                    }
-                });
-            });
-            i += 1;
-        }
-        let removed = !removals.is_empty();
-        for idx in removals.into_iter().rev() {
-            let slot = chain.remove(idx);
-            if let Ok(mut m) = engine.modulation.lock() {
-                m.remove_assignments_with_prefix(&format!("{chain_prefix}fx{}_", slot.uuid));
-            }
-        }
-        removed
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -605,15 +736,51 @@ mod egui_impl {
                 });
             }
 
-            // Master FX list + add button
+            // Master FX strip — same chip/drag affordances as the deck strips.
             ui.separator();
             ui.label(egui::RichText::new("Master FX").strong());
-            if fx_chain_ui(ui, &mut mixer.master, "master_", engine) {
+            let selected_fx = match &state.selection {
+                crate::Selection::MasterFx { fx } => Some(fx.as_str()),
+                _ => None,
+            };
+            let out = fx_strip(
+                ui,
+                &mixer.master,
+                &crate::ChainRef::Master,
+                selected_fx,
+                &self.pending_effect,
+            );
+            if let Some(i) = out.toggle {
+                let on = mixer.master[i].enabled;
+                mixer.master[i].enabled = !on;
+            }
+            if let Some(i) = out.remove {
+                let slot = mixer.master.remove(i);
+                if let Ok(mut m) = engine.modulation.lock() {
+                    m.remove_assignments_with_prefix(&format!("master_fx{}_", slot.uuid));
+                }
                 state.params_dirty_request = true;
             }
-            if ui.button("➕ Add Master FX…").clicked() {
-                spawn_effect_picker(&self.pending_effect, ui.ctx(), crate::EffectTarget::Master);
+            if let Some(fx) = out.select {
+                state.selection = crate::Selection::MasterFx { fx };
             }
+            let drops: Vec<ChainDrop> = out
+                .drops
+                .into_iter()
+                .map(|(index, payload)| ChainDrop {
+                    target: crate::ChainRef::Master,
+                    index,
+                    payload,
+                })
+                .collect();
+            apply_chain_drops(
+                &mut state.pending_effects,
+                &mut state.params_dirty_request,
+                &mut state.selection,
+                &mut mixer,
+                engine,
+                drops,
+            );
         }
     }
 
@@ -803,6 +970,9 @@ mod egui_impl {
 
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
             let mut fx_removed = false;
+            // Drops landed on chain-strip gaps this frame; applied after the
+            // deck loop (cross-chain moves need the whole mixer).
+            let mut drops: Vec<ChainDrop> = Vec::new();
             // Selection changes are collected and applied after the mixer lock
             // is released — `state` is borrowed by the lock while decks draw.
             let mut new_selection: Option<crate::Selection> = None;
@@ -909,46 +1079,30 @@ mod egui_impl {
                                                 });
                                             }
 
-                                            let mut toggle: Option<usize> = None;
-                                            let mut remove: Option<usize> = None;
-                                            for (i, slot) in deck.chain.iter().enumerate() {
-                                                strip_link(ui);
-                                                let fx_selected = matches!(
-                                                    &selection,
-                                                    crate::Selection::DeckFx { channel, deck: d, fx }
-                                                        if *channel == ch_uuid
-                                                            && *d == deck_uuid
-                                                            && *fx == slot.uuid
-                                                );
-                                                let (clicked, toggled) = chip(
-                                                    ui,
-                                                    slot.effect.label(),
-                                                    fx_selected,
-                                                    Some(slot.enabled),
-                                                );
-                                                if toggled {
-                                                    toggle = Some(i);
-                                                } else if clicked {
-                                                    new_selection =
-                                                        Some(crate::Selection::DeckFx {
-                                                            channel: ch_uuid.clone(),
-                                                            deck: deck_uuid.clone(),
-                                                            fx: slot.uuid.clone(),
-                                                        });
-                                                }
-                                                if ui
-                                                    .small_button("✖")
-                                                    .on_hover_text("Remove effect")
-                                                    .clicked()
+                                            let chain_ref = crate::ChainRef::Deck {
+                                                channel: ch_uuid.clone(),
+                                                deck: deck_uuid.clone(),
+                                            };
+                                            let selected_fx = match &selection {
+                                                crate::Selection::DeckFx { channel, deck: d, fx }
+                                                    if *channel == ch_uuid && *d == deck_uuid =>
                                                 {
-                                                    remove = Some(i);
+                                                    Some(fx.as_str())
                                                 }
-                                            }
-                                            if let Some(i) = toggle {
+                                                _ => None,
+                                            };
+                                            let out = fx_strip(
+                                                ui,
+                                                &deck.chain,
+                                                &chain_ref,
+                                                selected_fx,
+                                                &self.pending_effect,
+                                            );
+                                            if let Some(i) = out.toggle {
                                                 let on = deck.chain[i].enabled;
                                                 deck.set_effect_enabled(i, !on);
                                             }
-                                            if let Some(i) = remove {
+                                            if let Some(i) = out.remove {
                                                 let slot = deck.chain.remove(i);
                                                 if let Ok(mut m) = engine.modulation.lock() {
                                                     m.remove_assignments_with_prefix(&format!(
@@ -959,24 +1113,89 @@ mod egui_impl {
                                                 }
                                                 fx_removed = true;
                                             }
-
-                                            strip_link(ui);
-                                            if ui.small_button("+").on_hover_text("Add FX…").clicked() {
-                                                spawn_effect_picker(
-                                                    &self.pending_effect,
-                                                    ui.ctx(),
-                                                    crate::EffectTarget::Deck {
-                                                        channel_uuid: ch_uuid.clone(),
-                                                        deck_uuid: deck_uuid.clone(),
-                                                    },
-                                                );
+                                            if let Some(fx) = out.select {
+                                                new_selection = Some(chain_ref.selection_for(&fx));
                                             }
+                                            drops.extend(out.drops.into_iter().map(
+                                                |(index, payload)| ChainDrop {
+                                                    target: chain_ref.clone(),
+                                                    index,
+                                                    payload,
+                                                },
+                                            ));
                                         });
                                     });
                             });
                         });
                     }
+
+                    // ── Channel post-FX strip ───────────────────────────────
+                    // Drop target for cross-chain moves; hidden while empty and
+                    // no drag is in flight so an unused chain costs no space.
+                    let ch_ref = crate::ChainRef::Channel {
+                        channel: ch_uuid.clone(),
+                    };
+                    let drag_active =
+                        egui::DragAndDrop::has_payload_of_type::<ChainDrag>(ui.ctx());
+                    if !ch.chain.is_empty() || drag_active {
+                        let selected_fx = match &selection {
+                            crate::Selection::ChannelFx { channel, fx }
+                                if *channel == ch_uuid =>
+                            {
+                                Some(fx.as_str())
+                            }
+                            _ => None,
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("post")
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+                            );
+                            let out = fx_strip(
+                                ui,
+                                &ch.chain,
+                                &ch_ref,
+                                selected_fx,
+                                &self.pending_effect,
+                            );
+                            if let Some(i) = out.toggle {
+                                let on = ch.chain[i].enabled;
+                                ch.set_effect_enabled(i, !on);
+                            }
+                            if let Some(i) = out.remove {
+                                let slot = ch.chain.remove(i);
+                                if let Ok(mut m) = engine.modulation.lock() {
+                                    m.remove_assignments_with_prefix(&format!(
+                                        "ch_{}_fx{}_",
+                                        ch_uuid, slot.uuid
+                                    ));
+                                }
+                                fx_removed = true;
+                            }
+                            if let Some(fx) = out.select {
+                                new_selection = Some(ch_ref.selection_for(&fx));
+                            }
+                            drops.extend(out.drops.into_iter().map(|(index, payload)| {
+                                ChainDrop {
+                                    target: ch_ref.clone(),
+                                    index,
+                                    payload,
+                                }
+                            }));
+                        });
+                    }
                 }
+
+                apply_chain_drops(
+                    &mut state.pending_effects,
+                    &mut state.params_dirty_request,
+                    &mut state.selection,
+                    &mut mixer,
+                    engine,
+                    drops,
+                );
             }
 
             if let Some(sel) = new_selection {
@@ -1055,36 +1274,36 @@ mod egui_impl {
             ui.add_space(4.0);
 
             // Library listing — clicking "➕" queues a PendingDeck for materialisation in prepare().
+            // ISF shaders are grouped by role: a filter (header declares an
+            // `inputImage` input) can be dragged onto any FX strip; a generator
+            // is only meaningful as a deck source.
             ui.label(egui::RichText::new("Library").strong());
             let target_uuid = self.selected_channel_uuid.clone();
             egui::ScrollArea::vertical()
                 .max_height(140.0)
                 .show(ui, |ui| {
                     let mut queue_deck: Option<crate::PendingDeck> = None;
-                    for entry in state
-                        .registry
-                        .shaders
-                        .iter()
-                        .chain(&state.registry.images)
-                        .chain(&state.registry.videos)
-                        .chain(&state.registry.streams)
-                    {
+                    // One library row: label (optionally a drag source for FX
+                    // strips) plus the "➕ new deck" button.
+                    let mut row = |ui: &mut egui::Ui,
+                                   entry: &crate::sources::SourceEntry,
+                                   fx_drag: bool| {
                         ui.horizontal(|ui| {
-                            let icon = match entry.kind {
-                                crate::sources::SourceKind::Isf => "🎨",
-                                crate::sources::SourceKind::Image => "🖼",
-                                crate::sources::SourceKind::Video => "🎬",
-                                crate::sources::SourceKind::SolidColor => "🎨",
-                                crate::sources::SourceKind::Camera => "📷",
-                                crate::sources::SourceKind::Srt => "📡",
-                                crate::sources::SourceKind::Hls => "📡",
-                                crate::sources::SourceKind::Dash => "📡",
-                                crate::sources::SourceKind::Rtmp => "📡",
-                                crate::sources::SourceKind::Http => "📡",
-                                crate::sources::SourceKind::Rtsp => "📡",
-                                _ => "📁",
-                            };
-                            ui.label(format!("{} {}", icon, entry.name));
+                            let text = format!("{} {}", source_icon(entry.kind), entry.name);
+                            match (fx_drag, &entry.path) {
+                                (true, Some(path)) => {
+                                    ui.dnd_drag_source(
+                                        ui.id().with(("libfx", &entry.id)),
+                                        ChainDrag::LibraryIsf { path: path.clone() },
+                                        |ui| {
+                                            ui.label(text);
+                                        },
+                                    );
+                                }
+                                _ => {
+                                    ui.label(text);
+                                }
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1097,6 +1316,45 @@ mod egui_impl {
                                 },
                             );
                         });
+                    };
+
+                    for (heading, want_filter) in [("FILTERS", true), ("GENERATORS", false)] {
+                        let mut any = false;
+                        for entry in &state.registry.shaders {
+                            let is_filter = entry
+                                .path
+                                .as_ref()
+                                .map(|p| {
+                                    *self
+                                        .isf_filters
+                                        .entry(p.clone())
+                                        .or_insert_with(|| isf_is_filter(p))
+                                })
+                                .unwrap_or(false);
+                            if is_filter != want_filter {
+                                continue;
+                            }
+                            if !any {
+                                ui.label(
+                                    egui::RichText::new(heading)
+                                        .monospace()
+                                        .size(10.0)
+                                        .color(rustjay_gui::egui_theme::colors::ink_3()),
+                                );
+                                any = true;
+                            }
+                            row(ui, entry, want_filter);
+                        }
+                    }
+
+                    for entry in state
+                        .registry
+                        .images
+                        .iter()
+                        .chain(&state.registry.videos)
+                        .chain(&state.registry.streams)
+                    {
+                        row(ui, entry, false);
                     }
                     if let Some(req) = queue_deck {
                         let name = req.source.name.clone();
