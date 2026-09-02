@@ -923,6 +923,11 @@ pub struct EngineState {
     /// holds `&EngineState` and so cannot call `set_param_base` itself. Empty for
     /// apps that don't use it.
     pub param_restore: Arc<Mutex<Vec<(String, f32)>>>,
+    /// An audio-routing snapshot an app wants applied, for the same reason as
+    /// [`param_restore`](Self::param_restore): `audio_routing` has no interior
+    /// mutability, and an app restoring a saved scene inside the frame loop
+    /// holds only `&EngineState`. `None` for apps that don't use it.
+    pub audio_routing_restore: Arc<Mutex<Option<AudioRoutingState>>>,
     /// Pre-computed modulation offsets for each param id, updated once per frame after
     /// `ModulationEngine::update()`. `get_param()` reads this without locking.
     ///
@@ -1296,6 +1301,7 @@ impl EngineState {
             notifications: Arc::new(Mutex::new(Vec::new())),
             output_sinks: Arc::new(Mutex::new(Vec::new())),
             param_restore: Arc::new(Mutex::new(Vec::new())),
+            audio_routing_restore: Arc::new(Mutex::new(None)),
             next_notification_id: AtomicU64::new(0),
             recording_active: false,
             shift_space_pressed: false,

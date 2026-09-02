@@ -556,7 +556,7 @@ impl Default for RoutingMatrix {
 }
 
 /// Audio routing state for the app
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioRoutingState {
     /// The routing matrix
     pub matrix: RoutingMatrix,

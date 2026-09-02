@@ -46,6 +46,22 @@ pub struct Scene {
     #[cfg(feature = "mixer")]
     #[serde(default)]
     pub params: std::collections::HashMap<String, f32>,
+    /// Audio-reactivity routes (FFT band → parameter). Lives on `EngineState`
+    /// like `modulation`, so the mixer's own snapshot cannot see it — presets
+    /// captured it all along, which is why routes survived a preset save but
+    /// not a workspace save. `Default` (no routes) for older scenes.
+    #[serde(default = "no_routes")]
+    pub audio_routing: rustjay_core::AudioRoutingState,
+}
+
+/// An empty routing state, so a scene saved before routes were persisted means
+/// "no routes recorded" rather than "restore the two built-in defaults" — which
+/// would quietly overwrite whatever the user had set up.
+fn no_routes() -> rustjay_core::AudioRoutingState {
+    rustjay_core::AudioRoutingState {
+        matrix: rustjay_core::RoutingMatrix::new(),
+        ..Default::default()
+    }
 }
 
 #[cfg(feature = "mixer")]
@@ -64,6 +80,7 @@ impl Scene {
             topology: Some(Topology::from_mixer(mixer, sources)),
             modulation: rustjay_core::modulation::ModulationEngine::default(),
             params: std::collections::HashMap::new(),
+            audio_routing: no_routes(),
         }
     }
 
@@ -79,6 +96,12 @@ impl Scene {
     /// Attach a snapshot of custom param base values (chainable).
     pub fn with_params(mut self, params: std::collections::HashMap<String, f32>) -> Self {
         self.params = params;
+        self
+    }
+
+    /// Attach a snapshot of the audio routing matrix (chainable).
+    pub fn with_audio_routing(mut self, routing: &rustjay_core::AudioRoutingState) -> Self {
+        self.audio_routing = routing.clone();
         self
     }
 
@@ -263,5 +286,44 @@ impl Topology {
             layers,
             master_fx: capture_fx(&mixer.master),
         }
+    }
+}
+
+#[cfg(all(test, feature = "mixer"))]
+mod tests {
+    use super::*;
+    use rustjay_core::routing::{FftBand, ModulationTarget};
+
+    fn scene_with_routes(n: usize) -> Scene {
+        let mut routing = no_routes();
+        for _ in 0..n {
+            routing
+                .matrix
+                .add_route(FftBand::Mid, ModulationTarget::Brightness);
+        }
+        Scene::from_mixer(&rustjay_mixer::Mixer::new(), &Default::default())
+            .with_audio_routing(&routing)
+    }
+
+    #[test]
+    fn audio_routes_survive_a_scene_round_trip() {
+        let json = serde_json::to_string(&scene_with_routes(3)).expect("serialise");
+        let back: Scene = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.audio_routing.matrix.len(), 3);
+    }
+
+    /// A scene written before routes were persisted must not look like it
+    /// carried the two built-in defaults, or loading it would overwrite the
+    /// routes already set up.
+    #[test]
+    fn a_scene_without_routes_restores_none() {
+        let json = serde_json::to_string(&scene_with_routes(2)).expect("serialise");
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("as value");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("audio_routing");
+        let back: Scene = serde_json::from_value(value).expect("deserialise");
+        assert!(back.audio_routing.matrix.is_empty());
     }
 }

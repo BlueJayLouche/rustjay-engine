@@ -188,6 +188,11 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub param_bases_cache: Vec<f32>,
+    /// Snapshot of `EngineState.audio_routing`, refreshed in `prepare()` for the
+    /// same reason as `param_snapshot`: the save paths have no `&EngineState`.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub audio_routing_snapshot: rustjay_core::AudioRoutingState,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -419,7 +424,9 @@ impl KovvbojAppState {
     }
 
     pub fn scene_snapshot(&self, mixer: &Mixer) -> Scene {
-        let scene = Scene::from_mixer(mixer, &self.layer_sources).with_params(self.param_snapshot.clone());
+        let scene = Scene::from_mixer(mixer, &self.layer_sources)
+            .with_params(self.param_snapshot.clone())
+            .with_audio_routing(&self.audio_routing_snapshot);
         match &self.engine_modulation {
             Some(handle) => {
                 let m = handle.lock().unwrap_or_else(|e| e.into_inner());
@@ -561,6 +568,8 @@ impl Default for KovvbojAppState {
             engine_modulation: None,
             #[cfg(feature = "mixer")]
             param_snapshot: std::collections::HashMap::new(),
+            #[cfg(feature = "mixer")]
+            audio_routing_snapshot: rustjay_core::AudioRoutingState::default(),
             #[cfg(feature = "mixer")]
             param_bases_cache: Vec::new(),
             workspace: crate::persistence::default_workspace(),
@@ -1008,6 +1017,9 @@ pub struct KovvbojRootPlugin {
     /// no `&EngineState`), applied into `engine.modulation` on the first `prepare()`.
     #[cfg(feature = "mixer")]
     pending_modulation: Option<rustjay_core::modulation::ModulationEngine>,
+    /// Audio routes loaded from the workspace scene in `init()`, which has no
+    /// `EngineState`. Handed to the engine on the first `prepare()`.
+    pending_audio_routing: Option<rustjay_core::AudioRoutingState>,
     /// Custom param base values loaded from the workspace scene in `init()`, queued
     /// into `engine.param_restore` on the first `prepare()` so the renderer applies
     /// them after the rebuilt graph's params (re)register.
@@ -1041,6 +1053,7 @@ impl KovvbojRootPlugin {
             params_dirty: false,
             #[cfg(feature = "mixer")]
             pending_modulation: None,
+            pending_audio_routing: None,
             #[cfg(feature = "mixer")]
             pending_params: None,
             #[cfg(feature = "projection")]
@@ -1386,6 +1399,16 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // Restore the modulation snapshot loaded from the workspace scene
                 // in `init()` (topology already rebuilt there, so the param keys
                 // its assignments target now exist).
+                // `audio_routing` has no interior mutability and `prepare`
+                // holds `&EngineState`, so it goes through the engine's restore
+                // slot rather than being assigned here.
+                if let Some(routing) = self.pending_audio_routing.take()
+                    && let Ok(mut slot) = engine.audio_routing_restore.lock()
+                {
+                    log::info!("[Workspace] restoring {} audio routes", routing.matrix.len());
+                    *slot = Some(routing);
+                }
+
                 if let Some(modulation) = self.pending_modulation.take() {
                     let n = modulation.sources.len();
                     *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) = modulation;
@@ -1563,6 +1586,14 @@ impl EffectPlugin for KovvbojRootPlugin {
                     *engine.modulation.lock().unwrap_or_else(|e| e.into_inner()) =
                         scene.modulation.clone();
                 }
+                // Audio routes. Restored only when the scene actually carries
+                // some, so loading a pre-`audio_routing` scene does not wipe
+                // whatever is already set up.
+                if !scene.audio_routing.matrix.is_empty()
+                    && let Ok(mut slot) = engine.audio_routing_restore.lock()
+                {
+                    *slot = Some(scene.audio_routing.clone());
+                }
                 // Queue the saved param base values; the renderer applies them
                 // after the rebuilt graph's params (re)register (set_param_base
                 // needs &mut engine, which we don't have here).
@@ -1721,6 +1752,9 @@ impl EffectPlugin for KovvbojRootPlugin {
             // Refresh the custom-param snapshot only when base values actually
             // change (param edit, preset load) — cheap `Vec<f32>` compare per
             // frame, no allocation otherwise. The save paths read this.
+            // Cheap: a handful of routes and some floats.
+            state.audio_routing_snapshot = engine.audio_routing.clone();
+
             if state.param_bases_cache != engine.custom_param_bases {
                 state.param_bases_cache = engine.custom_param_bases.clone();
                 state.param_snapshot = engine
@@ -2557,6 +2591,9 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // stash them for the first prepare().
                 if !scene.modulation.sources.is_empty() {
                     self.pending_modulation = Some(scene.modulation.clone());
+                }
+                if !scene.audio_routing.matrix.is_empty() {
+                    self.pending_audio_routing = Some(scene.audio_routing.clone());
                 }
                 if !scene.params.is_empty() {
                     self.pending_params = Some(scene.params.clone());

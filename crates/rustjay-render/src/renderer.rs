@@ -524,6 +524,15 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             engine_state.set_param_base(&id, value);
         }
 
+        let routing = engine_state
+            .audio_routing_restore
+            .lock()
+            .ok()
+            .and_then(|mut r| r.take());
+        if let Some(routing) = routing {
+            engine_state.audio_routing = routing;
+        }
+
         let render_start = std::time::Instant::now();
 
         let mut encoder = self
