@@ -332,13 +332,18 @@ fn zero_const(wgsl_ty: &str) -> String {
     }
 }
 
-/// Generate our own tiny vertex module: fullscreen quad in, Y-flipped
-/// `isf_FragNormCoord` (ISF bottom-left origin) at location 0, plus zero-valued
+/// Generate our own tiny vertex module: fullscreen quad in,
+/// `isf_FragNormCoord` at location 0, plus zero-valued
 /// outputs for any extra fragment inputs (convolution shaders declare per-vertex
 /// texOffsets varyings — real ISF hosts compute them vertex-side; zeros keep the
 /// pipeline valid, rendering is approximate. ponytail: proper vertex-side offset
 /// computation is a follow-up).
-fn generate_vertex_wgsl(frag_inputs: &[FragInput]) -> String {
+///
+/// `flip_y` delivers the coordinate in ISF's bottom-left convention. That is
+/// only correct for shaders whose sampling goes through the `IMG_*` rewrite,
+/// which flips it back; a shader that samples directly would be inverted once
+/// per pass. See [`IsfManifest::flip_frag_norm_coord`].
+fn generate_vertex_wgsl(frag_inputs: &[FragInput], flip_y: bool) -> String {
     let mut fields = String::new();
     let mut assigns = String::new();
     for fi in frag_inputs {
@@ -348,7 +353,11 @@ fn generate_vertex_wgsl(frag_inputs: &[FragInput]) -> String {
             fi.location, fi.location, fi.wgsl_ty
         ));
         let value = if fi.location == 0 {
-            "vec2<f32>(in.uv.x, 1.0 - in.uv.y)".to_string()
+            if flip_y {
+                "vec2<f32>(in.uv.x, 1.0 - in.uv.y)".to_string()
+            } else {
+                "in.uv".to_string()
+            }
         } else {
             zero_const(&fi.wgsl_ty)
         };
@@ -481,7 +490,10 @@ impl EffectPlugin for IsfEffect {
         );
 
         // Compile shaders — wgpu panics on WGSL validation errors; catch_unwind prevents crash.
-        let vertex_wgsl = generate_vertex_wgsl(&fragment_inputs(&transpiled.wgsl, &manifest.frag_entry));
+        let vertex_wgsl = generate_vertex_wgsl(
+            &fragment_inputs(&transpiled.wgsl, &manifest.frag_entry),
+            manifest.flip_frag_norm_coord,
+        );
         let shader_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let frag = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("ISF Fragment Shader"),

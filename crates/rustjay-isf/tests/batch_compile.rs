@@ -140,3 +140,52 @@ fn corpus_compile_rate() {
         eprintln!("  [{cat}] ({}): {}", names.len(), names.join(", "));
     }
 }
+
+/// The vertex stage delivers `isf_FragNormCoord` Y-flipped into ISF's
+/// bottom-left convention, and the `IMG_*` sampling rewrite flips it back. A
+/// shader that samples directly never goes through that rewrite, so flipping
+/// for it inverts the output once per pass — which is what made an odd-length
+/// FX chain render upside down.
+///
+/// None of the bundled shaders use the macros; they declare their own bindings
+/// and call `texture(sampler2D(...), uv)`. So every one of them must opt out.
+#[test]
+fn baked_dialect_shaders_do_not_get_the_y_flip() {
+    let mut checked = 0;
+    let mut wrongly_flipped = Vec::new();
+
+    for entry in std::fs::read_dir(shaders_dir()).expect("shaders dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("fs") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if KNOWN_BROKEN.contains(&name.as_str()) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let cleaned = strip_json_comments(&src);
+        let Ok(isf) = isf::parse(&cleaned) else {
+            continue;
+        };
+        let Ok(out) = rustjay_isf::compile::compile(&isf, &cleaned) else {
+            continue;
+        };
+
+        let uses_macros = cleaned.contains("IMG_THIS_PIXEL")
+            || cleaned.contains("IMG_NORM_PIXEL")
+            || cleaned.contains("IMG_PIXEL");
+        checked += 1;
+        if out.manifest.flip_frag_norm_coord != uses_macros {
+            wrongly_flipped.push(name);
+        }
+    }
+
+    assert!(checked > 50, "expected the bundled corpus, compiled {checked}");
+    assert!(
+        wrongly_flipped.is_empty(),
+        "these shaders have the wrong Y-flip setting: {wrongly_flipped:?}"
+    );
+}

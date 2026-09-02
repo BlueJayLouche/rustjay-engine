@@ -38,6 +38,15 @@ pub struct IsfManifest {
     pub has_sampler: bool,
     /// Fragment entry point name in the emitted WGSL (from the naga module).
     pub frag_entry: String,
+    /// Whether the vertex stage should deliver `isf_FragNormCoord` Y-flipped
+    /// into ISF's bottom-left convention.
+    ///
+    /// That flip only exists to be undone by the `IMG_*` sampling rewrite. A
+    /// shader that samples its inputs directly — the baked kovvboj dialect,
+    /// which declares its own bindings and calls `texture(sampler2D(...), uv)`
+    /// — never goes through that rewrite, so flipping for it inverts the output
+    /// once per pass.
+    pub flip_frag_norm_coord: bool,
 }
 
 /// One std140 field of the `IsfInputs` block.
@@ -132,6 +141,7 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         has_sampler: !merged.textures.is_empty(),
         textures: merged.textures,
         frag_entry,
+        flip_frag_norm_coord: merged.uses_img_macros,
     };
     Ok(CompileOutput { wgsl, manifest })
 }
@@ -188,6 +198,8 @@ struct Merged {
     glsl: String,
     members: Vec<MemberDecl>,
     textures: Vec<TextureBinding>,
+    /// See [`IsfManifest::flip_frag_norm_coord`].
+    uses_img_macros: bool,
 }
 
 fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
@@ -226,6 +238,13 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         .chain(isf.passes.iter().filter_map(|p| p.target.clone()))
         .chain(isf.imported.keys().cloned())
         .collect();
+
+    // Does this shader sample through the IMG_* macros? Checked before the
+    // rewrite below replaces them. Only those get the Y-flipped coordinate; see
+    // `IsfManifest::flip_frag_norm_coord`.
+    let uses_img_macros = ["IMG_THIS_PIXEL", "IMG_NORM_PIXEL", "IMG_PIXEL"]
+        .iter()
+        .any(|m| body.contains(m));
 
     // 1.5 kovvboj dialect: strip baked kovvboj preludes (blocks/layout decls/aliases).
     let mut baked_members: Vec<MemberDecl> = Vec::new();
@@ -379,6 +398,7 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         glsl: p,
         members,
         textures,
+        uses_img_macros,
     }
 }
 
