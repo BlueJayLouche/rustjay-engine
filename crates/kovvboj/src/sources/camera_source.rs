@@ -11,9 +11,44 @@ use rustjay_io::InputManager;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// The most recent frame from one camera, readable by every deck sharing it.
+///
+/// `InputManager::take_frame` *removes* the frame, so with a session shared per
+/// device the first deck to render each frame consumed it and the others got
+/// nothing — two decks on one camera raced, and only one updated. The frame is
+/// stored here instead and stamped with a sequence number; a consumer uploads
+/// when the stamp differs from the one it last saw.
+#[derive(Default)]
+struct FrameCache {
+    frame: Option<Arc<Vec<u8>>>,
+    seq: u64,
+}
+
+impl FrameCache {
+    /// Replace the stored frame and stamp it.
+    fn store(&mut self, frame: Vec<u8>) {
+        self.frame = Some(Arc::new(frame));
+        self.seq = self.seq.wrapping_add(1);
+    }
+
+    /// The stored frame, if the caller has not already seen this one.
+    ///
+    /// Advances `last_seq` to what was handed out, so each consumer takes any
+    /// given frame exactly once while every consumer still gets it.
+    fn take_if_new(&self, last_seq: &mut u64) -> Option<Arc<Vec<u8>>> {
+        if self.seq == *last_seq {
+            return None;
+        }
+        *last_seq = self.seq;
+        self.frame.clone()
+    }
+}
+
 struct CameraSession {
     manager: InputManager,
     resolution: (u32, u32),
+    /// Shared by every deck on this device — see [`FrameCache`].
+    cache: FrameCache,
 }
 
 static CAMERA_SESSIONS: OnceLock<Mutex<HashMap<usize, Arc<Mutex<CameraSession>>>>> =
@@ -28,6 +63,7 @@ fn get_session(device_index: usize) -> Arc<Mutex<CameraSession>> {
             Arc::new(Mutex::new(CameraSession {
                 manager: InputManager::new(),
                 resolution: (1280, 720),
+                cache: FrameCache::default(),
             }))
         })
         .clone()
@@ -36,6 +72,8 @@ fn get_session(device_index: usize) -> Arc<Mutex<CameraSession>> {
 /// Renders live webcam frames to the target.
 pub struct CameraSource {
     session: Arc<Mutex<CameraSession>>,
+    /// Sequence of the last frame this deck uploaded; see [`FrameCache`].
+    last_seq: u64,
     device_index: usize,
     started: bool,
     pipeline: wgpu::RenderPipeline,
@@ -143,6 +181,7 @@ impl CameraSource {
 
         Self {
             session: get_session(device_index),
+            last_seq: 0,
             device_index,
             started: false,
             pipeline,
@@ -263,10 +302,13 @@ impl EffectInstance for CameraSource {
             let (new_frame, w, h) = {
                 let mut session = self.session.lock().unwrap();
                 session.manager.update();
-                let new_frame = session.manager.take_frame();
-                if new_frame.is_some() {
+                // Whoever gets here first for a given frame stores it; everyone
+                // sharing this camera then reads it from the cache.
+                if let Some(frame) = session.manager.take_frame() {
+                    session.cache.store(frame);
                     session.resolution = session.manager.resolution();
                 }
+                let new_frame = session.cache.take_if_new(&mut self.last_seq);
                 let (w, h) = session.resolution;
                 (new_frame, w, h)
             };
@@ -319,5 +361,60 @@ impl EffectInstance for CameraSource {
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameCache;
+
+    /// Two decks on one camera must both see every frame.
+    ///
+    /// The old path called `InputManager::take_frame`, which removes the frame,
+    /// so whichever deck rendered first consumed it and the other got nothing.
+    #[test]
+    fn every_consumer_sees_each_frame_exactly_once() {
+        let mut cache = FrameCache::default();
+        let (mut deck_a, mut deck_b) = (0_u64, 0_u64);
+
+        // Nothing stored yet.
+        assert!(cache.take_if_new(&mut deck_a).is_none());
+
+        cache.store(vec![1, 2, 3]);
+        assert_eq!(
+            cache.take_if_new(&mut deck_a).as_deref(),
+            Some(&vec![1, 2, 3]),
+            "the first deck gets the frame"
+        );
+        assert_eq!(
+            cache.take_if_new(&mut deck_b).as_deref(),
+            Some(&vec![1, 2, 3]),
+            "and so does the second — this is the bug that was fixed"
+        );
+
+        // Neither takes the same frame twice.
+        assert!(cache.take_if_new(&mut deck_a).is_none());
+        assert!(cache.take_if_new(&mut deck_b).is_none());
+
+        // A new frame reaches both again.
+        cache.store(vec![4, 5, 6]);
+        assert_eq!(cache.take_if_new(&mut deck_a).as_deref(), Some(&vec![4, 5, 6]));
+        assert_eq!(cache.take_if_new(&mut deck_b).as_deref(), Some(&vec![4, 5, 6]));
+    }
+
+    /// A deck joining late must not wait for the *next* frame to appear.
+    #[test]
+    fn a_deck_added_later_picks_up_the_current_frame() {
+        let mut cache = FrameCache::default();
+        let mut existing = 0_u64;
+        cache.store(vec![9]);
+        cache.take_if_new(&mut existing);
+
+        let mut joined = 0_u64;
+        assert_eq!(
+            cache.take_if_new(&mut joined).as_deref(),
+            Some(&vec![9]),
+            "a deck created mid-stream shows the live frame, not black"
+        );
     }
 }
