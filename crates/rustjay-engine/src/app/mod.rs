@@ -109,6 +109,7 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyEguiTab>>,
+    shell: Option<Box<dyn rustjay_gui::AnyEguiShell>>,
 ) -> Result<()> {
     let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -116,7 +117,7 @@ pub(crate) fn run_egui_app<P: EffectPlugin>(
     #[cfg(target_os = "macos")]
     let proxy = event_loop.create_proxy();
 
-    let mut app = App::new_with_egui(shared_state, plugin, tabs, false);
+    let mut app = App::new_with_egui(shared_state, plugin, tabs, shell, false);
 
     #[cfg(target_os = "macos")]
     {
@@ -137,6 +138,7 @@ pub(crate) fn run_egui_app_with_projection<
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     tabs: Vec<Box<dyn AnyEguiTab>>,
+    shell: Option<Box<dyn rustjay_gui::AnyEguiShell>>,
     nogui: bool,
     projection_setup: F,
 ) -> Result<()> {
@@ -146,7 +148,7 @@ pub(crate) fn run_egui_app_with_projection<
     #[cfg(target_os = "macos")]
     let proxy = event_loop.create_proxy();
 
-    let mut app = App::new_with_egui(shared_state, plugin, tabs, nogui);
+    let mut app = App::new_with_egui(shared_state, plugin, tabs, shell, nogui);
 
     #[cfg(target_os = "macos")]
     {
@@ -277,6 +279,9 @@ pub(crate) struct App<P: EffectPlugin> {
     pub(crate) custom_tabs_imgui: Vec<Box<dyn AnyGuiTab>>,
     #[cfg(feature = "egui")]
     pub(crate) custom_tabs_egui: Vec<Box<dyn AnyEguiTab>>,
+    /// App-supplied window shell, handed to the GUI when it is constructed.
+    #[cfg(feature = "egui")]
+    pub(crate) egui_shell: Option<Box<dyn rustjay_gui::AnyEguiShell>>,
 
     // Optional GLES 2.0 render path (replaces WgpuEngine on hardware that lacks GLES 3.0)
     #[cfg(feature = "gles2")]
@@ -591,6 +596,8 @@ impl<P: EffectPlugin> App<P> {
             custom_tabs_imgui: tabs_imgui,
             #[cfg(feature = "egui")]
             custom_tabs_egui: Vec::new(),
+            #[cfg(feature = "egui")]
+            egui_shell: None,
             #[cfg(feature = "gles2")]
             gles2_effect: None,
             #[cfg(feature = "gles2")]
@@ -614,10 +621,12 @@ impl<P: EffectPlugin> App<P> {
         shared_state: Arc<std::sync::Mutex<EngineState>>,
         plugin: P,
         tabs_egui: Vec<Box<dyn AnyEguiTab>>,
+        shell: Option<Box<dyn rustjay_gui::AnyEguiShell>>,
         nogui: bool,
     ) -> Self {
         let mut app = Self::new(shared_state, plugin, true, Vec::new(), nogui);
         app.custom_tabs_egui = tabs_egui;
+        app.egui_shell = shell;
         app
     }
 

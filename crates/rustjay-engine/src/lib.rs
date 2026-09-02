@@ -27,6 +27,8 @@ pub use rustjay_core::{LinkCommand, LinkState};
 #[cfg(feature = "egui")]
 pub use rustjay_gui::AnyEguiTab;
 pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
+#[cfg(feature = "egui")]
+pub use rustjay_gui::AnyEguiShell;
 pub use rustjay_render::PreviousFrameTexture;
 /// Audio capture devices the disk recorder can record from (see `OutputCommand::StartRecording`).
 pub use rustjay_io::list_audio_devices;
@@ -171,7 +173,51 @@ pub fn run_with_egui_tabs<P: EffectPlugin>(
     let mut state = EngineState::new();
     apply_cli_args(&mut state);
     let shared_state = Arc::new(Mutex::new(state));
-    app::run_egui_app(shared_state, plugin, tabs)
+    app::run_egui_app(shared_state, plugin, tabs, None)
+}
+
+/// Run the engine with an app-supplied window shell instead of the built-in
+/// sidebar-and-tabs layout.
+///
+/// The shell draws the entire control window — its own chrome, its own panels.
+/// It can still place any built-in tab body where it wants via
+/// `EguiControlGui::draw_builtin_tab`.
+///
+/// ```ignore
+/// use rustjay_engine::prelude::*;
+///
+/// struct MyShell;
+/// impl AnyEguiShell for MyShell { /* ... */ }
+///
+/// fn main() -> anyhow::Result<()> {
+///     rustjay_engine::run_with_egui_shell(MyEffect, Box::new(MyShell))
+/// }
+/// ```
+#[cfg(feature = "egui")]
+pub fn run_with_egui_shell<P: EffectPlugin>(
+    plugin: P,
+    shell: Box<dyn rustjay_gui::AnyEguiShell>,
+) -> Result<()> {
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
+    app::run_egui_app(shared_state, plugin, Vec::new(), Some(shell))
+}
+
+/// Run the engine with an app-supplied window shell **and** projection mapping.
+///
+/// The shell counterpart to [`run_with_projection_egui_tabs`]; `setup` registers
+/// projector windows exactly the same way.
+#[cfg(all(feature = "projection", feature = "egui"))]
+pub fn run_with_projection_egui_shell<P: EffectPlugin, F: FnOnce(&mut ProjectionSubsystem)>(
+    plugin: P,
+    shell: Box<dyn rustjay_gui::AnyEguiShell>,
+    setup: F,
+) -> Result<()> {
+    let mut state = EngineState::new();
+    apply_cli_args(&mut state);
+    let shared_state = Arc::new(Mutex::new(state));
+    app::run_egui_app_with_projection(shared_state, plugin, Vec::new(), Some(shell), false, setup)
 }
 
 /// Run the engine with egui custom tabs **and** projection mapping.
@@ -206,7 +252,7 @@ pub fn run_with_projection_egui_tabs<P: EffectPlugin, F: FnOnce(&mut ProjectionS
     let mut state = EngineState::new();
     apply_cli_args(&mut state);
     let shared_state = Arc::new(Mutex::new(state));
-    app::run_egui_app_with_projection(shared_state, plugin, tabs, false, setup)
+    app::run_egui_app_with_projection(shared_state, plugin, tabs, None, false, setup)
 }
 
 /// Run using a Wayland-backed GLES 2.0 context (compositor required).
@@ -238,9 +284,9 @@ pub mod prelude {
     #[cfg(feature = "drm-gles2")]
     pub use crate::run_drm_gles2_headless_with_tabs;
     #[cfg(feature = "egui")]
-    pub use crate::run_with_egui_tabs;
+    pub use crate::{run_with_egui_shell, run_with_egui_tabs};
     #[cfg(all(feature = "projection", feature = "egui"))]
-    pub use crate::run_with_projection_egui_tabs;
+    pub use crate::{run_with_projection_egui_shell, run_with_projection_egui_tabs};
     pub use crate::{run, run_headless, run_headless_with_tabs, run_with_tabs};
     pub use rustjay_core::{
         beat_division_to_hz, working_format, AudioCommand, EffectPlugin, EngineState, GuiTab,
@@ -252,7 +298,7 @@ pub mod prelude {
     #[cfg(feature = "egui")]
     pub use rustjay_gui::{
         apply_param_map_overlay, key_color_picker, map_mode_active, param_slider,
-        param_slider_int, AnyEguiTab,
+        param_slider_int, AnyEguiShell, AnyEguiTab, EguiControlGui,
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
     pub use rustjay_render::{InputTexture, PreviousFrameTexture, Texture, WgpuEngine};

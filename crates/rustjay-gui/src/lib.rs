@@ -37,7 +37,7 @@ pub use egui_control_gui::{apply_param_map_overlay, map_mode_active, EguiControl
 #[cfg(feature = "egui")]
 pub use egui_renderer::EguiRenderer;
 #[cfg(feature = "egui")]
-pub use egui_tab::{param_slider, param_slider_int, AnyEguiTab};
+pub use egui_tab::{param_slider, param_slider_int, AnyEguiShell, AnyEguiTab};
 #[cfg(feature = "egui")]
 pub use egui_widgets::key_color_picker;
 

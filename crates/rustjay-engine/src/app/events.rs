@@ -468,6 +468,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     log::info!("Created egui preview textures");
 
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_egui);
+                                    gui.shell = self.egui_shell.take();
 
                                     self.egui_control_gui = Some(gui);
                                     self.egui_renderer = Some(renderer);

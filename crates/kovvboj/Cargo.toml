@@ -9,7 +9,7 @@ mixer = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
 webcam = ["rustjay-engine/webcam", "rustjay-io/webcam"]
 led = ["rustjay-io/led"]
 api = ["rustjay-engine/api", "dep:rustjay-api"]
-egui = ["rustjay-engine/egui", "dep:egui"]
+egui = ["rustjay-engine/egui", "dep:egui", "dep:rustjay-gui", "rustjay-gui/egui"]
 projection = ["rustjay-engine/projection", "dep:rustjay-projection", "rustjay-projection/surface-import"]
 ndi = ["rustjay-engine/ndi", "rustjay-io/ndi"]
 link = ["rustjay-engine/link"]
@@ -23,6 +23,7 @@ sysmon = ["dep:sysinfo"]
 
 [dependencies]
 rustjay-engine = { workspace = true }
+rustjay-gui    = { workspace = true, optional = true }
 rustjay-mixer  = { workspace = true, optional = true }
 rustjay-isf    = { workspace = true }
 rustjay-core   = { workspace = true }

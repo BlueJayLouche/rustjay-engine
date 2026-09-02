@@ -21,6 +21,10 @@ pub struct EguiControlGui {
     pub custom_tabs: Vec<Box<dyn crate::AnyEguiTab>>,
     pub(crate) custom_tab_active: Option<usize>,
 
+    /// App-supplied replacement for the whole window layout. When set,
+    /// `build_ui` delegates the frame to it and draws none of its own chrome.
+    pub shell: Option<Box<dyn crate::AnyEguiShell>>,
+
     // Window toggles
     pub(crate) show_preferences: bool,
     pub(crate) show_routing_window: bool,
@@ -134,6 +138,7 @@ impl EguiControlGui {
             output_preview_texture_id: None,
             custom_tabs: Vec::new(),
             custom_tab_active: None,
+            shell: None,
             show_preferences: false,
             show_routing_window: false,
             webcam_devices: Vec::new(),
@@ -298,6 +303,14 @@ impl EguiControlGui {
 
     pub fn build_ui(&mut self, ui: &mut egui::Ui, app_state: &mut dyn std::any::Any) {
         crate::egui_theme::apply_professional_theme(ui.ctx());
+
+        // An app-supplied shell owns the whole frame. Taken out and put back so
+        // the shell can borrow the host mutably while it draws.
+        if let Some(mut shell) = self.shell.take() {
+            shell.draw(ui, app_state, self);
+            self.shell = Some(shell);
+            return;
+        }
 
         self.build_top_bar(ui);
         self.build_left_sidebar(ui);
@@ -900,8 +913,6 @@ impl EguiControlGui {
     // ── Central panel ────────────────────────────────────────────────────────
 
     fn build_central_panel(&mut self, ui: &mut egui::Ui, app_state: &mut dyn std::any::Any) {
-        use rustjay_core::GuiTab;
-
         #[allow(deprecated)] // top-level CentralPanel::show; see note on the top panel
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -928,23 +939,42 @@ impl EguiControlGui {
                             ct.draw(ui, app_state, &mut state);
                         }
                 } else {
-                    match self.active_tab {
-                        GuiTab::Input => self.build_input_tab(ui),
-                        GuiTab::Output => self.build_output_tab(ui),
-                        GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
-                        GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
-                        GuiTab::Audio => self.build_audio_tab(ui),
-                        GuiTab::Modulation => self.build_modulation_tab(ui),
-                        GuiTab::Midi => self.build_midi_tab(ui),
-                        GuiTab::Osc => self.build_osc_tab(ui),
-                        GuiTab::Web => self.build_web_tab(ui),
-                        GuiTab::Presets => self.build_presets_tab(ui),
-                        GuiTab::Settings => self.build_settings_tab(ui),
-                        GuiTab::Sync => { /* Sync is folded into Audio */ }
-                    }
+                    self.draw_builtin_tab(ui, self.active_tab);
                 }
             });
         });
+    }
+
+    /// Draw one built-in tab's body into `ui`.
+    ///
+    /// The host normally calls this for whichever sidebar tab is active. It is
+    /// public so an [`AnyEguiShell`](crate::AnyEguiShell) can place a built-in
+    /// tab wherever it likes — a floating window, a docked panel — without
+    /// reimplementing it.
+    pub fn draw_builtin_tab(&mut self, ui: &mut egui::Ui, tab: GuiTab) {
+        match tab {
+            GuiTab::Input => self.build_input_tab(ui),
+            GuiTab::Output => self.build_output_tab(ui),
+            GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
+            GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
+            GuiTab::Audio => self.build_audio_tab(ui),
+            GuiTab::Modulation => self.build_modulation_tab(ui),
+            GuiTab::Midi => self.build_midi_tab(ui),
+            GuiTab::Osc => self.build_osc_tab(ui),
+            GuiTab::Web => self.build_web_tab(ui),
+            GuiTab::Presets => self.build_presets_tab(ui),
+            GuiTab::Settings => self.build_settings_tab(ui),
+            GuiTab::Sync => { /* Sync is folded into Audio */ }
+        }
+    }
+
+    /// The engine state this GUI reads and writes.
+    ///
+    /// A shell needs this to pass `&mut EngineState` into tab bodies and param
+    /// widgets. Lock it for as short a time as possible — the render thread
+    /// wants it too.
+    pub fn engine(&self) -> &Arc<std::sync::Mutex<EngineState>> {
+        &self.shared_state
     }
 
     // ── Preview panel ────────────────────────────────────────────────────────

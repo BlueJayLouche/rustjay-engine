@@ -21,6 +21,29 @@ pub trait AnyEguiTab: Send + Sync {
     );
 }
 
+/// An app-supplied replacement for the entire control-window layout.
+///
+/// The built-in host draws a fixed frame: status bar, sidebar, preview panel,
+/// central tab area. An app that wants its own window chrome — a menu bar,
+/// its own panel split, floating windows — supplies a shell instead. When one
+/// is present, `EguiControlGui::build_ui` hands it the whole frame and draws
+/// none of its own furniture.
+///
+/// The shell receives the host so it can still reuse what the engine provides:
+/// `EguiControlGui::engine` for shared state, and
+/// `EguiControlGui::draw_builtin_tab` to render any built-in tab body into a
+/// `Ui` of the shell's choosing — a panel, a window, wherever it wants it.
+pub trait AnyEguiShell: Send + Sync {
+    /// Draw the entire control window. `app_state` downcasts to the app's own
+    /// state type, exactly as in [`AnyEguiTab::draw`].
+    fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        app_state: &mut dyn std::any::Any,
+        host: &mut crate::EguiControlGui,
+    );
+}
+
 /// Draw a float parameter slider that reads from and writes to engine state.
 ///
 /// This is the preferred way to expose effect parameters in a custom egui tab.

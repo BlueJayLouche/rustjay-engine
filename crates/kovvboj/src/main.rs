@@ -14,18 +14,6 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
-        let tabs = vec![
-            Box::new(kovvboj::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(kovvboj::ui::DeckTab::default()),
-            Box::new(kovvboj::ui::EffectsTab::default()),
-            Box::new(kovvboj::ui::MidiTab),
-            Box::new(kovvboj::ui::StageTab::new()),
-            Box::new(kovvboj::ui::OutputsTab::new()),
-            Box::new(kovvboj::ui::SequencerTab),
-            Box::new(kovvboj::ui::InspectorTab),
-            #[cfg(feature = "webcam")]
-            Box::new(kovvboj::ui::LedMapTab::new()),
-        ];
         let plugin = kovvboj::KovvbojRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
         // actually reach the render output.
@@ -63,7 +51,10 @@ fn main() -> anyhow::Result<()> {
             warp_syncs.len()
         );
 
-        rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
+        rustjay_engine::run_with_projection_egui_shell(
+            plugin,
+            Box::new(kovvboj::shell::KovvbojShell::new()),
+            move |sub| {
             use kovvboj::stage::{KovvbojDomeStage, KovvbojEdgeBlendStage, KovvbojSourceStage, KovvbojWarpStage};
             use winit::window::WindowAttributes;
             for (i, proj) in stage.projectors.iter().enumerate() {
@@ -108,19 +99,10 @@ fn main() -> anyhow::Result<()> {
     }
     #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
     {
-        let tabs = vec![
-            Box::new(kovvboj::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(kovvboj::ui::DeckTab::default()),
-            Box::new(kovvboj::ui::EffectsTab::default()),
-            Box::new(kovvboj::ui::MidiTab),
-            Box::new(kovvboj::ui::StageTab::new()),
-            Box::new(kovvboj::ui::OutputsTab::new()),
-            Box::new(kovvboj::ui::SequencerTab),
-            Box::new(kovvboj::ui::InspectorTab),
-            #[cfg(feature = "webcam")]
-            Box::new(kovvboj::ui::LedMapTab::new()),
-        ];
-        rustjay_engine::run_with_egui_tabs(kovvboj::KovvbojRootPlugin::new(), tabs)
+        rustjay_engine::run_with_egui_shell(
+            kovvboj::KovvbojRootPlugin::new(),
+            Box::new(kovvboj::shell::KovvbojShell::new()),
+        )
     }
     #[cfg(not(all(feature = "egui", feature = "mixer")))]
     {

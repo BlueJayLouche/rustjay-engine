@@ -112,9 +112,6 @@ impl Default for EffectsTab {
 /// Sequencer tab — transition sequences.
 pub struct SequencerTab;
 
-/// MIDI tab — device select, learn/unlearn, mapping table.
-pub struct MidiTab;
-
 /// Stage tab — 2D surface editor, warp handles, import.
 pub struct StageTab {
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
@@ -217,9 +214,6 @@ impl OutputsTab {
         }
     }
 }
-
-/// Inspector tab — context panel for selected node.
-pub struct InspectorTab;
 
 #[cfg(all(feature = "mixer", feature = "egui"))]
 mod egui_impl {
@@ -1257,27 +1251,6 @@ mod egui_impl {
             if fx_removed {
                 state.params_dirty_request = true;
             }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // MidiTab
-    // ─────────────────────────────────────────────────────────────────────────
-    impl AnyEguiTab for MidiTab {
-        fn name(&self) -> &str {
-            "MIDI"
-        }
-
-        fn draw(
-            &mut self,
-            ui: &mut egui::Ui,
-            _app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
-        ) {
-            ui.heading("MIDI");
-            ui.separator();
-            ui.label("MIDI device selection, learn/unlearn, and mapping are managed by the engine's built-in MIDI system.");
-            ui.label("Connect a controller and move a knob to auto-learn its mapping to the currently selected parameter.");
         }
     }
 
@@ -4098,20 +4071,4 @@ mod egui_impl {
         }
     }
 
-    impl AnyEguiTab for InspectorTab {
-        fn name(&self) -> &str {
-            "Inspector"
-        }
-        fn draw(
-            &mut self,
-            ui: &mut egui::Ui,
-            _app_state: &mut dyn std::any::Any,
-            _engine: &mut EngineState,
-        ) {
-            ui.heading("Inspector");
-            ui.separator();
-            ui.label("Context panel for the selected node.");
-            ui.label("Coming in a future phase.");
-        }
-    }
 }
