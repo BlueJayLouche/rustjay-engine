@@ -426,7 +426,7 @@ fn layout_std140(members: &[MemberDecl]) -> (Vec<InputField>, usize) {
 // ---------------------------------------------------------------------------
 
 /// Strip a baked varda-style prelude from the body (the 115 shaders bundled with
-/// examples/vjarda were generated with declarations baked into the `.fs` file:
+/// crates/kovvboj were generated with declarations baked into the `.fs` file:
 /// `ISFUniforms`/`UserParams`/`*Params` blocks, layout-qualified in/out, sampler and
 /// texture decls). Triggered only when the body mentions `ISFUniforms` — stock ISF
 /// never does. Members not provided by our own prelude are re-homed (into
