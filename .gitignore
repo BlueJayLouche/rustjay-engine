@@ -28,6 +28,7 @@ sputnik_*.txt
 .claude/
 
 # Varda workspace directory
+.kovvboj/
 .varda/
 
 # Video recordings

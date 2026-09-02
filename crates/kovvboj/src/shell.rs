@@ -82,13 +82,23 @@ pub struct KovvbojShell {
     initialised: bool,
 }
 
-/// The KOVVBOJ display face, used for the wordmark and mode buttons.
+/// The KOVVBOJ display face, or monospace until it is available.
 ///
 /// Workbench covers Latin only (217 codepoints), so the family lists egui's
 /// default monospace behind it — anything Workbench lacks falls back per glyph
 /// instead of rendering as tofu.
-fn display_family() -> egui::FontFamily {
-    egui::FontFamily::Name(WORKBENCH.into())
+///
+/// `Context::set_fonts` only takes effect at the start of the *next* pass, so on
+/// the first frame this family is not bound yet and asking for it panics inside
+/// epaint. Querying the context rather than tracking a "fonts installed" flag
+/// also keeps the UI rendering if the font ever fails to load.
+fn display_family(ctx: &egui::Context) -> egui::FontFamily {
+    let want = egui::FontFamily::Name(WORKBENCH.into());
+    if ctx.fonts(|f| f.families().contains(&want)) {
+        want
+    } else {
+        egui::FontFamily::Monospace
+    }
 }
 
 const WORKBENCH: &str = "workbench";
@@ -316,10 +326,9 @@ impl KovvbojShell {
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new("KOVVBOJ")
-                            .strong()
-                            .size(13.0)
+                            .size(15.0)
                             .color(amber())
-                            .monospace(),
+                            .family(display_family(ui.ctx())),
                     );
                     ui.add_space(10.0);
 
@@ -404,7 +413,7 @@ impl KovvbojShell {
             for (mode, label) in Mode::ALL {
                 let text = egui::RichText::new(label)
                     .size(14.0)
-                    .family(display_family());
+                    .family(display_family(ui.ctx()));
                 if ui.selectable_label(self.mode == mode, text).clicked() {
                     self.mode = mode;
                 }

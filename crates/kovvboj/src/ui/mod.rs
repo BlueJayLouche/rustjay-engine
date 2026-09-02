@@ -187,6 +187,30 @@ mod egui_impl {
     use rustjay_mixer::BlendMode;
 
     /// Helper: draw a blend-mode combo bound to a canonical engine param key.
+    /// Blend picker sized for the deck row.
+    ///
+    /// [`blend_combo`] sizes itself to `available_width`, which is right in the
+    /// inspector's vertical stack but ruinous in a right-aligned row — it takes
+    /// the whole line and overlaps the deck name.
+    fn blend_combo_compact(ui: &mut egui::Ui, engine: &mut EngineState, key: &str) {
+        let mut idx = engine.get_param_base(key).unwrap_or(0.0).round() as usize;
+        let prev = idx;
+        let names: Vec<&str> = BlendMode::all().iter().map(|m| m.short_name()).collect();
+        egui::ComboBox::from_id_salt(key)
+            .width(74.0)
+            .selected_text(*names.get(idx).unwrap_or(&"???"))
+            .show_ui(ui, |ui| {
+                for (i, name) in names.iter().enumerate() {
+                    if ui.selectable_label(idx == i, *name).clicked() {
+                        idx = i;
+                    }
+                }
+            });
+        if idx != prev {
+            engine.set_param_base(key, idx as f32);
+        }
+    }
+
     fn blend_combo(ui: &mut egui::Ui, engine: &mut EngineState, key: &str, label: &str) {
         let mut idx = engine.get_param_base(key).unwrap_or(0.0).round() as usize;
         let prev = idx;
@@ -841,12 +865,15 @@ mod egui_impl {
                                                     deck_uuid: deck_uuid.clone(),
                                                 });
                                             }
-                                            blend_combo(ui, engine, &deck.blend_key, "");
+                                            blend_combo_compact(ui, engine, &deck.blend_key);
                                             let mut op = engine
                                                 .get_param_base(&deck.opacity_key)
                                                 .unwrap_or(1.0);
+                                            // Explicit size: an unsized slider in a
+                                            // right-to-left layout collapses to nothing.
                                             if ui
-                                                .add(
+                                                .add_sized(
+                                                    [96.0, 18.0],
                                                     egui::Slider::new(&mut op, 0.0..=1.0)
                                                         .show_value(false),
                                                 )
