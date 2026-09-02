@@ -1144,6 +1144,7 @@ mod egui_impl {
             let mut drops: Vec<ChainDrop> = Vec::new();
 
             {
+                let thumb_ids = state.thumbs.ids.clone();
                 let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
                 // Drawn top-first so the list reads the way it composites.
@@ -1192,6 +1193,40 @@ mod egui_impl {
                                 )
                                 .response
                                 .on_hover_text("Drag to restack");
+
+                                // What the layer is actually putting out. Absent
+                                // for the first frame of a new layer, and while a
+                                // layer has no source at all.
+                                let thumb_h = 22.0;
+                                let thumb_size =
+                                    egui::vec2(thumb_h * crate::thumbs::ASPECT, thumb_h);
+                                match thumb_ids.get(uuid) {
+                                    Some(id) => {
+                                        if ui
+                                            .add(
+                                                egui::Image::new((*id, thumb_size))
+                                                    .fit_to_exact_size(thumb_size)
+                                                    .corner_radius(2.0)
+                                                    .sense(egui::Sense::click()),
+                                            )
+                                            .on_hover_text("Layer output")
+                                            .clicked()
+                                        {
+                                            new_selection = Some(crate::Selection::Layer {
+                                                layer: uuid.clone(),
+                                            });
+                                        }
+                                    }
+                                    None => {
+                                        let (rect, _) =
+                                            ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            2.0,
+                                            rustjay_gui::egui_theme::colors::bg_widget(),
+                                        );
+                                    }
+                                }
 
                                 let name = mixer.channels[idx].name.clone();
                                 if ui.selectable_label(layer_selected, &name).clicked() {

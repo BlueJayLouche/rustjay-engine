@@ -162,6 +162,16 @@ impl EguiRenderer {
         texture_id
     }
 
+    /// Register a texture the *caller* owns and keeps alive, for an app that
+    /// renders its own thumbnails. Unlike `create_preview_texture` this
+    /// allocates nothing: the app blits into its own texture at whatever size
+    /// it likes, so a per-layer preview costs a small target rather than a
+    /// full-resolution copy.
+    pub fn register_texture_view(&mut self, view: &wgpu::TextureView) -> egui::TextureId {
+        self.renderer
+            .register_native_texture(&self.device, view, wgpu::FilterMode::Linear)
+    }
+
     /// Get the underlying wgpu texture for a preview.
     pub fn get_preview_texture(&self, texture_id: egui::TextureId) -> Option<&wgpu::Texture> {
         self.preview_textures.get(&texture_id)

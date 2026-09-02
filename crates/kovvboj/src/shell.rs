@@ -284,6 +284,13 @@ impl AnyEguiShell for KovvbojShell {
         // engine — `host` is needed mutably for `draw_builtin_tab`.
         self.initialise(ui.ctx());
 
+        // Layer thumbnails: the render hook fills the textures, but only the
+        // shell is handed the host that can turn them into egui ids.
+        #[cfg(feature = "mixer")]
+        if let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>() {
+            state.thumbs.sync(host);
+        }
+
         // ⌘Z / ⇧⌘Z. Structural edits only — see `KovvbojAppState::push_undo_from`.
         let (undo_pressed, redo_pressed) = ui.input_mut(|i| {
             (

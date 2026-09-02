@@ -17,6 +17,15 @@ pub struct EguiControlGui {
     pub second_input_preview_texture_id: Option<egui::TextureId>,
     pub output_preview_texture_id: Option<egui::TextureId>,
 
+    /// Texture views an app wants to draw in its own UI, keyed by an
+    /// app-chosen id. Registering one needs the renderer, which a shell never
+    /// sees, so requests are queued here and drained by the host after the
+    /// frame; the id shows up in `registered_textures` on the next one.
+    pub pending_textures: Vec<(u64, wgpu::TextureView)>,
+    /// Ids for everything registered so far. An app keeps its own texture
+    /// alive; dropping it while an id is still here paints garbage.
+    pub registered_textures: std::collections::HashMap<u64, egui::TextureId>,
+
     // Custom tabs
     pub custom_tabs: Vec<Box<dyn crate::AnyEguiTab>>,
     pub(crate) custom_tab_active: Option<usize>,
@@ -133,6 +142,8 @@ impl EguiControlGui {
 
         Ok(Self {
             shared_state,
+            pending_textures: Vec::new(),
+            registered_textures: std::collections::HashMap::new(),
             input_preview_texture_id: None,
             second_input_preview_texture_id: None,
             output_preview_texture_id: None,

@@ -4,6 +4,8 @@
 //! into a single engine. Two ISF shader channels are composited via the mixer
 //! with crossfader, blend modes, and transitions.
 
+#[cfg(feature = "mixer")]
+pub mod thumbs;
 #[cfg(feature = "api")]
 pub mod api_state;
 pub mod control;
@@ -79,6 +81,9 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub mixer: Arc<Mutex<Mixer>>,
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub thumbs: crate::thumbs::Thumbnails,
     pub ready: bool,
     /// What the inspector panel is showing. Transient — not persisted.
     #[serde(skip)]
@@ -530,6 +535,8 @@ impl Default for KovvbojAppState {
         Self {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
+            #[cfg(feature = "mixer")]
+            thumbs: crate::thumbs::Thumbnails::default(),
             ready: false,
             selection: Selection::None,
             registry: Registry {
@@ -2622,6 +2629,11 @@ impl EffectPlugin for KovvbojRootPlugin {
 
             let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
             mixer.render_to(&mut render_ctx, inputs, target, ctx.engine_state);
+
+            // Layer thumbnails, from the outputs that render_to just produced.
+            app_state
+                .thumbs
+                .update(ctx.device, ctx.encoder, ctx.vertex_buffer, &mixer);
 
             #[cfg(not(feature = "projection"))]
             {

@@ -1,7 +1,7 @@
 //! Multi-channel compositing mixer for rustjay-engine.
 
 mod blend;
-mod blit;
+pub mod blit;
 mod composite;
 pub mod crossfade;
 pub mod plugin;
