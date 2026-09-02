@@ -1,6 +1,6 @@
-//! Parameter router — maps hierarchical Varda control paths to flat engine ids.
+//! Parameter router — maps hierarchical Kovvboj control paths to flat engine ids.
 //!
-//! Varda exposes a hierarchical namespace to external controllers:
+//! Kovvboj exposes a hierarchical namespace to external controllers:
 //!   `deck/<deck_uuid>/param/<name>`        → `ch_<channel_uuid>_deck_<deck_uuid>_<name>`
 //!   `channel/<channel_uuid>/param/<name>`  → `ch_<channel_uuid>_<name>`
 //!   `crossfader` (and any bare id)          → returned unchanged
@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// Maps hierarchical Varda parameter paths to flat engine parameter ids.
+/// Maps hierarchical Kovvboj parameter paths to flat engine parameter ids.
 #[derive(Debug, Clone, Default)]
 pub struct ParamRouter {
     /// `deck_uuid` → owning `channel_uuid` (the only fact not encodable in a path).

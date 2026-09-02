@@ -64,7 +64,7 @@ impl SurfaceSource {
 /// One surface on the stage: a polygonal or circular region with a source
 /// and a warp transform.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VardaSurface {
+pub struct KovvbojSurface {
     /// Display name.
     pub name: String,
     /// Stable identity.
@@ -103,7 +103,7 @@ fn full_uv_crop() -> [f32; 4] {
     [0.0, 0.0, 1.0, 1.0]
 }
 
-impl VardaSurface {
+impl KovvbojSurface {
     /// Create a default rectangular surface covering the full stage.
     pub fn full_frame(name: impl Into<String>, uuid: impl Into<String>) -> Self {
         Self {
@@ -262,14 +262,14 @@ impl Default for LedSurface {
 
 /// The stage holds all surfaces, projector configs, and headless output configs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VardaStage {
-    pub surfaces: Vec<VardaSurface>,
+pub struct KovvbojStage {
+    pub surfaces: Vec<KovvbojSurface>,
     /// Stage canvas size in pixels (logical design resolution).
     pub canvas_size: [u32; 2],
     /// Projector output windows.
-    pub projectors: Vec<VardaProjector>,
+    pub projectors: Vec<KovvbojProjector>,
     /// Headless (offscreen) outputs.
-    pub headless_outputs: Vec<VardaHeadlessConfig>,
+    pub headless_outputs: Vec<KovvbojHeadlessConfig>,
     /// Pixel-mapped DMX lighting outputs (sACN / Art-Net).
     #[serde(default)]
     pub lighting_outputs: Vec<LightingOutput>,
@@ -287,21 +287,21 @@ pub struct VardaStage {
     /// when the mixer is contended during render.
     #[serde(skip)]
     pub cached_source_options: Vec<(String, SurfaceSource)>,
-    /// Per-projector warp state. Each projector's [`VardaWarpStage`] reads its
+    /// Per-projector warp state. Each projector's [`KovvbojWarpStage`] reads its
     /// own slot so surface-specific warp edits reach only the assigned projector.
     /// Injected by the plugin; grown/shrunk with projectors.
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub warp_syncs: Vec<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
-    /// Shared dome state, read by [`VardaDomeStage`]. Injected by the plugin.
+    /// Shared dome state, read by [`KovvbojDomeStage`]. Injected by the plugin.
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub dome_sync: Option<std::sync::Arc<std::sync::Mutex<DomeSync>>>,
-    /// Shared edge-blend state, read by [`VardaEdgeBlendStage`]. Injected by the plugin.
+    /// Shared edge-blend state, read by [`KovvbojEdgeBlendStage`]. Injected by the plugin.
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub edge_blend_sync: Option<std::sync::Arc<std::sync::Mutex<EdgeBlendSync>>>,
-    /// Per-projector source texture override. Each projector's [`VardaSourceStage`]
+    /// Per-projector source texture override. Each projector's [`KovvbojSourceStage`]
     /// reads its slot to determine which texture to sample (Master = passthrough,
     /// Channel = override). Injected by the plugin; grown/shrunk with projectors.
     #[cfg(feature = "projection")]
@@ -314,7 +314,7 @@ pub struct VardaStage {
     pub rotation_syncs: Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>>,
 }
 
-impl VardaStage {
+impl KovvbojStage {
     pub fn new() -> Self {
         Self {
             surfaces: Vec::new(),
@@ -343,9 +343,9 @@ impl VardaStage {
         let mut stage = Self::new();
         stage
             .surfaces
-            .push(VardaSurface::full_frame("Main", "main"));
+            .push(KovvbojSurface::full_frame("Main", "main"));
         // One default projector
-        stage.projectors.push(VardaProjector::default());
+        stage.projectors.push(KovvbojProjector::default());
         stage.selected_surface_index = 0;
         stage.cached_source_options = Vec::new();
         stage.fixture_profiles = builtin_fixture_profiles();
@@ -372,7 +372,7 @@ impl VardaStage {
     }
 
     /// Push dome config into the shared [`DomeSync`] so the projector's
-    /// [`VardaDomeStage`] picks it up on the next frame.
+    /// [`KovvbojDomeStage`] picks it up on the next frame.
     #[cfg(feature = "projection")]
     pub fn publish_dome(
         &self,
@@ -391,7 +391,7 @@ impl VardaStage {
     }
 
     /// Push edge-blend config into the shared [`EdgeBlendSync`] so the projector's
-    /// [`VardaEdgeBlendStage`] picks it up on the next frame.
+    /// [`KovvbojEdgeBlendStage`] picks it up on the next frame.
     #[cfg(feature = "projection")]
     pub fn publish_edge_blend(&self, config: rustjay_projection::EdgeBlendConfig) {
         if let Some(sync) = &self.edge_blend_sync {
@@ -403,7 +403,7 @@ impl VardaStage {
     }
 
     /// Push the warp of the Master-routed surface (or the first surface) into
-    /// the shared [`WarpSync`] so the projector's [`VardaWarpStage`] picks it up
+    /// the shared [`WarpSync`] so the projector's [`KovvbojWarpStage`] picks it up
     /// on the next frame. Bumps the version so the projector only re-applies on
     /// an actual edit. Call after the GUI mutates a surface's warp.
     #[cfg(feature = "projection")]
@@ -439,7 +439,7 @@ impl VardaStage {
 
 /// Configuration for one projector output window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VardaProjector {
+pub struct KovvbojProjector {
     pub name: String,
     pub enabled: bool,
     pub width: u32,
@@ -477,7 +477,7 @@ pub struct VardaProjector {
     pub edge_blend_config: Option<()>,
 }
 
-impl Default for VardaProjector {
+impl Default for KovvbojProjector {
     fn default() -> Self {
         Self {
             name: "Projector".to_string(),
@@ -596,7 +596,7 @@ impl OutputType {
 
 /// Configuration for a headless (offscreen) output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VardaHeadlessConfig {
+pub struct KovvbojHeadlessConfig {
     pub name: String,
     pub enabled: bool,
     pub width: u32,
@@ -612,7 +612,7 @@ pub struct VardaHeadlessConfig {
     pub pushed: bool,
 }
 
-impl Default for VardaHeadlessConfig {
+impl Default for KovvbojHeadlessConfig {
     fn default() -> Self {
         Self {
             name: "Headless".to_string(),
@@ -731,7 +731,7 @@ impl SampleMode {
     }
 }
 
-/// Re-export scan-order types from `rustjay_lighting` so vjarda's scene format and
+/// Re-export scan-order types from `rustjay_lighting` so kovvboj's scene format and
 /// the lighting crate share one source of truth.
 pub use rustjay_lighting::{Axis, Corner, ScanOrder};
 
@@ -745,7 +745,7 @@ pub struct LightingSegment {
     /// Whether this segment contributes to the output.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Surface to pull pixel data from (by `VardaSurface::uuid`). When set, the
+    /// Surface to pull pixel data from (by `KovvbojSurface::uuid`). When set, the
     /// sampled region follows that surface's `uv_crop_rect` and `region` is
     /// ignored. `None` = sample the master composite using `region` directly.
     #[serde(default)]
@@ -819,13 +819,13 @@ fn default_profile_id() -> String {
 /// [`rustjay_lighting`]. Keeping one source of truth for fixture/channel types.
 pub use rustjay_lighting::{ChannelRole, FixtureProfile, SegmentColor, WhiteMode};
 
-/// Built-in fixture profiles shipped with vjarda.
+/// Built-in fixture profiles shipped with kovvboj.
 pub fn builtin_fixture_profiles() -> Vec<FixtureProfile> {
     rustjay_lighting::builtin_profiles()
 }
 
 /// Live warp state shared between the GUI (writer) and the projector's
-/// [`VardaWarpStage`] (reader). `version` is bumped on each edit so the reader
+/// [`KovvbojWarpStage`] (reader). `version` is bumped on each edit so the reader
 /// re-applies only on change, not every frame.
 #[cfg(feature = "projection")]
 #[derive(Debug, Clone)]
@@ -844,7 +844,7 @@ impl Default for WarpSync {
     }
 }
 
-/// Per-projector source texture override. The projector's [`VardaSourceStage`]
+/// Per-projector source texture override. The projector's [`KovvbojSourceStage`]
 /// reads this to determine which texture to sample.
 #[cfg(feature = "projection")]
 #[derive(Debug, Clone)]
@@ -891,7 +891,7 @@ impl Default for SourceSync {
 /// [`WarpSync`] state. Corner-pin edits update the homography in place (cheap);
 /// a mode switch or mesh edit rebuilds the inner [`rustjay_projection::WarpStage`].
 #[cfg(feature = "projection")]
-pub struct VardaWarpStage {
+pub struct KovvbojWarpStage {
     inner: rustjay_projection::WarpStage,
     format: wgpu::TextureFormat,
     sync: std::sync::Arc<std::sync::Mutex<WarpSync>>,
@@ -902,7 +902,7 @@ pub struct VardaWarpStage {
 }
 
 #[cfg(feature = "projection")]
-impl VardaWarpStage {
+impl KovvbojWarpStage {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -931,9 +931,9 @@ impl VardaWarpStage {
 }
 
 #[cfg(feature = "projection")]
-impl rustjay_projection::ProjectionStage for VardaWarpStage {
+impl rustjay_projection::ProjectionStage for KovvbojWarpStage {
     fn label(&self) -> &str {
-        "varda-warp"
+        "kovvboj-warp"
     }
 
     fn render(
@@ -949,7 +949,7 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
             (g.mode.clone(), g.version)
         };
         if version != self.last_version {
-            log::debug!("[VardaWarpStage] ptr={:p} version changed {} -> {}", std::sync::Arc::as_ptr(&self.sync), self.last_version, version);
+            log::debug!("[KovvbojWarpStage] ptr={:p} version changed {} -> {}", std::sync::Arc::as_ptr(&self.sync), self.last_version, version);
             self.last_version = version;
             match &mode {
                 // Same mode family → cheap homography update (no rebuild on drag).
@@ -993,7 +993,7 @@ impl rustjay_projection::ProjectionStage for VardaWarpStage {
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "projection")]
-pub struct VardaSourceStage {
+pub struct KovvbojSourceStage {
     blit: rustjay_projection::identity::BlitPipeline,
     vertex_buffer: wgpu::Buffer,
     cached_bind_group: Option<wgpu::BindGroup>,
@@ -1002,7 +1002,7 @@ pub struct VardaSourceStage {
 }
 
 #[cfg(feature = "projection")]
-impl VardaSourceStage {
+impl KovvbojSourceStage {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -1037,7 +1037,7 @@ impl VardaSourceStage {
             },
         ];
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Varda Source Stage VB"),
+            label: Some("Kovvboj Source Stage VB"),
             contents: bytemuck::cast_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
@@ -1052,9 +1052,9 @@ impl VardaSourceStage {
 }
 
 #[cfg(feature = "projection")]
-impl rustjay_projection::ProjectionStage for VardaSourceStage {
+impl rustjay_projection::ProjectionStage for KovvbojSourceStage {
     fn label(&self) -> &str {
-        "varda-source"
+        "kovvboj-source"
     }
 
     fn render(
@@ -1114,7 +1114,7 @@ impl Default for DomeSync {
 }
 
 #[cfg(feature = "projection")]
-pub struct VardaDomeStage {
+pub struct KovvbojDomeStage {
     inner: rustjay_projection::DomeStage,
     bypass: rustjay_projection::IdentityStage,
     sync: std::sync::Arc<std::sync::Mutex<DomeSync>>,
@@ -1122,7 +1122,7 @@ pub struct VardaDomeStage {
 }
 
 #[cfg(feature = "projection")]
-impl VardaDomeStage {
+impl KovvbojDomeStage {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -1144,9 +1144,9 @@ impl VardaDomeStage {
 }
 
 #[cfg(feature = "projection")]
-impl rustjay_projection::ProjectionStage for VardaDomeStage {
+impl rustjay_projection::ProjectionStage for KovvbojDomeStage {
     fn label(&self) -> &str {
-        "varda-dome"
+        "kovvboj-dome"
     }
 
     fn render(
@@ -1209,7 +1209,7 @@ impl Default for EdgeBlendSync {
 }
 
 #[cfg(feature = "projection")]
-pub struct VardaEdgeBlendStage {
+pub struct KovvbojEdgeBlendStage {
     inner: rustjay_projection::EdgeBlendStage,
     bypass: rustjay_projection::IdentityStage,
     sync: std::sync::Arc<std::sync::Mutex<EdgeBlendSync>>,
@@ -1217,7 +1217,7 @@ pub struct VardaEdgeBlendStage {
 }
 
 #[cfg(feature = "projection")]
-impl VardaEdgeBlendStage {
+impl KovvbojEdgeBlendStage {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -1235,9 +1235,9 @@ impl VardaEdgeBlendStage {
 }
 
 #[cfg(feature = "projection")]
-impl rustjay_projection::ProjectionStage for VardaEdgeBlendStage {
+impl rustjay_projection::ProjectionStage for KovvbojEdgeBlendStage {
     fn label(&self) -> &str {
-        "varda-edge-blend"
+        "kovvboj-edge-blend"
     }
 
     fn is_active(&self) -> bool {

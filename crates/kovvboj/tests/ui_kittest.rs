@@ -13,18 +13,18 @@ use rustjay_engine::prelude::AnyEguiTab;
 #[cfg(feature = "projection")]
 use kovvboj::ui::StageTab;
 use kovvboj::{
-    VardaAppState,
+    KovvbojAppState,
     ui::{DeckTab, OutputsTab},
 };
 
 fn tab_harness<T: AnyEguiTab + 'static>(tab: T, size: [f32; 2]) -> Harness<'static> {
-    tab_harness_with_app(tab, size, VardaAppState::default())
+    tab_harness_with_app(tab, size, KovvbojAppState::default())
 }
 
 fn tab_harness_with_app<T: AnyEguiTab + 'static>(
     mut tab: T,
     size: [f32; 2],
-    mut app: VardaAppState,
+    mut app: KovvbojAppState,
 ) -> Harness<'static> {
     let mut engine = EngineState::default();
     assert!(engine.stage_preview_texture_id.is_none());
@@ -50,9 +50,9 @@ fn tab_harness_with_app<T: AnyEguiTab + 'static>(
 }
 
 #[cfg(feature = "projection")]
-fn pad_surface_list_for_full_canvas(app: &mut VardaAppState) {
+fn pad_surface_list_for_full_canvas(app: &mut KovvbojAppState) {
     for index in 1..=4 {
-        let mut surface = kovvboj::stage::VardaSurface::full_frame(
+        let mut surface = kovvboj::stage::KovvbojSurface::full_frame(
             format!("Unused {index}"),
             format!("unused{index}"),
         );
@@ -75,7 +75,7 @@ fn deck_add_source_snapshot() {
 #[cfg(feature = "ffmpeg")]
 #[test]
 fn deck_stream_paints_invalid_url_error() {
-    let app = VardaAppState::default();
+    let app = KovvbojAppState::default();
     app.mixer
         .lock()
         .unwrap()
@@ -131,7 +131,7 @@ fn stage_preview_disabled_snapshot() {
 #[cfg(feature = "projection")]
 #[test]
 fn stage_corner_pin_warp_snapshot() {
-    let mut app = VardaAppState::default();
+    let mut app = KovvbojAppState::default();
     pad_surface_list_for_full_canvas(&mut app);
     app.stage.surfaces[0].warp = rustjay_projection::WarpMode::corner_pin([
         [0.08, 0.14],
@@ -148,7 +148,7 @@ fn stage_corner_pin_warp_snapshot() {
 #[cfg(feature = "projection")]
 #[test]
 fn stage_edge_blend_preview_snapshot() {
-    let mut app = VardaAppState::default();
+    let mut app = KovvbojAppState::default();
     pad_surface_list_for_full_canvas(&mut app);
     let mut config = rustjay_projection::EdgeBlendConfig::default();
     config.left.enabled = true;

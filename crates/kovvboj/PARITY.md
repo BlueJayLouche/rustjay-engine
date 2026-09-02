@@ -1,4 +1,4 @@
-# Varda Port Parity Tracker
+# Kovvboj Port Parity Tracker
 
 Source of truth: [`VARDA_PORT.md`](../../VARDA_PORT.md) and the [Varda README](../../varda/README.md).
 
@@ -18,7 +18,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 6 | **Sources — image** (PNG / JPG) | T02.3 | done *(image crate → GPU texture blit)* |
 | 7 | **Sources — solid color** | T02.3 | done *(uniform color shader)* |
 | 8 | **Sources — NDI** receive | T02.1, T09.1 | done *(engine `rustjay-io/ndi_runtime`, feature-gated)* |
-| 9 | **Sources — SRT** receive | T02.2, T09.2 | done *(Phase 20: `StreamDecoder` in `rustjay-io` opens SRT/HLS/DASH/RTMP/RTMPS URLs via `ffmpeg::format::input`; `StreamSource` in Varda uploads decoded RGBA frames to GPU texture; EffectsTab shows stream library + manual URL input)* |
+| 9 | **Sources — SRT** receive | T02.2, T09.2 | done *(Phase 20: `StreamDecoder` in `rustjay-io` opens SRT/HLS/DASH/RTMP/RTMPS URLs via `ffmpeg::format::input`; `StreamSource` in Kovvboj uploads decoded RGBA frames to GPU texture; EffectsTab shows stream library + manual URL input)* |
 | 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure as SRT; protocol auto-detected from URL or explicit kind selection in UI)* |
 | 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure; `assets/streams.txt` loads preset streams on startup)* |
 | 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images and `.mp4`/`.mov`/`.mkv`/`.avi`/`.webm` videos; HAP decode + ffmpeg decode both wired)* |
@@ -30,26 +30,26 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(mixer `ModulationEngine` wired to crossfader, channel opacity, and deck opacity; `DeckCompositor` reads mixer modulation via shared `Arc<Mutex<ModulationEngine>>`)* |
 | 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT + `AudioBand` `ModulationSource`; demo assigns audio band to crossfader)* |
 | 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | done *(engine `ModulationSource::ADSR` / `StepSequencer`; demo assigns both to crossfader)* |
-| 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | done *(engine `ModulationEngine::assign_mod_on_mod` supports 4-deep; Varda ModulationTab UI wired)* |
+| 21 | **Modulation** — mod-on-mod chaining up to 4 deep | T04.4 | done *(engine `ModulationEngine::assign_mod_on_mod` supports 4-deep; Kovvboj ModulationTab UI wired)* |
 | 22 | **Audio analysis** — 2048-bin FFT, beat detection, bands, BPM + beat phase | T04.2 | done *(engine `rustjay-audio`)* |
 | 23 | **Control** — MIDI (learn/unlearn, APC-mini profile, auto-map) | T05.1 | done *(engine `rustjay-control/midi`)* |
 | 24 | **Control** — OSC | T05.2 | done *(engine `rustjay-control/osc`)* |
-| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | done *(generic app-agnostic routes on `rustjay-api`: `GET /api/app/state` serves the opaque snapshot the app publishes into `EngineState::app_state` (rebuilt with live values each frame); `GET\|PUT /api/app/params` lists/sets params via `param_resolver` → `WebCommand::Set`; WS JSON-Patch deltas carry `app_state`. Varda schema owned in `crates/kovvboj/api_state.rs`, not the shared crate. Live server smoke-test pending)* |
+| 25 | **Control** — HTTP API + OpenAPI/Swagger + WS JSON-Patch deltas | T05.3 | done *(generic app-agnostic routes on `rustjay-api`: `GET /api/app/state` serves the opaque snapshot the app publishes into `EngineState::app_state` (rebuilt with live values each frame); `GET\|PUT /api/app/params` lists/sets params via `param_resolver` → `WebCommand::Set`; WS JSON-Patch deltas carry `app_state`. Kovvboj schema owned in `crates/kovvboj/api_state.rs`, not the shared crate. Live server smoke-test pending)* |
 | 26 | **Control** — param router (`deck/<uuid>/param/<name>` → `set_param_base`) | T05.4 | done *(structurally maps any hierarchical `deck\|channel/<uuid>/param/<name>` to flat canonical ids; wired into engine `WebCommand::Set` + MIDI param-path fallback via `EngineState::param_resolver`; OSC resolves to canonical ids directly. Router output cross-checked against real mixer registration in a test)* |
 | 27 | **Projection mapping** — 2D stage editor, polygon/circle surfaces, source selector | T07.1, T07.3 | done *(StageTab: 2D canvas, surface list add/remove, SVG/DXF import via `rustjay-projection/surface_import`, properties panel. Source combo models Master/Channel/Deck/Domemaster but only **Master** renders to the projector; properties edit surface 0 only — per-surface selection + non-Master source routing are Phase 8)* |
-| 28 | **Projection mapping** — corner-pin + mesh warp, calibration cards | T07.2 | done *(per-surface `WarpMode::CornerPin`/`Mesh`; **warp reaches the projector**: `VardaWarpStage` in the projector stage chain reads a shared `WarpSync` and applies StageTab edits to the Master surface live via `WarpStage::set_homography`/rebuild. Calibration cards not yet added)* |
-| 29 | **Projection mapping** — edge blending (auto-detect overlap + manual per-edge) | T13.2 | done *(engine `rustjay-projection` `edge_blend.rs`; `VardaEdgeBlendStage` wired into projector chain; manual per-edge controls in OutputsTab; auto-detect via `compute_auto_edge_blend` ready for multi-output)* |
-| 30 | **Multi-output** — multiple windows / fullscreen on any display | T08.1 | done *(multi-projector config in `VardaStage.projectors`; `main.rs` loads saved stage and registers each enabled projector via `sub.add_projector()`; per-projector size/monitor config; OutputsTab add/remove/edit)* |
-| 31 | **Multi-output** — headless outputs with surface assignments + async readback | T08.2 | done *(engine `HeadlessOutput` + async readback; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; Varda `prepare()` adds enabled headless configs at runtime; OutputsTab add/remove/edit)* |
+| 28 | **Projection mapping** — corner-pin + mesh warp, calibration cards | T07.2 | done *(per-surface `WarpMode::CornerPin`/`Mesh`; **warp reaches the projector**: `KovvbojWarpStage` in the projector stage chain reads a shared `WarpSync` and applies StageTab edits to the Master surface live via `WarpStage::set_homography`/rebuild. Calibration cards not yet added)* |
+| 29 | **Projection mapping** — edge blending (auto-detect overlap + manual per-edge) | T13.2 | done *(engine `rustjay-projection` `edge_blend.rs`; `KovvbojEdgeBlendStage` wired into projector chain; manual per-edge controls in OutputsTab; auto-detect via `compute_auto_edge_blend` ready for multi-output)* |
+| 30 | **Multi-output** — multiple windows / fullscreen on any display | T08.1 | done *(multi-projector config in `KovvbojStage.projectors`; `main.rs` loads saved stage and registers each enabled projector via `sub.add_projector()`; per-projector size/monitor config; OutputsTab add/remove/edit)* |
+| 31 | **Multi-output** — headless outputs with surface assignments + async readback | T08.2 | done *(engine `HeadlessOutput` + async readback; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; Kovvboj `prepare()` adds enabled headless configs at runtime; OutputsTab add/remove/edit)* |
 | 32 | **Network I/O — NDI** send/receive | T09.1 | done *(engine `rustjay-io/ndi_runtime`)* |
 | 33 | **Network I/O — SRT / HLS / LL-HLS / DASH / RTMP(S)** send + receive | T09.2 | done *(receive: Phase 20 `StreamDecoder` via ffmpeg; send: not yet implemented — would reuse ffmpeg muxer subprocess, same architecture as receive)* |
 | 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(HAP Q encode available via local `hap-rs` workspace; H.264/H.265/AV1/ProRes via ffmpeg)* |
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
-| 36 | **Persistence** — `.varda/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.varda/scene.json` = `MixerState` + sequencer; `.varda/stage.json` = `VardaStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.varda/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
+| 36 | **Persistence** — `.kovvboj/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.kovvboj/scene.json` = `MixerState` + sequencer; `.kovvboj/stage.json` = `KovvbojStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.kovvboj/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
 | 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
-| 38 | **Notifications** — toast overlay | T06.x | done *(generic `EngineState::notifications` queue + `rustjay-gui` toast overlay; Varda posts toasts from deck creation and mod-on-mod assignment)* |
-| 39 | **Sysmon** — CPU/mem readout for status bar | (adhoc) | done *(`sysinfo` feature; `VardaRootPlugin::prepare()` refreshes every 60 frames; CPU % and MEM used/total GB in top bar)* |
-| 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(`VardaDomeStage` wired into projector chain; StageTab shows dome config when surface source = Domemaster; drives `DomeSync` → projector)* 🧪 |
+| 38 | **Notifications** — toast overlay | T06.x | done *(generic `EngineState::notifications` queue + `rustjay-gui` toast overlay; Kovvboj posts toasts from deck creation and mod-on-mod assignment)* |
+| 39 | **Sysmon** — CPU/mem readout for status bar | (adhoc) | done *(`sysinfo` feature; `KovvbojRootPlugin::prepare()` refreshes every 60 frames; CPU % and MEM used/total GB in top bar)* |
+| 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(`KovvbojDomeStage` wired into projector chain; StageTab shows dome config when surface source = Domemaster; drives `DomeSync` → projector)* 🧪 |
 | 41 | **Surface overlap zones** — manual and auto-detect for edge blending | T13.2 | done *(`compute_auto_edge_blend` available for multi-output overlap detection; manual edge blend controls wired)* 🧪 |
 
 > **🧪 Experimental** — shipped by engine but not required for parity gate.
@@ -64,18 +64,18 @@ do not block core VJ functionality.
 
 | # | Gap | Blocking? | Recommended path |
 |---|-----|-----------|------------------|
-| 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | ✅ **Done** — Phase 16. `FfmpegDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` uses `ffmpeg-next` 8.1; `FfmpegSource` in Varda exposes 6 playback params. Hardware decode and background decode thread are future optimizations. |
+| 3 | **Video file decode** (ffmpeg loop/ping-pong/scrub) | Medium | ✅ **Done** — Phase 16. `FfmpegDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` uses `ffmpeg-next` 8.1; `FfmpegSource` in Kovvboj exposes 6 playback params. Hardware decode and background decode thread are future optimizations. |
 | 4 | **HAP decode** (BCn/YCoCg GPU-native) | Low | ✅ **Done** — Phase 15. `HapSource` in `crates/kovvboj/src/sources/hap_source.rs` wraps `hap-wgpu::HapPlayer`. YCoCg→RGB shader and background decode thread are future optimizations. |
-| 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | ✅ **Done** — Phase 20. `StreamDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` wraps `ffmpeg-next` to decode from network URLs; `StreamSource` in Varda uploads frames to GPU. Protocol auto-detected from URL or explicit kind selection. Manual URL input + `assets/streams.txt` preset loading wired in EffectsTab. |
-| 21 | **Mod-on-mod chaining** (4-deep) | Low | ✅ **Done** — engine supports 4-deep evaluation; Varda `ModulationTab` provides target/param/modulator/amount UI calling `assign_mod_on_mod()`. |
+| 9–11 | **SRT / HLS / DASH / RTMP receive** | Low | ✅ **Done** — Phase 20. `StreamDecoder` in `crates/rustjay-io/src/input/ffmpeg.rs` wraps `ffmpeg-next` to decode from network URLs; `StreamSource` in Kovvboj uploads frames to GPU. Protocol auto-detected from URL or explicit kind selection. Manual URL input + `assets/streams.txt` preset loading wired in EffectsTab. |
+| 21 | **Mod-on-mod chaining** (4-deep) | Low | ✅ **Done** — engine supports 4-deep evaluation; Kovvboj `ModulationTab` provides target/param/modulator/amount UI calling `assign_mod_on_mod()`. |
 | 33 | **SRT/HLS/DASH/RTMP send** (streaming output) | Low | Not yet implemented — would extend `rustjay-io/output` with ffmpeg muxer subprocess (same architecture as receive). |
-| 34 | **Recording** (H.264/H.265/AV1/ProRes/HAP Q) | Low | Greenfield over `rustjay-io/output` + ffmpeg. Varda's existing recorder is a 5-LOC stub. |
-| 38 | **Notifications toast overlay** | No | ✅ **Done** — generic `EngineState::notify()` + `rustjay-gui` toast overlay; Varda posts success/error/info toasts. |
-| 39 | **Sysmon readout** (CPU/GPU/mem) | No | ✅ **Done** — `sysinfo` polled in `VardaRootPlugin::prepare()` every 60 frames; CPU % and memory used/total GB rendered in top bar. GPU readout not yet implemented. |
+| 34 | **Recording** (H.264/H.265/AV1/ProRes/HAP Q) | Low | Greenfield over `rustjay-io/output` + ffmpeg. Kovvboj's existing recorder is a 5-LOC stub. |
+| 38 | **Notifications toast overlay** | No | ✅ **Done** — generic `EngineState::notify()` + `rustjay-gui` toast overlay; Kovvboj posts success/error/info toasts. |
+| 39 | **Sysmon readout** (CPU/GPU/mem) | No | ✅ **Done** — `sysinfo` polled in `KovvbojRootPlugin::prepare()` every 60 frames; CPU % and memory used/total GB rendered in top bar. GPU readout not yet implemented. |
 | — | **Calibration cards** for warp | No | Generate checkerboard / grid texture in StageTab for projector alignment. |
 | — | **Per-projector render graphs** (different content per output) | No | Requires decoupling `WgpuEngine` from singleton output surface — major engine refactor. |
-| — | **Per-projector warp/dome/edge-blend overrides** | No | Data model exists (`VardaProjector.use_global_*` flags); needs per-projector sync objects + stage factory plumbing. |
-| — | **Fullscreen on monitor** (winit monitor selection) | No | `VardaProjector.fullscreen_monitor` is stored; `main.rs` setup closure needs `ActiveEventLoop` access to resolve monitor handles. |
+| — | **Per-projector warp/dome/edge-blend overrides** | No | Data model exists (`KovvbojProjector.use_global_*` flags); needs per-projector sync objects + stage factory plumbing. |
+| — | **Fullscreen on monitor** (winit monitor selection) | No | `KovvbojProjector.fullscreen_monitor` is stored; `main.rs` setup closure needs `ActiveEventLoop` access to resolve monitor handles. |
 
 ### Phase 9–10 Recommendation
 
@@ -87,7 +87,7 @@ SRT/HLS/DASH/RTMP. Instead:
 3. `output/recorder.rs`: encode to H.264/H.265/AV1/ProRes via ffmpeg.
 4. HAP decode can be a separate `input/hap.rs` or bundled under the same feature.
 
-This reuses Varda's proven subprocess architecture and avoids maintaining
+This reuses Kovvboj's proven subprocess architecture and avoids maintaining
 protocol-specific Rust code.
 
 ---
@@ -105,9 +105,9 @@ Audited: `crates/rustjay-io/src/input/mod.rs`, `webcam.rs`, `ndi.rs`, `syphon_in
 | **Syphon receive** | ✅ **Covered** | `input/syphon_input.rs` (`SyphonInputReceiver`); macOS only; zero-copy texture path | — |
 | **Spout receive** | ✅ **Covered** | `input/spout_input.rs` (`SpoutInputReceiver`); Windows only; CPU path | — |
 | **V4L2 capture** | ✅ **Covered** | `v4l2_devices.rs`; Linux only; nokhwa maps to V4L2 natively | — |
-| **Video file decode (ffmpeg)** | ❌ **Absent** | No ffmpeg bindings, no `VideoPlayer`, no frame decoding loop | **Port required** — Varda has `internal/video/mod.rs` + `VideoPlayer` (~1280 LOC). Budget a port into `varda::sources` or extend `rustjay-io` with a new `input/ffmpeg.rs` module behind a `ffmpeg` feature. |
-| **HAP GPU-native decode** | ❌ **Absent** | No `HapPlayer`, no `HapTextureFormat`, no BCn/YCoCg upload path | **Port required** — Varda has `internal/video/hap.rs` with `HapPlayer` that parses HAP chunks and uploads directly to `wgpu::TextureFormat::Bc*`. Needs to be ported or added to `rustjay-io`. |
-| **SRT receive** | ❌ **Absent** | No SRT input module, no protocol glue | **Port required** — Varda uses an ffmpeg-based subprocess + bounded channel for SRT ingest. Budget porting the protocol glue. |
+| **Video file decode (ffmpeg)** | ❌ **Absent** | No ffmpeg bindings, no `VideoPlayer`, no frame decoding loop | **Port required** — Kovvboj has `internal/video/mod.rs` + `VideoPlayer` (~1280 LOC). Budget a port into `kovvboj::sources` or extend `rustjay-io` with a new `input/ffmpeg.rs` module behind a `ffmpeg` feature. |
+| **HAP GPU-native decode** | ❌ **Absent** | No `HapPlayer`, no `HapTextureFormat`, no BCn/YCoCg upload path | **Port required** — Kovvboj has `internal/video/hap.rs` with `HapPlayer` that parses HAP chunks and uploads directly to `wgpu::TextureFormat::Bc*`. Needs to be ported or added to `rustjay-io`. |
+| **SRT receive** | ❌ **Absent** | No SRT input module, no protocol glue | **Port required** — Kovvboj uses an ffmpeg-based subprocess + bounded channel for SRT ingest. Budget porting the protocol glue. |
 | **HLS receive** | ❌ **Absent** | No HLS input module | **Port required** — same pattern as SRT. |
 | **DASH receive** | ❌ **Absent** | No DASH input module | **Port required** — same pattern as SRT. |
 | **RTMP / RTMPS receive** | ❌ **Absent** | No RTMP input module | **Port required** — same pattern as SRT. |
@@ -123,7 +123,7 @@ Audited: `crates/rustjay-io/src/input/mod.rs`, `webcam.rs`, `ndi.rs`, `syphon_in
 | **SRT send** | ❌ **Absent** | No SRT output module | **Port required** — extend `rustjay-io/output` or build per-output recorder that shells out to ffmpeg with SRT muxer. |
 | **HLS / DASH send** | ❌ **Absent** | No streaming output modules | **Port required** — ffmpeg segmenter muxer path. |
 | **RTMP / RTMPS send** | ❌ **Absent** | No RTMP output module | **Port required** — ffmpeg flv muxer + RTMP protocol. |
-| **Recording H.264** | ❌ **Absent** | No recorder, no ffmpeg encode pipeline | **Port required** — greenfield over `rustjay-io/output` + ffmpeg. Varda's existing recorder is a 5-LOC stub. |
+| **Recording H.264** | ❌ **Absent** | No recorder, no ffmpeg encode pipeline | **Port required** — greenfield over `rustjay-io/output` + ffmpeg. Kovvboj's existing recorder is a 5-LOC stub. |
 | **Recording H.265** | ❌ **Absent** | No recorder | **Port required** |
 | **Recording AV1** | ❌ **Absent** | No recorder | **Port required** |
 | **Recording ProRes 422** | ❌ **Absent** | No recorder | **Port required** |
@@ -133,7 +133,7 @@ Audited: `crates/rustjay-io/src/input/mod.rs`, `webcam.rs`, `ndi.rs`, `syphon_in
 
 - **Fully covered (reuse)**: webcam, NDI in/out, Syphon in/out, Spout in/out, V4L2 in/out.
 - **Partial / absent**: everything else in Phases 2/9/10.
-- **Biggest single gap**: video file decode (ffmpeg). The standalone Varda has ~1280 LOC in `internal/video/` handling this. No engine equivalent exists.
+- **Biggest single gap**: video file decode (ffmpeg). The standalone Kovvboj has ~1280 LOC in `internal/video/` handling this. No engine equivalent exists.
 - **HAP decode/encode**: **covered by local `hap-rs` workspace** (`~/developer/rust/hap-rs`). Provides `hap-parser` (frame parsing + Snappy decompression), `hap-qt` (QuickTime container read/write), `hap-wgpu` (direct DXT/BCn texture upload to wgpu). Native HAP encoding without FFmpeg. All HAP variants: Hap1 (DXT1), Hap5 (DXT5), HapY (YCoCg-DXT5), HapA (BC4), Hap7 (BC7), HapH (BC6H).
 - **Recommended approach**: add `hap-rs` crates as workspace dependencies (or git submodules). For ffmpeg-based sources (video file decode + SRT/HLS/DASH/RTMP protocol ingest), add a `ffmpeg` feature to `rustjay-io` with `input/ffmpeg.rs` using `ffmpeg-next` or `rust-ffmpeg`. HAP path uses `hap-rs` natively; non-HAP video path uses ffmpeg.
 
@@ -150,7 +150,7 @@ Given the probe results:
 - **Phase 5 (Control)** — low risk. MIDI/OSC reuse is solid; HTTP routes are an extension of `rustjay-api`.
 - **Phase 6 (GUI)** — unaffected. Pattern is proven (`delta-egui`).
 - **Phase 7–8 (Surfaces / Multi-output)** — low risk. `rustjay-projection` covers warp, edge-blend, dome, headless readback.
-- **Phase 9 (Streaming)** — **high risk**. SRT/HLS/DASH/RTMP are absent from `rustjay-io`. Recommend wrapping ffmpeg subprocesses (same architecture Varda uses today) rather than native protocol implementations.
+- **Phase 9 (Streaming)** — **high risk**. SRT/HLS/DASH/RTMP are absent from `rustjay-io`. Recommend wrapping ffmpeg subprocesses (same architecture Kovvboj uses today) rather than native protocol implementations.
 - **Phase 10 (Recording)** — **high risk**. Complete greenfield. Recommend building on the same ffmpeg subprocess path as streaming.
 - **Phase 11 (Persistence)** — unaffected. App-level serde.
 - **Phase 12 (Transitions / Sequencer)** — low risk. Reuses `rustjay-mixer` transition primitives.
@@ -168,7 +168,7 @@ Given the probe results:
 - **2026-06-05** — Phase 4 (Modulation). `Mixer::modulation` changed to `Arc<Mutex<ModulationEngine>>` so it can be shared with nested `DeckCompositor`s. `DeckCompositor::render_to` now applies mixer-level modulation offsets to deck opacity (in addition to engine-level modulation via `get_param`). Demo assigns LFO to crossfader + all deck opacities, and audio-band to crossfader. All `rustjay-mixer` tests pass.
 - **2026-06-05** — Phase 5 (Control). MIDI/OSC reach canonical params; generic `rustjay-api` routes (`GET /api/app/state`, `GET|PUT /api/app/params`) with WS JSON-Patch deltas; param router maps hierarchical addresses to flat canonical ids.
 - **2026-06-05** — Phase 6 (GUI). Non-replacing egui tabs (Mixer, Deck, Effects, Modulation, MIDI, Stage, Outputs, Sequencer, Inspector) each with sidebar button. Mixer/Deck/Effects drive live params via canonical ids.
-- **2026-06-05** — Phase 7 (Surfaces & projection). Surface model (polygon/circle + source enum); corner-pin/mesh warp wired to projector via `VardaWarpStage`+`WarpSync` bridge; StageTab 2D canvas + warp editor + SVG/DXF import.
-- **2026-06-06** — Phases 11–13 (Persistence, Transitions, Dome/Edge-blend). `.varda/` workspace with scene/stage/keymap; `EffectPlugin` preset hooks; `TimedCrossfade`/`TimedHold` sequencer steps; `VardaDomeStage` + `VardaEdgeBlendStage` wired into projector chain.
-- **2026-06-06** — Phase 8 (Multi-output). `VardaStage.projectors` + `headless_outputs` config model; `main.rs` registers multiple projectors from saved stage; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; runtime headless output add from `prepare()`; OutputsTab UI for add/remove/edit.
-- **2026-06-06** — Phase 14 (Parity audit). Tracker walked to 100%; gaps documented as follow-ups; perf pass confirms no per-frame allocs in render path, opacity cull verified, `build_varda_snapshot` (API feature) noted as alloc-heavy; docs updated.
+- **2026-06-05** — Phase 7 (Surfaces & projection). Surface model (polygon/circle + source enum); corner-pin/mesh warp wired to projector via `KovvbojWarpStage`+`WarpSync` bridge; StageTab 2D canvas + warp editor + SVG/DXF import.
+- **2026-06-06** — Phases 11–13 (Persistence, Transitions, Dome/Edge-blend). `.kovvboj/` workspace with scene/stage/keymap; `EffectPlugin` preset hooks; `TimedCrossfade`/`TimedHold` sequencer steps; `KovvbojDomeStage` + `KovvbojEdgeBlendStage` wired into projector chain.
+- **2026-06-06** — Phase 8 (Multi-output). `KovvbojStage.projectors` + `headless_outputs` config model; `main.rs` registers multiple projectors from saved stage; `ProjectionSubsystem` stores device + exposes handle via `EngineState::projection_handle`; runtime headless output add from `prepare()`; OutputsTab UI for add/remove/edit.
+- **2026-06-06** — Phase 14 (Parity audit). Tracker walked to 100%; gaps documented as follow-ups; perf pass confirms no per-frame allocs in render path, opacity cull verified, `build_kovvboj_snapshot` (API feature) noted as alloc-heavy; docs updated.

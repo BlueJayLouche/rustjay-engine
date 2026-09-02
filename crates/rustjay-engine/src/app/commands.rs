@@ -849,7 +849,7 @@ impl<P: EffectPlugin> App<P> {
                                 "audio/pink_noise" => state.audio.pink_noise_shaping = value > 0.5,
                                 "output/fullscreen" => state.output_fullscreen = value > 0.5,
                                 _ => {
-                                    // App-specific param resolver (e.g. Varda's hierarchical paths).
+                                    // App-specific param resolver (e.g. Kovvboj's hierarchical paths).
                                     let resolved = state
                                         .param_resolver
                                         .as_ref()

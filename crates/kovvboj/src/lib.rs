@@ -1,4 +1,4 @@
-//! Varda — assembled VJ app.
+//! KOVVBOJ — assembled VJ app.
 //!
 //! Assembles rustjay-mixer + rustjay-isf + rustjay-api + rustjay-modulation
 //! into a single engine. Two ISF shader channels are composited via the mixer
@@ -14,7 +14,7 @@ pub mod scene;
 pub mod sources;
 pub mod stage;
 #[cfg(feature = "projection")]
-use stage::VardaStage;
+use stage::KovvbojStage;
 pub mod ui;
 
 #[cfg(feature = "mixer")]
@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(all(feature = "mixer", feature = "api"))]
 use crate::api_state::{
-    VardaChannel, VardaDeck, VardaEffect, VardaLibrary, VardaSourceEntry, VardaStateSnapshot,
+    KovvbojChannel, KovvbojDeck, KovvbojEffect, KovvbojLibrary, KovvbojSourceEntry, KovvbojStateSnapshot,
 };
 
 #[cfg(feature = "mixer")]
@@ -54,7 +54,7 @@ use crate::sources::{Registry, ShaderWatcher};
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct VardaAppState {
+pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub mixer: Arc<Mutex<Mixer>>,
@@ -64,7 +64,7 @@ pub struct VardaAppState {
     #[serde(skip)]
     pub shader_watcher: Option<ShaderWatcher>,
     #[cfg(feature = "projection")]
-    pub stage: VardaStage,
+    pub stage: KovvbojStage,
     /// Pending scene to apply on next `prepare()` (runtime preset/workspace load).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -187,7 +187,7 @@ pub struct PendingEffect {
     pub target: EffectTarget,
 }
 
-impl VardaAppState {
+impl KovvbojAppState {
     /// A complete scene snapshot: mixer knobs + topology + the unified modulation
     /// engine (captured via the `engine_modulation` handle, if available).
     #[cfg(feature = "mixer")]
@@ -226,7 +226,7 @@ impl VardaAppState {
     }
 }
 
-impl Default for VardaAppState {
+impl Default for KovvbojAppState {
     fn default() -> Self {
         Self {
             #[cfg(feature = "mixer")]
@@ -241,7 +241,7 @@ impl Default for VardaAppState {
             },
             shader_watcher: None,
             #[cfg(feature = "projection")]
-            stage: VardaStage::with_default_surface(),
+            stage: KovvbojStage::with_default_surface(),
             #[cfg(feature = "mixer")]
             pending_scene: None,
             #[cfg(feature = "mixer")]
@@ -301,7 +301,7 @@ fn build_dmx_sender(
 
     let tx: Box<dyn DmxTransport> = match output_type {
         OutputType::ArtNet => Box::new(ArtNetTransport::new(dest)?),
-        _ => Box::new(SacnTransport::new(dest, transport.priority, "vjarda")?),
+        _ => Box::new(SacnTransport::new(dest, transport.priority, "KOVVBOJ")?),
     };
     Ok(rustjay_lighting::DmxSender::spawn(tx, transport.fps))
 }
@@ -314,7 +314,7 @@ fn build_dmx_sender(
 #[cfg(feature = "projection")]
 fn segment_region(
     seg: &crate::stage::LightingSegment,
-    surfaces: &[crate::stage::VardaSurface],
+    surfaces: &[crate::stage::KovvbojSurface],
 ) -> [f32; 4] {
     match &seg.source_surface {
         Some(uuid) => surfaces
@@ -334,7 +334,7 @@ fn segment_region(
 #[cfg(feature = "projection")]
 fn resolve_segment_source(
     seg: &crate::stage::LightingSegment,
-    surfaces: &[crate::stage::VardaSurface],
+    surfaces: &[crate::stage::KovvbojSurface],
     resolve_channel: impl Fn(&str) -> Option<std::sync::Arc<wgpu::TextureView>>,
 ) -> Option<std::sync::Arc<wgpu::TextureView>> {
     let uuid = seg.source_surface.as_ref()?;
@@ -350,7 +350,7 @@ fn resolve_segment_source(
 #[cfg(feature = "projection")]
 fn output_atlas_layout(
     output: &crate::stage::LightingOutput,
-    surfaces: &[crate::stage::VardaSurface],
+    surfaces: &[crate::stage::KovvbojSurface],
 ) -> rustjay_projection::AtlasLayout {
     let segs: Vec<_> = output
         .segments
@@ -604,7 +604,7 @@ fn build_fx_slot(
 // Root plugin — wraps the mixer as the engine root
 // ---------------------------------------------------------------------------
 
-pub struct VardaRootPlugin {
+pub struct KovvbojRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
     params_dirty: bool,
@@ -636,7 +636,7 @@ pub struct VardaRootPlugin {
     rotation_syncs: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<rustjay_projection::RotationSync>>>>,
 }
 
-impl VardaRootPlugin {
+impl KovvbojRootPlugin {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "mixer")]
@@ -728,14 +728,14 @@ impl VardaRootPlugin {
     }
 }
 
-impl Default for VardaRootPlugin {
+impl Default for KovvbojRootPlugin {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[cfg(feature = "mixer")]
-impl VardaRootPlugin {
+impl KovvbojRootPlugin {
     fn build_default_graph(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
         let dummy_engine = EngineState::new();
@@ -917,7 +917,7 @@ impl VardaRootPlugin {
         }
 
         // NOTE: Phase 4 removed mixer-owned modulation. Demo sources that were
-        // previously added to mixer.modulation are now omitted; varda will ship
+        // previously added to mixer.modulation are now omitted; kovvboj will ship
         // a default preset that loads into the unified EngineState.modulation
         // instead (M6.3). DeckCompositor no longer needs set_modulation_engine().
 
@@ -1031,15 +1031,15 @@ pub struct DummyUniforms {
     _pad: [f32; 4],
 }
 
-impl EffectPlugin for VardaRootPlugin {
-    type State = VardaAppState;
+impl EffectPlugin for KovvbojRootPlugin {
+    type State = KovvbojAppState;
     type Uniforms = DummyUniforms;
 
     /// Distinct app identity: drives the control window title, the top-bar name,
-    /// and isolates this example's config/presets (`~/.config/rustjay/Varda.json`)
+    /// and isolates this example's config/presets (`~/.config/rustjay/Kovvboj.json`)
     /// so it doesn't collide with other examples.
     fn app_name(&self) -> &str {
-        "Varda"
+        "KOVVBOJ"
     }
 
     fn hide_main_output_by_default(&self) -> bool {
@@ -1059,9 +1059,9 @@ impl EffectPlugin for VardaRootPlugin {
         "#
     }
 
-    fn default_state(&self) -> VardaAppState {
+    fn default_state(&self) -> KovvbojAppState {
         #[cfg_attr(not(feature = "mixer"), allow(unused_mut))]
-        let mut s = VardaAppState::default();
+        let mut s = KovvbojAppState::default();
         #[cfg(feature = "mixer")]
         {
             s.mixer = self.mixer.clone();
@@ -1089,7 +1089,7 @@ impl EffectPlugin for VardaRootPlugin {
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn prepare(
         &mut self,
-        state: &mut VardaAppState,
+        state: &mut KovvbojAppState,
         engine: &EngineState,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1343,7 +1343,7 @@ impl EffectPlugin for VardaRootPlugin {
         #[cfg(all(feature = "mixer", feature = "api"))]
         {
             if let Ok(mixer) = self.mixer.lock() {
-                let snapshot = build_varda_snapshot(&mixer, &state.registry, engine);
+                let snapshot = build_kovvboj_snapshot(&mixer, &state.registry, engine);
                 if let Ok(mut guard) = engine.app_state.lock() {
                     match serde_json::to_value(&snapshot) {
                         Ok(val) => *guard = Some(val),
@@ -1709,7 +1709,7 @@ impl EffectPlugin for VardaRootPlugin {
                         }
                         let idx = enabled_idx;
                         enabled_idx += 1;
-                        let sender_name = format!("vjarda — {}", proj.name);
+                        let sender_name = format!("kovvboj — {}", proj.name);
 
                         // ── Disk recording ──────────────────────────────────
                         let want_rec = matches!(proj.output_type, OutputType::Recording);
@@ -1722,7 +1722,7 @@ impl EffectPlugin for VardaRootPlugin {
                             std::fs::create_dir_all(&dir).ok();
                             let path = dir.join(format!("projector_{}_{}_{}.mp4", i, proj.name, ts));
                             if let Err(e) = sub.start_projector_recording(idx, &path, fps, codec) {
-                                log::error!("[Varda] Failed to start projector {i} recording: {e}");
+                                log::error!("[Kovvboj] Failed to start projector {i} recording: {e}");
                             }
                         } else if !want_rec && sub.is_projector_recording(idx) {
                             sub.stop_projector_recording(idx);
@@ -1843,7 +1843,7 @@ impl EffectPlugin for VardaRootPlugin {
                         }
                         let idx = enabled_idx;
                         enabled_idx += 1;
-                        let sender_name = format!("vjarda — {}", hl.name);
+                        let sender_name = format!("kovvboj — {}", hl.name);
 
                         let want_rec = matches!(hl.output_type, OutputType::Recording);
                         if want_rec && !sub.is_headless_recording(idx) {
@@ -1855,7 +1855,7 @@ impl EffectPlugin for VardaRootPlugin {
                             std::fs::create_dir_all(&dir).ok();
                             let path = dir.join(format!("headless_{}_{}_{}.mp4", i, hl.name, ts));
                             if let Err(e) = sub.start_headless_recording(idx, &path, fps, codec) {
-                                log::error!("[Varda] Failed to start headless {i} recording: {e}");
+                                log::error!("[Kovvboj] Failed to start headless {i} recording: {e}");
                             }
                         } else if !want_rec && sub.is_headless_recording(idx) {
                             sub.stop_headless_recording(idx);
@@ -2110,7 +2110,7 @@ impl EffectPlugin for VardaRootPlugin {
         }
     }
 
-    fn build_uniforms(&self, _state: &VardaAppState, _engine: &EngineState) -> DummyUniforms {
+    fn build_uniforms(&self, _state: &KovvbojAppState, _engine: &EngineState) -> DummyUniforms {
         DummyUniforms { _pad: [0.0; 4] }
     }
 
@@ -2136,9 +2136,9 @@ impl EffectPlugin for VardaRootPlugin {
         self.params_dirty = false;
     }
 
-    // Varda's egui tabs are non-replacing (each gets its own sidebar button via
+    // Kovvboj's egui tabs are non-replacing (each gets its own sidebar button via
     // the engine host), so the built-in tabs — including the working LFO and MIDI
-    // panels the Varda tabs only summarize — stay available. Nothing is hidden.
+    // panels the Kovvboj tabs only summarize — stay available. Nothing is hidden.
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
     fn on_engine_ready(&mut self, engine: &mut EngineState) {
@@ -2256,7 +2256,7 @@ impl EffectPlugin for VardaRootPlugin {
     }
 
     #[cfg_attr(not(feature = "mixer"), allow(unused_variables))]
-    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, app_state: &mut VardaAppState) -> bool {
+    fn render(&mut self, ctx: &mut RenderHookCtx<'_>, app_state: &mut KovvbojAppState) -> bool {
         #[cfg(feature = "mixer")]
         {
             let mut render_ctx = RenderCtx {
@@ -2452,11 +2452,11 @@ impl EffectPlugin for VardaRootPlugin {
 // ── API snapshot builders (behind `api` feature) ───────────────────────────
 
 #[cfg(all(feature = "mixer", feature = "api"))]
-fn build_varda_snapshot(
+fn build_kovvboj_snapshot(
     mixer: &Mixer,
     registry: &Registry,
     engine: &EngineState,
-) -> VardaStateSnapshot {
+) -> KovvbojStateSnapshot {
     use rustjay_mixer::{BlendMode, InputSelect};
 
     // Live (base + modulation) value of a param key, falling back to `base`.
@@ -2482,14 +2482,14 @@ fn build_varda_snapshot(
                 for deck in &compositor.decks {
                     let mut deck_effects = Vec::new();
                     for slot in &deck.chain {
-                        deck_effects.push(VardaEffect {
+                        deck_effects.push(KovvbojEffect {
                             uuid: slot.uuid.clone(),
                             name: slot.effect.label().to_string(),
                             enabled: slot.enabled,
                             param_prefix: format!("{}fx{}_", deck.full_prefix, slot.uuid),
                         });
                     }
-                    decks.push(VardaDeck {
+                    decks.push(KovvbojDeck {
                         uuid: deck.uuid.clone(),
                         name: deck.name.clone(),
                         channel_uuid: ch.uuid.clone(),
@@ -2504,7 +2504,7 @@ fn build_varda_snapshot(
         }
 
         for slot in &ch.chain {
-            ch_effects.push(VardaEffect {
+            ch_effects.push(KovvbojEffect {
                 uuid: slot.uuid.clone(),
                 name: slot.effect.label().to_string(),
                 enabled: slot.enabled,
@@ -2512,7 +2512,7 @@ fn build_varda_snapshot(
             });
         }
 
-        channels.push(VardaChannel {
+        channels.push(KovvbojChannel {
             uuid: ch.uuid.clone(),
             name: ch.name.clone(),
             opacity_key: format!("ch_{}_opacity", ch.uuid),
@@ -2531,7 +2531,7 @@ fn build_varda_snapshot(
     }
 
     for slot in &mixer.master {
-        master_effects.push(VardaEffect {
+        master_effects.push(KovvbojEffect {
             uuid: slot.uuid.clone(),
             name: slot.effect.label().to_string(),
             enabled: slot.enabled,
@@ -2539,7 +2539,7 @@ fn build_varda_snapshot(
         });
     }
 
-    VardaStateSnapshot {
+    KovvbojStateSnapshot {
         crossfader: live("crossfader", mixer.crossfader),
         channels,
         master_effects,
@@ -2548,8 +2548,8 @@ fn build_varda_snapshot(
 }
 
 #[cfg(all(feature = "mixer", feature = "api"))]
-fn registry_to_library(registry: &Registry) -> VardaLibrary {
-    VardaLibrary {
+fn registry_to_library(registry: &Registry) -> KovvbojLibrary {
+    KovvbojLibrary {
         shaders: registry.shaders.iter().map(source_entry_to_api).collect(),
         images: registry.images.iter().map(source_entry_to_api).collect(),
         videos: registry.videos.iter().map(source_entry_to_api).collect(),
@@ -2558,9 +2558,9 @@ fn registry_to_library(registry: &Registry) -> VardaLibrary {
 }
 
 #[cfg(all(feature = "mixer", feature = "api"))]
-fn source_entry_to_api(e: &crate::sources::SourceEntry) -> VardaSourceEntry {
+fn source_entry_to_api(e: &crate::sources::SourceEntry) -> KovvbojSourceEntry {
     use crate::sources::SourceKind;
-    VardaSourceEntry {
+    KovvbojSourceEntry {
         id: e.id.clone(),
         name: e.name.clone(),
         kind: match e.kind {

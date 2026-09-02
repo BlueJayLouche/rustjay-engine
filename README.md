@@ -214,7 +214,7 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 | 10 | ✅ | Projection mapping — output post-processor, headless NDI/Syphon/Spout/V4L2 sinks |
 | 11 | ✅ | DMX lighting output — sACN / Art-Net with per-fixture pixel sampling |
 
-Stretch goals: hot-reload plugins, timeline/sequencer, VARDA full-parity port.
+Stretch goals: hot-reload plugins, timeline/sequencer, KOVVBOJ full-parity port.
 
 ## Related projects
 

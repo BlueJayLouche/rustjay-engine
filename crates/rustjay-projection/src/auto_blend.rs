@@ -1,6 +1,6 @@
 //! Auto edge-blend computer — CPU-side overlap detection between surfaces.
 //!
-//! Ported from Varda's edge_blend.rs auto-detection logic.
+//! Ported from Kovvboj's edge_blend.rs auto-detection logic.
 
 pub const MAX_OVERLAP_ZONES: usize = 4;
 

@@ -984,7 +984,7 @@ pub struct EngineState {
     pub show_stage_preview: bool,
     /// Raw value of the egui `TextureId` backing the live master-output preview,
     /// published by the egui control GUI each time the preview texture is
-    /// (re)created. Custom egui tabs (e.g. vjarda's Stage tab) read this to draw
+    /// (re)created. Custom egui tabs (e.g. kovvboj's Stage tab) read this to draw
     /// the live master output as a canvas background. `None` until the GUI is up,
     /// or when not using the egui front-end. Reconstruct with
     /// `egui::TextureId::User(id)` — `register_native_texture` always returns the
@@ -1107,7 +1107,7 @@ pub struct EngineState {
     pub param_lookup_prefix: RefCell<Option<String>>,
 
     /// Optional callback for resolving hierarchical parameter paths to flat
-    /// engine ids. Used by app-specific param routers (e.g. Varda's
+    /// engine ids. Used by app-specific param routers (e.g. Kovvboj's
     /// `deck/<uuid>/param/<name>` → `ch_<uuid>_deck_<uuid>_<name>`) without
     /// forking the core parameter system.
     pub param_resolver: Option<ParamResolver>,

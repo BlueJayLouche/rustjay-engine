@@ -1,4 +1,4 @@
-//! GUI — egui tabs for Varda's panels.
+//! GUI — egui tabs for Kovvboj's panels.
 //!
 //! Each tab is a non-replacing `AnyEguiTab` (it gets its own sidebar button via
 //! the engine host) so the built-in tabs (incl. the working LFO/MIDI panels)
@@ -225,7 +225,7 @@ pub struct InspectorTab;
 mod egui_impl {
     use super::*;
     use crate::graph::DeckCompositor;
-    use crate::VardaAppState;
+    use crate::KovvbojAppState;
     use rustjay_core::EngineState;
     use rustjay_engine::prelude::*;
     use rustjay_mixer::BlendMode;
@@ -453,7 +453,7 @@ mod egui_impl {
 
     /// Validate and queue a stream deck for either UI entry point.
     fn queue_stream_deck(
-        state: &mut VardaAppState,
+        state: &mut KovvbojAppState,
         engine: &mut EngineState,
         channel_uuid: &str,
         display_name: &str,
@@ -539,8 +539,8 @@ mod egui_impl {
             engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("MixerTab expects VardaAppState");
+                .downcast_mut::<KovvbojAppState>()
+                .expect("MixerTab expects KovvbojAppState");
 
             // Poll async file picker result.
             if let Ok(mut guard) = self.pending_effect.lock()
@@ -598,8 +598,8 @@ mod egui_impl {
             engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("DeckTab expects VardaAppState");
+                .downcast_mut::<KovvbojAppState>()
+                .expect("DeckTab expects KovvbojAppState");
 
             // Poll async file picker result.
             if let Ok(mut guard) = self.pending_effect.lock()
@@ -1042,8 +1042,8 @@ mod egui_impl {
             engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("EffectsTab expects VardaAppState");
+                .downcast_mut::<KovvbojAppState>()
+                .expect("EffectsTab expects KovvbojAppState");
 
             // Poll async file picker result.
             if let Ok(mut guard) = self.pending_effect.lock()
@@ -1312,8 +1312,8 @@ mod egui_impl {
                     .map(egui::TextureId::User);
 
                 let state = _app_state
-                    .downcast_mut::<VardaAppState>()
-                    .expect("StageTab expects VardaAppState");
+                    .downcast_mut::<KovvbojAppState>()
+                    .expect("StageTab expects KovvbojAppState");
 
                 // Keep the design resolution in sync with the master output so
                 // pixel-based surface sizing is accurate.
@@ -1545,12 +1545,12 @@ mod egui_impl {
         fn draw_stage_tab(
             &mut self,
             ui: &mut egui::Ui,
-            state: &mut VardaAppState,
+            state: &mut KovvbojAppState,
             master_res: [u32; 2],
             preview_tex: Option<egui::TextureId>,
             show_stage_preview: &mut bool,
         ) {
-            use crate::stage::{ContentMapping, SurfaceSource, VardaSurface};
+            use crate::stage::{ContentMapping, SurfaceSource, KovvbojSurface};
             use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
 
             // Disjoint field borrows so the closures below can capture each
@@ -1638,14 +1638,14 @@ mod egui_impl {
 
                     if ui.button("+ Add Rectangle").clicked() {
                         let idx = state.stage.surfaces.len() + 1;
-                        state.stage.surfaces.push(VardaSurface::full_frame(
+                        state.stage.surfaces.push(KovvbojSurface::full_frame(
                             format!("Surface {}", idx),
                             format!("surf{}", idx),
                         ));
                     }
                     if ui.button("+ Add Circle").clicked() {
                         let idx = state.stage.surfaces.len() + 1;
-                        state.stage.surfaces.push(VardaSurface::circle(
+                        state.stage.surfaces.push(KovvbojSurface::circle(
                             format!("Circle {}", idx),
                             format!("circle{}", idx),
                             [0.5, 0.5],
@@ -1671,7 +1671,7 @@ mod egui_impl {
                                     } else if result.contours.len() == 1 {
                                         let contour = &result.contours[0];
                                         let s = contour.to_surface(0);
-                                        state.stage.surfaces.push(VardaSurface {
+                                        state.stage.surfaces.push(KovvbojSurface {
                                             name: s.name,
                                             uuid: "import0".to_string(),
                                             vertices: s.vertices,
@@ -1694,7 +1694,7 @@ mod egui_impl {
                                             .iter()
                                             .map(|c| c.vertices.clone())
                                             .collect();
-                                        state.stage.surfaces.push(VardaSurface {
+                                        state.stage.surfaces.push(KovvbojSurface {
                                             name: s.name,
                                             uuid: "import0".to_string(),
                                             vertices: s.vertices,
@@ -2568,7 +2568,7 @@ mod egui_impl {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[cfg(feature = "projection")]
-    fn draw_surface_properties(ui: &mut egui::Ui, state: &mut VardaAppState) {
+    fn draw_surface_properties(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
         use crate::stage::{ContentMapping, SurfaceSource};
 
         // Collect channel/deck names for source selector, falling back to the
@@ -2996,8 +2996,8 @@ mod egui_impl {
         ) {
             #[cfg_attr(not(feature = "projection"), allow(unused_variables))]
             let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("OutputsTab expects VardaAppState");
+                .downcast_mut::<KovvbojAppState>()
+                .expect("OutputsTab expects KovvbojAppState");
 
             ui.heading("Outputs");
             ui.separator();
@@ -3181,7 +3181,7 @@ mod egui_impl {
                     state
                         .stage
                         .projectors
-                        .push(crate::stage::VardaProjector::default());
+                        .push(crate::stage::KovvbojProjector::default());
                     // Ensure source_syncs, warp_syncs, and rotation_syncs exist for the new projector.
                     while state.stage.source_syncs.len() <= new_idx {
                         state.stage.source_syncs.push(std::sync::Arc::new(
@@ -3205,7 +3205,7 @@ mod egui_impl {
                         if let Some(sub) = any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() {
                             let proj = &state.stage.projectors[new_idx];
                             let attrs = winit::window::WindowAttributes::default()
-                                .with_title(format!("Varda Projector {} - {}", new_idx + 1, proj.name))
+                                .with_title(format!("KOVVBOJ Projector {} - {}", new_idx + 1, proj.name))
                                 .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
                             let w = state.stage.warp_syncs.get(new_idx).cloned().unwrap_or_else(|| {
                                 std::sync::Arc::new(std::sync::Mutex::new(crate::stage::WarpSync::default()))
@@ -3220,10 +3220,10 @@ mod egui_impl {
                             });
                             sub.add_projector(attrs, proj.fullscreen_monitor, move |device, format| {
                                 vec![
-                                    Box::new(crate::stage::VardaSourceStage::new(device, format, s.clone())),
-                                    Box::new(crate::stage::VardaDomeStage::new(device, format, d.clone())),
-                                    Box::new(crate::stage::VardaEdgeBlendStage::new(device, format, e.clone())),
-                                    Box::new(crate::stage::VardaWarpStage::new(device, format, w.clone())),
+                                    Box::new(crate::stage::KovvbojSourceStage::new(device, format, s.clone())),
+                                    Box::new(crate::stage::KovvbojDomeStage::new(device, format, d.clone())),
+                                    Box::new(crate::stage::KovvbojEdgeBlendStage::new(device, format, e.clone())),
+                                    Box::new(crate::stage::KovvbojWarpStage::new(device, format, w.clone())),
                                     Box::new(rustjay_projection::RotationStage::new(device, format, r.clone())),
                                 ]
                             });
@@ -3325,7 +3325,7 @@ mod egui_impl {
                     state
                         .stage
                         .headless_outputs
-                        .push(crate::stage::VardaHeadlessConfig::default());
+                        .push(crate::stage::KovvbojHeadlessConfig::default());
                     state.save_workspace();
                 }
                 ui.separator();
@@ -3972,8 +3972,8 @@ mod egui_impl {
             _engine: &mut EngineState,
         ) {
             let state = app_state
-                .downcast_mut::<VardaAppState>()
-                .expect("SequencerTab expects VardaAppState");
+                .downcast_mut::<KovvbojAppState>()
+                .expect("SequencerTab expects KovvbojAppState");
 
             ui.heading("Sequencer");
             ui.separator();

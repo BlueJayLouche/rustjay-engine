@@ -2,7 +2,7 @@
 
 Map addressable LEDs (ws281x et al.) by flashing a calibration pattern and
 recovering each LED's position from camera/video. Export a map that
-rustjay-engine/vjarda (and later stageLX) can sample.
+rustjay-engine/kovvboj (and later stageLX) can sample.
 
 ## Decisions (locked)
 
@@ -13,7 +13,7 @@ rustjay-engine/vjarda (and later stageLX) can sample.
 | Output protocol | **sACN (E1.31)** — reuse `rustjay-lighting` (`e131`/`SacnTransport`); Art-Net deferred |
 | Home | **New crate `rustjay-ledmap`** in the rustjay-engine workspace (rustjay-mapper is retired) |
 | GUI | **egui tab** in `rustjay-gui` (engine's live GUI stack) |
-| First consumer | **rustjay-engine / vjarda** — needs a new freeform point-sample map type (current code is grid-only) |
+| First consumer | **rustjay-engine / kovvboj** — needs a new freeform point-sample map type (current code is grid-only) |
 
 ## Why a crate in rustjay-engine, not a new app
 
@@ -118,7 +118,7 @@ mode, don't touch the grid path:
    `DmxSender`. Full trigger chain wired: `OutputCommand::StartLed {path,priority}`
    / `StopLed` → `commands.rs` → `WgpuEngine::start_led_output` →
    `OutputManager::start_led`; toggled from the **Playback (sACN)** section of the
-   vjarda LED Map tab. End-to-end: calibrate → export → Start LED output → the
+   kovvboj LED Map tab. End-to-end: calibrate → export → Start LED output → the
    live mix drives the mapped strip.
 3. Gray-code pattern + uploaded-video ingestion (file input → same decode).
 4. Projection/homography rectification toggle (image → content space) for clean (u,v).

@@ -1,4 +1,4 @@
-//! Varda's API state schema (app-owned).
+//! Kovvboj's API state schema (app-owned).
 //!
 //! These DTOs serialize the deck/channel/effect structure + library registry
 //! that this app publishes into `EngineState::app_state` (the generic opaque
@@ -8,22 +8,22 @@
 
 use serde::Serialize;
 
-/// App-level snapshot published by Varda.
+/// App-level snapshot published by Kovvboj.
 #[derive(Debug, Clone, Serialize, Default)]
-pub struct VardaStateSnapshot {
+pub struct KovvbojStateSnapshot {
     /// Mixer crossfader value (live).
     pub crossfader: f32,
     /// All mixer channels.
-    pub channels: Vec<VardaChannel>,
+    pub channels: Vec<KovvbojChannel>,
     /// Master-chain effects.
-    pub master_effects: Vec<VardaEffect>,
+    pub master_effects: Vec<KovvbojEffect>,
     /// Library/registry snapshot.
-    pub library: VardaLibrary,
+    pub library: KovvbojLibrary,
 }
 
 /// One mixer channel.
 #[derive(Debug, Clone, Serialize)]
-pub struct VardaChannel {
+pub struct KovvbojChannel {
     /// Channel short UUID.
     pub uuid: String,
     /// Display name (e.g. "Channel A").
@@ -41,14 +41,14 @@ pub struct VardaChannel {
     /// Live input selection.
     pub input_select: String,
     /// Decks owned by this channel.
-    pub decks: Vec<VardaDeck>,
+    pub decks: Vec<KovvbojDeck>,
     /// Channel-level FX chain.
-    pub effects: Vec<VardaEffect>,
+    pub effects: Vec<KovvbojEffect>,
 }
 
 /// One deck inside a channel.
 #[derive(Debug, Clone, Serialize)]
-pub struct VardaDeck {
+pub struct KovvbojDeck {
     /// Deck short UUID.
     pub uuid: String,
     /// Display name (e.g. "ColorCycle").
@@ -64,12 +64,12 @@ pub struct VardaDeck {
     /// Live blend mode name.
     pub blend: String,
     /// Deck-level FX chain.
-    pub effects: Vec<VardaEffect>,
+    pub effects: Vec<KovvbojEffect>,
 }
 
 /// One effect slot.
 #[derive(Debug, Clone, Serialize)]
-pub struct VardaEffect {
+pub struct KovvbojEffect {
     /// Effect slot UUID.
     pub uuid: String,
     /// Display name.
@@ -82,20 +82,20 @@ pub struct VardaEffect {
 
 /// Library/registry contents.
 #[derive(Debug, Clone, Serialize, Default)]
-pub struct VardaLibrary {
+pub struct KovvbojLibrary {
     /// ISF shaders.
-    pub shaders: Vec<VardaSourceEntry>,
+    pub shaders: Vec<KovvbojSourceEntry>,
     /// Static images.
-    pub images: Vec<VardaSourceEntry>,
+    pub images: Vec<KovvbojSourceEntry>,
     /// Video files.
-    pub videos: Vec<VardaSourceEntry>,
+    pub videos: Vec<KovvbojSourceEntry>,
     /// Built-in generators.
-    pub builtins: Vec<VardaSourceEntry>,
+    pub builtins: Vec<KovvbojSourceEntry>,
 }
 
-/// One entry in the Varda library.
+/// One entry in the Kovvboj library.
 #[derive(Debug, Clone, Serialize)]
-pub struct VardaSourceEntry {
+pub struct KovvbojSourceEntry {
     /// Stable identifier.
     pub id: String,
     /// Human-readable name.

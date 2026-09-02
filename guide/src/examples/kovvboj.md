@@ -35,7 +35,7 @@ compositing, modulation, and output.
 - **LED Map tab** — calibrate addressable LED strips and play them back over
   sACN. See [Lighting & LED](../lighting.md).
 - **Outputs** — window output plus lifecycle-managed NDI / Syphon senders
-  (broadcast as `vjarda — <name>`). The top bar shows WEB / OSC / sink pills for
+  (broadcast as `kovvboj — <name>`). The top bar shows WEB / OSC / sink pills for
   whatever is live.
 - **External control** — the Web parameter server, OSC, and MIDI all reach into
   any mapped parameter. The top bar exposes **MIDI MAP** and **LFO MAP** toggles:

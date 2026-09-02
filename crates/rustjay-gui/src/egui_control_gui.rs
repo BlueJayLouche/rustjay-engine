@@ -201,7 +201,7 @@ impl EguiControlGui {
     }
     pub fn set_output_preview_texture(&mut self, id: egui::TextureId) {
         self.output_preview_texture_id = Some(id);
-        // Publish the raw id so custom egui tabs (e.g. vjarda's Stage tab) can
+        // Publish the raw id so custom egui tabs (e.g. kovvboj's Stage tab) can
         // draw the live master output as a canvas background. They reconstruct
         // it with `egui::TextureId::User(id)`.
         let raw = match id {

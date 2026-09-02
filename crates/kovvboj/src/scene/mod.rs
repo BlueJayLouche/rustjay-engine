@@ -1,7 +1,7 @@
 //! Scene — the full runtime state of the show.
 //!
 //! Channels, decks, effects, modulation, crossfader, and sequences.
-//! Persisted as `.varda/scene.json`.
+//! Persisted as `.kovvboj/scene.json`.
 //!
 //! Two layers are persisted:
 //! - **Knobs** ([`rustjay_mixer::MixerState`]) — crossfader, per-channel

@@ -10,7 +10,7 @@ fn main() -> anyhow::Result<()> {
         .filter_module("tracing::span", log::LevelFilter::Warn)
         .init();
 
-    log::info!("Starting Varda v{}", env!("CARGO_PKG_VERSION"));
+    log::info!("Starting KOVVBOJ v{}", env!("CARGO_PKG_VERSION"));
 
     #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "webcam")]
             Box::new(kovvboj::ui::LedMapTab::new()),
         ];
-        let plugin = kovvboj::VardaRootPlugin::new();
+        let plugin = kovvboj::KovvbojRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
         // actually reach the render output.
         let dome_sync = plugin.dome_sync();
@@ -64,14 +64,14 @@ fn main() -> anyhow::Result<()> {
         );
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
-            use kovvboj::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
+            use kovvboj::stage::{KovvbojDomeStage, KovvbojEdgeBlendStage, KovvbojSourceStage, KovvbojWarpStage};
             use winit::window::WindowAttributes;
             for (i, proj) in stage.projectors.iter().enumerate() {
                 if !proj.enabled {
                     continue;
                 }
                 let attrs = WindowAttributes::default()
-                    .with_title(format!("Varda Projector {} - {}", i + 1, proj.name))
+                    .with_title(format!("KOVVBOJ Projector {} - {}", i + 1, proj.name))
                     .with_inner_size(winit::dpi::LogicalSize::new(proj.width, proj.height));
                 if let Some(monitor_idx) = proj.fullscreen_monitor {
                     log::info!(
@@ -95,10 +95,10 @@ fn main() -> anyhow::Result<()> {
                 });
                 sub.add_projector(attrs, proj.fullscreen_monitor, move |device, format| {
                     vec![
-                        Box::new(VardaSourceStage::new(device, format, s.clone())),
-                        Box::new(VardaDomeStage::new(device, format, d.clone())),
-                        Box::new(VardaEdgeBlendStage::new(device, format, e.clone())),
-                        Box::new(VardaWarpStage::new(device, format, w.clone())),
+                        Box::new(KovvbojSourceStage::new(device, format, s.clone())),
+                        Box::new(KovvbojDomeStage::new(device, format, d.clone())),
+                        Box::new(KovvbojEdgeBlendStage::new(device, format, e.clone())),
+                        Box::new(KovvbojWarpStage::new(device, format, w.clone())),
                         Box::new(rustjay_projection::RotationStage::new(device, format, r.clone())),
                     ]
                 });
@@ -120,10 +120,10 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "webcam")]
             Box::new(kovvboj::ui::LedMapTab::new()),
         ];
-        rustjay_engine::run_with_egui_tabs(kovvboj::VardaRootPlugin::new(), tabs)
+        rustjay_engine::run_with_egui_tabs(kovvboj::KovvbojRootPlugin::new(), tabs)
     }
     #[cfg(not(all(feature = "egui", feature = "mixer")))]
     {
-        rustjay_engine::run(kovvboj::VardaRootPlugin::new())
+        rustjay_engine::run(kovvboj::KovvbojRootPlugin::new())
     }
 }

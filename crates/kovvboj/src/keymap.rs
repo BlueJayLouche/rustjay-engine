@@ -1,6 +1,6 @@
 //! Keymap — keyboard shortcut bindings.
 //!
-//! Persisted as `.varda/keymap.json`.
+//! Persisted as `.kovvboj/keymap.json`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

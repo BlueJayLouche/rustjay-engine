@@ -227,7 +227,7 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         .chain(isf.imported.keys().cloned())
         .collect();
 
-    // 1.5 vjarda dialect: strip baked varda preludes (blocks/layout decls/aliases).
+    // 1.5 kovvboj dialect: strip baked kovvboj preludes (blocks/layout decls/aliases).
     let mut baked_members: Vec<MemberDecl> = Vec::new();
     let mut baked_textures: Vec<String> = Vec::new();
     let (b, baked_needs_out, bool_as_float) = strip_baked_prelude(
@@ -311,7 +311,7 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
             InputType::Float(_) => Some(FieldTy::F32),
             InputType::Long(_) => Some(FieldTy::I32),
             InputType::Bool(_) | InputType::Event => {
-                // vjarda dialect: baked blocks declare bools as float and bodies
+                // kovvboj dialect: baked blocks declare bools as float and bodies
                 // compare against floats
                 Some(if bool_as_float {
                     FieldTy::F32
@@ -425,7 +425,7 @@ fn layout_std140(members: &[MemberDecl]) -> (Vec<InputField>, usize) {
 // Body rewrite passes (line/char scanners — see module docs)
 // ---------------------------------------------------------------------------
 
-/// Strip a baked varda-style prelude from the body (the 115 shaders bundled with
+/// Strip a baked kovvboj-style prelude from the body (the 115 shaders bundled with
 /// crates/kovvboj were generated with declarations baked into the `.fs` file:
 /// `ISFUniforms`/`UserParams`/`*Params` blocks, layout-qualified in/out, sampler and
 /// texture decls). Triggered only when the body mentions `ISFUniforms` — stock ISF

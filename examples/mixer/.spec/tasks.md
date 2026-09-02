@@ -39,7 +39,7 @@ improvement, not a blocker (see PHASE_B_ROADMAP §B0).
 **File:** `crates/rustjay-mixer/src/{blend.rs,composite.wgsl}`
 **Implements:** REQ-02.1, REQ-02.2
 
-- [x] Ported the 15 `BlendMode` variants + indices + `short_name`/`all()` from Varda
+- [x] Ported the 15 `BlendMode` variants + indices + `short_name`/`all()` from Kovvboj
 - [x] `composite.wgsl`: samples source + dest, branches on blend index, self-contained vs+fs
 - [x] naga WGSL front-end validates the shader (unit test, no GPU)
 
@@ -49,7 +49,7 @@ improvement, not a blocker (see PHASE_B_ROADMAP §B0).
 **File:** `crates/rustjay-mixer/src/composite.rs`
 **Needs:** T02 · **Implements:** REQ-02.3 (REQ-11.1 deferred to T19)
 
-- [x] Pipeline + bind layout (`@group(0)`: sampler, source, dest, params) — matches Varda
+- [x] Pipeline + bind layout (`@group(0)`: sampler, source, dest, params) — matches Kovvboj
 - [x] `blend(device, encoder, source, dest, out, opacity, mode, vertex_buffer)` — REPLACE to a third texture (ping-pong; you can't sample the render target)
 - [ ] Generation-keyed bind-group cache — **deferred to T19** (current `blend` allocates a uniform+bind group per call; correct but per-frame; documented `TODO`)
 
@@ -57,7 +57,7 @@ improvement, not a blocker (see PHASE_B_ROADMAP §B0).
 
 > **Design reconciliation:** the design doc's "accumulation read via `LoadOp::Load`"
 > is **wrong** for a shader compositor — you cannot sample the texture you render
-> into. The implemented (and Varda-proven) approach samples `source` + `dest` and
+> into. The implemented (and Kovvboj-proven) approach samples `source` + `dest` and
 > writes to a third texture, so the mixer ping-pongs two accumulation textures.
 > design.md §6 should be updated to match when T07 lands.
 

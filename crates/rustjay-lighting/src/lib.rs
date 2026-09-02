@@ -11,7 +11,7 @@
 //! ```no_run
 //! use rustjay_lighting::{DmxFrame, DmxSender, SacnTransport, Dest};
 //!
-//! let transport = SacnTransport::new(Dest::Multicast, 100, "vjarda").unwrap();
+//! let transport = SacnTransport::new(Dest::Multicast, 100, "kovvboj").unwrap();
 //! let sender = DmxSender::spawn(Box::new(transport), 44.0);
 //!
 //! let mut frame = DmxFrame::new();
