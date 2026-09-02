@@ -301,15 +301,20 @@ mod egui_impl {
 
     /// One node in a signal strip: a source or an FX slot.
     ///
-    /// Returns `(clicked, toggled)` — a click selects the node, a click on the
-    /// leading dot toggles `enabled`. Disabled slots render dimmed and struck
-    /// through so a bypassed FX reads as present-but-off rather than absent.
-    fn chip(
+    /// Returns `(response, toggled)`. The response senses **click and drag** on
+    /// one stable `id`, so the caller can both select on click and start a drag
+    /// on the same chip — `dnd_drag_source` cannot be used here, because it
+    /// layers its own `Sense::drag()` over the rect and swallows the click.
+    /// A press on the leading dot toggles `enabled` instead of selecting.
+    /// Disabled slots render dimmed and struck through, so a bypassed FX reads
+    /// as present-but-off rather than absent.
+    pub(crate) fn chip(
         ui: &mut egui::Ui,
+        id: egui::Id,
         label: &str,
         selected: bool,
         enabled: Option<bool>,
-    ) -> (bool, bool) {
+    ) -> (egui::Response, bool) {
         use rustjay_gui::egui_theme::colors::*;
 
         let pad = egui::vec2(8.0, 4.0);
@@ -325,7 +330,13 @@ mod egui_impl {
             galley.size().x + pad.x * 2.0 + dot_w,
             galley.size().y + pad.y * 2.0,
         );
-        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
+        // The label is painted as a galley, so without this the chip is an
+        // unnamed rectangle to a screen reader — and unfindable from a test.
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+        });
         let p = ui.painter();
 
         let bg = if selected {
@@ -374,7 +385,7 @@ mod egui_impl {
             );
         }
 
-        (resp.clicked() && !toggled, toggled)
+        (resp, toggled)
     }
 
     /// The "─" joining two chips in a strip.
@@ -419,14 +430,26 @@ mod egui_impl {
             return None;
         }
         let (inner, payload) = ui.dnd_drop_zone::<ChainDrag, _>(egui::Frame::NONE, |ui| {
-            ui.allocate_exact_size(egui::vec2(12.0, 22.0), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(16.0, 22.0), egui::Sense::hover());
         });
-        if inner.response.dnd_hover_payload::<ChainDrag>().is_some() {
-            let rect = inner.response.rect;
-            ui.painter().vline(
+        // Every gap advertises itself as soon as something is lifted — waiting
+        // for hover means you have to guess where the targets are. The hovered
+        // one is then the bright, wider one.
+        let rect = inner.response.rect;
+        let hovered = inner.response.dnd_hover_payload::<ChainDrag>().is_some();
+        let painter = ui.painter();
+        if hovered {
+            painter.rect_filled(rect, 0.0, amber().gamma_multiply(0.25));
+            painter.vline(
                 rect.center().x,
                 rect.y_range(),
-                egui::Stroke::new(2.0, amber()),
+                egui::Stroke::new(3.0, amber()),
+            );
+        } else {
+            painter.vline(
+                rect.center().x,
+                rect.y_range().shrink(4.0),
+                egui::Stroke::new(1.0, amber().gamma_multiply(0.45)),
             );
         }
         payload
@@ -463,24 +486,43 @@ mod egui_impl {
                 chain: chain_ref.clone(),
                 slot: slot.uuid.clone(),
             };
-            let (clicked, toggled) = ui
-                .dnd_drag_source(
-                    ui.id().with(("fxchip", &slot.uuid)),
-                    payload,
-                    |ui| {
-                        chip(
-                            ui,
-                            slot.effect.label(),
-                            selected_fx == Some(slot.uuid.as_str()),
-                            Some(slot.enabled),
-                        )
-                    },
-                )
-                .inner;
+            let id = ui.id().with(("fxchip", &slot.uuid));
+            let selected = selected_fx == Some(slot.uuid.as_str());
+            let label = slot.effect.label();
+            let dragging = ui.ctx().is_being_dragged(id);
+
+            let (resp, toggled) = if dragging {
+                // Carry the payload for as long as the drag lives, and draw the
+                // chip into a tooltip-order layer translated to the cursor so it
+                // visibly follows the pointer. Mirrors what `dnd_drag_source`
+                // does internally; we do it by hand because that helper's own
+                // drag sense would eat the click we need for selection.
+                egui::DragAndDrop::set_payload(ui.ctx(), payload);
+                let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+                let ir = ui.scope_builder(egui::UiBuilder::new().layer_id(layer), |ui| {
+                    chip(ui, id, label, selected, Some(slot.enabled))
+                });
+                if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                    let delta = pos - ir.response.rect.center();
+                    ui.ctx().transform_layer_shapes(
+                        layer,
+                        egui::emath::TSTransform::from_translation(delta),
+                    );
+                }
+                ir.inner
+            } else {
+                chip(ui, id, label, selected, Some(slot.enabled))
+            };
+
             if toggled {
                 out.toggle = Some(i);
-            } else if clicked {
+            } else if resp.clicked() {
                 out.select = Some(slot.uuid.clone());
+            }
+            if resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
             if ui
                 .small_button("✖")
@@ -1070,9 +1112,15 @@ mod egui_impl {
                                                 source_icon(deck.source_kind),
                                                 deck.name
                                             );
-                                            let (clicked, _) =
-                                                chip(ui, &label, src_selected, None);
-                                            if clicked {
+                                            let (src_resp, _) =
+                                                chip(
+                                                    ui,
+                                                    ui.id().with(("srcchip", &deck_uuid)),
+                                                    &label,
+                                                    src_selected,
+                                                    None,
+                                                );
+                                            if src_resp.clicked() {
                                                 new_selection = Some(crate::Selection::Source {
                                                     channel: ch_uuid.clone(),
                                                     deck: deck_uuid.clone(),
@@ -4280,4 +4328,50 @@ mod egui_impl {
         }
     }
 
+    #[cfg(test)]
+    mod chip_tests {
+        use super::chip;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        /// A chip must report a plain click.
+        ///
+        /// It used to be wrapped in `dnd_drag_source`, which layers its own
+        /// `Sense::drag()` over the same rect and swallows the press — so
+        /// clicking a chip silently stopped selecting it, and the inspector
+        /// could never be opened for an effect. The chip now senses
+        /// click-and-drag itself on one stable id.
+        #[test]
+        fn chip_reports_a_click_so_selection_still_works() {
+            let clicked = Arc::new(AtomicBool::new(false));
+            let seen = clicked.clone();
+
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size([200.0, 60.0])
+                .build_ui(move |ui| {
+                    let id = ui.id().with("test-chip");
+                    let (resp, _) = chip(ui, id, "Kaleido", false, Some(true));
+                    if resp.clicked() {
+                        seen.store(true, Ordering::SeqCst);
+                    }
+                });
+
+            harness.run();
+            assert!(
+                !clicked.load(Ordering::SeqCst),
+                "nothing clicked it yet"
+            );
+
+            use egui_kittest::kittest::Queryable as _;
+            harness.get_by_label("Kaleido").click();
+            harness.run();
+
+            assert!(
+                clicked.load(Ordering::SeqCst),
+                "a chip must report clicks, or the inspector is unreachable"
+            );
+        }
+    }
 }
