@@ -8,6 +8,8 @@ use rustjay_core::Vertex;
 
 pub struct BlitPipeline {
     pipeline: wgpu::RenderPipeline,
+    /// Same blit, but forcing alpha to 1 — see [`BlitPipeline::blit_opaque`].
+    pipeline_opaque: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 }
@@ -37,6 +39,12 @@ impl BlitPipeline {
                 @fragment
                 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                     return textureSample(source_tex, source_sampler, in.texcoord);
+                }
+
+                @fragment
+                fn fs_opaque(in: VertexOutput) -> @location(0) vec4<f32> {
+                    let c = textureSample(source_tex, source_sampler, in.texcoord);
+                    return vec4<f32>(c.rgb, 1.0);
                 }
                 "#
                 .into(),
@@ -103,13 +111,41 @@ impl BlitPipeline {
             cache: None,
         });
 
+        let pipeline_opaque = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Mixer Blit Pipeline (opaque)"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(Vertex::desc())],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_opaque"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             pipeline,
+            pipeline_opaque,
             bind_group_layout,
             sampler,
         }
     }
 
+    /// Copy `source` to `dest`, alpha and all.
     pub fn blit(
         &self,
         device: &wgpu::Device,
@@ -117,6 +153,42 @@ impl BlitPipeline {
         source: &wgpu::TextureView,
         dest: &wgpu::TextureView,
         vertex_buffer: &wgpu::Buffer,
+    ) {
+        self.blit_with(device, encoder, source, dest, vertex_buffer, &self.pipeline);
+    }
+
+    /// Copy `source` to `dest`, forcing alpha to 1.
+    ///
+    /// For frames arriving from outside the app, where the alpha channel is not
+    /// meaningful. A Syphon publisher that only ever writes RGB leaves alpha at
+    /// whatever the shared surface was initialised to — zero — and the layer
+    /// then composites to nothing on its own and dims anything beneath it.
+    pub fn blit_opaque(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        dest: &wgpu::TextureView,
+        vertex_buffer: &wgpu::Buffer,
+    ) {
+        self.blit_with(
+            device,
+            encoder,
+            source,
+            dest,
+            vertex_buffer,
+            &self.pipeline_opaque,
+        );
+    }
+
+    fn blit_with(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        dest: &wgpu::TextureView,
+        vertex_buffer: &wgpu::Buffer,
+        pipeline: &wgpu::RenderPipeline,
     ) {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Mixer Blit Bind Group"),
@@ -149,7 +221,7 @@ impl BlitPipeline {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..6, 0..1);

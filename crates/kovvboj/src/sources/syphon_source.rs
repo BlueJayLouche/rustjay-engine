@@ -68,7 +68,9 @@ impl EffectInstance for SyphonSource {
 
         if let Some(tex) = self.receiver.output_texture() {
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.pipeline.blit(
+            // Opaque: a Syphon publisher that writes only RGB leaves alpha at
+            // the shared surface's initial zero, which composites to nothing.
+            self.pipeline.blit_opaque(
                 ctx.device,
                 ctx.encoder,
                 &view,
