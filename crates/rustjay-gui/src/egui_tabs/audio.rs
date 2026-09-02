@@ -334,11 +334,8 @@ impl EguiControlGui {
                     const BAND_NAMES: [&str; 8] = [
                         "Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres",
                     ];
-                    let avail_w = ui.available_width();
-                    let label_col = 50.0;
                     let val_col = 34.0;
                     let gap = 6.0;
-                    let bar_w = (avail_w - label_col - val_col - gap).max(20.0);
 
                     for (i, (&value, &name)) in fft.iter().zip(BAND_NAMES.iter()).enumerate() {
                         let color = fft_bands()[i];
@@ -346,6 +343,13 @@ impl EguiControlGui {
                             ui.add_space(4.0);
                             ui.colored_label(color, name);
                             ui.add_space(4.0);
+                            // Measured after the label, so the bar takes only what is
+                            // actually left. Deriving it from the row's full width up
+                            // front and then allocating that *plus* the label and value
+                            // columns makes the row always want more than it has, which
+                            // inside an auto-sizing window is a loop: the window grows,
+                            // so the bar grows, so the window grows.
+                            let bar_w = (ui.available_width() - val_col - gap).max(20.0);
                             let rect = ui.available_rect_before_wrap();
                             let bar_rect = egui::Rect::from_min_size(
                                 egui::pos2(rect.min.x, rect.min.y + 3.0),
