@@ -28,39 +28,8 @@ impl Default for MixerTab {
     }
 }
 
-/// Active tab in the Add Source section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AddSourceTab {
-    File,
-    Stream,
-    Camera,
-    #[cfg(feature = "ndi")]
-    Ndi,
-    #[allow(dead_code)] // constructed only on macOS (Syphon)
-    Syphon,
-    #[allow(dead_code)] // constructed only on Windows (Spout)
-    Spout,
-}
-
 /// Deck tab — source picker, opacity/blend/scaling, deck FX.
 pub struct DeckTab {
-    /// Target channel UUID for "Add to channel" actions.
-    selected_channel_uuid: String,
-    add_tab: AddSourceTab,
-    file_path: String,
-    #[cfg(feature = "ffmpeg")]
-    stream_url: String,
-    #[cfg(feature = "ffmpeg")]
-    stream_name: String,
-    selected_camera_index: usize,
-    #[cfg(feature = "ndi")]
-    selected_ndi_index: usize,
-    #[allow(dead_code)] // read only on macOS (Syphon)
-    selected_syphon_index: usize,
-    #[allow(dead_code)] // read only on Windows (Spout)
-    selected_spout_index: usize,
-    /// Async result from the native file picker (source files).
-    pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// Async result from the native file picker (effect shaders).
     pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
 }
@@ -68,19 +37,6 @@ pub struct DeckTab {
 impl Default for DeckTab {
     fn default() -> Self {
         Self {
-            selected_channel_uuid: String::new(),
-            add_tab: AddSourceTab::File,
-            file_path: String::new(),
-            #[cfg(feature = "ffmpeg")]
-            stream_url: String::new(),
-            #[cfg(feature = "ffmpeg")]
-            stream_name: String::new(),
-            selected_camera_index: 0,
-            #[cfg(feature = "ndi")]
-            selected_ndi_index: 0,
-            selected_syphon_index: 0,
-            selected_spout_index: 0,
-            pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -90,6 +46,8 @@ impl Default for DeckTab {
 pub struct EffectsTab {
     /// Target channel UUID for "Add to channel" actions.
     selected_channel_uuid: String,
+    /// Async result from the native file picker (source files).
+    pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// Manual stream URL input.
     stream_url: String,
     /// Manual stream name input.
@@ -102,6 +60,7 @@ impl Default for EffectsTab {
     fn default() -> Self {
         Self {
             selected_channel_uuid: String::new(),
+            pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
             stream_url: String::new(),
             stream_name: String::new(),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -216,6 +175,9 @@ impl OutputsTab {
 }
 
 #[cfg(all(feature = "mixer", feature = "egui"))]
+pub(crate) use egui_impl::draw_inspector;
+
+#[cfg(all(feature = "mixer", feature = "egui"))]
 mod egui_impl {
     use super::*;
     use crate::graph::DeckCompositor;
@@ -280,6 +242,110 @@ mod egui_impl {
     /// the slider acts as a stable offset and modulation (LFO/audio/MIDI) is
     /// applied additively on top when the shader reads `get_param` — matching the
     /// `examples/delta-egui` convention. Stays co-equal with OSC/MIDI/LFO.
+    /// A one-glyph badge for a source kind, shared by the library and the strip.
+    fn source_icon(kind: crate::sources::SourceKind) -> &'static str {
+        use crate::sources::SourceKind as K;
+        match kind {
+            K::Isf | K::SolidColor => "\u{1F3A8}",
+            K::Image => "\u{1F5BC}",
+            K::Video => "\u{1F3AC}",
+            K::Camera => "\u{1F4F7}",
+            K::Syphon | K::Spout => "\u{1F5A5}",
+            _ => "\u{1F4E1}",
+        }
+    }
+
+    /// One node in a signal strip: a source or an FX slot.
+    ///
+    /// Returns `(clicked, toggled)` — a click selects the node, a click on the
+    /// leading dot toggles `enabled`. Disabled slots render dimmed and struck
+    /// through so a bypassed FX reads as present-but-off rather than absent.
+    fn chip(
+        ui: &mut egui::Ui,
+        label: &str,
+        selected: bool,
+        enabled: Option<bool>,
+    ) -> (bool, bool) {
+        use rustjay_gui::egui_theme::colors::*;
+
+        let pad = egui::vec2(8.0, 4.0);
+        let font = egui::FontId::monospace(11.0);
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            font.clone(),
+            if enabled == Some(false) { ink_4() } else { ink() },
+        );
+        // Room for the enable dot when the node can be bypassed.
+        let dot_w = if enabled.is_some() { 12.0 } else { 0.0 };
+        let size = egui::vec2(
+            galley.size().x + pad.x * 2.0 + dot_w,
+            galley.size().y + pad.y * 2.0,
+        );
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+        let p = ui.painter();
+
+        let bg = if selected {
+            surface_2()
+        } else if resp.hovered() {
+            bg_hover()
+        } else {
+            surface()
+        };
+        p.rect_filled(rect, 0.0, bg);
+        p.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, if selected { amber() } else { hair_2() }),
+            egui::StrokeKind::Inside,
+        );
+
+        let mut text_x = rect.left() + pad.x;
+        let mut toggled = false;
+        if let Some(on) = enabled {
+            let c = egui::pos2(rect.left() + 7.0, rect.center().y);
+            p.circle_filled(c, 3.0, if on { signal() } else { ink_4() });
+            text_x += dot_w;
+            // A click in the dot's column toggles rather than selects.
+            if resp.clicked()
+                && let Some(pos) = resp.interact_pointer_pos()
+                && pos.x < rect.left() + dot_w + 2.0
+            {
+                toggled = true;
+            }
+        }
+
+        p.galley(
+            egui::pos2(text_x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            ink(),
+        );
+        if enabled == Some(false) {
+            let y = rect.center().y;
+            p.line_segment(
+                [
+                    egui::pos2(text_x, y),
+                    egui::pos2(rect.right() - pad.x, y),
+                ],
+                egui::Stroke::new(1.0, ink_4()),
+            );
+        }
+
+        (resp.clicked() && !toggled, toggled)
+    }
+
+    /// The "─" joining two chips in a strip.
+    fn strip_link(ui: &mut egui::Ui) {
+        use rustjay_gui::egui_theme::colors::*;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 2.0), egui::Sense::hover());
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.left(), rect.center().y),
+                egui::pos2(rect.right(), rect.center().y),
+            ],
+            egui::Stroke::new(1.0, hair_3()),
+        );
+    }
+
     fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
         let current = engine.get_param_base(&desc.id).unwrap_or(desc.default);
         // In MIDI-learn / LFO-assign map mode the slider is shown disabled with a
@@ -371,56 +437,6 @@ mod egui_impl {
     /// collapsing "Parameters" block) plus a block per FX slot. Source params are
     /// those under `full_prefix` that aren't an FX param (`fx…`) or a deck control
     /// key already shown by a dedicated widget.
-    fn deck_param_sliders(
-        ui: &mut egui::Ui,
-        engine: &mut EngineState,
-        full_prefix: &str,
-        chain: &[rustjay_mixer::EffectSlot],
-    ) {
-        let descriptors = engine.param_descriptors.clone();
-
-        // Source params.
-        let has_source = descriptors.iter().any(|d| {
-            d.id.strip_prefix(full_prefix).is_some_and(|r| {
-                !r.starts_with("fx") && !DECK_CONTROL_KEYS.contains(&r)
-            })
-        });
-        if has_source {
-            egui::CollapsingHeader::new("Parameters")
-                .id_salt(format!("{full_prefix}params"))
-                .default_open(false)
-                .show(ui, |ui| {
-                    for desc in descriptors.iter() {
-                        let Some(rest) = desc.id.strip_prefix(full_prefix) else {
-                            continue;
-                        };
-                        if rest.starts_with("fx") || DECK_CONTROL_KEYS.contains(&rest) {
-                            continue;
-                        }
-                        draw_param(ui, engine, desc);
-                    }
-                });
-        }
-
-        // Per-FX-slot params.
-        for slot in chain {
-            let prefix = format!("{full_prefix}fx{}_", slot.uuid);
-            if !descriptors.iter().any(|d| d.id.starts_with(&prefix)) {
-                continue;
-            }
-            egui::CollapsingHeader::new(slot.effect.label())
-                .id_salt(&prefix)
-                .default_open(false)
-                .show(ui, |ui| {
-                    for desc in descriptors.iter() {
-                        if desc.id.starts_with(&prefix) {
-                            draw_param(ui, engine, desc);
-                        }
-                    }
-                });
-        }
-    }
-
     /// Helper: spawn a native ISF-shader file picker on a background thread; the
     /// chosen path is delivered into `pending` (polled next frame) and the UI is
     /// repainted. Shared by every "Add FX" button (deck / channel / master).
@@ -580,6 +596,165 @@ mod egui_impl {
     // ─────────────────────────────────────────────────────────────────────────
     // DeckTab
     // ─────────────────────────────────────────────────────────────────────────
+    /// Draw the inspector for whatever is selected.
+    ///
+    /// Every node's parameters live here rather than on the deck card, which is
+    /// what keeps the deck column short enough to read at a glance. Rows go
+    /// through [`draw_param`], so MIDI-learn and LFO-assign work here exactly
+    /// as they do in the built-in tabs.
+    pub(crate) fn draw_inspector(
+        ui: &mut egui::Ui,
+        state: &mut KovvbojAppState,
+        engine: &mut EngineState,
+    ) {
+        let selection = state.selection.clone();
+
+        // Resolve the selection to a parameter prefix and a heading. Returning
+        // the prefix rather than a borrow keeps the mixer lock short.
+        let mut heading = String::new();
+        let mut prefix: Option<String> = None;
+        let mut source_of: Option<String> = None;
+        let mut deck_controls: Option<(String, crate::sources::SourceKind)> = None;
+
+        {
+            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            match &selection {
+                crate::Selection::None => {}
+                crate::Selection::Channel { channel } => {
+                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *channel) {
+                        heading = ch.name.clone();
+                        prefix = Some(format!("ch_{}_", ch.uuid));
+                    }
+                }
+                crate::Selection::ChannelFx { channel, fx } => {
+                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *channel) {
+                        heading = format!("{} · FX", ch.name);
+                        prefix = Some(format!("ch_{}_fx{}_", ch.uuid, fx));
+                    }
+                }
+                crate::Selection::MasterFx { fx } => {
+                    heading = "Master · FX".to_string();
+                    prefix = Some(format!("master_fx{}_", fx));
+                }
+                crate::Selection::Deck { channel, deck }
+                | crate::Selection::Source { channel, deck } => {
+                    if let Some(d) = find_deck(&mut mixer, channel, deck) {
+                        heading = d.name.clone();
+                        let full = d.full_prefix().to_string();
+                        if matches!(selection, crate::Selection::Source { .. }) {
+                            source_of = Some(full);
+                        } else {
+                            deck_controls = Some((full, d.source_kind));
+                        }
+                    }
+                }
+                crate::Selection::DeckFx { channel, deck, fx } => {
+                    if let Some(d) = find_deck(&mut mixer, channel, deck) {
+                        heading = d
+                            .chain
+                            .iter()
+                            .find(|s| s.uuid == *fx)
+                            .map(|s| s.effect.label().to_string())
+                            .unwrap_or_else(|| "FX".to_string());
+                        prefix = Some(format!("{}fx{}_", d.full_prefix(), fx));
+                    }
+                }
+            }
+        }
+
+        if selection == crate::Selection::None {
+            master_summary(ui, engine);
+            return;
+        }
+
+        ui.label(egui::RichText::new(&heading).strong().monospace());
+        ui.separator();
+
+        if let Some((full, kind)) = deck_controls {
+            param_slider(ui, engine, &format!("{full}opacity"), "Opacity", 0.0, 1.0);
+            blend_combo(ui, engine, &format!("{full}blend"), "Blend");
+            ui.label(
+                egui::RichText::new(format!("{kind:?}"))
+                    .monospace()
+                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+            );
+            if kind == crate::sources::SourceKind::Video {
+                ui.separator();
+                let playing_key = format!("{full}playing");
+                let mut playing = engine.get_param_base(&playing_key).unwrap_or(1.0) > 0.5;
+                if ui.checkbox(&mut playing, "Playing").changed() {
+                    engine.set_param_base(&playing_key, if playing { 1.0 } else { 0.0 });
+                }
+                param_slider(ui, engine, &format!("{full}speed"), "Speed", -5.0, 5.0);
+                loop_combo(ui, engine, &format!("{full}loop_mode"), "Loop");
+                param_slider(ui, engine, &format!("{full}position"), "Position", 0.0, 1.0);
+            }
+            return;
+        }
+
+        // A source node shows every param under the deck prefix that is neither
+        // a deck control nor owned by an FX slot.
+        if let Some(full) = source_of {
+            let descriptors = engine.param_descriptors.clone();
+            let mut any = false;
+            for desc in descriptors.iter() {
+                let Some(rest) = desc.id.strip_prefix(full.as_str()) else {
+                    continue;
+                };
+                if rest.starts_with("fx") || DECK_CONTROL_KEYS.contains(&rest) {
+                    continue;
+                }
+                draw_param(ui, engine, desc);
+                any = true;
+            }
+            if !any {
+                ui.label(
+                    egui::RichText::new("This source exposes no parameters.")
+                        .color(rustjay_gui::egui_theme::colors::ink_3()),
+                );
+            }
+            return;
+        }
+
+        if let Some(prefix) = prefix {
+            let descriptors = engine.param_descriptors.clone();
+            let mut any = false;
+            for desc in descriptors.iter().filter(|d| d.id.starts_with(&prefix)) {
+                draw_param(ui, engine, desc);
+                any = true;
+            }
+            if !any {
+                ui.label(
+                    egui::RichText::new("No parameters.")
+                        .color(rustjay_gui::egui_theme::colors::ink_3()),
+                );
+            }
+        }
+    }
+
+    /// Find a deck by channel + deck uuid, descending through the compositor.
+    fn find_deck<'a>(
+        mixer: &'a mut rustjay_mixer::Mixer,
+        channel: &str,
+        deck: &str,
+    ) -> Option<&'a mut crate::graph::Deck> {
+        let ch = mixer.channels.iter_mut().find(|c| c.uuid == channel)?;
+        let compositor = ch.effect.as_any_mut()?.downcast_mut::<DeckCompositor>()?;
+        compositor.decks.iter_mut().find(|d| d.uuid == deck)
+    }
+
+    /// What the inspector shows when nothing is selected.
+    fn master_summary(ui: &mut egui::Ui, engine: &mut EngineState) {
+        ui.label(egui::RichText::new("MASTER").strong().monospace());
+        ui.separator();
+        param_slider(ui, engine, "crossfader", "Crossfader", 0.0, 1.0);
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("Select a channel, deck, source or effect to edit it.")
+                .color(rustjay_gui::egui_theme::colors::ink_3()),
+        );
+    }
+
     impl AnyEguiTab for DeckTab {
         fn name(&self) -> &str {
             "Deck"
@@ -595,428 +770,196 @@ mod egui_impl {
                 .downcast_mut::<KovvbojAppState>()
                 .expect("DeckTab expects KovvbojAppState");
 
-            // Poll async file picker result.
+            // Poll async file picker result (Add FX).
             if let Ok(mut guard) = self.pending_effect.lock()
-                && let Some(req) = guard.take() {
-                    state.pending_effects.push(req);
-                }
-
-            ui.heading("Decks");
-            ui.separator();
+                && let Some(req) = guard.take()
+            {
+                state.pending_effects.push(req);
+            }
 
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
-            // Set when an FX is removed in place, so prepare() re-registers params.
             let mut fx_removed = false;
+            // Selection changes are collected and applied after the mixer lock
+            // is released — `state` is borrowed by the lock while decks draw.
+            let mut new_selection: Option<crate::Selection> = None;
+            let selection = state.selection.clone();
 
             {
                 let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
                 for ch in &mut mixer.channels {
-                    ui.collapsing(&ch.name, |ui| {
-                        let Some(compositor) = ch.effect.as_any_mut() else {
-                            return;
-                        };
-                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
-                            return;
-                        };
+                    let ch_uuid = ch.uuid.clone();
+                    let ch_selected = matches!(
+                        &selection,
+                        crate::Selection::Channel { channel } if *channel == ch_uuid
+                    );
 
-                        for deck in &mut compositor.decks {
-                            ui.push_id(deck.uuid.clone(), |ui| {
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(&deck.name).strong());
-                                        ui.label(
-                                            egui::RichText::new(format!("[{:?}]", deck.source_kind))
-                                                .monospace()
-                                                .color(ui.visuals().weak_text_color()),
-                                        );
-                                        if ui.small_button("✖").clicked() {
-                                            removals.push(crate::PendingRemoval {
-                                                channel_uuid: ch.uuid.clone(),
-                                                deck_uuid: deck.uuid.clone(),
-                                            });
-                                        }
-                                    });
-                                    param_slider(ui, engine, &deck.opacity_key, "Opacity", 0.0, 1.0);
-                                    blend_combo(ui, engine, &deck.blend_key, "Blend:");
-
-                                    // Deck FX list + add button
-                                    if !deck.chain.is_empty() {
-                                        ui.label("FX:");
-                                    }
-                                    let deck_prefix = deck.full_prefix.clone();
-                                    if fx_chain_ui(ui, &mut deck.chain, &deck_prefix, engine) {
-                                        fx_removed = true;
-                                    }
-                                    if ui.small_button("➕ Add FX…").clicked() {
-                                        spawn_effect_picker(
-                                            &self.pending_effect,
-                                            ui.ctx(),
-                                            crate::EffectTarget::Deck {
-                                                channel_uuid: ch.uuid.clone(),
-                                                deck_uuid: deck.uuid.clone(),
-                                            },
-                                        );
-                                    }
-
-                                    // Exposed shader sliders: source params + per-FX params.
-                                    deck_param_sliders(
-                                        ui,
-                                        engine,
-                                        &deck.full_prefix,
-                                        &deck.chain,
-                                    );
-
-                                    // Playback controls for video sources.
-                                    if deck.source_kind == crate::sources::SourceKind::Video {
-                                        ui.separator();
-                                        let prefix = deck.full_prefix();
-
-                                        let playing_key = format!("{}playing", prefix);
-                                        let mut playing =
-                                            engine.get_param_base(&playing_key).unwrap_or(1.0) > 0.5;
-                                        if ui.checkbox(&mut playing, "Playing").changed() {
-                                            engine.set_param_base(
-                                                &playing_key,
-                                                if playing { 1.0 } else { 0.0 },
-                                            );
-                                        }
-
-                                        param_slider(
-                                            ui,
-                                            engine,
-                                            &format!("{}speed", prefix),
-                                            "Speed",
-                                            -5.0,
-                                            5.0,
-                                        );
-                                        loop_combo(
-                                            ui,
-                                            engine,
-                                            &format!("{}loop", prefix),
-                                            "Loop:",
-                                        );
-                                        param_slider(
-                                            ui,
-                                            engine,
-                                            &format!("{}position", prefix),
-                                            "Position",
-                                            0.0,
-                                            1.0,
-                                        );
-                                    }
-                                });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(
+                                ch_selected,
+                                egui::RichText::new(&ch.name).strong().monospace(),
+                            )
+                            .clicked()
+                        {
+                            new_selection = Some(crate::Selection::Channel {
+                                channel: ch_uuid.clone(),
                             });
                         }
                     });
+
+                    let Some(compositor) = ch.effect.as_any_mut() else {
+                        continue;
+                    };
+                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
+                        continue;
+                    };
+
+                    for deck in &mut compositor.decks {
+                        let deck_uuid = deck.uuid.clone();
+                        ui.push_id(deck.uuid.clone(), |ui| {
+                            ui.group(|ui| {
+                                // ── Row 1: identity and mix ──────────────────
+                                ui.horizontal(|ui| {
+                                    let deck_selected = matches!(
+                                        &selection,
+                                        crate::Selection::Deck { channel, deck: d }
+                                            if *channel == ch_uuid && *d == deck_uuid
+                                    );
+                                    if ui.selectable_label(deck_selected, &deck.name).clicked() {
+                                        new_selection = Some(crate::Selection::Deck {
+                                            channel: ch_uuid.clone(),
+                                            deck: deck_uuid.clone(),
+                                        });
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("✖").clicked() {
+                                                removals.push(crate::PendingRemoval {
+                                                    channel_uuid: ch_uuid.clone(),
+                                                    deck_uuid: deck_uuid.clone(),
+                                                });
+                                            }
+                                            blend_combo(ui, engine, &deck.blend_key, "");
+                                            let mut op = engine
+                                                .get_param_base(&deck.opacity_key)
+                                                .unwrap_or(1.0);
+                                            if ui
+                                                .add(
+                                                    egui::Slider::new(&mut op, 0.0..=1.0)
+                                                        .show_value(false),
+                                                )
+                                                .changed()
+                                            {
+                                                engine.set_param_base(&deck.opacity_key, op);
+                                            }
+                                        },
+                                    );
+                                });
+
+                                // ── Row 2: the signal strip ──────────────────
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("strip")
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let src_selected = matches!(
+                                                &selection,
+                                                crate::Selection::Source { channel, deck: d }
+                                                    if *channel == ch_uuid && *d == deck_uuid
+                                            );
+                                            let label = format!(
+                                                "{} {}",
+                                                source_icon(deck.source_kind),
+                                                deck.name
+                                            );
+                                            let (clicked, _) =
+                                                chip(ui, &label, src_selected, None);
+                                            if clicked {
+                                                new_selection = Some(crate::Selection::Source {
+                                                    channel: ch_uuid.clone(),
+                                                    deck: deck_uuid.clone(),
+                                                });
+                                            }
+
+                                            let mut toggle: Option<usize> = None;
+                                            let mut remove: Option<usize> = None;
+                                            for (i, slot) in deck.chain.iter().enumerate() {
+                                                strip_link(ui);
+                                                let fx_selected = matches!(
+                                                    &selection,
+                                                    crate::Selection::DeckFx { channel, deck: d, fx }
+                                                        if *channel == ch_uuid
+                                                            && *d == deck_uuid
+                                                            && *fx == slot.uuid
+                                                );
+                                                let (clicked, toggled) = chip(
+                                                    ui,
+                                                    slot.effect.label(),
+                                                    fx_selected,
+                                                    Some(slot.enabled),
+                                                );
+                                                if toggled {
+                                                    toggle = Some(i);
+                                                } else if clicked {
+                                                    new_selection =
+                                                        Some(crate::Selection::DeckFx {
+                                                            channel: ch_uuid.clone(),
+                                                            deck: deck_uuid.clone(),
+                                                            fx: slot.uuid.clone(),
+                                                        });
+                                                }
+                                                if ui
+                                                    .small_button("✖")
+                                                    .on_hover_text("Remove effect")
+                                                    .clicked()
+                                                {
+                                                    remove = Some(i);
+                                                }
+                                            }
+                                            if let Some(i) = toggle {
+                                                let on = deck.chain[i].enabled;
+                                                deck.set_effect_enabled(i, !on);
+                                            }
+                                            if let Some(i) = remove {
+                                                let slot = deck.chain.remove(i);
+                                                if let Ok(mut m) = engine.modulation.lock() {
+                                                    m.remove_assignments_with_prefix(&format!(
+                                                        "{}fx{}_",
+                                                        deck.full_prefix(),
+                                                        slot.uuid
+                                                    ));
+                                                }
+                                                fx_removed = true;
+                                            }
+
+                                            strip_link(ui);
+                                            if ui.small_button("+").on_hover_text("Add FX…").clicked() {
+                                                spawn_effect_picker(
+                                                    &self.pending_effect,
+                                                    ui.ctx(),
+                                                    crate::EffectTarget::Deck {
+                                                        channel_uuid: ch_uuid.clone(),
+                                                        deck_uuid: deck_uuid.clone(),
+                                                    },
+                                                );
+                                            }
+                                        });
+                                    });
+                            });
+                        });
+                    }
                 }
             }
 
+            if let Some(sel) = new_selection {
+                state.selection = sel;
+            }
             for req in removals {
                 state.pending_removals.push(req);
             }
             if fx_removed {
                 state.params_dirty_request = true;
-            }
-
-            ui.separator();
-            ui.heading("Add Source");
-
-            // Channel selector.
-            let channel_names: Vec<(String, String)> = {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                mixer.channels.iter().map(|c| (c.uuid.clone(), c.name.clone())).collect()
-            };
-            if self.selected_channel_uuid.is_empty()
-                && let Some((uuid, _)) = channel_names.first() {
-                    self.selected_channel_uuid = uuid.clone();
-                }
-            ui.horizontal(|ui| {
-                ui.label("Channel:");
-                egui::ComboBox::from_id_salt("deck_add_channel")
-                    .selected_text(
-                        channel_names
-                            .iter()
-                            .find(|(u, _)| u == &self.selected_channel_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &channel_names {
-                            ui.selectable_value(&mut self.selected_channel_uuid, uuid.clone(), name);
-                        }
-                    });
-            });
-
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::File, "📁 File");
-                #[cfg(feature = "ffmpeg")]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Stream, "📡 Stream");
-                #[cfg(not(feature = "ffmpeg"))]
-                let _ = ui
-                    .add_enabled(false, egui::Button::selectable(false, "📡 Stream"))
-                    .on_disabled_hover_text("Stream sources require the ffmpeg feature.");
-                #[cfg(target_os = "linux")]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera / V4L2");
-                #[cfg(not(target_os = "linux"))]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Camera, "📷 Camera");
-                #[cfg(feature = "ndi")]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Ndi, "📡 NDI");
-                #[cfg(target_os = "macos")]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Syphon, "🖥 Syphon");
-                #[cfg(target_os = "windows")]
-                ui.selectable_value(&mut self.add_tab, AddSourceTab::Spout, "🖥 Spout");
-                if self.add_tab != AddSourceTab::File && self.add_tab != AddSourceTab::Stream {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("⟳ Refresh").clicked() {
-                            state.registry.refresh_builtins();
-                        }
-                    });
-                }
-            });
-            ui.separator();
-
-            let target_uuid = self.selected_channel_uuid.clone();
-            if target_uuid.is_empty() {
-                ui.label("No channel available.");
-                return;
-            }
-
-            match self.add_tab {
-                AddSourceTab::File => {
-                    if let Ok(mut guard) = self.pending_file.lock()
-                        && let Some(path) = guard.take() {
-                            self.file_path = path.to_string_lossy().to_string();
-                        }
-                    ui.horizontal(|ui| {
-                        ui.label("Path:");
-                        ui.text_edit_singleline(&mut self.file_path);
-                        if ui.button("Browse…").clicked() {
-                            let pending = self.pending_file.clone();
-                            let ctx = ui.ctx().clone();
-                            std::thread::spawn(move || {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"])
-                                    .add_filter("Image", &["png", "jpg", "jpeg"])
-                                    .add_filter("ISF Shader", &["fs"])
-                                    .pick_file()
-                                {
-                                    if let Ok(mut guard) = pending.lock() {
-                                        *guard = Some(path);
-                                    }
-                                    ctx.request_repaint();
-                                }
-                            });
-                        }
-                    });
-                    let path = std::path::PathBuf::from(&self.file_path);
-                    let exists = path.exists();
-                    if !exists && !self.file_path.is_empty() {
-                        ui.colored_label(
-                            ui.visuals().error_fg_color,
-                            "File not found",
-                        );
-                    }
-                    if ui.button("Add File").clicked() && exists {
-                        let ext = path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("File")
-                            .to_string();
-                        let kind = match ext.as_str() {
-                            "mp4" | "mov" | "avi" | "mkv" | "webm" => crate::sources::SourceKind::Video,
-                            "png" | "jpg" | "jpeg" => crate::sources::SourceKind::Image,
-                            "fs" => crate::sources::SourceKind::Isf,
-                            _ => crate::sources::SourceKind::Video,
-                        };
-                        let id = name.to_lowercase().replace(' ', "_");
-                        state.pending_decks.push(crate::PendingDeck {
-                            channel_uuid: target_uuid.clone(),
-                            source: crate::sources::SourceEntry {
-                                id,
-                                name,
-                                kind,
-                                path: Some(path),
-                                device_index: 0,
-                            },
-                        });
-                        self.file_path.clear();
-                    }
-                }
-                AddSourceTab::Stream => {
-                    #[cfg(feature = "ffmpeg")]
-                    {
-                        ui.horizontal(|ui| {
-                            ui.label("URL:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.stream_url)
-                                    .hint_text("https://… / rtsp://… / srt://…"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Name (optional):");
-                            ui.text_edit_singleline(&mut self.stream_name);
-                        });
-
-                        let url_error = if self.stream_url.trim().is_empty() {
-                            None
-                        } else {
-                            crate::sources::classify_stream_url(&self.stream_url).err()
-                        };
-                        if let Some(error) = url_error {
-                            ui.colored_label(ui.visuals().error_fg_color, error);
-                        }
-
-                        let can_add = !self.stream_url.trim().is_empty() && url_error.is_none();
-                        if ui.add_enabled(can_add, egui::Button::new("Add Stream")).clicked()
-                            && queue_stream_deck(
-                                state,
-                                engine,
-                                &target_uuid,
-                                &self.stream_name,
-                                &self.stream_url,
-                            ).is_ok() {
-                                self.stream_url.clear();
-                                self.stream_name.clear();
-                            }
-                    }
-                    #[cfg(not(feature = "ffmpeg"))]
-                    ui.label("Stream sources require the ffmpeg feature.");
-                }
-                AddSourceTab::Camera => {
-                    let cameras: Vec<&crate::sources::SourceEntry> = state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| e.kind == crate::sources::SourceKind::Camera)
-                        .collect();
-                    if cameras.is_empty() {
-                        ui.label("No cameras found.");
-                    } else {
-                        let names: Vec<String> = cameras.iter().map(|c| c.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("deck_add_camera")
-                            .selected_text(
-                                names.get(self.selected_camera_index).map(|s| s.as_str()).unwrap_or("--"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (i, name) in names.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_camera_index, i, name);
-                                }
-                            });
-                        if ui.button("Add Camera").clicked()
-                            && let Some(entry) = cameras.get(self.selected_camera_index) {
-                                state.pending_decks.push(crate::PendingDeck {
-                                    channel_uuid: target_uuid.clone(),
-                                    source: (*entry).clone(),
-                                });
-                            }
-                    }
-                }
-                #[cfg(feature = "ndi")]
-                AddSourceTab::Ndi => {
-                    let sources: Vec<&crate::sources::SourceEntry> = state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| e.kind == crate::sources::SourceKind::Ndi)
-                        .collect();
-                    if sources.is_empty() {
-                        ui.label("No NDI sources found.");
-                    } else {
-                        let names: Vec<String> = sources.iter().map(|s| s.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("deck_add_ndi")
-                            .selected_text(
-                                names.get(self.selected_ndi_index).map(|s| s.as_str()).unwrap_or("--"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (i, name) in names.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_ndi_index, i, name);
-                                }
-                            });
-                        if ui.button("Add NDI").clicked() {
-                            if let Some(entry) = sources.get(self.selected_ndi_index) {
-                                state.pending_decks.push(crate::PendingDeck {
-                                    channel_uuid: target_uuid.clone(),
-                                    source: (*entry).clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-                #[cfg(target_os = "macos")]
-                AddSourceTab::Syphon => {
-                    let servers: Vec<&crate::sources::SourceEntry> = state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| e.kind == crate::sources::SourceKind::Syphon)
-                        .collect();
-                    if servers.is_empty() {
-                        ui.label("No Syphon servers found.");
-                    } else {
-                        let names: Vec<String> = servers.iter().map(|s| s.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("deck_add_syphon")
-                            .selected_text(
-                                names.get(self.selected_syphon_index).map(|s| s.as_str()).unwrap_or("--"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (i, name) in names.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_syphon_index, i, name);
-                                }
-                            });
-                        if ui.button("Add Syphon").clicked()
-                            && let Some(entry) = servers.get(self.selected_syphon_index) {
-                                state.pending_decks.push(crate::PendingDeck {
-                                    channel_uuid: target_uuid.clone(),
-                                    source: (*entry).clone(),
-                                });
-                            }
-                    }
-                }
-                #[cfg(not(target_os = "macos"))]
-                AddSourceTab::Syphon => {
-                    ui.label("Syphon is only available on macOS.");
-                }
-                #[cfg(target_os = "windows")]
-                AddSourceTab::Spout => {
-                    let senders: Vec<&crate::sources::SourceEntry> = state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| e.kind == crate::sources::SourceKind::Spout)
-                        .collect();
-                    if senders.is_empty() {
-                        ui.label("No Spout senders found.");
-                    } else {
-                        let names: Vec<String> = senders.iter().map(|s| s.name.clone()).collect();
-                        egui::ComboBox::from_id_salt("deck_add_spout")
-                            .selected_text(
-                                names.get(self.selected_spout_index).map(|s| s.as_str()).unwrap_or("--"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (i, name) in names.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_spout_index, i, name);
-                                }
-                            });
-                        if ui.button("Add Spout").clicked() {
-                            if let Some(entry) = senders.get(self.selected_spout_index) {
-                                state.pending_decks.push(crate::PendingDeck {
-                                    channel_uuid: target_uuid.clone(),
-                                    source: (*entry).clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-                #[cfg(not(target_os = "windows"))]
-                AddSourceTab::Spout => {
-                    ui.label("Spout is only available on Windows.");
-                }
             }
         }
     }
@@ -1139,6 +1082,61 @@ mod egui_impl {
                     }
                 });
 
+            // Arbitrary file — the registry only lists what it scanned, so
+            // picking a file from anywhere still needs a native dialog.
+            if let Ok(mut guard) = self.pending_file.lock()
+                && let Some(path) = guard.take()
+            {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("File")
+                    .to_string();
+                let kind = match path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .as_str()
+                {
+                    "png" | "jpg" | "jpeg" => crate::sources::SourceKind::Image,
+                    "fs" => crate::sources::SourceKind::Isf,
+                    _ => crate::sources::SourceKind::Video,
+                };
+                if !target_uuid.is_empty() {
+                    state.pending_decks.push(crate::PendingDeck {
+                        channel_uuid: target_uuid.clone(),
+                        source: crate::sources::SourceEntry {
+                            id: name.to_lowercase().replace(' ', "_"),
+                            name,
+                            kind,
+                            path: Some(path),
+                            device_index: 0,
+                        },
+                    });
+                }
+            }
+            if ui
+                .add_enabled(!target_uuid.is_empty(), egui::Button::new("Add file\u{2026}"))
+                .clicked()
+            {
+                let pending = self.pending_file.clone();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"])
+                        .add_filter("Image", &["png", "jpg", "jpeg"])
+                        .add_filter("ISF Shader", &["fs"])
+                        .pick_file()
+                    {
+                        if let Ok(mut guard) = pending.lock() {
+                            *guard = Some(path);
+                        }
+                        ctx.request_repaint();
+                    }
+                });
+            }
+
             // Manual stream input
             ui.collapsing("Add Stream URL", |ui| {
                 ui.horizontal(|ui| {
@@ -1177,80 +1175,6 @@ mod egui_impl {
             });
             ui.separator();
 
-            // Live FX chains
-            ui.label(egui::RichText::new("Live FX Chains").strong());
-
-            // Set when an FX is removed in place, so prepare() re-registers params.
-            let mut fx_removed = false;
-            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-
-            for ch in &mut mixer.channels {
-                ui.push_id(ch.uuid.clone(), |ui| {
-                    ui.collapsing(format!("Channel: {}", ch.name), |ui| {
-                        // Channel FX list + add button
-                        if !ch.chain.is_empty() {
-                            ui.label("Channel FX:");
-                        }
-                        let ch_prefix = format!("ch_{}_", ch.uuid);
-                        if fx_chain_ui(ui, &mut ch.chain, &ch_prefix, engine) {
-                            fx_removed = true;
-                        }
-                        if ui.small_button("➕ Add Channel FX…").clicked() {
-                            spawn_effect_picker(
-                                &self.pending_effect,
-                                ui.ctx(),
-                                crate::EffectTarget::Channel {
-                                    channel_uuid: ch.uuid.clone(),
-                                },
-                            );
-                        }
-
-                        // Deck FX
-                        let Some(compositor) = ch.effect.as_any_mut() else {
-                            return;
-                        };
-                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
-                            return;
-                        };
-                        for deck in &mut compositor.decks {
-                            ui.push_id(deck.uuid.clone(), |ui| {
-                                if !deck.chain.is_empty() {
-                                    ui.label(format!("Deck {} FX:", deck.name));
-                                }
-                                let deck_prefix = deck.full_prefix.clone();
-                                if fx_chain_ui(ui, &mut deck.chain, &deck_prefix, engine) {
-                                    fx_removed = true;
-                                }
-                                if ui.small_button("➕ Add Deck FX…").clicked() {
-                                    spawn_effect_picker(
-                                        &self.pending_effect,
-                                        ui.ctx(),
-                                        crate::EffectTarget::Deck {
-                                            channel_uuid: ch.uuid.clone(),
-                                            deck_uuid: deck.uuid.clone(),
-                                        },
-                                    );
-                                }
-                            });
-                        }
-                    });
-                });
-            }
-
-            // Master FX list + add button
-            ui.collapsing("Master FX", |ui| {
-                if fx_chain_ui(ui, &mut mixer.master, "master_", engine) {
-                    fx_removed = true;
-                }
-                if ui.small_button("➕ Add Master FX…").clicked() {
-                    spawn_effect_picker(&self.pending_effect, ui.ctx(), crate::EffectTarget::Master);
-                }
-            });
-
-            drop(mixer);
-            if fx_removed {
-                state.params_dirty_request = true;
-            }
         }
     }
 

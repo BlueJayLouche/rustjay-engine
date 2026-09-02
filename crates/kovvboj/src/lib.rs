@@ -54,12 +54,54 @@ use crate::sources::{Registry, ShaderWatcher};
 // App state
 // ---------------------------------------------------------------------------
 
+/// What the inspector is showing.
+///
+/// Nodes are addressed by UUID rather than index so a selection survives a
+/// reorder, a drag between chains, or a rebuild from a saved topology — the
+/// same reason parameter prefixes are UUID-keyed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Selection {
+    /// Nothing picked — the inspector shows the master summary.
+    #[default]
+    None,
+    Channel {
+        channel: String,
+    },
+    Deck {
+        channel: String,
+        deck: String,
+    },
+    /// A deck's source node.
+    Source {
+        channel: String,
+        deck: String,
+    },
+    /// An FX slot in a deck's chain.
+    DeckFx {
+        channel: String,
+        deck: String,
+        fx: String,
+    },
+    /// An FX slot in a channel's post-compositor chain.
+    ChannelFx {
+        channel: String,
+        fx: String,
+    },
+    /// An FX slot in the master chain.
+    MasterFx {
+        fx: String,
+    },
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub mixer: Arc<Mutex<Mixer>>,
     pub ready: bool,
+    /// What the inspector panel is showing. Transient — not persisted.
+    #[serde(skip)]
+    pub selection: Selection,
     #[serde(skip)]
     pub registry: Registry,
     #[serde(skip)]
@@ -233,6 +275,7 @@ impl Default for KovvbojAppState {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
             ready: false,
+            selection: Selection::None,
             registry: Registry {
                 shaders: Vec::new(),
                 images: Vec::new(),

@@ -12,6 +12,8 @@ use rustjay_core::EngineState;
 use rustjay_engine::prelude::AnyEguiTab;
 #[cfg(feature = "projection")]
 use kovvboj::ui::StageTab;
+#[cfg(feature = "ffmpeg")]
+use kovvboj::ui::EffectsTab;
 use kovvboj::{
     KovvbojAppState,
     ui::{DeckTab, OutputsTab},
@@ -61,15 +63,63 @@ fn pad_surface_list_for_full_canvas(app: &mut KovvbojAppState) {
     }
 }
 
+/// The deck column is channel rows and signal strips now — adding sources moved
+/// to the Library panel. A deck itself needs a `wgpu::Device` to build, so this
+/// covers the channel row; the strip's own logic is unit-tested below.
+///
+/// No pixel baseline: every committed snapshot here is rendered by CI on
+/// lavapipe, so one generated on a dev machine would fail the moment it landed.
 #[test]
-fn deck_add_source_snapshot() {
-    let mut harness = tab_harness(DeckTab::default(), [700.0, 500.0]);
+fn deck_channel_row_is_drawn() {
+    let app = KovvbojAppState::default();
+    app.mixer
+        .lock()
+        .unwrap()
+        .add_channel(rustjay_mixer::Channel::new(
+            "test",
+            "Test",
+            Box::new(kovvboj::graph::DeckCompositor::new()),
+        ))
+        .unwrap();
+    let harness = tab_harness_with_app(DeckTab::default(), [700.0, 500.0], app);
 
-    harness.get_by_label("Add Source");
-    harness.get_by_label("📁 File");
-    harness.get_by_label("📡 Stream");
-    harness.get_by_label("📷 Camera / V4L2");
-    harness.snapshot("deck_add_source");
+    harness.get_by_label("Test");
+}
+
+/// Selecting a node must survive a chain reorder, which is why `Selection`
+/// addresses nodes by UUID rather than by index.
+#[test]
+fn selection_identifies_a_node_by_uuid_not_position() {
+    use kovvboj::Selection;
+
+    let first = Selection::DeckFx {
+        channel: "ch-1".into(),
+        deck: "deck-1".into(),
+        fx: "fx-a".into(),
+    };
+    let same_slot_moved = Selection::DeckFx {
+        channel: "ch-1".into(),
+        deck: "deck-1".into(),
+        fx: "fx-a".into(),
+    };
+    let different_fx = Selection::DeckFx {
+        channel: "ch-1".into(),
+        deck: "deck-1".into(),
+        fx: "fx-b".into(),
+    };
+    let same_fx_other_deck = Selection::DeckFx {
+        channel: "ch-1".into(),
+        deck: "deck-2".into(),
+        fx: "fx-a".into(),
+    };
+
+    assert_eq!(first, same_slot_moved, "position is not part of identity");
+    assert_ne!(first, different_fx);
+    assert_ne!(
+        first, same_fx_other_deck,
+        "an fx uuid alone must not match across decks"
+    );
+    assert_eq!(Selection::default(), Selection::None);
 }
 
 #[cfg(feature = "ffmpeg")]
@@ -85,9 +135,9 @@ fn deck_stream_paints_invalid_url_error() {
             Box::new(kovvboj::graph::DeckCompositor::new()),
         ))
         .unwrap();
-    let mut harness = tab_harness_with_app(DeckTab::default(), [700.0, 500.0], app);
+    let mut harness = tab_harness_with_app(EffectsTab::default(), [700.0, 500.0], app);
 
-    harness.get_by_label("📡 Stream").click();
+    harness.get_by_label("Add Stream URL").click();
     harness.run();
     harness
         .get_all(By::new().role(Role::TextInput))

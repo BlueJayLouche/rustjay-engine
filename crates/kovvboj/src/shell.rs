@@ -213,8 +213,17 @@ impl AnyEguiShell for KovvbojShell {
                 .resizable(true)
                 .show(ui, |ui| {
                     Self::preview(ui, host.output_preview_texture_id, &engine);
-                    // The inspector proper lands in the next phase; nothing is
-                    // drawn here rather than a "coming soon" placeholder.
+                    egui::ScrollArea::vertical()
+                        .id_salt("inspector_scroll")
+                        .show(ui, |ui| {
+                            let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
+                            else {
+                                return;
+                            };
+                            let mut guard =
+                                engine.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::ui::draw_inspector(ui, state, &mut guard);
+                        });
                 });
         }
 
