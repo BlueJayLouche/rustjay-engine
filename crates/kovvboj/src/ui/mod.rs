@@ -50,8 +50,6 @@ impl Default for DeckTab {
 
 /// Effects / Library tab — registry list + add/enable/reorder.
 pub struct EffectsTab {
-    /// Target channel UUID for "Add to channel" actions.
-    selected_channel_uuid: String,
     /// Async result from the native file picker (source files).
     pending_file: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// Manual stream URL input.
@@ -68,7 +66,6 @@ pub struct EffectsTab {
 impl Default for EffectsTab {
     fn default() -> Self {
         Self {
-            selected_channel_uuid: String::new(),
             pending_file: std::sync::Arc::new(std::sync::Mutex::new(None)),
             stream_url: String::new(),
             stream_name: String::new(),
@@ -771,7 +768,7 @@ mod egui_impl {
     // ─────────────────────────────────────────────────────────────────────────
     impl AnyEguiTab for MixerTab {
         fn name(&self) -> &str {
-            "Mixer"
+            "Master"
         }
 
         fn draw(
@@ -795,28 +792,19 @@ mod egui_impl {
                 state.save_workspace();
             }
 
-            ui.heading("Mixer");
-            ui.separator();
-            param_slider(ui, engine, "crossfader", "Crossfader", 0.0, 1.0);
+            // The master row: the dimmer, then the chain everything passes
+            // through on its way out. Per-layer opacity and blend live on the
+            // layer rows — repeating them here was the old channel model.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("MASTER").strong().monospace());
+                ui.add_space(8.0);
+                param_slider(ui, engine, super::MASTER_DIM, "Dim", 0.0, 1.0);
+            });
             ui.separator();
 
             let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
-            for ch in &mixer.channels {
-                ui.push_id(&ch.uuid, |ui| {
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new(&ch.name).strong());
-                        let opacity_key = format!("ch_{}_opacity", ch.uuid);
-                        param_slider(ui, engine, &opacity_key, "Opacity", 0.0, 1.0);
-                        blend_combo(ui, engine, &format!("ch_{}_blend", ch.uuid), "Blend:");
-                    });
-                });
-            }
-
-            // Master FX strip — same chip/drag affordances as the deck strips.
             let mut undo_snapshot: Option<crate::scene::Topology> = None;
-            ui.separator();
-            ui.label(egui::RichText::new("Master FX").strong());
             let selected_fx = match &state.selection {
                 crate::Selection::MasterFx { fx } => Some(fx.as_str()),
                 _ => None,
@@ -1268,44 +1256,11 @@ mod egui_impl {
                     state.pending_effects.push(req);
                 }
 
-            ui.heading("Effects / Library");
+            ui.heading("Library");
             ui.separator();
 
-            // Channel selector for runtime deck creation.
-            let channel_names: Vec<(String, String)> = {
-                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
-                mixer
-                    .channels
-                    .iter()
-                    .map(|c| (c.uuid.clone(), c.name.clone()))
-                    .collect()
-            };
-            if self.selected_channel_uuid.is_empty()
-                && let Some((uuid, _)) = channel_names.first() {
-                    self.selected_channel_uuid = uuid.clone();
-                }
-
-            ui.horizontal(|ui| {
-                ui.label("Add to:");
-                egui::ComboBox::from_id_salt("effects_target_channel")
-                    .selected_text(
-                        channel_names
-                            .iter()
-                            .find(|(u, _)| u == &self.selected_channel_uuid)
-                            .map(|(_, n)| n.as_str())
-                            .unwrap_or("--"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (uuid, name) in &channel_names {
-                            ui.selectable_value(
-                                &mut self.selected_channel_uuid,
-                                uuid.clone(),
-                                name,
-                            );
-                        }
-                    });
-            });
-            ui.add_space(4.0);
+            // No target selector: a source's ➕ makes a new layer, and an
+            // effect's ➕ goes to the selected one.
 
             // Library listing — clicking "➕" queues a PendingDeck for materialisation in prepare().
             // ISF shaders are grouped by role: a filter (header declares an
@@ -1323,7 +1278,6 @@ mod egui_impl {
                     }
                 });
             });
-            let target_uuid = self.selected_channel_uuid.clone();
             // Fill the panel, leaving room for the two buttons below. The old
             // fixed 140px was sized for the pre-shell layout and now hides most
             // of the library while the panel beneath it sits empty.
@@ -1505,7 +1459,7 @@ mod egui_impl {
                     "fs" => crate::sources::SourceKind::Isf,
                     _ => crate::sources::SourceKind::Video,
                 };
-                if !target_uuid.is_empty() {
+                {
                     state.pending_layers.push(crate::PendingLayer {
                         source: crate::sources::SourceEntry {
                             id: name.to_lowercase().replace(' ', "_"),
@@ -1518,7 +1472,7 @@ mod egui_impl {
                 }
             }
             if ui
-                .add_enabled(!target_uuid.is_empty(), egui::Button::new("Add file\u{2026}"))
+                .button("Add file\u{2026}")
                 .clicked()
             {
                 let pending = self.pending_file.clone();
@@ -1559,9 +1513,7 @@ mod egui_impl {
                 if let Some(error) = url_error {
                     ui.colored_label(ui.visuals().error_fg_color, error);
                 }
-                let can_add = !target_uuid.is_empty()
-                    && !self.stream_url.trim().is_empty()
-                    && url_error.is_none();
+                let can_add = !self.stream_url.trim().is_empty() && url_error.is_none();
                 if ui.add_enabled(can_add, egui::Button::new("Add Stream")).clicked()
                     && queue_stream_deck(
                         state,

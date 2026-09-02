@@ -385,6 +385,20 @@ impl KovvbojAppState {
     /// A complete scene snapshot: mixer knobs + topology + the unified modulation
     /// engine (captured via the `engine_modulation` handle, if available).
     #[cfg(feature = "mixer")]
+    /// A scene snapshot, or `None` while the graph is not yet describable.
+    ///
+    /// Before the first `prepare()` the layer source map is empty, so every
+    /// layer would serialise as a placeholder solid colour. Saving then
+    /// clobbers a good scene with junk — which is what the startup auto-save
+    /// did, since its elapsed timer starts at "forever ago".
+    pub fn scene_snapshot_if_ready(&self, mixer: &Mixer) -> Option<Scene> {
+        if !mixer.channels.is_empty() && self.layer_sources.is_empty() {
+            log::debug!("[Workspace] scene save skipped: layer sources not resolved yet");
+            return None;
+        }
+        Some(self.scene_snapshot(mixer))
+    }
+
     pub fn scene_snapshot(&self, mixer: &Mixer) -> Scene {
         let scene = Scene::from_mixer(mixer, &self.layer_sources).with_params(self.param_snapshot.clone());
         match &self.engine_modulation {
@@ -472,10 +486,15 @@ impl KovvbojAppState {
 
     pub fn save_workspace(&self) {
         if let Ok(mixer) = self.mixer.lock() {
-            let scene = self.scene_snapshot(&mixer);
-            match self.workspace.save_scene(&scene) {
-                Ok(_) => log::info!("[Workspace] scene saved"),
-                Err(e) => log::warn!("[Workspace] scene save failed: {}", e),
+            // Before the first `prepare()` the layer source map is still empty,
+            // so every layer would serialise as a placeholder solid colour.
+            // Saving then would clobber a good scene with junk — as it does for
+            // anyone who launches and quits inside the auto-save interval.
+            if let Some(scene) = self.scene_snapshot_if_ready(&mixer) {
+                match self.workspace.save_scene(&scene) {
+                    Ok(_) => log::info!("[Workspace] scene saved"),
+                    Err(e) => log::warn!("[Workspace] scene save failed: {}", e),
+                }
             }
         }
         #[cfg(feature = "projection")]
@@ -1625,11 +1644,11 @@ impl EffectPlugin for KovvbojRootPlugin {
             state.auto_save_last = Some(now);
             #[cfg(feature = "mixer")]
             {
-                if let Ok(mixer) = state.mixer.lock() {
-                    let scene = state.scene_snapshot(&mixer);
-                    if let Err(e) = state.workspace.save_scene(&scene) {
-                        log::warn!("[AutoSave] scene failed: {}", e);
-                    }
+                if let Ok(mixer) = state.mixer.lock()
+                    && let Some(scene) = state.scene_snapshot_if_ready(&mixer)
+                    && let Err(e) = state.workspace.save_scene(&scene)
+                {
+                    log::warn!("[AutoSave] scene failed: {}", e);
                 }
             }
             #[cfg(feature = "projection")]
@@ -1717,6 +1736,15 @@ impl EffectPlugin for KovvbojRootPlugin {
                     }
                 }
                 state.params_dirty_request = true;
+            }
+
+            // Hand over the layer source entries built during `init()`, which
+            // runs before any app state exists. Without this the map stays
+            // empty and every layer saves as a placeholder solid colour.
+            if !self.layer_sources_init.is_empty() {
+                state
+                    .layer_sources
+                    .extend(std::mem::take(&mut self.layer_sources_init));
             }
 
             // The dimmer is a normal parameter, so MIDI/OSC/LFO can drive it;
