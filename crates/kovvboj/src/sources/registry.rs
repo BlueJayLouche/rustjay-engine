@@ -215,81 +215,17 @@ impl Registry {
             }
         }
 
-        Self {
+        let mut registry = Self {
             shaders,
             images,
             videos,
             streams,
-            builtins: {
-                let mut builtins = vec![
-                    SourceEntry {
-                        id: "solid_color".to_string(),
-                        name: "Solid Color".to_string(),
-                        kind: SourceKind::SolidColor,
-                        path: None,
-                        device_index: 0,
-                    },
-                ];
-                // Discover webcams via the engine's nokhwa backend.
-                #[cfg(feature = "webcam")]
-                for (idx, name) in rustjay_io::list_cameras().into_iter().enumerate() {
-                    let id = format!("camera_{}", idx);
-                    builtins.push(SourceEntry {
-                        id: id.clone(),
-                        name,
-                        kind: SourceKind::Camera,
-                        path: None,
-                        device_index: idx,
-                    });
-                }
-                #[cfg(feature = "ndi")]
-                {
-                    for (idx, name) in rustjay_io::list_ndi_sources(500).into_iter().enumerate() {
-                        let id = format!("ndi_{}", idx);
-                        builtins.push(SourceEntry {
-                            id: id.clone(),
-                            name: name.clone(),
-                            kind: SourceKind::Ndi,
-                            path: None,
-                            device_index: 0,
-                        });
-                    }
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    for (idx, info) in rustjay_io::SyphonDiscovery::new()
-                        .discover_servers()
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let id = format!("syphon_{}", idx);
-                        builtins.push(SourceEntry {
-                            id: id.clone(),
-                            name: info.name.clone(),
-                            kind: SourceKind::Syphon,
-                            path: Some(std::path::PathBuf::from(&info.uuid)),
-                            device_index: 0,
-                        });
-                    }
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    for (idx, info) in rustjay_io::SpoutDiscovery::list_senders()
-                        .into_iter()
-                        .enumerate()
-                    {
-                        builtins.push(SourceEntry {
-                            id: format!("spout_{}", idx),
-                            name: info.name.clone(),
-                            kind: SourceKind::Spout,
-                            path: None,
-                            device_index: 0,
-                        });
-                    }
-                }
-                builtins
-            },
-        }
+            builtins: Vec::new(),
+        };
+        // One code path for device discovery, so the generic NDI/Syphon/Spout
+        // entries exist from startup and not only after a rescan.
+        registry.refresh_builtins();
+        registry
     }
 
     /// Re-scan live devices (cameras, NDI, Syphon) without touching shaders/images/videos.
@@ -349,6 +285,33 @@ impl Registry {
             });
         }
         self.builtins = builtins;
+        // Generic device entries, always present. A server or sender you have
+        // not started yet cannot be discovered, so without these there is no
+        // way to add the layer first and connect it later from the inspector.
+        #[cfg(feature = "ndi")]
+        self.builtins.push(SourceEntry {
+            id: "ndi_any".to_string(),
+            name: "NDI…".to_string(),
+            kind: SourceKind::Ndi,
+            path: None,
+            device_index: 0,
+        });
+        #[cfg(target_os = "macos")]
+        self.builtins.push(SourceEntry {
+            id: "syphon_any".to_string(),
+            name: "Syphon…".to_string(),
+            kind: SourceKind::Syphon,
+            path: None,
+            device_index: 0,
+        });
+        #[cfg(target_os = "windows")]
+        self.builtins.push(SourceEntry {
+            id: "spout_any".to_string(),
+            name: "Spout…".to_string(),
+            kind: SourceKind::Spout,
+            path: None,
+            device_index: 0,
+        });
     }
 
     /// All entries flattened.

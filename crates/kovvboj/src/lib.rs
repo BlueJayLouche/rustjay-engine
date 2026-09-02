@@ -150,6 +150,10 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_fx_removals: Vec<PendingFxRemoval>,
+    /// Layer sources queued for re-pointing; drained in `prepare()`.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_source_swaps: Vec<PendingSourceSwap>,
     /// Library entry each layer was built from, keyed by its channel uuid.
     ///
     /// `rustjay_mixer::Channel` has nowhere to record what a layer's source
@@ -215,6 +219,20 @@ pub struct PendingFxRemoval {
     pub chain: ChainRef,
     /// UUID of the slot to remove.
     pub slot: String,
+}
+
+/// A layer whose source should be re-pointed at a different device or server.
+///
+/// Swapping `Channel::effect` keeps the layer itself — its chain, opacity,
+/// blend, and every MIDI/modulation binding keyed to `ch_<uuid>_`. That is why
+/// re-pointing needs no per-source rebind API: the layer outlives its source.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug)]
+pub struct PendingSourceSwap {
+    /// Layer (channel) uuid.
+    pub layer_uuid: String,
+    /// The library entry to bind instead.
+    pub source: crate::sources::SourceEntry,
 }
 
 /// One layer queued for removal by the UI and processed in `prepare()`.
@@ -559,6 +577,8 @@ impl Default for KovvbojAppState {
             pending_removals: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_fx_removals: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_source_swaps: Vec::new(),
             #[cfg(feature = "mixer")]
             layer_sources: std::collections::HashMap::new(),
             #[cfg(feature = "mixer")]
@@ -1715,6 +1735,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                 || !state.pending_layers.is_empty()
                 || !state.pending_effects.is_empty()
                 || !state.pending_fx_removals.is_empty()
+                || !state.pending_source_swaps.is_empty()
             {
                 state.push_undo();
             }
@@ -1754,6 +1775,42 @@ impl EffectPlugin for KovvbojRootPlugin {
                     .get_param(crate::ui::MASTER_DIM)
                     .unwrap_or(1.0);
 
+            }
+
+            // Re-point a layer's source. The layer keeps its uuid, so its
+            // chain and every binding under `ch_<uuid>_` survive untouched.
+            let swaps: Vec<PendingSourceSwap> = std::mem::take(&mut state.pending_source_swaps);
+            for req in swaps {
+                match instantiate_source(&req.source, device, queue, engine) {
+                    Ok(mut source) => {
+                        source.set_param_prefix(&format!("ch_{}_", req.layer_uuid));
+                        let Ok(mut mixer) = state.mixer.lock() else {
+                            continue;
+                        };
+                        let Some(ch) =
+                            mixer.channels.iter_mut().find(|c| c.uuid == req.layer_uuid)
+                        else {
+                            continue;
+                        };
+                        ch.effect = source;
+                        ch.name = req.source.name.clone();
+                        drop(mixer);
+                        state
+                            .layer_sources
+                            .insert(req.layer_uuid.clone(), req.source.clone());
+                        self.params_dirty = true;
+                        engine.notify(
+                            format!("Connected to '{}'", req.source.name),
+                            rustjay_core::NotificationLevel::Info,
+                            std::time::Duration::from_secs(3),
+                        );
+                    }
+                    Err(e) => engine.notify(
+                        format!("Could not connect to '{}': {e}", req.source.name),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(5),
+                    ),
+                }
             }
 
             // Layer removals.

@@ -272,6 +272,21 @@ mod egui_impl {
     /// the slider acts as a stable offset and modulation (LFO/audio/MIDI) is
     /// applied additively on top when the shader reads `get_param` — matching the
     /// `examples/delta-egui` convention. Stays co-equal with OSC/MIDI/LFO.
+    /// Whether an entry is a live input rather than something generated.
+    ///
+    /// Solid colour lives in the builtins list too, but it is a generator: it
+    /// has nothing to connect to and no device to pick in the inspector.
+    fn is_device(entry: &crate::sources::SourceEntry) -> bool {
+        use crate::sources::SourceKind as K;
+        matches!(entry.kind, K::Camera | K::Ndi | K::Syphon | K::Spout)
+    }
+
+    /// Whether an entry is the generic "add one and connect later" placeholder
+    /// rather than a discovered device.
+    fn is_generic_device(entry: &crate::sources::SourceEntry) -> bool {
+        entry.id.ends_with("_any")
+    }
+
     /// A one-glyph badge for a source kind, shared by the library and the strip.
     fn source_icon(kind: crate::sources::SourceKind) -> &'static str {
         use crate::sources::SourceKind as K;
@@ -929,6 +944,62 @@ mod egui_impl {
         ui.label(egui::RichText::new(&heading).strong().monospace());
         ui.separator();
 
+        // A device layer can be re-pointed while it runs: servers and senders
+        // come and go, and the layer (with its chain and bindings) should
+        // outlive whichever one it happens to be watching.
+        if let Some((_, kind)) = layer_controls.as_ref().map(|(f, k)| (f.clone(), *k))
+            && matches!(
+                kind,
+                crate::sources::SourceKind::Camera
+                    | crate::sources::SourceKind::Ndi
+                    | crate::sources::SourceKind::Syphon
+                    | crate::sources::SourceKind::Spout
+            )
+            && let crate::Selection::Layer { layer } = &selection
+        {
+            let layer = layer.clone();
+            let current = state
+                .layer_sources
+                .get(&layer)
+                .map(|e| e.name.clone())
+                .unwrap_or_default();
+            // Only entries the device actually discovered — never the generic
+            // "NDI…" placeholder, which is a way in, not a thing to connect to.
+            let options: Vec<crate::sources::SourceEntry> = state
+                .registry
+                .builtins
+                .iter()
+                .filter(|e| e.kind == kind && !is_generic_device(e))
+                .cloned()
+                .collect();
+
+            ui.horizontal(|ui| {
+                ui.label("Source:");
+                egui::ComboBox::from_id_salt(("layer_source", &layer))
+                    .selected_text(if current.is_empty() { "--" } else { &current })
+                    .show_ui(ui, |ui| {
+                        for entry in &options {
+                            if ui.selectable_label(entry.name == current, &entry.name).clicked() {
+                                state.pending_source_swaps.push(crate::PendingSourceSwap {
+                                    layer_uuid: layer.clone(),
+                                    source: entry.clone(),
+                                });
+                            }
+                        }
+                    });
+                if ui.small_button("⟳").on_hover_text("Rescan").clicked() {
+                    state.registry.refresh_builtins();
+                }
+            });
+            if options.is_empty() {
+                ui.label(
+                    egui::RichText::new("Nothing found — start the sender, then rescan.")
+                        .color(rustjay_gui::egui_theme::colors::ink_3()),
+                );
+            }
+            ui.separator();
+        }
+
         if let Some((full, kind)) = layer_controls {
             param_slider(ui, engine, &format!("{full}opacity"), "Opacity", 0.0, 1.0);
             blend_combo(ui, engine, &format!("{full}blend"), "Blend");
@@ -1400,19 +1471,51 @@ mod egui_impl {
                         });
                     };
 
-                    // SOURCES — anything that can stand on its own as a layer.
-                    heading(ui, "SOURCES", "➕ new layer");
-                    for entry in &state.registry.builtins {
-                        row(ui, entry, false);
-                    }
+                    // Live inputs: cameras, plus NDI/Syphon/Spout. The generic
+                    // entries come last in each kind so the discovered ones read
+                    // first.
+                    heading(ui, "DEVICES", "➕ new layer");
                     for entry in state
                         .registry
-                        .shaders
+                        .builtins
                         .iter()
-                        .filter(|e| !is_effect(e))
-                        .chain(state.registry.images.iter())
+                        .filter(|e| is_device(e) && !is_generic_device(e))
+                        .chain(
+                            state
+                                .registry
+                                .builtins
+                                .iter()
+                                .filter(|e| is_device(e) && is_generic_device(e)),
+                        )
+                    {
+                        row(ui, entry, false);
+                    }
+
+                    // Files and streams.
+                    let media: Vec<&crate::sources::SourceEntry> = state
+                        .registry
+                        .images
+                        .iter()
                         .chain(state.registry.videos.iter())
                         .chain(state.registry.streams.iter())
+                        .collect();
+                    if !media.is_empty() {
+                        ui.add_space(4.0);
+                        heading(ui, "MEDIA", "➕ new layer");
+                        for entry in media {
+                            row(ui, entry, false);
+                        }
+                    }
+
+                    // Shaders that generate rather than filter.
+                    ui.add_space(4.0);
+                    heading(ui, "GENERATORS", "➕ new layer");
+                    for entry in state
+                        .registry
+                        .builtins
+                        .iter()
+                        .filter(|e| !is_device(e))
+                        .chain(state.registry.shaders.iter().filter(|e| !is_effect(e)))
                     {
                         row(ui, entry, false);
                     }
