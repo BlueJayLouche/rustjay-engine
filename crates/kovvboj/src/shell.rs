@@ -80,6 +80,9 @@ pub struct KovvbojShell {
     prefs: crate::persistence::UiPrefs,
     /// One-shot: install the display font and apply the saved palette.
     initialised: bool,
+    /// Panel widths changed since the last save. Dragging an edge fires every
+    /// frame, so the write is deferred rather than done inline.
+    prefs_dirty: bool,
 }
 
 /// The KOVVBOJ display face, or monospace until it is available.
@@ -130,6 +133,7 @@ impl KovvbojShell {
             show_preview: true,
             prefs: crate::persistence::UiPrefs::default(),
             initialised: false,
+            prefs_dirty: false,
         }
     }
 
@@ -163,7 +167,16 @@ impl KovvbojShell {
         ctx.set_fonts(fonts);
 
         self.prefs = crate::persistence::default_workspace().load_ui();
+        self.show_library = self.prefs.library_open;
         set_palette(Palette::by_id(&self.prefs.palette));
+    }
+
+    /// Write UI preferences out.
+    fn save_prefs(&mut self) {
+        self.prefs_dirty = false;
+        if let Err(e) = crate::persistence::default_workspace().save_ui(&self.prefs) {
+            log::warn!("[Shell] could not save UI prefs: {e}");
+        }
     }
 
     /// Persist the chosen palette and apply it. The repaint picks it up next
@@ -227,26 +240,75 @@ impl AnyEguiShell for KovvbojShell {
         if self.show_library {
             #[allow(deprecated)] // top-level Panel::show, as in the built-in host
             egui::Panel::left("kovvboj_library")
-                .default_size(200.0)
+                .default_size(self.prefs.library_width)
                 .min_size(140.0)
+                .max_size(420.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    // Children may not demand more than the panel currently has,
+                    // so dragging the edge decides the width — not the widest
+                    // label inside.
+                    ui.set_max_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("◀")
+                            .on_hover_text("Collapse the library")
+                            .clicked()
+                        {
+                            self.show_library = false;
+                            self.prefs.library_open = false;
+                            self.save_prefs();
+                        }
+                        ui.label(egui::RichText::new("LIBRARY").monospace().size(10.0));
+                    });
+                    let width = ui.available_width();
+                    if (width - self.prefs.library_width).abs() > 1.0 {
+                        self.prefs.library_width = width;
+                        self.prefs_dirty = true;
+                    }
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| tab(&mut self.library, ui, app_state, &engine));
+                });
+        } else {
+            // A thin strip to bring it back, so hiding it is not a trip to the
+            // View menu.
+            #[allow(deprecated)]
+            egui::Panel::left("kovvboj_library_collapsed")
+                .exact_size(22.0)
+                .resizable(false)
+                .show(ui, |ui| {
+                    if ui
+                        .small_button("▶")
+                        .on_hover_text("Show the library")
+                        .clicked()
+                    {
+                        self.show_library = true;
+                        self.prefs.library_open = true;
+                        self.save_prefs();
+                    }
                 });
         }
 
         if self.show_preview {
             #[allow(deprecated)]
             egui::Panel::right("kovvboj_inspector")
-                .default_size(300.0)
+                .default_size(self.prefs.inspector_width)
                 .min_size(200.0)
                 // Capped: an ISF parameter can be named anything, and a long
                 // one used to widen this panel until the layer stack had no
                 // room left. Labels truncate inside it instead.
-                .max_size(460.0)
+                .max_size(560.0)
                 .resizable(true)
                 .show(ui, |ui| {
+                    // The width you drag to is the width you keep: without this
+                    // the panel grows to whatever the widest parameter row asks
+                    // for, so selecting a different chip resized it under you.
+                    ui.set_max_width(ui.available_width());
+                    let width = ui.available_width();
+                    if (width - self.prefs.inspector_width).abs() > 1.0 {
+                        self.prefs.inspector_width = width;
+                        self.prefs_dirty = true;
+                    }
                     Self::preview(ui, host.output_preview_texture_id, &engine);
                     egui::ScrollArea::vertical()
                         .id_salt("inspector_scroll")
@@ -260,6 +322,11 @@ impl AnyEguiShell for KovvbojShell {
                             crate::ui::draw_inspector(ui, state, &mut guard);
                         });
                 });
+        }
+
+        // Panel drags settle when the pointer is released; write once then.
+        if self.prefs_dirty && !ui.ctx().egui_is_using_pointer() {
+            self.save_prefs();
         }
 
         #[allow(deprecated)]

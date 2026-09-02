@@ -136,12 +136,36 @@ impl Workspace {
 pub struct UiPrefs {
     /// Palette preset id — see `rustjay_gui::egui_theme::Palette::PRESETS`.
     pub palette: String,
+    /// Width of the library panel.
+    #[serde(default = "default_library_width")]
+    pub library_width: f32,
+    /// Whether the library panel is showing.
+    #[serde(default = "default_true")]
+    pub library_open: bool,
+    /// Width of the inspector panel.
+    #[serde(default = "default_inspector_width")]
+    pub inspector_width: f32,
+}
+
+fn default_library_width() -> f32 {
+    200.0
+}
+
+fn default_inspector_width() -> f32 {
+    300.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             palette: "kovvboj".to_string(),
+            library_width: default_library_width(),
+            library_open: true,
+            inspector_width: default_inspector_width(),
         }
     }
 }
