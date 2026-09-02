@@ -114,14 +114,15 @@ upgrade is a diff-based apply that only touches changed nodes.
 Param edits are **not** undoable — they are continuous and driven by
 MIDI/LFO/OSC.
 
-### P5 — deck thumbnails
-One registered wgpu texture id per deck row, re-registered when the deck's
+### P5 — layer thumbnails
+One registered wgpu texture id per layer row, re-registered when the layer's
 output texture generation flips (ping-pong gotcha: a stale id shows a frozen
 frame).
 
-### P6 — modes and polish
-MIX / STAGE / MAP wiring, Outputs window + top-bar REC, View-menu window
-visibility persisted to the workspace, snapshot re-baseline.
+### P6 — polish
+Top-bar REC button, View-menu window visibility persisted to `.kovvboj/ui.json`,
+snapshot re-baseline. MIX / STAGE / MAP switching and the Outputs window landed
+with P1.
 
 ## Tests
 
