@@ -13,6 +13,7 @@
 use crate::ui::LedMapTab;
 use crate::ui::{DeckTab, EffectsTab, MixerTab, OutputsTab, SequencerTab, StageTab};
 use rustjay_engine::prelude::{AnyEguiShell, AnyEguiTab, EguiControlGui, EngineState, GuiTab};
+use rustjay_gui::egui_theme::{Palette, set_palette};
 use rustjay_gui::egui_widgets::{PillState, status_pill};
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +74,24 @@ pub struct KovvbojShell {
     show_sequencer: bool,
     show_library: bool,
     show_preview: bool,
+
+    /// Persisted UI preferences (palette choice). Loaded on the first frame,
+    /// because the shell is built before there is an egui context to theme.
+    prefs: crate::persistence::UiPrefs,
+    /// One-shot: install the display font and apply the saved palette.
+    initialised: bool,
 }
+
+/// The KOVVBOJ display face, used for the wordmark and mode buttons.
+///
+/// Workbench covers Latin only (217 codepoints), so the family lists egui's
+/// default monospace behind it — anything Workbench lacks falls back per glyph
+/// instead of rendering as tofu.
+fn display_family() -> egui::FontFamily {
+    egui::FontFamily::Name(WORKBENCH.into())
+}
+
+const WORKBENCH: &str = "workbench";
 
 impl Default for KovvbojShell {
     fn default() -> Self {
@@ -100,6 +118,51 @@ impl KovvbojShell {
             show_sequencer: false,
             show_library: true,
             show_preview: true,
+            prefs: crate::persistence::UiPrefs::default(),
+            initialised: false,
+        }
+    }
+
+    /// Install the display font and apply the saved palette. Runs once, on the
+    /// first frame — `set_fonts` is cheap to call but not free, and the palette
+    /// only needs applying when it changes.
+    fn initialise(&mut self, ctx: &egui::Context) {
+        if self.initialised {
+            return;
+        }
+        self.initialised = true;
+
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            WORKBENCH.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../assets/fonts/Workbench.ttf"
+            ))),
+        );
+        let mut chain = vec![WORKBENCH.to_owned()];
+        chain.extend(
+            fonts
+                .families
+                .get(&egui::FontFamily::Monospace)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(WORKBENCH.into()), chain);
+        ctx.set_fonts(fonts);
+
+        self.prefs = crate::persistence::default_workspace().load_ui();
+        set_palette(Palette::by_id(&self.prefs.palette));
+    }
+
+    /// Persist the chosen palette and apply it. The repaint picks it up next
+    /// frame, when the host re-runs `apply_professional_theme`.
+    fn choose_palette(&mut self, id: &str) {
+        self.prefs.palette = id.to_string();
+        set_palette(Palette::by_id(id));
+        if let Err(e) = crate::persistence::default_workspace().save_ui(&self.prefs) {
+            log::warn!("[Shell] could not save UI prefs: {e}");
         }
     }
 }
@@ -124,6 +187,7 @@ impl AnyEguiShell for KovvbojShell {
     ) {
         // Cloned once so nothing below has to keep `host` borrowed to reach the
         // engine — `host` is needed mutably for `draw_builtin_tab`.
+        self.initialise(ui.ctx());
         let engine = host.engine().clone();
 
         self.menu_and_status_row(ui, app_state, &engine);
@@ -235,8 +299,8 @@ impl KovvbojShell {
             .exact_size(32.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_2)
-                    .stroke(egui::Stroke::new(1.0_f32, HAIR_2)),
+                    .fill(surface_2())
+                    .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
@@ -245,7 +309,7 @@ impl KovvbojShell {
                         egui::RichText::new("KOVVBOJ")
                             .strong()
                             .size(13.0)
-                            .color(AMBER)
+                            .color(amber())
                             .monospace(),
                     );
                     ui.add_space(10.0);
@@ -312,13 +376,13 @@ impl KovvbojShell {
                             egui::RichText::new(format!("{:.0} BPM", bpm))
                                 .size(11.0)
                                 .monospace()
-                                .color(INK_2),
+                                .color(ink_2()),
                         );
                         ui.label(
                             egui::RichText::new(format!("{:.0} FPS", fps))
                                 .size(11.0)
                                 .monospace()
-                                .color(INK_2),
+                                .color(ink_2()),
                         );
                     });
                 });
@@ -329,7 +393,10 @@ impl KovvbojShell {
     fn mode_switcher(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for (mode, label) in Mode::ALL {
-                if ui.selectable_label(self.mode == mode, label).clicked() {
+                let text = egui::RichText::new(label)
+                    .size(14.0)
+                    .family(display_family());
+                if ui.selectable_label(self.mode == mode, text).clicked() {
                     self.mode = mode;
                 }
             }
@@ -358,11 +425,38 @@ impl KovvbojShell {
         }
 
         if self.show_settings {
+            let mut open = true;
+            let mut chosen: Option<&'static str> = None;
             egui::Window::new("Settings")
-                .open(&mut self.show_settings)
+                .open(&mut open)
                 .default_width(460.0)
                 .vscroll(true)
-                .show(&ctx, |ui| host.draw_builtin_tab(ui, GuiTab::Settings));
+                .show(&ctx, |ui| {
+                    ui.label(egui::RichText::new("Appearance").strong());
+                    let current = Palette::PRESETS
+                        .iter()
+                        .find(|(id, _)| *id == self.prefs.palette)
+                        .map(|(_, name)| *name)
+                        .unwrap_or("HUD Amber");
+                    egui::ComboBox::from_label("Palette")
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            for (id, name) in Palette::PRESETS {
+                                if ui
+                                    .selectable_label(self.prefs.palette == id, name)
+                                    .clicked()
+                                {
+                                    chosen = Some(id);
+                                }
+                            }
+                        });
+                    ui.separator();
+                    host.draw_builtin_tab(ui, GuiTab::Settings);
+                });
+            self.show_settings = open;
+            if let Some(id) = chosen {
+                self.choose_palette(id);
+            }
         }
 
         // App-owned windows. The open flag is copied into a local so the

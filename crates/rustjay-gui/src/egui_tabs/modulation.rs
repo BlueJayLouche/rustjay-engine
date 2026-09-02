@@ -26,7 +26,7 @@ impl EguiControlGui {
         ui.label(
             egui::RichText::new("LFO · ADSR · Step Sequencer · Audio Band")
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
         );
         ui.add_space(12.0);
 
@@ -82,11 +82,11 @@ impl EguiControlGui {
 
         for (uuid, typ, value, enabled) in &sources_snapshot {
             let is_expanded = expanded_uuid == *uuid;
-            let header_color = if *enabled { ACCENT_CYAN } else { TEXT_SECONDARY };
+            let header_color = if *enabled { accent_cyan() } else { text_secondary() };
 
             egui::Frame::group(ui.style())
-                .fill(BG_WIDGET)
-                .stroke(egui::Stroke::new(1.0_f32, if is_expanded { ACCENT_CYAN } else { BORDER }))
+                .fill(bg_widget())
+                .stroke(egui::Stroke::new(1.0_f32, if is_expanded { accent_cyan() } else { border() }))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
 
@@ -96,7 +96,7 @@ impl EguiControlGui {
                         let btn = egui::Button::new(
                             egui::RichText::new(label).color(header_color).strong(),
                         )
-                        .fill(if is_expanded { BG_HOVER } else { BG_WIDGET });
+                        .fill(if is_expanded { bg_hover() } else { bg_widget() });
                         if ui.add(btn).clicked() {
                             self.modulation_expanded_source = if is_expanded {
                                 None
@@ -208,7 +208,7 @@ impl EguiControlGui {
                     ui.label(
                         egui::RichText::new(format!("BPM: {:.1}", bpm))
                             .size(11.0)
-                            .color(TEXT_SECONDARY),
+                            .color(text_secondary()),
                     );
                 }
             });
@@ -220,10 +220,10 @@ impl EguiControlGui {
                     let selected = *waveform == *wf;
                     let btn = if selected {
                         egui::Button::new(egui::RichText::new(*name).strong().color(Color32::BLACK))
-                            .fill(ACCENT_CYAN)
+                            .fill(accent_cyan())
                     } else {
-                        egui::Button::new(egui::RichText::new(*name).color(TEXT_PRIMARY))
-                            .fill(BG_HOVER)
+                        egui::Button::new(egui::RichText::new(*name).color(text_primary()))
+                            .fill(bg_hover())
                     };
                     if ui.add_sized(egui::vec2(64.0, 22.0), btn).clicked() && !selected {
                         *waveform = *wf;
@@ -253,7 +253,7 @@ impl EguiControlGui {
                         beat_division_to_hz(*division, bpm)
                     ))
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
                 );
             } else {
                 ui.add(
@@ -395,7 +395,7 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new("No assignments — select a parameter below")
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         }
 

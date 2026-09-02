@@ -42,6 +42,25 @@ impl Workspace {
         self.dir.join("keymap.json")
     }
 
+    pub fn ui_path(&self) -> PathBuf {
+        self.dir.join("ui.json")
+    }
+
+    /// Load UI preferences, falling back to defaults when absent or unreadable —
+    /// a corrupt prefs file must not stop the app opening.
+    pub fn load_ui(&self) -> UiPrefs {
+        std::fs::read_to_string(self.ui_path())
+            .ok()
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_ui(&self, prefs: &UiPrefs) -> anyhow::Result<()> {
+        self.ensure_dir()?;
+        std::fs::write(self.ui_path(), serde_json::to_string_pretty(prefs)?)?;
+        Ok(())
+    }
+
     pub fn ensure_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)
     }
@@ -112,6 +131,21 @@ impl Workspace {
 /// not, so workspaces saved before the KOVVBOJ rename keep loading. Saving from
 /// a legacy workspace keeps writing to `.varda/` — it is never migrated behind
 /// the user's back.
+/// UI preferences that outlive a session but are not part of the scene.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UiPrefs {
+    /// Palette preset id — see `rustjay_gui::egui_theme::Palette::PRESETS`.
+    pub palette: String,
+}
+
+impl Default for UiPrefs {
+    fn default() -> Self {
+        Self {
+            palette: "kovvboj".to_string(),
+        }
+    }
+}
+
 pub fn default_workspace() -> Workspace {
     // ponytail: read-only compatibility shim. Delete once no `.varda/` remains
     // in the wild; a real migration would have to move presets/ too.

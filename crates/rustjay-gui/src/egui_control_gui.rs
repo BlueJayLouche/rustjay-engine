@@ -385,8 +385,8 @@ impl EguiControlGui {
             .exact_size(56.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_2)
-                    .stroke(egui::Stroke::new(1.0_f32, HAIR_2)),
+                    .fill(surface_2())
+                    .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
                 ui.add_space(6.0);
@@ -400,18 +400,18 @@ impl EguiControlGui {
                         egui::RichText::new(head)
                             .strong()
                             .size(18.0)
-                            .color(INK)
+                            .color(ink())
                             .monospace(),
                     );
-                    ui.label(egui::RichText::new("/").color(AMBER).size(18.0).monospace());
+                    ui.label(egui::RichText::new("/").color(amber()).size(18.0).monospace());
                     if !tail.is_empty() {
-                        ui.label(egui::RichText::new(tail).size(18.0).color(INK).monospace());
+                        ui.label(egui::RichText::new(tail).size(18.0).color(ink()).monospace());
                     }
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("CONTROL · v1.0")
                             .size(10.0)
-                            .color(INK_4)
+                            .color(ink_4())
                             .monospace(),
                     );
 
@@ -419,11 +419,11 @@ impl EguiControlGui {
 
                     // BPM readout — big tabular numerics
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("BPM").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("BPM").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>5.1}", bpm))
                                 .size(15.0)
-                                .color(AMBER)
+                                .color(amber())
                                 .strong()
                                 .monospace(),
                         );
@@ -433,11 +433,11 @@ impl EguiControlGui {
 
                     // FPS readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("FPS").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("FPS").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>4.0}", fps))
                                 .size(15.0)
-                                .color(INK)
+                                .color(ink())
                                 .monospace(),
                         );
                     });
@@ -446,11 +446,11 @@ impl EguiControlGui {
 
                     // CPU readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("CPU").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("CPU").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>4.0}%", cpu))
                                 .size(15.0)
-                                .color(INK)
+                                .color(ink())
                                 .monospace(),
                         );
                     });
@@ -459,7 +459,7 @@ impl EguiControlGui {
 
                     // Memory readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("MEM").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("MEM").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!(
                                 "{:.2}/{:.2} GB",
@@ -467,7 +467,7 @@ impl EguiControlGui {
                                 mem_total as f32 / 1024.0
                             ))
                             .size(15.0)
-                            .color(INK)
+                            .color(ink())
                             .monospace(),
                         );
                     });
@@ -476,14 +476,14 @@ impl EguiControlGui {
 
                     // Mini volume meter — flat bar w/ amber fill, square edges
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("VOL").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("VOL").size(9.5).color(ink_4()));
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(72.0, 10.0), egui::Sense::hover());
                         let p = ui.painter();
                         p.rect_stroke(
                             rect,
                             0.0,
-                            egui::Stroke::new(1.0_f32, HAIR_2),
+                            egui::Stroke::new(1.0_f32, hair_2()),
                             egui::StrokeKind::Inside,
                         );
                         let fill_w = rect.width() * volume.clamp(0.0, 1.0);
@@ -492,7 +492,7 @@ impl EguiControlGui {
                                 rect.min,
                                 egui::vec2(fill_w, rect.height()),
                             );
-                            let col = if volume > 0.8 { ALERT } else { SIGNAL };
+                            let col = if volume > 0.8 { alert() } else { signal() };
                             p.rect_filled(fr, 0.0, col);
                         }
                         // Tick marks
@@ -503,7 +503,7 @@ impl EguiControlGui {
                                     egui::pos2(x, rect.bottom() - 2.0),
                                     egui::pos2(x, rect.bottom()),
                                 ],
-                                egui::Stroke::new(1.0_f32, HAIR_3),
+                                egui::Stroke::new(1.0_f32, hair_3()),
                             );
                         }
                     });
@@ -515,7 +515,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("⚙  PREFS")
                                     .size(11.0)
-                                    .color(if self.show_preferences { AMBER } else { INK_2 }),
+                                    .color(if self.show_preferences { amber() } else { ink_2() }),
                             )
                             .clicked()
                         {
@@ -527,7 +527,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("〰 LFO MAP")
                                     .size(11.0)
-                                    .color(if lfo_assign_mode { AMBER } else { INK_2 }),
+                                    .color(if lfo_assign_mode { amber() } else { ink_2() }),
                             )
                             .on_hover_text("Click a parameter to assign a modulation source")
                             .clicked()
@@ -545,7 +545,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("🎹 MIDI MAP")
                                     .size(11.0)
-                                    .color(if midi_learn_mode { AMBER } else { INK_2 }),
+                                    .color(if midi_learn_mode { amber() } else { ink_2() }),
                             )
                             .on_hover_text("Click a parameter, then move/press a MIDI control")
                             .clicked()
@@ -570,9 +570,9 @@ impl EguiControlGui {
                                 })
                                 .size(11.0)
                                 .color(if show_preview {
-                                    AMBER
+                                    amber()
                                 } else {
-                                    INK_2
+                                    ink_2()
                                 }),
                             )
                             .clicked()
@@ -583,7 +583,7 @@ impl EguiControlGui {
                         }
                         ui.add_space(6.0);
                         if ui
-                            .button(egui::RichText::new("🔄 REFRESH").size(11.0).color(INK_2))
+                            .button(egui::RichText::new("🔄 REFRESH").size(11.0).color(ink_2()))
                             .clicked()
                         {
                             let mut state =
@@ -594,7 +594,7 @@ impl EguiControlGui {
                         }
                         ui.add_space(6.0);
                         if ui
-                            .button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2))
+                            .button(egui::RichText::new("💾 SAVE").size(11.0).color(ink_2()))
                             .clicked()
                         {
                             let mut state =
@@ -690,10 +690,10 @@ impl EguiControlGui {
                 ui.vertical(|ui| {
                     for n in notifs {
                         let (bg, text) = match n.level {
-                            NotificationLevel::Error => (ALERT, INK),
-                            NotificationLevel::Warning => (AMBER, INK),
-                            NotificationLevel::Success => (SIGNAL, INK),
-                            NotificationLevel::Info => (SURFACE, INK_2),
+                            NotificationLevel::Error => (alert(), ink()),
+                            NotificationLevel::Warning => (amber(), ink()),
+                            NotificationLevel::Success => (signal(), ink()),
+                            NotificationLevel::Info => (surface(), ink_2()),
                         };
                         egui::Frame::NONE
                             .fill(bg)
@@ -745,8 +745,8 @@ impl EguiControlGui {
             .resizable(false)
             .frame(
                 egui::Frame::NONE
-                    .fill(BG)
-                    .stroke(egui::Stroke::new(1.0_f32, HAIR_2)),
+                    .fill(bg())
+                    .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
                 ui.add_space(10.0);
@@ -864,7 +864,7 @@ impl EguiControlGui {
 
         // Background
         let bg = if active {
-            SURFACE_2
+            surface_2()
         } else if resp.hovered() {
             egui::Color32::from_rgba_premultiplied(8, 12, 16, 24)
         } else {
@@ -874,7 +874,7 @@ impl EguiControlGui {
 
         // Left accent bar — amber on active
         let accent_w = if active { 3.0 } else { 1.0 };
-        let accent_color = if active { AMBER } else { HAIR_2 };
+        let accent_color = if active { amber() } else { hair_2() };
         p.rect_filled(
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(accent_w, rect.height())),
             0.0,
@@ -882,7 +882,7 @@ impl EguiControlGui {
         );
 
         // Label
-        let label_color = if active { INK } else { INK_2 };
+        let label_color = if active { ink() } else { ink_2() };
         let galley = p.layout_no_wrap(
             label.to_string(),
             egui::FontId::monospace(12.0),
@@ -896,14 +896,14 @@ impl EguiControlGui {
 
         // Tab index on the right when active
         if active {
-            let idx_g = p.layout_no_wrap("▶".to_string(), egui::FontId::monospace(11.0), AMBER);
+            let idx_g = p.layout_no_wrap("▶".to_string(), egui::FontId::monospace(11.0), amber());
             p.galley(
                 egui::pos2(
                     rect.right() - idx_g.size().x - 10.0,
                     rect.center().y - idx_g.size().y / 2.0,
                 ),
                 idx_g,
-                AMBER,
+                amber(),
             );
         }
 
@@ -1052,7 +1052,7 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new(label)
                     .size(11.0)
-                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                    .color(crate::egui_theme::colors::text_secondary()),
             );
 
             // Allocate space for the image (label already consumed its portion)
@@ -1084,13 +1084,13 @@ impl EguiControlGui {
                 ui.put(image_rect, image);
             } else {
                 ui.painter()
-                    .rect_filled(rect, 4.0, crate::egui_theme::colors::BG_WIDGET);
+                    .rect_filled(rect, 4.0, crate::egui_theme::colors::bg_widget());
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "No preview",
                     egui::FontId::proportional(12.0),
-                    crate::egui_theme::colors::TEXT_SECONDARY,
+                    crate::egui_theme::colors::text_secondary(),
                 );
             }
         });
@@ -1150,7 +1150,7 @@ impl EguiControlGui {
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Add New Route")
-                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .color(crate::egui_theme::colors::accent_cyan())
                         .strong(),
                 );
 
@@ -1215,14 +1215,14 @@ impl EguiControlGui {
                 } else {
                     ui.label(
                         egui::RichText::new("Max routes reached")
-                            .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                            .color(crate::egui_theme::colors::text_secondary()),
                     );
                 }
 
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Active Routes")
-                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .color(crate::egui_theme::colors::accent_cyan())
                         .strong(),
                 );
 
@@ -1271,7 +1271,7 @@ impl EguiControlGui {
                                     }
                                     ui.label(format!("{} → {}", band.short_name(), target.name()));
                                     ui.colored_label(
-                                        crate::egui_theme::colors::ACCENT_GREEN,
+                                        crate::egui_theme::colors::accent_green(),
                                         format!("{:.2}", current),
                                     );
                                     if ui.button("✕").clicked() {
@@ -1347,7 +1347,7 @@ impl EguiControlGui {
                         if routes_data.is_empty() {
                             ui.label(
                                 egui::RichText::new("No routes configured. Add one above.")
-                                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                                    .color(crate::egui_theme::colors::text_secondary()),
                             );
                         }
                     });
@@ -1372,7 +1372,7 @@ impl EguiControlGui {
         if descriptors.is_empty() {
             ui.label(
                 egui::RichText::new("No parameters declared for this category.")
-                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                    .color(crate::egui_theme::colors::text_secondary()),
             );
             return;
         }
@@ -1415,7 +1415,7 @@ impl EguiControlGui {
             if active_lfos > 0 {
                 ui.horizontal(|ui| {
                     ui.colored_label(
-                        crate::egui_theme::colors::ACCENT_GREEN,
+                        crate::egui_theme::colors::accent_green(),
                         format!("({} active)", active_lfos),
                     );
                 });
@@ -1630,7 +1630,7 @@ pub fn apply_param_map_overlay(
             .collect();
         (assigned, sources)
     };
-    let color = if assigned { ACCENT_GREEN } else { ACCENT_CYAN };
+    let color = if assigned { accent_green() } else { accent_cyan() };
     ui.painter().rect_stroke(
         rect.expand(2.0),
         0.0,

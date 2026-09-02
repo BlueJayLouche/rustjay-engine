@@ -50,13 +50,13 @@ pub fn hud_frame<R>(
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     egui::Frame::NONE
-        .fill(SURFACE_2)
-        .stroke(Stroke::new(1.0_f32, HAIR_2))
+        .fill(surface_2())
+        .stroke(Stroke::new(1.0_f32, hair_2()))
         .inner_margin(egui::Margin::same(pad as i8))
         .show(ui, |ui| {
             let r = add_contents(ui);
             if brackets {
-                corner_brackets(ui, ui.min_rect(), AMBER);
+                corner_brackets(ui, ui.min_rect(), amber());
             }
             r
         })
@@ -83,26 +83,26 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
             Vec2::new(3.0, row_height - 4.0),
         ),
         0.0,
-        AMBER,
+        amber(),
     );
 
     // Title (uppercase, letterspaced visually via tracking)
     let title_pos = rect.left_top() + Vec2::new(10.0, row_height / 2.0);
-    let title_galley = painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
+    let title_galley = painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), ink_2());
     painter.galley(
         Pos2::new(title_pos.x, title_pos.y - title_galley.size().y / 2.0),
         title_galley.clone(),
-        INK_2,
+        ink_2(),
     );
 
     // Counter on the right (e.g. "03 CH · 01/04")
     let counter_w = if let Some(c) = counter {
-        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), INK_4);
+        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), ink_4());
         let w = g.size().x;
         painter.galley(
             Pos2::new(rect.right() - w, rect.center().y - g.size().y / 2.0),
             g,
-            INK_4,
+            ink_4(),
         );
         w + 12.0
     } else {
@@ -121,7 +121,7 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
             let end = (x + dash).min(rule_right);
             painter.line_segment(
                 [Pos2::new(x, y), Pos2::new(end, y)],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
             x = end + gap;
         }
@@ -152,12 +152,12 @@ pub fn hud_collapsible_section_header(
     // Chevron (▶ collapsed / ▼ expanded)
     let chevron_text = if collapsed { "▶" } else { "▼" };
     let chevron_galley =
-        painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), INK_3);
+        painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), ink_3());
     let chevron_w = chevron_galley.size().x;
     painter.galley(
         Pos2::new(rect.left(), rect.center().y - chevron_galley.size().y / 2.0),
         chevron_galley,
-        INK_3,
+        ink_3(),
     );
 
     // Amber tick glyph ▌
@@ -168,27 +168,27 @@ pub fn hud_collapsible_section_header(
             Vec2::new(3.0, row_height - 4.0),
         ),
         0.0,
-        AMBER,
+        amber(),
     );
 
     // Title (uppercase, letterspaced visually via tracking)
     let title_x = tick_x + 10.0;
     let title_galley =
-        painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
+        painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), ink_2());
     painter.galley(
         Pos2::new(title_x, rect.center().y - title_galley.size().y / 2.0),
         title_galley.clone(),
-        INK_2,
+        ink_2(),
     );
 
     // Counter on the right (e.g. "03 CH · 01/04")
     let counter_w = if let Some(c) = counter {
-        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), INK_4);
+        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), ink_4());
         let w = g.size().x;
         painter.galley(
             Pos2::new(rect.right() - w, rect.center().y - g.size().y / 2.0),
             g,
-            INK_4,
+            ink_4(),
         );
         w + 12.0
     } else {
@@ -207,7 +207,7 @@ pub fn hud_collapsible_section_header(
             let end = (x + dash).min(rule_right);
             painter.line_segment(
                 [Pos2::new(x, y), Pos2::new(end, y)],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
             x = end + gap;
         }
@@ -259,7 +259,7 @@ pub fn segmented_select(
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, HAIR_2),
+        Stroke::new(1.0_f32, hair_2()),
         egui::StrokeKind::Inside,
     );
     painter.rect_filled(rect, 0.0, Color32::from_rgba_premultiplied(2, 3, 4, 8));
@@ -277,7 +277,7 @@ pub fn segmented_select(
         let hovered = resp.hovered();
 
         if active {
-            painter.rect_filled(seg_rect, 0.0, AMBER);
+            painter.rect_filled(seg_rect, 0.0, amber());
         } else if hovered {
             painter.rect_filled(
                 seg_rect,
@@ -288,14 +288,14 @@ pub fn segmented_select(
         if i > 0 {
             painter.line_segment(
                 [seg_rect.left_top(), seg_rect.left_bottom()],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
         }
 
         let color = if active {
             Color32::from_rgb(0x0a, 0x0a, 0x0a)
         } else {
-            INK_3
+            ink_3()
         };
         let galley = painter.layout_no_wrap(label.to_uppercase(), FontId::monospace(12.0), color);
         let pos = seg_rect.center() - galley.size() / 2.0;
@@ -332,10 +332,10 @@ pub enum PillState {
 /// A status pill: filled dot + uppercase label. Online dot pulses subtly.
 pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     let (fg, dot) = match state {
-        PillState::Online => (SIGNAL, SIGNAL),
-        PillState::Offline => (ALERT, ALERT),
-        PillState::Warn => (AMBER, AMBER),
-        PillState::Neutral => (INK_3, INK_4),
+        PillState::Online => (signal(), signal()),
+        PillState::Offline => (alert(), alert()),
+        PillState::Warn => (amber(), amber()),
+        PillState::Neutral => (ink_3(), ink_4()),
     };
 
     let text = label.to_uppercase();
@@ -353,7 +353,7 @@ pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, HAIR_2),
+        Stroke::new(1.0_f32, hair_2()),
         egui::StrokeKind::Inside,
     );
 
@@ -415,13 +415,13 @@ pub fn parameter_card_f32(
     let mut changed = false;
 
     let frame = egui::Frame::NONE
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0_f32, HAIR))
+        .fill(surface())
+        .stroke(Stroke::new(1.0_f32, hair()))
         .inner_margin(egui::Margin::symmetric(12, 10));
 
     let frame_resp = frame.show(ui, |ui| {
         // Left accent bar — amber when "active" (value != min)
-        let accent_color = if *value != min { AMBER } else { INK_4 };
+        let accent_color = if *value != min { amber() } else { ink_4() };
         let panel_rect = ui.max_rect();
         ui.painter().rect_filled(
             Rect::from_min_size(
@@ -434,10 +434,10 @@ pub fn parameter_card_f32(
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(name).color(INK).size(13.0));
+                ui.label(egui::RichText::new(name).color(ink()).size(13.0));
                 ui.label(
                     egui::RichText::new(id_tag.to_uppercase())
-                        .color(INK_4)
+                        .color(ink_4())
                         .size(10.0)
                         .monospace(),
                 );
@@ -447,7 +447,7 @@ pub fn parameter_card_f32(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         ui.label(
                             egui::RichText::new(format!("{}{}", format_value(*value), unit))
-                                .color(AMBER)
+                                .color(amber())
                                 .size(20.0)
                                 .strong()
                                 .monospace(),
@@ -460,7 +460,7 @@ pub fn parameter_card_f32(
                                 format_bound(min),
                                 format_bound(max)
                             ))
-                            .color(INK_4)
+                            .color(ink_4())
                             .size(10.0)
                             .monospace(),
                         );
@@ -497,7 +497,7 @@ pub fn parameter_card_f32(
                     Pos2::new(x, tick_rect.top()),
                     Pos2::new(x, tick_rect.top() + h),
                 ],
-                Stroke::new(1.0_f32, if major { HAIR_3 } else { HAIR_2 }),
+                Stroke::new(1.0_f32, if major { hair_3() } else { hair_2() }),
             );
         }
 
@@ -505,7 +505,7 @@ pub fn parameter_card_f32(
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(format_bound(min))
-                    .color(INK_4)
+                    .color(ink_4())
                     .size(10.0)
                     .monospace(),
             );
@@ -514,7 +514,7 @@ pub fn parameter_card_f32(
                 |ui| {
                     ui.label(
                         egui::RichText::new(format_bound((min + max) / 2.0))
-                            .color(INK_4)
+                            .color(ink_4())
                             .size(10.0)
                             .monospace(),
                     );
@@ -523,7 +523,7 @@ pub fn parameter_card_f32(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 ui.label(
                     egui::RichText::new(format_bound(max))
-                        .color(INK_4)
+                        .color(ink_4())
                         .size(10.0)
                         .monospace(),
                 );
