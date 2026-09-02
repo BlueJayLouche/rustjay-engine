@@ -60,6 +60,14 @@ pub struct IsfEffect {
     /// Set to true after a successful init() so the engine re-reads parameters().
     params_dirty: bool,
 
+    /// `PHASE_INPUTS` from the shader header: which parameter drives which
+    /// accumulator, and by how much.
+    phase_inputs: Vec<PhaseInput>,
+    /// `PHASE_TIME_0..3`. Integrated per frame rather than derived from TIME,
+    /// which is the whole point: `TIME * speed` jumps when the speed changes,
+    /// an accumulator carries on smoothly from where it was.
+    phase: [f32; 4],
+
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
     /// Previous frame's timestamp — for TIMEDELTA.
@@ -99,6 +107,65 @@ struct PackField {
     /// Component keys: scalar fields use only `k[0]`; vec2 uses `k[0..2]`
     /// (`name_x`, `name_y`); vec4 uses `k[0..4]` (`name_r.._a`).
     k: [String; 4],
+    /// Set for `PHASE_TIME_0..3`, which come from the instance's accumulators
+    /// rather than from a parameter of that name — there is none.
+    phase: Option<usize>,
+}
+
+/// One `PHASE_INPUTS` entry: a parameter that drives an accumulator.
+#[derive(Clone, Debug)]
+struct PhaseInput {
+    param: String,
+    index: usize,
+    scale: f32,
+}
+
+/// Read `PHASE_INPUTS` out of the ISF header comment.
+///
+/// The `isf` crate drops keys it does not know, and this one is a rustjay
+/// extension, so the header JSON is read again here.
+fn parse_phase_inputs(glsl_src: &str) -> Vec<PhaseInput> {
+    // Scan comment blocks rather than assuming the first one: a shader may
+    // carry a licence header above its ISF blob, and taking that one would
+    // silently drop the phase inputs.
+    let mut rest = glsl_src;
+    let value = loop {
+        let Some(start) = rest.find("/*") else {
+            return Vec::new();
+        };
+        let Some(end) = rest[start..].find("*/") else {
+            return Vec::new();
+        };
+        let body = rest[start + 2..start + end].trim();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(body)
+            && v.is_object()
+        {
+            break v;
+        }
+        rest = &rest[start + end + 2..];
+    };
+    value
+        .get("PHASE_INPUTS")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| {
+                    let index = e.get("INDEX").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    // Four accumulators exist; anything else would be a silent
+                    // out-of-bounds at render time.
+                    if index >= 4 {
+                        return None;
+                    }
+                    Some(PhaseInput {
+                        param: e.get("PARAM")?.as_str()?.to_string(),
+                        index,
+                        scale: e.get("SCALE").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl IsfEffect {
@@ -113,6 +180,7 @@ impl IsfEffect {
             .unwrap_or("ISF Shader")
             .to_string();
 
+        let phase_inputs = parse_phase_inputs(&glsl_src);
         Ok(Self {
             isf,
             glsl_src,
@@ -122,6 +190,8 @@ impl IsfEffect {
             last_mtime: std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
             pending_path: Arc::new(Mutex::new(None)),
             params_dirty: false,
+            phase_inputs,
+            phase: [0.0; 4],
             start_time: Instant::now(),
             last_frame: None,
             frame_index: 0,
@@ -147,6 +217,10 @@ impl IsfEffect {
         };
         let mut buf = vec![0u8; manifest.inputs_block_size];
         for f in &self.pack_fields {
+            if let Some(n) = f.phase {
+                put_f32(&mut buf, f.offset, self.phase[n]);
+                continue;
+            }
             let get = |i: usize| {
                 engine
                     .get_param(&f.k[i])
@@ -187,6 +261,14 @@ impl IsfEffect {
         self.last_frame = Some(now);
         let frame = self.frame_index;
         self.frame_index += 1;
+
+        // Integrate the phase accumulators for this frame. `get_param` resolves
+        // against the effect's active prefix, so the driving parameter is found
+        // per instance — two layers running the same shader keep their own phase.
+        for pi in &self.phase_inputs {
+            let rate = engine.get_param(&pi.param).unwrap_or(1.0);
+            self.phase[pi.index] += delta * rate * pi.scale;
+        }
 
         let mut buf = [0u8; 64];
         put_i32(&mut buf, 0, 0); // PASSINDEX (multipass = follow-up)
@@ -675,6 +757,11 @@ impl EffectPlugin for IsfEffect {
                     offset: f.offset,
                     ty: f.ty,
                     k,
+                    phase: f
+                        .name
+                        .strip_prefix("PHASE_TIME_")
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .filter(|n| *n < 4),
                 }
             })
             .collect();
@@ -803,5 +890,57 @@ impl EffectPlugin for IsfEffect {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::parse_phase_inputs;
+
+    #[test]
+    fn reads_phase_inputs_with_defaults() {
+        let src = r#"/*{
+            "INPUTS": [],
+            "PHASE_INPUTS": [{"PARAM": "flow_speed", "INDEX": 0}]
+        }*/
+        void main() {}"#;
+        let got = parse_phase_inputs(src);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].param, "flow_speed");
+        assert_eq!(got[0].index, 0);
+        assert_eq!(got[0].scale, 1.0, "SCALE defaults to 1");
+    }
+
+    #[test]
+    fn honours_scale_and_index() {
+        let src = r#"/*{"PHASE_INPUTS": [{"PARAM": "spin", "INDEX": 2, "SCALE": 0.5}]}*/"#;
+        let got = parse_phase_inputs(src);
+        assert_eq!(got[0].index, 2);
+        assert_eq!(got[0].scale, 0.5);
+    }
+
+    /// Only four accumulators exist; a fifth would index out of bounds every
+    /// frame, so it is dropped at parse time.
+    #[test]
+    fn drops_an_out_of_range_index() {
+        let src = r#"/*{"PHASE_INPUTS": [{"PARAM": "a", "INDEX": 4}]}*/"#;
+        assert!(parse_phase_inputs(src).is_empty());
+    }
+
+    #[test]
+    fn a_shader_without_phase_inputs_gets_none() {
+        let src = r#"/*{"INPUTS": [{"NAME": "x", "TYPE": "float"}]}*/ void main() {}"#;
+        assert!(parse_phase_inputs(src).is_empty());
+    }
+
+    /// A licence block above the ISF header must not be mistaken for it.
+    #[test]
+    fn skips_a_leading_non_json_comment() {
+        let src = r#"/* Copyright someone, all rights reserved. */
+        /*{"PHASE_INPUTS": [{"PARAM": "rate", "INDEX": 1}]}*/
+        void main() {}"#;
+        let got = parse_phase_inputs(src);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].param, "rate");
     }
 }

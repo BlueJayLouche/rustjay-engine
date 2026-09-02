@@ -5536,6 +5536,7 @@ dependencies = [
  "pollster 0.4.0",
  "rustjay-core",
  "serde",
+ "serde_json",
  "shaderc",
  "wgpu",
 ]
