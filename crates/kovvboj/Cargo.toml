@@ -24,6 +24,7 @@ sysmon = ["dep:sysinfo"]
 [dependencies]
 rustjay-engine = { workspace = true }
 rustjay-gui    = { workspace = true, optional = true }
+uuid           = { workspace = true }
 rustjay-mixer  = { workspace = true, optional = true }
 rustjay-isf    = { workspace = true }
 isf            = { workspace = true }

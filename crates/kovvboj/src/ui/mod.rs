@@ -9,6 +9,12 @@
 //!
 //! See VARDA_PORT.md §5 and `examples/delta-egui`.
 
+/// Canonical id of the master dimmer.
+///
+/// A real engine parameter rather than a UI-level multiply, so a blackout fader
+/// is reachable from MIDI, OSC and modulation like every other control.
+pub const MASTER_DIM: &str = "master_dim";
+
 #[cfg(feature = "webcam")]
 pub mod ledmap_tab;
 #[cfg(feature = "webcam")]
@@ -184,7 +190,6 @@ pub(crate) use egui_impl::draw_inspector;
 #[cfg(all(feature = "mixer", feature = "egui"))]
 mod egui_impl {
     use super::*;
-    use crate::graph::DeckCompositor;
     use crate::KovvbojAppState;
     use rustjay_core::EngineState;
     use rustjay_engine::prelude::*;
@@ -562,6 +567,7 @@ mod egui_impl {
     /// applied in place via [`crate::move_effect`], which re-prefixes the slot
     /// and re-keys the engine stores. Keeps the inspector attached to a slot
     /// that moved chains.
+    #[allow(clippy::too_many_arguments)] // decomposed borrows, not a config bag
     fn apply_chain_drops(
         pending_effects: &mut Vec<crate::PendingEffect>,
         params_dirty_request: &mut bool,
@@ -570,6 +576,7 @@ mod egui_impl {
         engine: &mut EngineState,
         drops: Vec<ChainDrop>,
         undo: &mut Option<crate::scene::Topology>,
+        layer_sources: &std::collections::HashMap<String, crate::sources::SourceEntry>,
     ) {
         for drop in drops {
             match drop.payload {
@@ -584,16 +591,24 @@ mod egui_impl {
                     // Snapshot before the graph changes. Library inserts do not
                     // need one here — they go through `pending_effects`, which
                     // `prepare()` already snapshots before draining.
-                    let before = crate::scene::Topology::from_mixer(mixer);
+                    let before = crate::scene::Topology::from_mixer(mixer, layer_sources);
                     if !crate::move_effect(mixer, engine, &chain, &slot, &drop.target, drop.index)
                     {
                         continue;
                     }
                     undo.get_or_insert(before);
                     *params_dirty_request = true;
-                    if let Some((sel_chain, sel_fx)) = selection.fx_location()
-                        && sel_chain == chain
-                        && sel_fx == slot
+                    let moved_selection = matches!(
+                        &*selection,
+                        crate::Selection::LayerFx { layer, fx }
+                            if crate::ChainRef::Layer { layer: layer.clone() } == chain
+                                && *fx == slot
+                    ) || matches!(
+                        &*selection,
+                        crate::Selection::MasterFx { fx }
+                            if chain == crate::ChainRef::Master && *fx == slot
+                    );
+                    if moved_selection
                     {
                         *selection = drop.target.selection_for(&slot);
                     }
@@ -721,11 +736,10 @@ mod egui_impl {
         });
     }
 
-    /// Validate and queue a stream deck for either UI entry point.
+    /// Validate a stream URL and queue a layer for it.
     fn queue_stream_deck(
         state: &mut KovvbojAppState,
         engine: &mut EngineState,
-        channel_uuid: &str,
         display_name: &str,
         url: &str,
     ) -> Result<(), &'static str> {
@@ -735,8 +749,7 @@ mod egui_impl {
             "" => url,
             name => name,
         };
-        state.pending_decks.push(crate::PendingDeck {
-            channel_uuid: channel_uuid.to_string(),
+        state.pending_layers.push(crate::PendingLayer {
             source: crate::sources::SourceEntry {
                 id: name.to_lowercase().replace(' ', "_"),
                 name: name.to_string(),
@@ -847,6 +860,7 @@ mod egui_impl {
                 engine,
                 drops,
                 &mut undo_snapshot,
+                &state.layer_sources,
             );
             drop(mixer);
             if let Some(snapshot) = undo_snapshot {
@@ -876,21 +890,38 @@ mod egui_impl {
         let mut heading = String::new();
         let mut prefix: Option<String> = None;
         let mut source_of: Option<String> = None;
-        let mut deck_controls: Option<(String, crate::sources::SourceKind)> = None;
+        let mut layer_controls: Option<(String, crate::sources::SourceKind)> = None;
 
         {
             let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
             match &selection {
                 crate::Selection::None => {}
-                crate::Selection::Channel { channel } => {
-                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *channel) {
+                crate::Selection::Layer { layer } | crate::Selection::Source { layer } => {
+                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *layer) {
                         heading = ch.name.clone();
-                        prefix = Some(format!("ch_{}_", ch.uuid));
+                        let full = format!("ch_{}_", ch.uuid);
+                        if matches!(selection, crate::Selection::Source { .. }) {
+                            source_of = Some(full);
+                        } else {
+                            layer_controls = Some((
+                                full,
+                                state
+                                    .layer_sources
+                                    .get(layer)
+                                    .map(|e| e.kind)
+                                    .unwrap_or(crate::sources::SourceKind::SolidColor),
+                            ));
+                        }
                     }
                 }
-                crate::Selection::ChannelFx { channel, fx } => {
-                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *channel) {
-                        heading = format!("{} · FX", ch.name);
+                crate::Selection::LayerFx { layer, fx } => {
+                    if let Some(ch) = mixer.channels.iter().find(|c| c.uuid == *layer) {
+                        heading = ch
+                            .chain
+                            .iter()
+                            .find(|s| s.uuid == *fx)
+                            .map(|s| s.effect.label().to_string())
+                            .unwrap_or_else(|| "FX".to_string());
                         prefix = Some(format!("ch_{}_fx{}_", ch.uuid, fx));
                     }
                 }
@@ -898,30 +929,8 @@ mod egui_impl {
                     heading = "Master · FX".to_string();
                     prefix = Some(format!("master_fx{}_", fx));
                 }
-                crate::Selection::Deck { channel, deck }
-                | crate::Selection::Source { channel, deck } => {
-                    if let Some(d) = find_deck(&mut mixer, channel, deck) {
-                        heading = d.name.clone();
-                        let full = d.full_prefix().to_string();
-                        if matches!(selection, crate::Selection::Source { .. }) {
-                            source_of = Some(full);
-                        } else {
-                            deck_controls = Some((full, d.source_kind));
-                        }
-                    }
-                }
-                crate::Selection::DeckFx { channel, deck, fx } => {
-                    if let Some(d) = find_deck(&mut mixer, channel, deck) {
-                        heading = d
-                            .chain
-                            .iter()
-                            .find(|s| s.uuid == *fx)
-                            .map(|s| s.effect.label().to_string())
-                            .unwrap_or_else(|| "FX".to_string());
-                        prefix = Some(format!("{}fx{}_", d.full_prefix(), fx));
-                    }
-                }
             }
+            let _ = &mut mixer;
         }
 
         if selection == crate::Selection::None {
@@ -932,7 +941,7 @@ mod egui_impl {
         ui.label(egui::RichText::new(&heading).strong().monospace());
         ui.separator();
 
-        if let Some((full, kind)) = deck_controls {
+        if let Some((full, kind)) = layer_controls {
             param_slider(ui, engine, &format!("{full}opacity"), "Opacity", 0.0, 1.0);
             blend_combo(ui, engine, &format!("{full}blend"), "Blend");
             ui.label(
@@ -994,32 +1003,22 @@ mod egui_impl {
         }
     }
 
-    /// Find a deck by channel + deck uuid, descending through the compositor.
-    fn find_deck<'a>(
-        mixer: &'a mut rustjay_mixer::Mixer,
-        channel: &str,
-        deck: &str,
-    ) -> Option<&'a mut crate::graph::Deck> {
-        let ch = mixer.channels.iter_mut().find(|c| c.uuid == channel)?;
-        let compositor = ch.effect.as_any_mut()?.downcast_mut::<DeckCompositor>()?;
-        compositor.decks.iter_mut().find(|d| d.uuid == deck)
-    }
-
     /// What the inspector shows when nothing is selected.
     fn master_summary(ui: &mut egui::Ui, engine: &mut EngineState) {
         ui.label(egui::RichText::new("MASTER").strong().monospace());
         ui.separator();
-        param_slider(ui, engine, "crossfader", "Crossfader", 0.0, 1.0);
+        param_slider(ui, engine, super::MASTER_DIM, "Dimmer", 0.0, 1.0);
         ui.add_space(6.0);
         ui.label(
-            egui::RichText::new("Select a channel, deck, source or effect to edit it.")
+            egui::RichText::new("Select a layer, source or effect to edit it.")
                 .color(rustjay_gui::egui_theme::colors::ink_3()),
         );
     }
 
+    /// The layer stack: top of the list composites over the bottom.
     impl AnyEguiTab for DeckTab {
         fn name(&self) -> &str {
-            "Deck"
+            "Layers"
         }
 
         fn draw(
@@ -1032,270 +1031,218 @@ mod egui_impl {
                 .downcast_mut::<KovvbojAppState>()
                 .expect("DeckTab expects KovvbojAppState");
 
-            // Poll async file picker result (Add FX).
             if let Ok(mut guard) = self.pending_effect.lock()
                 && let Some(req) = guard.take()
             {
                 state.pending_effects.push(req);
             }
 
-            let mut removals: Vec<crate::PendingRemoval> = Vec::new();
-            let mut fx_removed = false;
-            let mut undo_snapshot: Option<crate::scene::Topology> = None;
-            let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
-            // Drops landed on chain-strip gaps this frame; applied after the
-            // deck loop (cross-chain moves need the whole mixer).
-            let mut drops: Vec<ChainDrop> = Vec::new();
-            // Selection changes are collected and applied after the mixer lock
-            // is released — `state` is borrowed by the lock while decks draw.
-            let mut new_selection: Option<crate::Selection> = None;
             let selection = state.selection.clone();
+            let mut new_selection: Option<crate::Selection> = None;
+            let mut removals: Vec<crate::PendingRemoval> = Vec::new();
+            let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
+            let mut undo_snapshot: Option<crate::scene::Topology> = None;
+            let mut restack: Option<(usize, usize)> = None;
+            let mut drops: Vec<ChainDrop> = Vec::new();
 
             {
                 let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
 
-                for ch in &mut mixer.channels {
-                    let ch_uuid = ch.uuid.clone();
-                    let ch_selected = matches!(
+                // Drawn top-first so the list reads the way it composites.
+                let order: Vec<String> =
+                    mixer.channels.iter().rev().map(|c| c.uuid.clone()).collect();
+
+                for (row, uuid) in order.iter().enumerate() {
+                    let Some(idx) = mixer.channels.iter().position(|c| c.uuid == *uuid) else {
+                        continue;
+                    };
+                    let chain_ref = crate::ChainRef::Layer {
+                        layer: uuid.clone(),
+                    };
+                    let selected_fx = match &selection {
+                        crate::Selection::LayerFx { layer, fx } if layer == uuid => {
+                            Some(fx.as_str())
+                        }
+                        _ => None,
+                    };
+                    let layer_selected = matches!(
                         &selection,
-                        crate::Selection::Channel { channel } if *channel == ch_uuid
+                        crate::Selection::Layer { layer } if layer == uuid
+                    );
+                    let source_selected = matches!(
+                        &selection,
+                        crate::Selection::Source { layer } if layer == uuid
                     );
 
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(
-                                ch_selected,
-                                egui::RichText::new(&ch.name).strong().monospace(),
-                            )
-                            .clicked()
-                        {
-                            new_selection = Some(crate::Selection::Channel {
-                                channel: ch_uuid.clone(),
+                    ui.push_id(uuid, |ui| {
+                        ui.group(|ui| {
+                            // ── Row 1: restack, identity, mix ────────────────
+                            ui.horizontal(|ui| {
+                                let handle = ui.add(
+                                    egui::Label::new("≡")
+                                        .sense(egui::Sense::click_and_drag()),
+                                )
+                                .on_hover_text("Drag to restack");
+                                if handle.dragged()
+                                    && let Some(pos) = ui.ctx().pointer_interact_pos()
+                                {
+                                    // Rows are uniform, so the pointer's offset in
+                                    // rows is the move distance.
+                                    let dy = pos.y - handle.rect.center().y;
+                                    let step = (dy / 56.0).round() as i32;
+                                    if step != 0 {
+                                        let target =
+                                            (row as i32 + step).clamp(0, order.len() as i32 - 1);
+                                        restack = Some((row, target as usize));
+                                    }
+                                }
+
+                                let name = mixer.channels[idx].name.clone();
+                                if ui.selectable_label(layer_selected, &name).clicked() {
+                                    new_selection = Some(crate::Selection::Layer {
+                                        layer: uuid.clone(),
+                                    });
+                                }
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("✖").clicked() {
+                                            removals.push(crate::PendingRemoval {
+                                                layer_uuid: uuid.clone(),
+                                            });
+                                        }
+                                        blend_combo_compact(
+                                            ui,
+                                            engine,
+                                            &format!("ch_{uuid}_blend"),
+                                        );
+                                        let opacity_key = format!("ch_{uuid}_opacity");
+                                        let mut op =
+                                            engine.get_param_base(&opacity_key).unwrap_or(1.0);
+                                        if ui
+                                            .add_sized(
+                                                [96.0, 18.0],
+                                                egui::Slider::new(&mut op, 0.0..=1.0)
+                                                    .show_value(false),
+                                            )
+                                            .changed()
+                                        {
+                                            engine.set_param_base(&opacity_key, op);
+                                        }
+                                        let mut mute = mixer.channels[idx].mute;
+                                        if ui.selectable_label(mute, "M").on_hover_text("Mute").clicked() {
+                                            mute = !mute;
+                                            mixer.channels[idx].mute = mute;
+                                        }
+                                        let mut solo = mixer.channels[idx].solo;
+                                        if ui.selectable_label(solo, "S").on_hover_text("Solo").clicked() {
+                                            solo = !solo;
+                                            mixer.channels[idx].solo = solo;
+                                        }
+                                    },
+                                );
                             });
-                        }
-                    });
 
-                    let Some(compositor) = ch.effect.as_any_mut() else {
-                        continue;
-                    };
-                    let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
-                        continue;
-                    };
-
-                    for deck in &mut compositor.decks {
-                        let deck_uuid = deck.uuid.clone();
-                        ui.push_id(deck.uuid.clone(), |ui| {
-                            ui.group(|ui| {
-                                // ── Row 1: identity and mix ──────────────────
+                            // ── Row 2: the signal strip ──────────────────────
+                            egui::ScrollArea::horizontal().id_salt("strip").show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    let deck_selected = matches!(
-                                        &selection,
-                                        crate::Selection::Deck { channel, deck: d }
-                                            if *channel == ch_uuid && *d == deck_uuid
+                                    let kind = state
+                                        .layer_sources
+                                        .get(uuid)
+                                        .map(|e| e.kind)
+                                        .unwrap_or(crate::sources::SourceKind::SolidColor);
+                                    let label = format!(
+                                        "{} {}",
+                                        source_icon(kind),
+                                        mixer.channels[idx].name
                                     );
-                                    if ui.selectable_label(deck_selected, &deck.name).clicked() {
-                                        new_selection = Some(crate::Selection::Deck {
-                                            channel: ch_uuid.clone(),
-                                            deck: deck_uuid.clone(),
+                                    let (resp, _) = chip(
+                                        ui,
+                                        ui.id().with(("srcchip", uuid)),
+                                        &label,
+                                        source_selected,
+                                        None,
+                                    );
+                                    if resp.clicked() {
+                                        new_selection = Some(crate::Selection::Source {
+                                            layer: uuid.clone(),
                                         });
                                     }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui.small_button("✖").clicked() {
-                                                removals.push(crate::PendingRemoval {
-                                                    channel_uuid: ch_uuid.clone(),
-                                                    deck_uuid: deck_uuid.clone(),
-                                                });
-                                            }
-                                            blend_combo_compact(ui, engine, &deck.blend_key);
-                                            let mut op = engine
-                                                .get_param_base(&deck.opacity_key)
-                                                .unwrap_or(1.0);
-                                            // Explicit size: an unsized slider in a
-                                            // right-to-left layout collapses to nothing.
-                                            if ui
-                                                .add_sized(
-                                                    [96.0, 18.0],
-                                                    egui::Slider::new(&mut op, 0.0..=1.0)
-                                                        .show_value(false),
-                                                )
-                                                .changed()
-                                            {
-                                                engine.set_param_base(&deck.opacity_key, op);
-                                            }
-                                        },
+
+                                    let out = fx_strip(
+                                        ui,
+                                        &mixer.channels[idx].chain,
+                                        &chain_ref,
+                                        selected_fx,
+                                        &self.pending_effect,
                                     );
-                                });
-
-                                // ── Row 2: the signal strip ──────────────────
-                                egui::ScrollArea::horizontal()
-                                    .id_salt("strip")
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            let src_selected = matches!(
-                                                &selection,
-                                                crate::Selection::Source { channel, deck: d }
-                                                    if *channel == ch_uuid && *d == deck_uuid
-                                            );
-                                            let label = format!(
-                                                "{} {}",
-                                                source_icon(deck.source_kind),
-                                                deck.name
-                                            );
-                                            let (src_resp, _) =
-                                                chip(
-                                                    ui,
-                                                    ui.id().with(("srcchip", &deck_uuid)),
-                                                    &label,
-                                                    src_selected,
-                                                    None,
-                                                );
-                                            if src_resp.clicked() {
-                                                new_selection = Some(crate::Selection::Source {
-                                                    channel: ch_uuid.clone(),
-                                                    deck: deck_uuid.clone(),
-                                                });
-                                            }
-
-                                            let chain_ref = crate::ChainRef::Deck {
-                                                channel: ch_uuid.clone(),
-                                                deck: deck_uuid.clone(),
-                                            };
-                                            let selected_fx = match &selection {
-                                                crate::Selection::DeckFx { channel, deck: d, fx }
-                                                    if *channel == ch_uuid && *d == deck_uuid =>
-                                                {
-                                                    Some(fx.as_str())
-                                                }
-                                                _ => None,
-                                            };
-                                            let out = fx_strip(
-                                                ui,
-                                                &deck.chain,
-                                                &chain_ref,
-                                                selected_fx,
-                                                &self.pending_effect,
-                                            );
-                                            if let Some(i) = out.toggle {
-                                                let on = deck.chain[i].enabled;
-                                                deck.set_effect_enabled(i, !on);
-                                            }
-                                            if let Some(i) = out.remove {
-                                                // Queued, not removed here: the
-                                                // mixer is mutably borrowed by
-                                                // this iteration, so there is no
-                                                // way to snapshot for undo.
-                                                fx_removals.push(crate::PendingFxRemoval {
-                                                    chain: crate::ChainRef::Deck {
-                                                        channel: ch_uuid.clone(),
-                                                        deck: deck_uuid.clone(),
-                                                    },
-                                                    slot: deck.chain[i].uuid.clone(),
-                                                });
-                                            }
-                                            if let Some(fx) = out.select {
-                                                new_selection = Some(chain_ref.selection_for(&fx));
-                                            }
-                                            drops.extend(out.drops.into_iter().map(
-                                                |(index, payload)| ChainDrop {
-                                                    target: chain_ref.clone(),
-                                                    index,
-                                                    payload,
-                                                },
-                                            ));
+                                    if let Some(i) = out.toggle {
+                                        let on = mixer.channels[idx].chain[i].enabled;
+                                        mixer.channels[idx].chain[i].enabled = !on;
+                                    }
+                                    if let Some(i) = out.remove {
+                                        fx_removals.push(crate::PendingFxRemoval {
+                                            chain: chain_ref.clone(),
+                                            slot: mixer.channels[idx].chain[i].uuid.clone(),
                                         });
-                                    });
+                                    }
+                                    if let Some(fx) = out.select {
+                                        new_selection = Some(crate::Selection::LayerFx {
+                                            layer: uuid.clone(),
+                                            fx,
+                                        });
+                                    }
+                                    for (index, payload) in out.drops {
+                                        drops.push(ChainDrop {
+                                            target: chain_ref.clone(),
+                                            index,
+                                            payload,
+                                        });
+                                    }
+                                });
                             });
                         });
-                    }
-
-                    // ── Channel post-FX strip ───────────────────────────────
-                    // Drop target for cross-chain moves; hidden while empty and
-                    // no drag is in flight so an unused chain costs no space.
-                    let ch_ref = crate::ChainRef::Channel {
-                        channel: ch_uuid.clone(),
-                    };
-                    let drag_active =
-                        egui::DragAndDrop::has_payload_of_type::<ChainDrag>(ui.ctx());
-                    if !ch.chain.is_empty() || drag_active {
-                        let selected_fx = match &selection {
-                            crate::Selection::ChannelFx { channel, fx }
-                                if *channel == ch_uuid =>
-                            {
-                                Some(fx.as_str())
-                            }
-                            _ => None,
-                        };
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("post")
-                                    .monospace()
-                                    .size(10.0)
-                                    .color(rustjay_gui::egui_theme::colors::ink_3()),
-                            );
-                            let out = fx_strip(
-                                ui,
-                                &ch.chain,
-                                &ch_ref,
-                                selected_fx,
-                                &self.pending_effect,
-                            );
-                            if let Some(i) = out.toggle {
-                                let on = ch.chain[i].enabled;
-                                ch.set_effect_enabled(i, !on);
-                            }
-                            if let Some(i) = out.remove {
-                                fx_removals.push(crate::PendingFxRemoval {
-                                    chain: crate::ChainRef::Channel {
-                                        channel: ch_uuid.clone(),
-                                    },
-                                    slot: ch.chain[i].uuid.clone(),
-                                });
-                                {
-                                }
-                                fx_removed = true;
-                            }
-                            if let Some(fx) = out.select {
-                                new_selection = Some(ch_ref.selection_for(&fx));
-                            }
-                            drops.extend(out.drops.into_iter().map(|(index, payload)| {
-                                ChainDrop {
-                                    target: ch_ref.clone(),
-                                    index,
-                                    payload,
-                                }
-                            }));
-                        });
-                    }
+                    });
                 }
 
-                apply_chain_drops(
-                    &mut state.pending_effects,
-                    &mut state.params_dirty_request,
-                    &mut state.selection,
-                    &mut mixer,
-                    engine,
-                    drops,
-                    &mut undo_snapshot,
-                );
+                if !drops.is_empty() {
+                    apply_chain_drops(
+                        &mut state.pending_effects,
+                        &mut state.params_dirty_request,
+                        &mut state.selection,
+                        &mut mixer,
+                        engine,
+                        std::mem::take(&mut drops),
+                        &mut undo_snapshot,
+                        &state.layer_sources,
+                    );
+                }
+
+                // Restack last: it invalidates the indices used above.
+                if let Some((from_row, to_row)) = restack {
+                    let n = mixer.channels.len();
+                    if n > 1 {
+                        undo_snapshot.get_or_insert_with(|| {
+                            crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                        });
+                        // Rows are top-first; channels composite bottom-first.
+                        mixer.reorder_channel(n - 1 - from_row, n - 1 - to_row);
+                    }
+                }
             }
 
             if let Some(snapshot) = undo_snapshot {
                 record_undo(&mut state.undo_stack, &mut state.redo_stack, snapshot);
             }
             state.pending_fx_removals.append(&mut fx_removals);
+            state.pending_removals.append(&mut removals);
             if let Some(sel) = new_selection {
                 state.selection = sel;
             }
-            for req in removals {
-                state.pending_removals.push(req);
-            }
-            if fx_removed {
-                state.params_dirty_request = true;
-            }
         }
     }
+
 
     // ─────────────────────────────────────────────────────────────────────────
     // EffectsTab
@@ -1384,15 +1331,27 @@ mod egui_impl {
             egui::ScrollArea::vertical()
                 .max_height(list_height)
                 .show(ui, |ui| {
-                    let mut queue_deck: Option<crate::PendingDeck> = None;
+                    // Which layer an effect's ➕ targets.
+                    let selected_layer = match &state.selection {
+                        crate::Selection::Layer { layer }
+                        | crate::Selection::Source { layer }
+                        | crate::Selection::LayerFx { layer, .. } => Some(layer.clone()),
+                        _ => None,
+                    };
+                    let mut queue_layer: Option<crate::PendingLayer> = None;
+                    let mut queue_fx: Option<crate::PendingEffect> = None;
                     // One library row: label (optionally a drag source for FX
                     // strips) plus the "➕ new deck" button.
+                    // Two verbs. A source's ➕ makes a layer; an effect's ➕
+                    // appends to the selected layer. Only effects drag, and only
+                    // into a chain — a filter has no input as a layer source,
+                    // which is what used to produce a black, source-less layer.
                     let mut row = |ui: &mut egui::Ui,
                                    entry: &crate::sources::SourceEntry,
-                                   fx_drag: bool| {
+                                   is_effect: bool| {
                         ui.horizontal(|ui| {
                             let text = format!("{} {}", source_icon(entry.kind), entry.name);
-                            match (fx_drag, &entry.path) {
+                            match (is_effect, &entry.path) {
                                 (true, Some(path)) => {
                                     ui.dnd_drag_source(
                                         ui.id().with(("libfx", &entry.id)),
@@ -1400,7 +1359,9 @@ mod egui_impl {
                                         |ui| {
                                             ui.label(text);
                                         },
-                                    );
+                                    )
+                                    .response
+                                    .on_hover_text("Drag onto a layer's chain");
                                 }
                                 _ => {
                                     ui.label(text);
@@ -1409,9 +1370,37 @@ mod egui_impl {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if ui.small_button("➕").clicked() && !target_uuid.is_empty() {
-                                        queue_deck = Some(crate::PendingDeck {
-                                            channel_uuid: target_uuid.clone(),
+                                    if is_effect {
+                                        let enabled = selected_layer.is_some();
+                                        let btn = ui.add_enabled(
+                                            enabled,
+                                            egui::Button::new("➕").small(),
+                                        );
+                                        let btn = if enabled {
+                                            btn.on_hover_text("Add to the selected layer")
+                                        } else {
+                                            btn.on_disabled_hover_text(
+                                                "Select a layer first",
+                                            )
+                                        };
+                                        if btn.clicked()
+                                            && let (Some(layer), Some(path)) =
+                                                (selected_layer.clone(), entry.path.clone())
+                                        {
+                                            queue_fx = Some(crate::PendingEffect {
+                                                path,
+                                                target: crate::EffectTarget::Layer {
+                                                    layer_uuid: layer,
+                                                },
+                                                index: None,
+                                            });
+                                        }
+                                    } else if ui
+                                        .small_button("➕")
+                                        .on_hover_text("New layer")
+                                        .clicked()
+                                    {
+                                        queue_layer = Some(crate::PendingLayer {
                                             source: entry.clone(),
                                         });
                                     }
@@ -1420,68 +1409,78 @@ mod egui_impl {
                         });
                     };
 
-                    // Live inputs first — cameras, NDI, Syphon/Spout, solid
-                    // colour. These are discovered devices, not files, so they
-                    // are the one group that needs a rescan button: servers and
-                    // senders come and go while the app is running.
-                    if !state.registry.builtins.is_empty() {
-                        ui.label(
-                            egui::RichText::new("INPUTS")
-                                .monospace()
-                                .size(10.0)
-                                .color(rustjay_gui::egui_theme::colors::ink_3()),
-                        );
-                    }
+                    // A shader is an effect if it declares an inputImage;
+                    // otherwise it generates and can stand as a layer source.
+                    let mut is_effect = |entry: &crate::sources::SourceEntry| -> bool {
+                        entry
+                            .path
+                            .as_ref()
+                            .map(|p| {
+                                *self
+                                    .isf_filters
+                                    .entry(p.clone())
+                                    .or_insert_with(|| isf_is_filter(p))
+                            })
+                            .unwrap_or(false)
+                    };
+
+                    let heading = |ui: &mut egui::Ui, text: &str, hint: &str| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(text)
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(hint)
+                                            .monospace()
+                                            .size(9.0)
+                                            .color(rustjay_gui::egui_theme::colors::ink_4()),
+                                    );
+                                },
+                            );
+                        });
+                    };
+
+                    // SOURCES — anything that can stand on its own as a layer.
+                    heading(ui, "SOURCES", "➕ new layer");
                     for entry in &state.registry.builtins {
                         row(ui, entry, false);
                     }
-
-                    for (heading, want_filter) in [("FILTERS", true), ("GENERATORS", false)] {
-                        let mut any = false;
-                        for entry in &state.registry.shaders {
-                            let is_filter = entry
-                                .path
-                                .as_ref()
-                                .map(|p| {
-                                    *self
-                                        .isf_filters
-                                        .entry(p.clone())
-                                        .or_insert_with(|| isf_is_filter(p))
-                                })
-                                .unwrap_or(false);
-                            if is_filter != want_filter {
-                                continue;
-                            }
-                            if !any {
-                                ui.label(
-                                    egui::RichText::new(heading)
-                                        .monospace()
-                                        .size(10.0)
-                                        .color(rustjay_gui::egui_theme::colors::ink_3()),
-                                );
-                                any = true;
-                            }
-                            row(ui, entry, want_filter);
-                        }
-                    }
-
                     for entry in state
                         .registry
-                        .images
+                        .shaders
                         .iter()
-                        .chain(&state.registry.videos)
-                        .chain(&state.registry.streams)
+                        .filter(|e| !is_effect(e))
+                        .chain(state.registry.images.iter())
+                        .chain(state.registry.videos.iter())
+                        .chain(state.registry.streams.iter())
                     {
                         row(ui, entry, false);
                     }
-                    if let Some(req) = queue_deck {
+
+                    // EFFECTS — filters, which need something to filter.
+                    ui.add_space(4.0);
+                    heading(ui, "EFFECTS", "➕ to selected layer");
+                    for entry in state.registry.shaders.iter().filter(|e| is_effect(e)) {
+                        row(ui, entry, true);
+                    }
+
+                    if let Some(req) = queue_layer {
                         let name = req.source.name.clone();
-                        state.pending_decks.push(req);
+                        state.pending_layers.push(req);
                         engine.notify(
-                            format!("Queued '{}' for creation", name),
+                            format!("Added layer '{name}'"),
                             rustjay_core::NotificationLevel::Info,
                             std::time::Duration::from_secs(3),
                         );
+                    }
+                    if let Some(req) = queue_fx {
+                        state.pending_effects.push(req);
                     }
                 });
 
@@ -1507,8 +1506,7 @@ mod egui_impl {
                     _ => crate::sources::SourceKind::Video,
                 };
                 if !target_uuid.is_empty() {
-                    state.pending_decks.push(crate::PendingDeck {
-                        channel_uuid: target_uuid.clone(),
+                    state.pending_layers.push(crate::PendingLayer {
                         source: crate::sources::SourceEntry {
                             id: name.to_lowercase().replace(' ', "_"),
                             name,
@@ -1568,7 +1566,6 @@ mod egui_impl {
                     && queue_stream_deck(
                         state,
                         engine,
-                        &target_uuid,
                         &self.stream_name,
                         &self.stream_url,
                     ).is_ok() {
@@ -2881,25 +2878,6 @@ mod egui_impl {
                         format!("{} ({})", ch.name, &ch.uuid[..ch.uuid.len().min(4)]),
                         SurfaceSource::Channel(ch.uuid.clone()),
                     ));
-                    if let Some(compositor) = ch.effect.as_any() {
-                        if let Some(compositor) =
-                            compositor.downcast_ref::<crate::graph::DeckCompositor>()
-                        {
-                            for deck in &compositor.decks {
-                                opts.push((
-                                    format!(
-                                        "  {} ({})",
-                                        deck.name,
-                                        &deck.uuid[..deck.uuid.len().min(4)]
-                                    ),
-                                    SurfaceSource::Deck {
-                                        channel_uuid: ch.uuid.clone(),
-                                        deck_uuid: deck.uuid.clone(),
-                                    },
-                                ));
-                            }
-                        }
-                    }
                 }
                 opts.push(("Domemaster".to_string(), SurfaceSource::Domemaster));
                 state.stage.cached_source_options = opts.clone();

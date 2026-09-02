@@ -63,14 +63,28 @@ fn pad_surface_list_for_full_canvas(app: &mut KovvbojAppState) {
     }
 }
 
-/// The deck column is channel rows and signal strips now — adding sources moved
-/// to the Library panel. A deck itself needs a `wgpu::Device` to build, so this
+/// A layer source that needs no GPU — enough to give the stack a row to draw.
+struct StubSource;
+
+impl rustjay_core::EffectInstance for StubSource {
+    fn render_to(
+        &mut self,
+        _ctx: &mut rustjay_core::RenderCtx<'_>,
+        _inputs: &[rustjay_core::EffectInput<'_>],
+        _target: rustjay_core::RenderTarget<'_>,
+        _engine: &rustjay_core::EngineState,
+    ) {
+    }
+}
+
+/// The centre column is the layer stack now — adding sources moved to the
+/// Library panel. A deck itself needs a `wgpu::Device` to build, so this
 /// covers the channel row; the strip's own logic is unit-tested below.
 ///
 /// No pixel baseline: every committed snapshot here is rendered by CI on
 /// lavapipe, so one generated on a dev machine would fail the moment it landed.
 #[test]
-fn deck_channel_row_is_drawn() {
+fn layer_row_is_drawn() {
     let app = KovvbojAppState::default();
     app.mixer
         .lock()
@@ -78,7 +92,7 @@ fn deck_channel_row_is_drawn() {
         .add_channel(rustjay_mixer::Channel::new(
             "test",
             "Test",
-            Box::new(kovvboj::graph::DeckCompositor::new()),
+            Box::new(StubSource),
         ))
         .unwrap();
     let harness = tab_harness_with_app(DeckTab::default(), [700.0, 500.0], app);
@@ -92,32 +106,28 @@ fn deck_channel_row_is_drawn() {
 fn selection_identifies_a_node_by_uuid_not_position() {
     use kovvboj::Selection;
 
-    let first = Selection::DeckFx {
-        channel: "ch-1".into(),
-        deck: "deck-1".into(),
+    let first = Selection::LayerFx {
+        layer: "layer-1".into(),
         fx: "fx-a".into(),
     };
-    let same_slot_moved = Selection::DeckFx {
-        channel: "ch-1".into(),
-        deck: "deck-1".into(),
+    let same_slot_moved = Selection::LayerFx {
+        layer: "layer-1".into(),
         fx: "fx-a".into(),
     };
-    let different_fx = Selection::DeckFx {
-        channel: "ch-1".into(),
-        deck: "deck-1".into(),
+    let different_fx = Selection::LayerFx {
+        layer: "layer-1".into(),
         fx: "fx-b".into(),
     };
-    let same_fx_other_deck = Selection::DeckFx {
-        channel: "ch-1".into(),
-        deck: "deck-2".into(),
+    let same_fx_other_layer = Selection::LayerFx {
+        layer: "layer-2".into(),
         fx: "fx-a".into(),
     };
 
     assert_eq!(first, same_slot_moved, "position is not part of identity");
     assert_ne!(first, different_fx);
     assert_ne!(
-        first, same_fx_other_deck,
-        "an fx uuid alone must not match across decks"
+        first, same_fx_other_layer,
+        "an fx uuid alone must not match across layers"
     );
     assert_eq!(Selection::default(), Selection::None);
 }

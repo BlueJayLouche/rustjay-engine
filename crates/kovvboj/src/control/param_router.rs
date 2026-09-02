@@ -149,7 +149,6 @@ mod tests {
     #[cfg(feature = "mixer")]
     #[test]
     fn resolver_output_matches_registered_param_ids() {
-        use crate::graph::{Deck, DeckCompositor};
         use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
         use rustjay_mixer::{Channel, Mixer};
 
@@ -165,30 +164,18 @@ mod tests {
             }
         }
 
-        let mut comp = DeckCompositor::new();
-        comp.decks
-            .push(Deck::new("d1", "Deck", Box::new(StubSource), crate::sources::SourceKind::Isf));
         let mut mixer = Mixer::new();
         mixer
-            .add_channel(Channel::new("c1", "Ch", Box::new(comp)))
+            .add_channel(Channel::new("c1", "Layer", Box::new(StubSource)))
             .unwrap();
         let registered: Vec<String> = mixer.parameters().into_iter().map(|d| d.id).collect();
 
         let mut router = ParamRouter::new();
-        router.register_channel("c1", "Ch");
-        router.register_deck("c1", "d1", "Deck");
-
-        let deck_op = router
-            .resolve("deck/d1/param/opacity")
-            .expect("deck opacity resolves");
-        assert!(
-            registered.contains(&deck_op),
-            "router produced `{deck_op}`, not in registered ids: {registered:?}"
-        );
+        router.register_channel("c1", "Layer");
 
         let ch_op = router
             .resolve("channel/c1/param/opacity")
-            .expect("channel opacity resolves");
+            .expect("layer opacity resolves");
         assert!(
             registered.contains(&ch_op),
             "router produced `{ch_op}`, not in registered ids: {registered:?}"

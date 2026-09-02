@@ -53,12 +53,15 @@ impl Scene {
     /// Snapshot from the live mixer (knobs + topology). The unified modulation
     /// must be filled in by the caller via [`with_modulation`](Self::with_modulation),
     /// since it lives on `EngineState`, not the mixer.
-    pub fn from_mixer(mixer: &rustjay_mixer::Mixer) -> Self {
+    pub fn from_mixer(
+        mixer: &rustjay_mixer::Mixer,
+        sources: &std::collections::HashMap<String, crate::sources::SourceEntry>,
+    ) -> Self {
         Self {
             version: 2,
             mixer_state: mixer.serialize_state(),
             sequencer: mixer.sequencer.clone(),
-            topology: Some(Topology::from_mixer(mixer)),
+            topology: Some(Topology::from_mixer(mixer, sources)),
             modulation: rustjay_core::modulation::ModulationEngine::default(),
             params: std::collections::HashMap::new(),
         }
@@ -113,12 +116,15 @@ pub struct FxDesc {
     pub enabled: bool,
 }
 
-/// One deck: a source plus its post-source FX chain and mix settings.
+/// One layer: a source, its FX chain, and how it composites.
+///
+/// Replaces the old `DeckDesc`/`ChannelDesc` pair. A layer is a
+/// `rustjay_mixer::Channel`, so its uuid is the channel uuid and its parameter
+/// prefix is `ch_<uuid>_` — reproduced on replay so saved modulation matches.
 #[cfg(feature = "mixer")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeckDesc {
-    /// Stable deck identity — reproduced on replay so the deck's param prefix
-    /// (`ch_<ch>_deck_<uuid>_`) matches its saved modulation.
+pub struct LayerDesc {
+    /// Stable identity, reproduced on replay.
     pub uuid: String,
     /// Display name.
     pub name: String,
@@ -127,26 +133,13 @@ pub struct DeckDesc {
     pub source: crate::sources::SourceEntry,
     /// Base mix opacity.
     pub opacity: f32,
-    /// Blend mode onto the channel composite.
+    /// How this layer composites over the ones beneath it.
     pub blend_mode: rustjay_mixer::BlendMode,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
+    pub mute: bool,
     /// Ordered post-source FX.
-    #[serde(default)]
-    pub fx: Vec<FxDesc>,
-}
-
-/// One channel: an ordered deck list plus a post-compositor FX chain.
-#[cfg(feature = "mixer")]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChannelDesc {
-    /// Stable channel identity — reproduced on replay so param prefixes
-    /// (`ch_<uuid>_…`) match saved modulation.
-    pub uuid: String,
-    /// Display name.
-    pub name: String,
-    /// Decks, composited in order.
-    #[serde(default)]
-    pub decks: Vec<DeckDesc>,
-    /// Channel post-compositor FX.
     #[serde(default)]
     pub fx: Vec<FxDesc>,
 }
@@ -155,13 +148,22 @@ pub struct ChannelDesc {
 #[cfg(feature = "mixer")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Topology {
-    /// Channels in mix order.
+    /// Format version. Absent (0) means the pre-layer nesting of decks inside
+    /// channels, which cannot be flattened honestly — see `load`.
     #[serde(default)]
-    pub channels: Vec<ChannelDesc>,
+    pub version: u32,
+    /// Layers, bottom of the stack first.
+    #[serde(default)]
+    pub layers: Vec<LayerDesc>,
     /// Master FX applied after compositing.
     #[serde(default)]
     pub master_fx: Vec<FxDesc>,
 }
+
+/// Current topology format. Bumped when the graph shape changes in a way older
+/// files cannot express.
+#[cfg(feature = "mixer")]
+pub const TOPOLOGY_VERSION: u32 = 1;
 
 #[cfg(feature = "mixer")]
 fn default_true() -> bool {
@@ -200,10 +202,17 @@ impl Topology {
     /// FX slots with no recorded `source_path` are skipped — they cannot be
     /// rebuilt from disk — but this should not happen for ISF effects added
     /// through the normal paths.
-    pub fn from_mixer(mixer: &rustjay_mixer::Mixer) -> Self {
+    /// Capture the live graph.
+    ///
+    /// `sources` maps a layer's channel uuid to the library entry it was built
+    /// from; `rustjay_mixer::Channel` has nowhere to keep it, so the host holds
+    /// it alongside and hands it in here.
+    pub fn from_mixer(
+        mixer: &rustjay_mixer::Mixer,
+        sources: &std::collections::HashMap<String, crate::sources::SourceEntry>,
+    ) -> Self {
         let base = topology_base();
 
-        // Build an FxDesc list from a mixer effect chain.
         let capture_fx = |chain: &[rustjay_mixer::EffectSlot]| -> Vec<FxDesc> {
             chain
                 .iter()
@@ -218,49 +227,40 @@ impl Topology {
                 .collect()
         };
 
-        let mut channels = Vec::new();
-        for ch in &mixer.channels {
-            let mut decks = Vec::new();
-            if let Some(compositor) = ch
-                .effect
-                .as_any()
-                .and_then(|a| a.downcast_ref::<crate::graph::DeckCompositor>())
-            {
-                for deck in &compositor.decks {
-                    // Prefer the recorded library entry; fall back to a minimal
-                    // synthesized one for decks built without a registry entry.
-                    let mut source = deck.source_entry.clone().unwrap_or_else(|| {
-                        crate::sources::SourceEntry {
-                            id: deck.uuid.clone(),
-                            name: deck.name.clone(),
-                            kind: deck.source_kind,
-                            path: deck.source_path.clone(),
-                            device_index: 0,
-                        }
-                    });
-                    if let Some(p) = source.path.take() {
-                        source.path = Some(relativize(&p, &base));
+        let layers = mixer
+            .channels
+            .iter()
+            .map(|ch| {
+                let mut source = sources.get(&ch.uuid).cloned().unwrap_or_else(|| {
+                    // A layer built outside the library still round-trips as a
+                    // solid colour rather than vanishing from the saved scene.
+                    crate::sources::SourceEntry {
+                        id: ch.uuid.clone(),
+                        name: ch.name.clone(),
+                        kind: crate::sources::SourceKind::SolidColor,
+                        path: None,
+                        device_index: 0,
                     }
-                    decks.push(DeckDesc {
-                        uuid: deck.uuid.clone(),
-                        name: deck.name.clone(),
-                        source,
-                        opacity: deck.opacity,
-                        blend_mode: deck.blend_mode,
-                        fx: capture_fx(&deck.chain),
-                    });
+                });
+                if let Some(path) = source.path.take() {
+                    source.path = Some(relativize(&path, &base));
                 }
-            }
-            channels.push(ChannelDesc {
-                uuid: ch.uuid.clone(),
-                name: ch.name.clone(),
-                decks,
-                fx: capture_fx(&ch.chain),
-            });
-        }
+                LayerDesc {
+                    uuid: ch.uuid.clone(),
+                    name: ch.name.clone(),
+                    source,
+                    opacity: ch.opacity,
+                    blend_mode: ch.blend_mode,
+                    solo: ch.solo,
+                    mute: ch.mute,
+                    fx: capture_fx(&ch.chain),
+                }
+            })
+            .collect();
 
         Self {
-            channels,
+            version: TOPOLOGY_VERSION,
+            layers,
             master_fx: capture_fx(&mixer.master),
         }
     }

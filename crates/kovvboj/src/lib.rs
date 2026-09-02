@@ -7,7 +7,6 @@
 #[cfg(feature = "api")]
 pub mod api_state;
 pub mod control;
-pub mod graph;
 pub mod keymap;
 pub mod persistence;
 pub mod scene;
@@ -25,7 +24,6 @@ use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
-use sources::SourceKind;
 use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
@@ -39,15 +37,12 @@ use crate::api_state::{
 use crate::control::param_router::ParamRouter;
 
 #[cfg(feature = "mixer")]
-use crate::graph::{Deck, DeckCompositor};
-#[cfg(feature = "mixer")]
 use crate::scene::Scene;
 #[cfg(all(feature = "mixer", feature = "ffmpeg"))]
 use crate::sources::FfmpegSource;
 #[cfg(feature = "hap")]
 use crate::sources::HapSource;
 #[cfg(feature = "mixer")]
-use crate::sources::{CameraSource, SolidColorSource};
 use crate::sources::{Registry, ShaderWatcher};
 
 // ---------------------------------------------------------------------------
@@ -64,27 +59,17 @@ pub enum Selection {
     /// Nothing picked — the inspector shows the master summary.
     #[default]
     None,
-    Channel {
-        channel: String,
+    /// A layer row: its source, mix and chain.
+    Layer {
+        layer: String,
     },
-    Deck {
-        channel: String,
-        deck: String,
-    },
-    /// A deck's source node.
+    /// A layer's source node.
     Source {
-        channel: String,
-        deck: String,
+        layer: String,
     },
-    /// An FX slot in a deck's chain.
-    DeckFx {
-        channel: String,
-        deck: String,
-        fx: String,
-    },
-    /// An FX slot in a channel's post-compositor chain.
-    ChannelFx {
-        channel: String,
+    /// An FX slot in a layer's chain.
+    LayerFx {
+        layer: String,
         fx: String,
     },
     /// An FX slot in the master chain.
@@ -156,7 +141,7 @@ pub struct KovvbojAppState {
     /// Runtime deck creation queue (processed in `prepare()` where GPU resources are available).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
-    pub pending_decks: Vec<PendingDeck>,
+    pub pending_layers: Vec<PendingLayer>,
     /// Runtime deck removal queue (processed in `prepare()`).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -165,6 +150,14 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_fx_removals: Vec<PendingFxRemoval>,
+    /// Library entry each layer was built from, keyed by its channel uuid.
+    ///
+    /// `rustjay_mixer::Channel` has nowhere to record what a layer's source
+    /// came from, and the entry is what lets a scene be rebuilt — a camera
+    /// device index or a stream URL cannot be recovered from the effect alone.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub layer_sources: std::collections::HashMap<String, crate::sources::SourceEntry>,
     /// Runtime effect addition queue (processed in `prepare()` where GPU resources are available).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -204,9 +197,7 @@ pub struct KovvbojAppState {
 /// One deck queued for creation by the UI and materialized in `prepare()`.
 #[derive(Debug, Clone)]
 #[cfg(feature = "mixer")]
-pub struct PendingDeck {
-    /// Target channel UUID.
-    pub channel_uuid: String,
+pub struct PendingLayer {
     /// Source entry from the library registry.
     pub source: crate::sources::SourceEntry,
 }
@@ -226,28 +217,19 @@ pub struct PendingFxRemoval {
     pub slot: String,
 }
 
-/// One deck queued for removal by the UI and processed in `prepare()`.
+/// One layer queued for removal by the UI and processed in `prepare()`.
 #[derive(Debug, Clone)]
 pub struct PendingRemoval {
-    /// Target channel UUID.
-    pub channel_uuid: String,
-    /// Deck UUID to remove.
-    pub deck_uuid: String,
+    /// Layer (channel) UUID to remove.
+    pub layer_uuid: String,
 }
 
 /// Target location for a runtime effect addition.
 #[derive(Debug, Clone)]
 #[cfg(feature = "mixer")]
 pub enum EffectTarget {
-    /// Add to a specific deck's FX chain.
-    Deck {
-        channel_uuid: String,
-        deck_uuid: String,
-    },
-    /// Add to a channel's post-compositor FX chain.
-    Channel {
-        channel_uuid: String,
-    },
+    /// Add to a layer's FX chain.
+    Layer { layer_uuid: String },
     /// Add to the master FX chain.
     Master,
 }
@@ -270,10 +252,8 @@ pub struct PendingEffect {
 #[cfg(feature = "mixer")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainRef {
-    /// A deck's post-source chain.
-    Deck { channel: String, deck: String },
-    /// A channel's post-compositor chain.
-    Channel { channel: String },
+    /// A layer's FX chain.
+    Layer { layer: String },
     /// The master chain.
     Master,
 }
@@ -283,12 +263,8 @@ impl ChainRef {
     /// The equivalent [`EffectTarget`] for queueing a new effect.
     pub fn effect_target(&self) -> EffectTarget {
         match self {
-            ChainRef::Deck { channel, deck } => EffectTarget::Deck {
-                channel_uuid: channel.clone(),
-                deck_uuid: deck.clone(),
-            },
-            ChainRef::Channel { channel } => EffectTarget::Channel {
-                channel_uuid: channel.clone(),
+            ChainRef::Layer { layer } => EffectTarget::Layer {
+                layer_uuid: layer.clone(),
             },
             ChainRef::Master => EffectTarget::Master,
         }
@@ -297,13 +273,8 @@ impl ChainRef {
     /// The [`Selection`] that addresses `fx` (a slot UUID) in this chain.
     pub fn selection_for(&self, fx: &str) -> Selection {
         match self {
-            ChainRef::Deck { channel, deck } => Selection::DeckFx {
-                channel: channel.clone(),
-                deck: deck.clone(),
-                fx: fx.to_string(),
-            },
-            ChainRef::Channel { channel } => Selection::ChannelFx {
-                channel: channel.clone(),
+            ChainRef::Layer { layer } => Selection::LayerFx {
+                layer: layer.clone(),
                 fx: fx.to_string(),
             },
             ChainRef::Master => Selection::MasterFx { fx: fx.to_string() },
@@ -311,47 +282,8 @@ impl ChainRef {
     }
 }
 
-#[cfg(feature = "mixer")]
-impl Selection {
-    /// The chain and slot UUID this selection points at, if it selects an FX.
-    pub fn fx_location(&self) -> Option<(ChainRef, &str)> {
-        match self {
-            Selection::DeckFx { channel, deck, fx } => Some((
-                ChainRef::Deck {
-                    channel: channel.clone(),
-                    deck: deck.clone(),
-                },
-                fx,
-            )),
-            Selection::ChannelFx { channel, fx } => Some((
-                ChainRef::Channel {
-                    channel: channel.clone(),
-                },
-                fx,
-            )),
-            Selection::MasterFx { fx } => Some((ChainRef::Master, fx)),
-            _ => None,
-        }
-    }
-}
-
-/// Move the just-appended slot (last) to `index` when a drop specified an
-/// insertion position; returns the slot's final index.
-#[cfg(feature = "mixer")]
-fn position_new_slot(chain: &mut Vec<rustjay_mixer::EffectSlot>, index: Option<usize>) -> usize {
-    match index {
-        Some(i) if i + 1 < chain.len() => {
-            let slot = chain.pop().expect("chain just grew");
-            let pos = i.min(chain.len());
-            chain.insert(pos, slot);
-            pos
-        }
-        _ => chain.len() - 1,
-    }
-}
-
-/// The chain's slot list plus the base of its per-slot parameter prefixes, so
-/// a slot's full prefix is always `format!("{base}fx{slot_uuid}_")`.
+/// The chain a [`ChainRef`] names, plus the parameter prefix its slots sit
+/// under (`ch_<uuid>_` or `master_`).
 #[cfg(feature = "mixer")]
 fn chain_parts<'m>(
     mixer: &'m mut Mixer,
@@ -359,32 +291,21 @@ fn chain_parts<'m>(
 ) -> Option<(&'m mut Vec<rustjay_mixer::EffectSlot>, String)> {
     match chain {
         ChainRef::Master => Some((&mut mixer.master, "master_".to_string())),
-        ChainRef::Channel { channel } => {
-            let ch = mixer.channels.iter_mut().find(|c| c.uuid == *channel)?;
+        ChainRef::Layer { layer } => {
+            let ch = mixer.channels.iter_mut().find(|c| c.uuid == *layer)?;
             let base = format!("ch_{}_", ch.uuid);
             Some((&mut ch.chain, base))
-        }
-        ChainRef::Deck { channel, deck } => {
-            let ch = mixer.channels.iter_mut().find(|c| c.uuid == *channel)?;
-            let compositor = ch.effect.as_any_mut()?.downcast_mut::<DeckCompositor>()?;
-            let d = compositor.decks.iter_mut().find(|d| d.uuid == *deck)?;
-            let base = d.full_prefix().to_string();
-            Some((&mut d.chain, base))
         }
     }
 }
 
-/// Move an FX slot (by UUID) to a gap position in a chain — the drag-and-drop
-/// primitive behind the chain strips.
+/// Move an FX slot within a chain, or from one chain to another.
 ///
-/// A same-chain drop is a pure reorder (prefixes are UUID-stable, so nothing
-/// is re-keyed). A cross-chain move re-prefixes the slot at the destination
-/// and calls [`rustjay_core::rekey_prefix`] so modulation assignments and MIDI
-/// mappings follow it; the slot's current param values are queued onto
-/// `engine.param_restore` under the new ids so the re-registration the prefix
-/// change triggers doesn't reset them to defaults. `index` is a gap position
-/// (`0..=len`); dropping a slot on its own gap is a no-op. Returns `true` when
-/// the graph changed.
+/// Returns `false` and leaves everything untouched when the move is a no-op or
+/// either end cannot be resolved — a slot must never be dropped on the floor.
+///
+/// A cross-chain move re-prefixes the slot and re-keys the engine's modulation
+/// assignments and MIDI mappings, so a mapped effect keeps its knob.
 #[cfg(feature = "mixer")]
 pub fn move_effect(
     mixer: &mut Mixer,
@@ -394,75 +315,58 @@ pub fn move_effect(
     to: &ChainRef,
     index: usize,
 ) -> bool {
-    if from == to {
-        let from_idx = {
-            let Some((chain, _)) = chain_parts(mixer, from) else {
-                return false;
-            };
-            let Some(pos) = chain.iter().position(|s| s.uuid == slot_uuid) else {
-                return false;
-            };
-            pos
+    let from_idx = {
+        let Some((chain, _)) = chain_parts(mixer, from) else {
+            return false;
         };
-        // `index` is a gap position; removing the slot first shifts every
-        // later gap down by one.
+        match chain.iter().position(|s| s.uuid == slot_uuid) {
+            Some(pos) => pos,
+            None => return false,
+        }
+    };
+
+    if from == to {
+        // `index` is a gap position; removing the slot first shifts every later
+        // gap down by one.
         let to_idx = if index > from_idx { index - 1 } else { index };
         if to_idx == from_idx {
             return false;
         }
-        match from {
-            ChainRef::Deck { channel, deck } => {
-                let Some(ch) = mixer.channels.iter_mut().find(|c| &c.uuid == channel) else {
-                    return false;
-                };
-                let Some(compositor) = ch
-                    .effect
-                    .as_any_mut()
-                    .and_then(|a| a.downcast_mut::<DeckCompositor>())
-                else {
-                    return false;
-                };
-                let Some(d) = compositor.decks.iter_mut().find(|d| &d.uuid == deck) else {
-                    return false;
-                };
-                d.reorder_effect(from_idx, to_idx);
-            }
-            ChainRef::Channel { channel } => {
-                let Some(ch) = mixer.channels.iter_mut().find(|c| &c.uuid == channel) else {
-                    return false;
-                };
-                ch.reorder_effect(from_idx, to_idx);
-            }
-            ChainRef::Master => {
-                mixer.reorder_master_effect(from_idx, to_idx);
-            }
-        }
+        let Some((chain, _)) = chain_parts(mixer, from) else {
+            return false;
+        };
+        let slot = chain.remove(from_idx);
+        chain.insert(to_idx.min(chain.len()), slot);
         return true;
     }
 
-    // Bail before touching the source if either end is gone.
-    let (mut slot, old_prefix) = {
-        let Some((chain, base)) = chain_parts(mixer, from) else {
-            return false;
-        };
-        let Some(idx) = chain.iter().position(|s| s.uuid == slot_uuid) else {
-            return false;
-        };
-        (chain.remove(idx), format!("{base}fx{slot_uuid}_"))
+    // Cross-chain: confirm the destination exists before detaching anything.
+    let Some((_, to_base)) = chain_parts(mixer, to) else {
+        return false;
     };
-    let Some((dst_chain, dst_base)) = chain_parts(mixer, to) else {
-        // Destination vanished — restore the slot rather than drop it.
+    let to_base = to_base.clone();
+    let Some((from_chain, from_base)) = chain_parts(mixer, from) else {
+        return false;
+    };
+    let old_prefix = format!("{from_base}fx{slot_uuid}_");
+    let mut slot = from_chain.remove(from_idx);
+
+    let new_prefix = format!("{to_base}fx{}_", slot.uuid);
+    slot.effect.set_param_prefix(&new_prefix);
+
+    let Some((to_chain, _)) = chain_parts(mixer, to) else {
+        // Destination vanished between the check and here — put the slot back
+        // rather than drop it.
         if let Some((src_chain, _)) = chain_parts(mixer, from) {
-            src_chain.push(slot);
+            src_chain.insert(from_idx.min(src_chain.len()), slot);
         }
         return false;
     };
+    to_chain.insert(index.min(to_chain.len()), slot);
 
-    let new_prefix = format!("{dst_base}fx{}_", slot.uuid);
-
-    // Preserve current param values across the prefix change: re-registration
-    // keys base values by param id, so queue the re-keyed values for the
-    // engine to apply right after the next registration.
+    // Re-registration keys base values by param id, so a prefix change would
+    // otherwise reset the slot's knobs to their defaults. Queue the current
+    // values under the new ids for the engine to apply right after.
     if let Ok(mut restore) = engine.param_restore.lock() {
         let descriptors = engine.param_descriptors.clone();
         for d in descriptors.iter() {
@@ -473,10 +377,7 @@ pub fn move_effect(
         }
     }
 
-    slot.effect.set_param_prefix(&new_prefix);
-    let at = index.min(dst_chain.len());
-    dst_chain.insert(at, slot);
-    rustjay_core::rekey_prefix(engine, &old_prefix, &new_prefix);
+    rustjay_core::state::rekey_prefix(engine, &old_prefix, &new_prefix);
     true
 }
 
@@ -485,7 +386,7 @@ impl KovvbojAppState {
     /// engine (captured via the `engine_modulation` handle, if available).
     #[cfg(feature = "mixer")]
     pub fn scene_snapshot(&self, mixer: &Mixer) -> Scene {
-        let scene = Scene::from_mixer(mixer).with_params(self.param_snapshot.clone());
+        let scene = Scene::from_mixer(mixer, &self.layer_sources).with_params(self.param_snapshot.clone());
         match &self.engine_modulation {
             Some(handle) => {
                 let m = handle.lock().unwrap_or_else(|e| e.into_inner());
@@ -511,7 +412,7 @@ impl KovvbojAppState {
     #[cfg(feature = "mixer")]
     pub fn push_undo_from(&mut self, mixer: &Mixer) {
         self.undo_stack
-            .push(crate::scene::Topology::from_mixer(mixer));
+            .push(crate::scene::Topology::from_mixer(mixer, &self.layer_sources));
         if self.undo_stack.len() > Self::UNDO_DEPTH {
             self.undo_stack.remove(0);
         }
@@ -527,7 +428,7 @@ impl KovvbojAppState {
             let Ok(mixer) = self.mixer.lock() else {
                 return;
             };
-            crate::scene::Topology::from_mixer(&mixer)
+            crate::scene::Topology::from_mixer(&mixer, &self.layer_sources)
         };
         self.undo_stack.push(snapshot);
         if self.undo_stack.len() > Self::UNDO_DEPTH {
@@ -549,7 +450,7 @@ impl KovvbojAppState {
         };
         if let Ok(mixer) = self.mixer.lock() {
             self.redo_stack
-                .push(crate::scene::Topology::from_mixer(&mixer));
+                .push(crate::scene::Topology::from_mixer(&mixer, &self.layer_sources));
         }
         self.pending_topology = Some(previous);
         true
@@ -563,7 +464,7 @@ impl KovvbojAppState {
         };
         if let Ok(mixer) = self.mixer.lock() {
             self.undo_stack
-                .push(crate::scene::Topology::from_mixer(&mixer));
+                .push(crate::scene::Topology::from_mixer(&mixer, &self.layer_sources));
         }
         self.pending_topology = Some(next);
         true
@@ -634,11 +535,13 @@ impl Default for KovvbojAppState {
             #[cfg(feature = "projection")]
             lighting_overlap_warnings: Vec::new(),
             #[cfg(feature = "mixer")]
-            pending_decks: Vec::new(),
+            pending_layers: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_removals: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_fx_removals: Vec::new(),
+            #[cfg(feature = "mixer")]
+            layer_sources: std::collections::HashMap::new(),
             #[cfg(feature = "mixer")]
             pending_effects: Vec::new(),
             #[cfg(feature = "mixer")]
@@ -813,9 +716,7 @@ fn instantiate_source(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     engine: &EngineState,
-    channel_id: &str,
-    deck_uuid: Option<&str>,
-) -> anyhow::Result<crate::graph::Deck> {
+) -> anyhow::Result<Box<dyn EffectInstance>> {
     use crate::sources::{CameraSource, ImageSource, SolidColorSource, SourceKind};
     let format = rustjay_core::working_format();
 
@@ -932,21 +833,96 @@ fn instantiate_source(
         }
     };
 
-    let deck_uuid = deck_uuid
-        .map(String::from)
-        .unwrap_or_else(|| format!("deck_{}_{}", channel_id, entry.id));
-    let mut deck = crate::graph::Deck::new(deck_uuid, &entry.name, source, entry.kind);
-    deck.source_path = entry.path.clone();
-    deck.source_entry = Some(entry.clone());
-    Ok(deck)
+    Ok(source)
+}
+
+/// Move the just-appended slot (last) to `index` when a drop specified an
+/// insertion position; returns the slot's final index.
+#[cfg(feature = "mixer")]
+fn position_new_slot(chain: &mut Vec<rustjay_mixer::EffectSlot>, index: Option<usize>) -> usize {
+    match index {
+        Some(i) if i + 1 < chain.len() => {
+            let slot = chain.pop().expect("chain just grew");
+            let pos = i.min(chain.len());
+            chain.insert(pos, slot);
+            pos
+        }
+        _ => chain.len() - 1,
+    }
+}
+
+/// Rebuild every slot in `chain` whose source is `path`. Returns whether any
+/// were replaced, so the caller can flag params dirty once.
+///
+/// A free function rather than a closure: the master chain and the channels
+/// cannot both be borrowed from the mixer at the same time.
+#[cfg(feature = "mixer")]
+#[allow(clippy::too_many_arguments)]
+fn reload_matching_slots(
+    chain: &mut [rustjay_mixer::EffectSlot],
+    base: &str,
+    path: &std::path::Path,
+    name: &str,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    engine: &EngineState,
+) -> bool {
+    let mut any = false;
+    for slot in chain.iter_mut() {
+        if slot.source_path.as_deref() != Some(path) {
+            continue;
+        }
+        match rustjay_isf::IsfEffect::from_path(path) {
+            Ok(isf) => {
+                let node = EffectNode::new(isf, name, device, queue, engine);
+                slot.effect = Box::new(node);
+                slot.effect
+                    .set_param_prefix(&format!("{base}fx{}_", slot.uuid));
+                any = true;
+                log::info!("[HotReload] reloaded FX {} in {base}", slot.uuid);
+            }
+            Err(e) => log::warn!("[HotReload] failed to reload {}: {e}", path.display()),
+        }
+    }
+    any
+}
+
+/// Whether a saved topology can be replayed by this build.
+///
+/// A version-0 file nests decks inside channels. Flattening it is not possible
+/// honestly: a channel's post-FX ran once over the composite of its decks, and
+/// once those decks are sibling layers there is nowhere for that effect to go
+/// that renders the same picture.
+#[cfg(feature = "mixer")]
+fn usable_topology(topo: &crate::scene::Topology) -> bool {
+    topo.version >= crate::scene::TOPOLOGY_VERSION && !topo.layers.is_empty()
+}
+
+/// Tell the user why their saved graph did not load, and leave the file alone.
+#[cfg(feature = "mixer")]
+fn warn_stale_topology(topo: &crate::scene::Topology, engine: &EngineState) {
+    if topo.version >= crate::scene::TOPOLOGY_VERSION {
+        return;
+    }
+    log::warn!(
+        "[Topology] scene is version {} (this build reads {}); starting with an empty stack",
+        topo.version,
+        crate::scene::TOPOLOGY_VERSION
+    );
+    engine.notify(
+        "This scene predates layers and was not loaded. Your file is untouched."
+            .to_string(),
+        rustjay_core::NotificationLevel::Warning,
+        std::time::Duration::from_secs(8),
+    );
 }
 
 /// Build an [`EffectSlot`](rustjay_mixer::EffectSlot) from a saved [`FxDesc`],
 /// reproducing the slot's stable uuid so its param prefix matches saved
-/// modulation. The caller is responsible for assigning the param prefix
-/// (deck chains are re-prefixed by `Deck::set_full_prefix`; channel/master
-/// chains must be prefixed explicitly). Returns `None` if the shader fails to
+/// modulation. The caller is responsible for assigning the param prefix. Returns `None` if the shader fails to
 /// load, logging the cause.
+///
+/// Chains live on `rustjay_mixer::Channel` now, so every caller prefixes.
 #[cfg(feature = "mixer")]
 fn build_fx_slot(
     fx: &crate::scene::FxDesc,
@@ -981,6 +957,10 @@ fn build_fx_slot(
 pub struct KovvbojRootPlugin {
     #[cfg(feature = "mixer")]
     mixer: Arc<Mutex<Mixer>>,
+    /// Layer source entries built during `init()`, handed to the app state on
+    /// the first `prepare()` — `init` runs before any state exists.
+    #[cfg(feature = "mixer")]
+    layer_sources_init: std::collections::HashMap<String, crate::sources::SourceEntry>,
     params_dirty: bool,
     /// Modulation snapshot loaded from the workspace scene in `init()` (which has
     /// no `&EngineState`), applied into `engine.modulation` on the first `prepare()`.
@@ -1015,6 +995,7 @@ impl KovvbojRootPlugin {
         Self {
             #[cfg(feature = "mixer")]
             mixer: Arc::new(Mutex::new(Mixer::new())),
+            layer_sources_init: std::collections::HashMap::new(),
             params_dirty: false,
             #[cfg(feature = "mixer")]
             pending_modulation: None,
@@ -1112,157 +1093,55 @@ impl Default for KovvbojRootPlugin {
 impl KovvbojRootPlugin {
     fn build_default_graph(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        // A free-standing layer stack: channel opacities are the layers' own,
+        // never scaled by a two-channel crossfader.
+        mixer.use_crossfader = false;
         let dummy_engine = EngineState::new();
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let shaders_dir = manifest_dir.join("shaders");
+        let mut sources = std::collections::HashMap::new();
 
-        // Channel A: ColorCycle (ISF) + Solid Color (red)
-        let mut comp_a = DeckCompositor::new();
-        let path_a1 = shaders_dir.join("ColorCycle.fs");
-        match rustjay_isf::IsfEffect::from_path(&path_a1) { Ok(isf) => {
-            let node = EffectNode::new(isf, "ColorCycle", device, queue, &dummy_engine);
-            let mut deck = Deck::new("a1", "ColorCycle", Box::new(node), SourceKind::Isf);
-            deck.source_path = Some(path_a1);
-            comp_a.decks.push(deck);
-        } _ => {
-            log::warn!("Failed to load ColorCycle.fs");
-        }}
-        let solid = SolidColorSource::new(
-            device,
-            rustjay_core::working_format(),
-            [1.0, 0.0, 0.0, 1.0],
-        );
-        comp_a
-            .decks
-            .push(Deck::new("a2", "Solid Red", Box::new(solid), SourceKind::SolidColor));
+        // Two layers to open on: a generator underneath, a camera over it.
+        let defaults: [(&str, crate::sources::SourceEntry); 2] = [
+            (
+                "ColorCycle",
+                crate::sources::SourceEntry {
+                    id: "colorcycle".to_string(),
+                    name: "ColorCycle".to_string(),
+                    kind: crate::sources::SourceKind::Isf,
+                    path: Some(shaders_dir.join("ColorCycle.fs")),
+                    device_index: 0,
+                },
+            ),
+            (
+                "Camera",
+                crate::sources::SourceEntry {
+                    id: "camera".to_string(),
+                    name: "Camera".to_string(),
+                    kind: crate::sources::SourceKind::Camera,
+                    path: None,
+                    device_index: 0,
+                },
+            ),
+        ];
 
-        #[cfg(feature = "hap")]
-        {
-            let assets_dir = manifest_dir.join("assets");
-            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    #[cfg(feature = "ffmpeg")]
-                    let is_hap = rustjay_io::detect_hap_codec(&path).unwrap_or(false);
-                    #[cfg(not(feature = "ffmpeg"))]
-                    let is_hap = path
-                        .extension()
-                        .map(|e| e == "mov" || e == "hap")
-                        .unwrap_or(false);
-                    if is_hap {
-                        match HapSource::new(device, queue, &path) {
-                            Ok(hap) => {
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("HAP Video")
-                                    .to_string();
-                                comp_a.decks.push(Deck::new(
-                                    format!("a_hap_{}", comp_a.decks.len()),
-                                    &name,
-                                    Box::new(hap),
-                                    SourceKind::Video,
-                                ));
-                                log::info!("Loaded HAP source: {}", path.display());
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to open HAP file {}: {}", path.display(), e);
-                            }
-                        }
-                        break;
+        for (uuid, entry) in defaults {
+            match instantiate_source(&entry, device, queue, &dummy_engine) {
+                Ok(mut source) => {
+                    source.set_param_prefix(&format!("ch_{uuid}_"));
+                    let channel = Channel::new(uuid, &entry.name, source);
+                    if let Err(e) = mixer.add_channel(channel) {
+                        log::warn!("[Graph] could not add layer '{}': {}", entry.name, e);
+                        continue;
                     }
+                    sources.insert(uuid.to_string(), entry);
                 }
+                Err(e) => log::warn!("[Graph] could not build layer '{}': {}", entry.name, e),
             }
         }
 
-        if let Err(e) = mixer.add_channel(Channel::new("a", "Channel A", Box::new(comp_a))) {
-            log::warn!("Failed to add channel A: {}", e);
-        }
+        self.layer_sources_init = sources;
 
-        // Channel B: AuroraWaves (ISF) + Camera
-        let mut comp_b = DeckCompositor::new();
-        let path_b1 = shaders_dir.join("AuroraWaves.fs");
-        match rustjay_isf::IsfEffect::from_path(&path_b1) { Ok(isf) => {
-            let node = EffectNode::new(isf, "AuroraWaves", device, queue, &dummy_engine);
-            let mut deck = Deck::new("b1", "AuroraWaves", Box::new(node), SourceKind::Isf);
-            deck.source_path = Some(path_b1);
-            comp_b.decks.push(deck);
-        } _ => {
-            log::warn!("Failed to load AuroraWaves.fs");
-        }}
-        let camera = CameraSource::new(device, 0);
-        comp_b
-            .decks
-            .push(Deck::new("b2", "Camera", Box::new(camera), SourceKind::Camera));
-
-        #[cfg(feature = "ffmpeg")]
-        {
-            let assets_dir = manifest_dir.join("assets");
-            if let Ok(entries) = std::fs::read_dir(&assets_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" || ext == "mov" {
-                            #[cfg(all(feature = "ffmpeg", feature = "hap"))]
-                            let result = {
-                                let is_hap = rustjay_io::detect_hap_codec(&path).unwrap_or(false);
-                                if is_hap {
-                                    HapSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>)
-                                } else {
-                                    FfmpegSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>)
-                                }
-                            };
-                            #[cfg(all(feature = "ffmpeg", not(feature = "hap")))]
-                            let result = FfmpegSource::new(device, queue, &path).map(|s| Box::new(s) as Box<dyn rustjay_core::EffectInstance>);
-                            match result {
-                                Ok(src) => {
-                                    let name = path
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("Video")
-                                        .to_string();
-                                    comp_b.decks.push(Deck::new(
-                                        format!("b_vid_{}", comp_b.decks.len()),
-                                        &name,
-                                        src,
-                                        SourceKind::Video,
-                                    ));
-                                    log::info!("Loaded video source: {}", path.display());
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "Failed to open video file {}: {}",
-                                        path.display(),
-                                        e
-                                    );
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Err(e) = mixer.add_channel(Channel::new("b", "Channel B", Box::new(comp_b))) {
-            log::warn!("Failed to add channel B: {}", e);
-        }
-
-        // Exercise a deck FX in the demo assembly (T03.1b)
-        let fx_path = shaders_dir.join("ConcentricRings.fs");
-        if let Ok(isf) = rustjay_isf::IsfEffect::from_path(&fx_path) {
-            let node = EffectNode::new(isf, "ConcentricRings", device, queue, &dummy_engine);
-            if let Some(ch) = mixer.channels.first_mut()
-                && let Some(compositor) = ch.effect.as_any_mut()
-                    && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>()
-                        && let Some(deck) = compositor.decks.first_mut() {
-                            deck.add_effect(Box::new(node));
-                            if let Some(slot) = deck.chain.last_mut() {
-                                slot.source_path = Some(fx_path.clone());
-                            }
-                            log::info!("Added deck FX ConcentricRings to deck {}", deck.uuid);
-                        }
-        }
 
         // Phase 12 demo: pre-populate sequencer with a beat-synced sequence
         mixer.sequencer.steps = vec![
@@ -1322,65 +1201,49 @@ impl KovvbojRootPlugin {
         // releases their sources (cameras, decoders, GPU textures).
         mixer.channels.clear();
         mixer.master.clear();
+        // Channels are a free-standing layer stack here, so the two-channel
+        // crossfader special case must not apply — see `Mixer::use_crossfader`.
+        mixer.use_crossfader = false;
+        let mut sources = std::collections::HashMap::new();
 
-        for ch_desc in &topo.channels {
-            let mut comp = DeckCompositor::new();
-            for deck_desc in &ch_desc.decks {
-                // Resolve the source path back to absolute before instantiating.
-                let mut entry = deck_desc.source.clone();
-                if let Some(p) = entry.path.take() {
-                    entry.path = Some(crate::scene::resolve(&p, &base));
-                }
-                match instantiate_source(
-                    &entry,
-                    device,
-                    queue,
-                    &dummy_engine,
-                    &ch_desc.uuid,
-                    Some(deck_desc.uuid.as_str()),
-                ) {
-                    Ok(mut deck) => {
-                        deck.opacity = deck_desc.opacity;
-                        deck.blend_mode = deck_desc.blend_mode;
-                        // Deck FX: pushed with the saved uuid; the channel's
-                        // set_param_prefix → Deck::set_full_prefix re-prefixes
-                        // these slots once the channel is created below.
-                        for fx in &deck_desc.fx {
-                            if let Some(slot) =
-                                build_fx_slot(fx, &base, device, queue, &dummy_engine)
-                            {
-                                deck.chain.push(slot);
-                            }
-                        }
-                        comp.decks.push(deck);
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "[Topology] failed to rebuild deck '{}' on channel '{}': {}",
-                            deck_desc.name,
-                            ch_desc.name,
-                            e
-                        );
-                    }
-                }
+        for desc in &topo.layers {
+            // Resolve the source path back to absolute before instantiating.
+            let mut entry = desc.source.clone();
+            if let Some(p) = entry.path.take() {
+                entry.path = Some(crate::scene::resolve(&p, &base));
             }
+            let source = match instantiate_source(&entry, device, queue, &dummy_engine) {
+                Ok(source) => source,
+                Err(e) => {
+                    log::warn!("[Topology] failed to rebuild layer '{}': {}", desc.name, e);
+                    continue;
+                }
+            };
 
-            let mut channel = Channel::new(ch_desc.uuid.clone(), ch_desc.name.clone(), Box::new(comp));
-            // Channel post-FX: prefix explicitly (channel chains aren't
-            // auto-prefixed the way deck chains are).
-            for fx in &ch_desc.fx {
+            let mut channel = Channel::new(desc.uuid.clone(), desc.name.clone(), source);
+            channel.opacity = desc.opacity;
+            channel.blend_mode = desc.blend_mode;
+            channel.solo = desc.solo;
+            channel.mute = desc.mute;
+
+            let prefix = format!("ch_{}_", desc.uuid);
+            channel.effect.set_param_prefix(&prefix);
+            for fx in &desc.fx {
                 if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
                     slot.effect
-                        .set_param_prefix(&format!("ch_{}_fx{}_", ch_desc.uuid, slot.uuid));
+                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
                     channel.chain.push(slot);
                 }
             }
+
+            let uuid = desc.uuid.clone();
             if let Err(e) = mixer.add_channel(channel) {
-                log::warn!("[Topology] failed to add channel '{}': {}", ch_desc.name, e);
+                log::warn!("[Topology] failed to add layer '{}': {}", desc.name, e);
+                continue;
             }
+            sources.insert(uuid, desc.source.clone());
         }
 
-        // Master FX: prefix explicitly (`master_fx<uuid>_`).
         for fx in &topo.master_fx {
             if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
                 slot.effect
@@ -1390,11 +1253,12 @@ impl KovvbojRootPlugin {
         }
 
         log::info!(
-            "[Topology] rebuilt {} channels, {} master FX",
-            topo.channels.len(),
+            "[Topology] rebuilt {} layers, {} master FX",
+            topo.layers.len(),
             topo.master_fx.len()
         );
         drop(mixer);
+        self.layer_sources_init = sources;
         self.params_dirty = true;
     }
 }
@@ -1623,12 +1487,12 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // apply_topology clears + replaces the live graph with the saved
                 // UUIDs and flags params_dirty; do it before applying knobs (which
                 // match channels by UUID) and modulation (keyed by param id).
-                if let Some(topo) = scene
-                    .topology
-                    .as_ref()
-                    .filter(|t| !t.channels.is_empty())
-                {
-                    self.apply_topology(topo, device, queue);
+                match scene.topology.as_ref() {
+                    Some(topo) if usable_topology(topo) => {
+                        self.apply_topology(topo, device, queue);
+                    }
+                    Some(topo) => warn_stale_topology(topo, engine),
+                    None => {}
                 }
                 if let Ok(mut mixer) = state.mixer.lock() {
                     if let Some(legacy_mod) = scene.apply_to_mixer(&mut mixer) {
@@ -1667,55 +1531,72 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
             if let Some(ref watcher) = state.shader_watcher {
-                let events = watcher.poll();
-                for event in events {
+                for event in watcher.poll() {
                     for path in &event.paths {
                         log::info!("[ShaderWatcher] changed: {}", path.display());
-                        if let Ok(mut mixer) = state.mixer.lock() {
-                            for ch in mixer.channels.iter_mut() {
-                                if let Some(compositor) = ch.effect.as_any_mut()
-                                    && let Some(compositor) =
-                                        compositor.downcast_mut::<DeckCompositor>()
-                                    {
-                                        for deck in compositor.decks.iter_mut() {
-                                            if deck.source_path.as_ref() == Some(path) {
-                                                let name = path
-                                                    .file_stem()
-                                                    .and_then(|s| s.to_str())
-                                                    .unwrap_or("ISF Shader")
-                                                    .to_string();
-                                                match rustjay_isf::IsfEffect::from_path(path) {
-                                                    Ok(isf) => {
-                                                        let node = EffectNode::new(
-                                                            isf, &name, device, queue, engine,
-                                                        );
-                                                        deck.source = Box::new(node);
-                                                        deck.source
-                                                            .set_param_prefix(&deck.full_prefix);
-                                                        self.params_dirty = true;
-                                                        log::info!(
-                                                            "[HotReload] Reloaded {} for deck {}",
-                                                            path.display(),
-                                                            deck.uuid
-                                                        );
-                                                    }
-                                                    Err(e) => {
-                                                        log::warn!(
-                                                            "[HotReload] Failed to reload {}: {}",
-                                                            path.display(),
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                        let name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("ISF Shader")
+                            .to_string();
+                        let Ok(mut mixer) = state.mixer.lock() else {
+                            continue;
+                        };
+
+                        // A layer whose *source* is this shader.
+                        let layers: Vec<String> = state
+                            .layer_sources
+                            .iter()
+                            .filter(|(_, e)| e.path.as_ref() == Some(path))
+                            .map(|(uuid, _)| uuid.clone())
+                            .collect();
+                        for uuid in layers {
+                            let Some(ch) = mixer.channels.iter_mut().find(|c| c.uuid == uuid)
+                            else {
+                                continue;
+                            };
+                            match rustjay_isf::IsfEffect::from_path(path) {
+                                Ok(isf) => {
+                                    let node = EffectNode::new(isf, &name, device, queue, engine);
+                                    ch.effect = Box::new(node);
+                                    ch.effect.set_param_prefix(&format!("ch_{uuid}_"));
+                                    self.params_dirty = true;
+                                    log::info!("[HotReload] reloaded source for layer {uuid}");
+                                }
+                                Err(e) => log::warn!(
+                                    "[HotReload] failed to reload {}: {e}",
+                                    path.display()
+                                ),
                             }
+                        }
+
+                        // Every FX slot built from it, in any chain.
+                        let mut any = reload_matching_slots(
+                            &mut mixer.master,
+                            "master_",
+                            path,
+                            &name,
+                            device,
+                            queue,
+                            engine,
+                        );
+                        for ch in mixer.channels.iter_mut() {
+                            let base = format!("ch_{}_", ch.uuid);
+                            any |= reload_matching_slots(
+                                &mut ch.chain, &base, path, &name, device, queue, engine,
+                            );
+                        }
+                        if any {
+                            self.params_dirty = true;
                         }
                     }
                 }
             }
         }
+
+
+
+
 
         // Publish a fresh app-state snapshot (structure + live modulated values)
         // every frame into the engine's opaque `app_state` slot. The generic
@@ -1812,7 +1693,7 @@ impl EffectPlugin for KovvbojRootPlugin {
             // deck removals, new decks, new FX. Taken before any of them are
             // applied, so undo steps back to the graph as it was.
             if !state.pending_removals.is_empty()
-                || !state.pending_decks.is_empty()
+                || !state.pending_layers.is_empty()
                 || !state.pending_effects.is_empty()
                 || !state.pending_fx_removals.is_empty()
             {
@@ -1838,90 +1719,85 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.params_dirty_request = true;
             }
 
-            // Process pending deck removals first.
+            // The dimmer is a normal parameter, so MIDI/OSC/LFO can drive it;
+            // the mixer just reads the resolved value each frame.
+            if let Ok(mut mixer) = state.mixer.lock() {
+                mixer.master_dim = engine
+                    .get_param(crate::ui::MASTER_DIM)
+                    .unwrap_or(1.0);
+
+            }
+
+            // Layer removals.
             let removals: Vec<PendingRemoval> = std::mem::take(&mut state.pending_removals);
             for req in removals {
                 let Ok(mut mixer) = state.mixer.lock() else {
                     continue;
                 };
-                let channel = mixer
-                    .channels
-                    .iter_mut()
-                    .find(|c| c.uuid == req.channel_uuid || c.name == req.channel_uuid);
-                let Some(channel) = channel else {
+                let Some(index) = mixer.channels.iter().position(|c| c.uuid == req.layer_uuid)
+                else {
                     continue;
                 };
-                if let Some(compositor) = channel.effect.as_any_mut()
-                    && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>()
-                        && let Some(deck) = compositor.remove_deck(&req.deck_uuid) {
-                            self.params_dirty = true;
-                            // Purge orphaned modulation assignments for the deck's
-                            // source params AND every FX it carried (one prefix
-                            // sweep covers `<full_prefix>…` and `<full_prefix>fx…`).
-                            if let Ok(mut m) = engine.modulation.lock() {
-                                m.remove_assignments_with_prefix(deck.full_prefix());
-                            }
-                            engine.notify(
-                                format!("Removed deck '{}' from {}", deck.name, channel.name),
-                                rustjay_core::NotificationLevel::Info,
-                                std::time::Duration::from_secs(3),
-                            );
-                        }
+                let Ok(removed) = mixer.remove_channel(index) else {
+                    continue;
+                };
+                drop(mixer);
+                self.params_dirty = true;
+                state.layer_sources.remove(&req.layer_uuid);
+                // One prefix sweep covers the layer's source params and every FX
+                // it carried (`ch_<uuid>_…` and `ch_<uuid>_fx…`).
+                if let Ok(mut m) = engine.modulation.lock() {
+                    m.remove_assignments_with_prefix(&format!("ch_{}_", req.layer_uuid));
+                }
+                engine.notify(
+                    format!("Removed layer '{}'", removed.name),
+                    rustjay_core::NotificationLevel::Info,
+                    std::time::Duration::from_secs(3),
+                );
             }
 
-            let pending: Vec<PendingDeck> = std::mem::take(&mut state.pending_decks);
+            // New layers.
+            let pending: Vec<PendingLayer> = std::mem::take(&mut state.pending_layers);
             for req in pending {
-                let Ok(mut mixer) = state.mixer.lock() else {
-                    continue;
-                };
-                let channel = mixer
-                    .channels
-                    .iter_mut()
-                    .find(|c| c.uuid == req.channel_uuid || c.name == req.channel_uuid);
-                let Some(channel) = channel else {
-                    engine.notify(
-                        format!("Channel '{}' not found", req.channel_uuid),
-                        rustjay_core::NotificationLevel::Error,
-                        std::time::Duration::from_secs(4),
-                    );
-                    continue;
-                };
-                let result =
-                    instantiate_source(&req.source, device, queue, engine, &channel.uuid, None);
-                match result {
-                    Ok(deck) => {
-                        let name = deck.name.clone();
-                        if let Some(compositor) = channel.effect.as_any_mut() {
-                            if let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                                compositor.decks.push(deck);
-                                self.params_dirty = true;
-                                engine.notify(
-                                    format!("Added deck '{}' to {}", name, channel.name),
-                                    rustjay_core::NotificationLevel::Success,
-                                    std::time::Duration::from_secs(3),
-                                );
-                            } else {
-                                engine.notify(
-                                    "Channel does not use DeckCompositor".to_string(),
-                                    rustjay_core::NotificationLevel::Error,
-                                    std::time::Duration::from_secs(4),
-                                );
-                            }
+                let uuid = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+                match instantiate_source(&req.source, device, queue, engine) {
+                    Ok(mut source) => {
+                        source.set_param_prefix(&format!("ch_{uuid}_"));
+                        let mut channel = Channel::new(uuid.clone(), &req.source.name, source);
+                        channel.opacity = 1.0;
+                        let name = req.source.name.clone();
+                        let Ok(mut mixer) = state.mixer.lock() else {
+                            continue;
+                        };
+                        // New layers go on top of the stack, which is where you
+                        // expect a thing you just added to appear.
+                        if mixer.add_channel(channel).is_err() {
+                            drop(mixer);
+                            engine.notify(
+                                format!("Could not add layer '{name}'"),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                            continue;
                         }
-                    }
-                    Err(e) => {
+                        drop(mixer);
+                        state.layer_sources.insert(uuid, req.source.clone());
+                        self.params_dirty = true;
                         engine.notify(
-                            format!("Failed to create deck: {}", e),
-                            rustjay_core::NotificationLevel::Error,
-                            std::time::Duration::from_secs(4),
+                            format!("Added layer '{name}'"),
+                            rustjay_core::NotificationLevel::Info,
+                            std::time::Duration::from_secs(3),
                         );
                     }
+                    Err(e) => engine.notify(
+                        format!("Could not build '{}': {e}", req.source.name),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(5),
+                    ),
                 }
             }
 
-            // ── Process pending effect additions ─────────────────────────────
-            // Lock the mixer once for the whole batch (only when there's work),
-            // rather than re-locking per effect.
+
             let pending_effects: Vec<PendingEffect> = std::mem::take(&mut state.pending_effects);
             let mut mixer_guard = (!pending_effects.is_empty())
                 .then(|| state.mixer.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1930,38 +1806,32 @@ impl EffectPlugin for KovvbojRootPlugin {
                     continue;
                 };
                 match req.target {
-                    EffectTarget::Master => {
-                        match rustjay_isf::IsfEffect::from_path(&req.path) {
-                            Ok(isf) => {
-                                let name = isf.shader_name.clone();
-                                let node = EffectNode::new(isf, &name, device, queue, engine);
-                                mixer.add_master_effect(Box::new(node));
-                                let pos = position_new_slot(&mut mixer.master, req.index);
-                                mixer.master[pos].source_path = Some(req.path.clone());
-                                self.params_dirty = true;
-                                engine.notify(
-                                    format!("Added master FX '{}'", name),
-                                    rustjay_core::NotificationLevel::Success,
-                                    std::time::Duration::from_secs(3),
-                                );
-                            }
-                            Err(e) => {
-                                engine.notify(
-                                    format!("Failed to load master FX: {}", e),
-                                    rustjay_core::NotificationLevel::Error,
-                                    std::time::Duration::from_secs(4),
-                                );
-                            }
-                        }
-                    }
-                    EffectTarget::Channel { channel_uuid } => {
-                        let channel = mixer
-                            .channels
-                            .iter_mut()
-                            .find(|c| c.uuid == channel_uuid || c.name == channel_uuid);
-                        let Some(channel) = channel else {
+                    EffectTarget::Master => match rustjay_isf::IsfEffect::from_path(&req.path) {
+                        Ok(isf) => {
+                            let name = isf.shader_name.clone();
+                            let node = EffectNode::new(isf, &name, device, queue, engine);
+                            mixer.add_master_effect(Box::new(node));
+                            let pos = position_new_slot(&mut mixer.master, req.index);
+                            mixer.master[pos].source_path = Some(req.path.clone());
+                            self.params_dirty = true;
                             engine.notify(
-                                format!("Channel '{}' not found", channel_uuid),
+                                format!("Added master FX '{name}'"),
+                                rustjay_core::NotificationLevel::Success,
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                        Err(e) => engine.notify(
+                            format!("Failed to load master FX: {e}"),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(4),
+                        ),
+                    },
+                    EffectTarget::Layer { ref layer_uuid } => {
+                        let Some(channel) =
+                            mixer.channels.iter_mut().find(|c| &c.uuid == layer_uuid)
+                        else {
+                            engine.notify(
+                                "Layer no longer exists".to_string(),
                                 rustjay_core::NotificationLevel::Error,
                                 std::time::Duration::from_secs(4),
                             );
@@ -1976,87 +1846,22 @@ impl EffectPlugin for KovvbojRootPlugin {
                                 channel.chain[pos].source_path = Some(req.path.clone());
                                 self.params_dirty = true;
                                 engine.notify(
-                                    format!("Added FX '{}' to channel '{}'", name, channel.name),
+                                    format!("Added '{name}' to {}", channel.name),
                                     rustjay_core::NotificationLevel::Success,
                                     std::time::Duration::from_secs(3),
                                 );
                             }
-                            Err(e) => {
-                                engine.notify(
-                                    format!("Failed to load channel FX: {}", e),
-                                    rustjay_core::NotificationLevel::Error,
-                                    std::time::Duration::from_secs(4),
-                                );
-                            }
-                        }
-                    }
-                    EffectTarget::Deck { channel_uuid, deck_uuid } => {
-                        let channel = mixer
-                            .channels
-                            .iter_mut()
-                            .find(|c| c.uuid == channel_uuid || c.name == channel_uuid);
-                        let Some(channel) = channel else {
-                            engine.notify(
-                                format!("Channel '{}' not found", channel_uuid),
+                            Err(e) => engine.notify(
+                                format!("Failed to load FX: {e}"),
                                 rustjay_core::NotificationLevel::Error,
                                 std::time::Duration::from_secs(4),
-                            );
-                            continue;
-                        };
-                        let Some(compositor) = channel.effect.as_any_mut() else {
-                            engine.notify(
-                                "Channel does not support deck FX".to_string(),
-                                rustjay_core::NotificationLevel::Error,
-                                std::time::Duration::from_secs(4),
-                            );
-                            continue;
-                        };
-                        let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() else {
-                            engine.notify(
-                                "Channel does not use DeckCompositor".to_string(),
-                                rustjay_core::NotificationLevel::Error,
-                                std::time::Duration::from_secs(4),
-                            );
-                            continue;
-                        };
-                        let deck = compositor
-                            .decks
-                            .iter_mut()
-                            .find(|d| d.uuid == deck_uuid);
-                        let Some(deck) = deck else {
-                            engine.notify(
-                                format!("Deck '{}' not found", deck_uuid),
-                                rustjay_core::NotificationLevel::Error,
-                                std::time::Duration::from_secs(4),
-                            );
-                            continue;
-                        };
-                        match rustjay_isf::IsfEffect::from_path(&req.path) {
-                            Ok(isf) => {
-                                let name = isf.shader_name.clone();
-                                let node = EffectNode::new(isf, &name, device, queue, engine);
-                                deck.add_effect(Box::new(node));
-                                let pos = position_new_slot(&mut deck.chain, req.index);
-                                deck.chain[pos].source_path = Some(req.path.clone());
-                                self.params_dirty = true;
-                                engine.notify(
-                                    format!("Added FX '{}' to deck '{}'", name, deck.name),
-                                    rustjay_core::NotificationLevel::Success,
-                                    std::time::Duration::from_secs(3),
-                                );
-                            }
-                            Err(e) => {
-                                engine.notify(
-                                    format!("Failed to load deck FX: {}", e),
-                                    rustjay_core::NotificationLevel::Error,
-                                    std::time::Duration::from_secs(4),
-                                );
-                            }
+                            ),
                         }
                     }
                 }
             }
         }
+
 
         // Sync headless outputs: add any newly-enabled configs.
         #[cfg(feature = "projection")]
@@ -2526,10 +2331,25 @@ impl EffectPlugin for KovvbojRootPlugin {
     fn parameters(&self) -> Vec<rustjay_core::ParameterDescriptor> {
         #[cfg(feature = "mixer")]
         {
-            self.mixer
+            let mut params = self
+                .mixer
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .parameters()
+                .parameters();
+            // The master dimmer is the host's own control, not the mixer's, but
+            // it is a real parameter so a blackout fader is reachable from MIDI,
+            // OSC and modulation like everything else.
+            params.push(rustjay_core::ParameterDescriptor {
+                id: crate::ui::MASTER_DIM.to_string(),
+                name: "Master Dim".to_string(),
+                param_type: rustjay_core::ParamType::Float,
+                min: 0.0,
+                max: 1.0,
+                default: 1.0,
+                step: 0.01,
+                category: rustjay_core::ParamCategory::Color,
+            });
+            params
         }
         #[cfg(not(feature = "mixer"))]
         {
@@ -2554,15 +2374,9 @@ impl EffectPlugin for KovvbojRootPlugin {
         #[cfg(feature = "mixer")]
         {
             let mut router = ParamRouter::new();
-            if let Ok(mut mixer) = self.mixer.lock() {
-                for ch in mixer.channels.iter_mut() {
+            if let Ok(mixer) = self.mixer.lock() {
+                for ch in mixer.channels.iter() {
                     router.register_channel(&ch.uuid, &ch.name);
-                    if let Some(compositor) = ch.effect.as_any_mut()
-                        && let Some(compositor) = compositor.downcast_mut::<DeckCompositor>() {
-                            for deck in &compositor.decks {
-                                router.register_deck(&ch.uuid, &deck.uuid, &deck.name);
-                            }
-                        }
                 }
                 // `crossfader` and other bare ids resolve via pass-through — no
                 // explicit registration needed.
@@ -2635,7 +2449,7 @@ impl EffectPlugin for KovvbojRootPlugin {
             match scene
                 .as_ref()
                 .and_then(|s| s.topology.as_ref())
-                .filter(|t| !t.channels.is_empty())
+                .filter(|t| usable_topology(t))
             {
                 Some(topo) => self.apply_topology(topo, device, queue),
                 None => self.build_default_graph(device, queue),
@@ -3032,52 +2846,31 @@ mod tests {
         }
     }
 
-    /// Two channels with one deck each; each deck carries two FX slots.
+    /// Two layers, each carrying two FX slots.
     fn test_mixer() -> Mixer {
         let mut mixer = Mixer::new();
-        for (ch_uuid, ch_name, deck_uuid) in [("ch1", "CH 1", "d1"), ("ch2", "CH 2", "d2")] {
-            let mut comp = DeckCompositor::new();
-            let mut deck = Deck::new(
-                deck_uuid,
-                deck_uuid,
-                Box::new(DummyFx::new()),
-                SourceKind::SolidColor,
-            );
-            deck.add_effect(Box::new(DummyFx::new()));
-            deck.add_effect(Box::new(DummyFx::new()));
-            comp.decks.push(deck);
-            mixer
-                .add_channel(Channel::new(ch_uuid, ch_name, Box::new(comp)))
-                .unwrap();
+        mixer.use_crossfader = false;
+        for (uuid, name) in [("l1", "Layer 1"), ("l2", "Layer 2")] {
+            let mut channel = Channel::new(uuid, name, Box::new(DummyFx::new()));
+            channel.add_effect(Box::new(DummyFx::new()));
+            channel.add_effect(Box::new(DummyFx::new()));
+            mixer.add_channel(channel).unwrap();
         }
         mixer
     }
 
-    fn deck_ref<'m>(mixer: &'m Mixer, channel: &str, deck: &str) -> &'m Deck {
-        let ch = mixer.channels.iter().find(|c| c.uuid == channel).unwrap();
-        let comp = ch
-            .effect
-            .as_any()
-            .and_then(|a| a.downcast_ref::<DeckCompositor>())
-            .unwrap();
-        comp.decks.iter().find(|d| d.uuid == deck).unwrap()
+    fn layer_ref<'m>(mixer: &'m Mixer, layer: &str) -> &'m Channel {
+        mixer.channels.iter().find(|c| c.uuid == layer).unwrap()
     }
 
     #[test]
     fn same_chain_drop_reorders_and_keeps_prefixes() {
         let mut mixer = test_mixer();
         let mut engine = EngineState::new();
-        let chain = ChainRef::Deck {
-            channel: "ch1".into(),
-            deck: "d1".into(),
-        };
-        let first_uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
-        let second_uuid = deck_ref(&mixer, "ch1", "d1").chain[1].uuid.clone();
-        let first_prefix = format!(
-            "{}fx{}_",
-            deck_ref(&mixer, "ch1", "d1").full_prefix(),
-            first_uuid
-        );
+        let chain = ChainRef::Layer { layer: "l1".into() };
+        let first_uuid = layer_ref(&mixer, "l1").chain[0].uuid.clone();
+        let second_uuid = layer_ref(&mixer, "l1").chain[1].uuid.clone();
+        let first_prefix = format!("ch_l1_fx{}_", first_uuid);
 
         // Dropping on the slot's own gaps is a no-op.
         assert!(!move_effect(&mut mixer, &mut engine, &chain, &first_uuid, &chain, 0));
@@ -3085,7 +2878,7 @@ mod tests {
 
         // Dropping on the trailing gap moves the slot to the end.
         assert!(move_effect(&mut mixer, &mut engine, &chain, &first_uuid, &chain, 2));
-        let d = deck_ref(&mixer, "ch1", "d1");
+        let d = layer_ref(&mixer, "l1");
         assert_eq!(d.chain[0].uuid, second_uuid);
         assert_eq!(d.chain[1].uuid, first_uuid);
         // Prefixes are UUID-stable: a reorder re-keys nothing.
@@ -3101,13 +2894,10 @@ mod tests {
     fn cross_chain_move_reprefixes_and_rekeys_engine_stores() {
         let mut mixer = test_mixer();
         let mut engine = EngineState::new();
-        let from = ChainRef::Deck {
-            channel: "ch1".into(),
-            deck: "d1".into(),
-        };
-        let d = deck_ref(&mixer, "ch1", "d1");
+        let from = ChainRef::Layer { layer: "l1".into() };
+        let d = layer_ref(&mixer, "l1");
         let uuid = d.chain[0].uuid.clone();
-        let old_prefix = format!("{}fx{}_", d.full_prefix(), uuid);
+        let old_prefix = format!("ch_{}_fx{}_", d.uuid, uuid);
 
         // Wire a modulation assignment, a MIDI mapping and a param value to
         // the slot's old prefix.
@@ -3154,7 +2944,7 @@ mod tests {
         // The slot moved; the deck chain shrank.
         assert_eq!(mixer.master.len(), 1);
         assert_eq!(mixer.master[0].uuid, uuid);
-        assert_eq!(deck_ref(&mixer, "ch1", "d1").chain.len(), 1);
+        assert_eq!(layer_ref(&mixer, "l1").chain.len(), 1);
 
         // The slot was re-prefixed at the destination.
         let new_prefix = format!("master_fx{uuid}_");
@@ -3193,42 +2983,34 @@ mod tests {
     fn cross_deck_move_inserts_at_drop_index() {
         let mut mixer = test_mixer();
         let mut engine = EngineState::new();
-        let from = ChainRef::Deck {
-            channel: "ch1".into(),
-            deck: "d1".into(),
-        };
-        let to = ChainRef::Deck {
-            channel: "ch2".into(),
-            deck: "d2".into(),
-        };
-        let uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
-        let existing = deck_ref(&mixer, "ch2", "d2").chain[0].uuid.clone();
+        let from = ChainRef::Layer { layer: "l1".into() };
+        let to = ChainRef::Layer { layer: "l2".into() };
+        let uuid = layer_ref(&mixer, "l1").chain[0].uuid.clone();
+        let existing = layer_ref(&mixer, "l2").chain[0].uuid.clone();
 
         assert!(move_effect(&mut mixer, &mut engine, &from, &uuid, &to, 0));
 
-        let d2 = deck_ref(&mixer, "ch2", "d2");
+        let d2 = layer_ref(&mixer, "l2");
         assert_eq!(d2.chain.len(), 3);
         assert_eq!(d2.chain[0].uuid, uuid, "inserted at gap 0");
         assert_eq!(d2.chain[1].uuid, existing);
-        assert_eq!(deck_ref(&mixer, "ch1", "d1").chain.len(), 1);
+        assert_eq!(layer_ref(&mixer, "l1").chain.len(), 1);
     }
 
     #[test]
     fn move_to_missing_chain_keeps_slot_in_source() {
         let mut mixer = test_mixer();
         let mut engine = EngineState::new();
-        let from = ChainRef::Deck {
-            channel: "ch1".into(),
-            deck: "d1".into(),
-        };
-        let uuid = deck_ref(&mixer, "ch1", "d1").chain[0].uuid.clone();
-        let missing = ChainRef::Channel {
-            channel: "nope".into(),
+        let from = ChainRef::Layer { layer: "l1".into() };
+        let uuid = layer_ref(&mixer, "l1").chain[0].uuid.clone();
+        // A layer uuid that is not in the mixer at all.
+        let missing = ChainRef::Layer {
+            layer: "deleted-layer".into(),
         };
 
         assert!(!move_effect(&mut mixer, &mut engine, &from, &uuid, &missing, 0));
 
-        let d = deck_ref(&mixer, "ch1", "d1");
+        let d = layer_ref(&mixer, "l1");
         assert_eq!(d.chain.len(), 2, "slot restored, not lost");
         assert!(d.chain.iter().any(|s| s.uuid == uuid));
     }

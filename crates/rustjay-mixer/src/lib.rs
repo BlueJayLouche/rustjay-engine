@@ -230,6 +230,10 @@ impl Channel {
         engine: &EngineState,
     ) -> Option<&'a Texture> {
         let tex = self.texture.as_ref()?;
+        // Uniform buffers are written here, not in render_to — an effect that is
+        // never prepared draws with stale or zero uniforms, which for an ISF
+        // shader means black.
+        self.effect.prepare(engine, ctx.device, ctx.queue);
         self.effect.render_to(
             ctx,
             inputs,
@@ -252,6 +256,7 @@ impl Channel {
             if !slot.enabled {
                 continue;
             }
+            slot.effect.prepare(engine, ctx.device, ctx.queue);
             let (src_tex, dst_tex) = if is_ping { (ping, tex) } else { (tex, ping) };
             let input = EffectInput {
                 view: &src_tex.view,
@@ -317,6 +322,10 @@ pub struct Mixer {
     /// crossfade. Defaults to `true`, preserving the A/B behaviour every
     /// existing host relies on.
     pub use_crossfader: bool,
+    /// Scales every channel's effective opacity — a master dimmer / blackout.
+    ///
+    /// 1.0 is unity, so hosts that never touch it are unaffected.
+    pub master_dim: f32,
     /// Master effect chain (REQ-06).
     pub master: Vec<EffectSlot>,
     pub auto: Option<AutoCrossfade>,
@@ -344,6 +353,7 @@ impl Mixer {
             channels: Vec::new(),
             crossfader: 0.5,
             use_crossfader: true,
+            master_dim: 1.0,
             master: Vec::new(),
             auto: None,
             beat_sync: None,
@@ -430,6 +440,13 @@ impl Mixer {
     /// With exactly 2 channels the crossfader scales the two opacities; otherwise
     /// each channel's own opacity is used directly.
     pub fn effective_opacities(&self) -> Vec<f32> {
+        let dim = self.master_dim.clamp(0.0, 1.0);
+        let scaled: Vec<f32> = self.raw_effective_opacities().iter().map(|o| o * dim).collect();
+        scaled
+    }
+
+    /// Per-channel opacity before the master dimmer.
+    fn raw_effective_opacities(&self) -> Vec<f32> {
         if self.use_crossfader && self.channels.len() == 2 {
             vec![
                 if self.channels[0].active {
@@ -873,6 +890,9 @@ fn run_chain<'a>(
         if !slot.enabled {
             continue;
         }
+        // See `Channel::render`: without this an ISF slot draws with unwritten
+        // uniforms.
+        slot.effect.prepare(engine, ctx.device, ctx.queue);
         let (src_tex, dst_tex) = if is_ping {
             (ping, initial_input)
         } else {
