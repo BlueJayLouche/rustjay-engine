@@ -164,6 +164,12 @@ impl KovvbojShell {
 
         self.prefs = crate::persistence::default_workspace().load_ui();
         self.show_library = self.prefs.library_open;
+        self.show_preview = self.prefs.inspector_open;
+        self.show_outputs = self.prefs.outputs_open;
+        self.show_sequencer = self.prefs.sequencer_open;
+        for (i, tab) in VIEW_TABS.iter().enumerate() {
+            self.builtin_open[i] = self.prefs.open_windows.iter().any(|n| n == tab.name());
+        }
         set_palette(Palette::by_id(&self.prefs.palette));
     }
 
@@ -208,6 +214,34 @@ impl KovvbojShell {
             _ => width - delta,
         };
         Some(moved.clamp(140.0, (ui.ctx().content_rect().width() - 360.0).max(200.0)))
+    }
+
+    /// Note which windows and panels are open, saving only when it changes.
+    ///
+    /// Toggles come from menu checkboxes and window close buttons, so there is
+    /// no single place to hook; comparing against what was last written is
+    /// cheaper than threading a callback through every one of them.
+    fn remember_window_state(&mut self) {
+        let open: Vec<String> = VIEW_TABS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.builtin_open[*i])
+            .map(|(_, t)| t.name().to_string())
+            .collect();
+        let changed = open != self.prefs.open_windows
+            || self.show_outputs != self.prefs.outputs_open
+            || self.show_sequencer != self.prefs.sequencer_open
+            || self.show_library != self.prefs.library_open
+            || self.show_preview != self.prefs.inspector_open;
+        if !changed {
+            return;
+        }
+        self.prefs.open_windows = open;
+        self.prefs.outputs_open = self.show_outputs;
+        self.prefs.sequencer_open = self.show_sequencer;
+        self.prefs.library_open = self.show_library;
+        self.prefs.inspector_open = self.show_preview;
+        self.save_prefs();
     }
 
     /// Write UI preferences out.
@@ -273,6 +307,7 @@ impl AnyEguiShell for KovvbojShell {
         let engine = host.engine().clone();
 
         self.menu_and_status_row(ui, app_state, &engine);
+        self.remember_window_state();
         self.view_windows(ui, app_state, host, &engine);
 
         if self.show_library {
@@ -289,8 +324,6 @@ impl AnyEguiShell for KovvbojShell {
                             .clicked()
                         {
                             self.show_library = false;
-                            self.prefs.library_open = false;
-                            self.save_prefs();
                         }
                     });
                     egui::ScrollArea::vertical()
@@ -323,8 +356,6 @@ impl AnyEguiShell for KovvbojShell {
                         .clicked()
                     {
                         self.show_library = true;
-                        self.prefs.library_open = true;
-                        self.save_prefs();
                     }
                 });
         }
@@ -417,7 +448,7 @@ impl KovvbojShell {
 
         // Which optional built-ins have anything to show, so the View menu does
         // not offer empty panels. Mirrors the built-in host's own filter.
-        let (has_color, has_motion, fps, bpm, web, osc) = {
+        let (has_color, has_motion, fps, bpm, web, osc, recording) = {
             let state = engine.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state
                 .performance
@@ -437,6 +468,7 @@ impl KovvbojShell {
                 state.effective_bpm(),
                 state.web_enabled,
                 state.osc_enabled,
+                state.recording_active,
             )
         };
 
@@ -519,6 +551,34 @@ impl KovvbojShell {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
+                        // The one output control you reach for mid-set; the rest
+                        // of the routing lives in the Outputs window.
+                        let rec = ui
+                            .selectable_label(
+                                recording,
+                                egui::RichText::new("● REC")
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(if recording { alert() } else { ink_3() }),
+                            )
+                            .on_hover_text(if recording {
+                                "Stop recording"
+                            } else {
+                                "Start recording"
+                            });
+                        if rec.clicked()
+                            && let Ok(mut e) = engine.lock()
+                        {
+                            e.output_command = if recording {
+                                rustjay_core::OutputCommand::StopRecording
+                            } else {
+                                rustjay_core::OutputCommand::StartRecording {
+                                    path: crate::ui::next_recording_path(),
+                                    codec: rustjay_core::RecorderCodec::H264,
+                                    audio_device: None,
+                                }
+                            };
+                        }
                         status_pill(
                             ui,
                             "OSC",

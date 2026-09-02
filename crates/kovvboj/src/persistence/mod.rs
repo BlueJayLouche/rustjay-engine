@@ -142,6 +142,21 @@ pub struct UiPrefs {
     /// Width of the inspector panel.
     #[serde(default = "default_inspector_width")]
     pub inspector_width: f32,
+    /// Built-in tabs left open as windows, by `GuiTab` name.
+    ///
+    /// Stored by name rather than index so adding a tab upstream cannot silently
+    /// reopen the wrong window.
+    #[serde(default)]
+    pub open_windows: Vec<String>,
+    /// Whether the Outputs window is showing.
+    #[serde(default)]
+    pub outputs_open: bool,
+    /// Whether the Sequencer window is showing.
+    #[serde(default)]
+    pub sequencer_open: bool,
+    /// Whether the inspector panel is showing.
+    #[serde(default = "default_true")]
+    pub inspector_open: bool,
     /// Whether the library panel is showing.
     #[serde(default = "default_true")]
     pub library_open: bool,
@@ -165,6 +180,10 @@ impl Default for UiPrefs {
             palette: "kovvboj".to_string(),
             library_width: default_library_width(),
             inspector_width: default_inspector_width(),
+            open_windows: Vec::new(),
+            outputs_open: false,
+            sequencer_open: false,
+            inspector_open: true,
             library_open: true,
         }
     }
