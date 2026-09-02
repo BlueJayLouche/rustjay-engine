@@ -3115,4 +3115,77 @@ mod tests {
         assert!(!state.redo());
         assert!(state.pending_topology.is_none());
     }
+
+    /// Restacking must move a layer to the dropped-on layer's position, and
+    /// reordering must not disturb uuids — parameter prefixes and modulation
+    /// are keyed to them.
+    #[test]
+    fn restacking_moves_a_layer_and_keeps_uuids() {
+        let mut mixer = Mixer::new();
+        mixer.use_crossfader = false;
+        for uuid in ["bottom", "middle", "top"] {
+            mixer
+                .add_channel(Channel::new(uuid, uuid, Box::new(DummyFx::new())))
+                .unwrap();
+        }
+        let ids = |m: &Mixer| m.channels.iter().map(|c| c.uuid.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&mixer), ["bottom", "middle", "top"]);
+
+        // Drag "bottom" onto "top": it takes top's index.
+        let from = mixer.channels.iter().position(|c| c.uuid == "bottom").unwrap();
+        let to = mixer.channels.iter().position(|c| c.uuid == "top").unwrap();
+        mixer.reorder_channel(from, to);
+        assert_eq!(ids(&mixer), ["middle", "top", "bottom"]);
+
+        // Dropping a layer on itself is a no-op.
+        let same = mixer.channels.iter().position(|c| c.uuid == "top").unwrap();
+        mixer.reorder_channel(same, same);
+        assert_eq!(ids(&mixer), ["middle", "top", "bottom"]);
+    }
+
+    /// Re-pointing a device layer must keep the layer: its chain, its mix, and
+    /// every binding keyed to `ch_<uuid>_`. That is the whole reason the swap
+    /// replaces `Channel::effect` rather than rebuilding the layer.
+    #[cfg(feature = "mixer")]
+    #[test]
+    fn swapping_a_layer_source_keeps_the_chain_and_bindings() {
+        let mut mixer = Mixer::new();
+        let mut channel = Channel::new("cam", "MacBook Camera", Box::new(DummyFx::new()));
+        channel.add_effect(Box::new(DummyFx::new()));
+        channel.opacity = 0.42;
+        channel.blend_mode = rustjay_mixer::BlendMode::Add;
+        mixer.add_channel(channel).unwrap();
+
+        let fx_uuid = mixer.channels[0].chain[0].uuid.clone();
+        let prefix = format!("ch_cam_fx{fx_uuid}_");
+
+        let engine = EngineState::new();
+        engine
+            .modulation
+            .lock()
+            .unwrap()
+            .assignments
+            .insert(format!("{prefix}angle"), Vec::new());
+
+        // The swap the UI queues: same layer uuid, different source.
+        let ch = mixer.channels.iter_mut().find(|c| c.uuid == "cam").unwrap();
+        ch.effect = Box::new(DummyFx::new());
+        ch.name = "OBS Virtual Camera".to_string();
+
+        let ch = &mixer.channels[0];
+        assert_eq!(ch.uuid, "cam", "the layer keeps its identity");
+        assert_eq!(ch.name, "OBS Virtual Camera", "and takes the new name");
+        assert_eq!(ch.chain.len(), 1, "its chain survives");
+        assert_eq!(ch.chain[0].uuid, fx_uuid, "with the same slot uuid");
+        assert_eq!(ch.opacity, 0.42, "and its mix");
+        assert!(
+            engine
+                .modulation
+                .lock()
+                .unwrap()
+                .assignments
+                .contains_key(&format!("{prefix}angle")),
+            "bindings are keyed to the layer, so a source swap must not touch them"
+        );
+    }
 }

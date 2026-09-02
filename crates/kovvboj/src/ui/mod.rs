@@ -283,6 +283,9 @@ mod egui_impl {
 
     /// Whether an entry is the generic "add one and connect later" placeholder
     /// rather than a discovered device.
+    ///
+    /// The inspector's picker filters these out: they exist so you can create a
+    /// layer before the sender does, not as something to connect to.
     fn is_generic_device(entry: &crate::sources::SourceEntry) -> bool {
         entry.id.ends_with("_any")
     }
@@ -430,6 +433,11 @@ mod egui_impl {
     }
 
     /// A completed drop on a chain-strip gap.
+    /// A layer being dragged to a new position, identified by uuid so the
+    /// move survives the stack changing under it.
+    #[derive(Clone)]
+    struct LayerDrag(String);
+
     struct ChainDrop {
         target: crate::ChainRef,
         index: usize,
@@ -1101,7 +1109,7 @@ mod egui_impl {
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
             let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
             let mut undo_snapshot: Option<crate::scene::Topology> = None;
-            let mut restack: Option<(usize, usize)> = None;
+            let mut restack: Option<(String, String)> = None;
             let mut drops: Vec<ChainDrop> = Vec::new();
 
             {
@@ -1111,7 +1119,7 @@ mod egui_impl {
                 let order: Vec<String> =
                     mixer.channels.iter().rev().map(|c| c.uuid.clone()).collect();
 
-                for (row, uuid) in order.iter().enumerate() {
+                for uuid in order.iter() {
                     let Some(idx) = mixer.channels.iter().position(|c| c.uuid == *uuid) else {
                         continue;
                     };
@@ -1134,27 +1142,25 @@ mod egui_impl {
                     );
 
                     ui.push_id(uuid, |ui| {
+                        let (_, dropped) =
+                            ui.dnd_drop_zone::<LayerDrag, _>(egui::Frame::NONE, |ui| {
                         ui.group(|ui| {
                             // ── Row 1: restack, identity, mix ────────────────
                             ui.horizontal(|ui| {
-                                let handle = ui.add(
-                                    egui::Label::new("≡")
-                                        .sense(egui::Sense::click_and_drag()),
+                                // Dragging the handle carries the layer's uuid;
+                                // the drop lands on whichever row it is released
+                                // over. Reading `dragged()` directly would fire
+                                // every frame of the hold and walk the layer down
+                                // the stack.
+                                ui.dnd_drag_source(
+                                    ui.id().with(("layerdrag", uuid)),
+                                    LayerDrag(uuid.clone()),
+                                    |ui| {
+                                        ui.label("≡");
+                                    },
                                 )
+                                .response
                                 .on_hover_text("Drag to restack");
-                                if handle.dragged()
-                                    && let Some(pos) = ui.ctx().pointer_interact_pos()
-                                {
-                                    // Rows are uniform, so the pointer's offset in
-                                    // rows is the move distance.
-                                    let dy = pos.y - handle.rect.center().y;
-                                    let step = (dy / 56.0).round() as i32;
-                                    if step != 0 {
-                                        let target =
-                                            (row as i32 + step).clamp(0, order.len() as i32 - 1);
-                                        restack = Some((row, target as usize));
-                                    }
-                                }
 
                                 let name = mixer.channels[idx].name.clone();
                                 if ui.selectable_label(layer_selected, &name).clicked() {
@@ -1262,6 +1268,10 @@ mod egui_impl {
                                 });
                             });
                         });
+                            });
+                        if let Some(payload) = dropped {
+                            restack = Some((payload.0.clone(), uuid.clone()));
+                        }
                     });
                 }
 
@@ -1279,15 +1289,15 @@ mod egui_impl {
                 }
 
                 // Restack last: it invalidates the indices used above.
-                if let Some((from_row, to_row)) = restack {
-                    let n = mixer.channels.len();
-                    if n > 1 {
-                        undo_snapshot.get_or_insert_with(|| {
-                            crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
-                        });
-                        // Rows are top-first; channels composite bottom-first.
-                        mixer.reorder_channel(n - 1 - from_row, n - 1 - to_row);
-                    }
+                if let Some((from_uuid, to_uuid)) = restack
+                    && from_uuid != to_uuid
+                    && let Some(from) = mixer.channels.iter().position(|c| c.uuid == from_uuid)
+                    && let Some(to) = mixer.channels.iter().position(|c| c.uuid == to_uuid)
+                {
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    mixer.reorder_channel(from, to);
                 }
             }
 
@@ -4428,6 +4438,77 @@ mod egui_impl {
                     mixer.beat_sync = Some(rustjay_mixer::BeatSyncCrossfade::new(1.0, 4.0));
                 }
             });
+        }
+    }
+
+    #[cfg(test)]
+    mod inspector_tests {
+        use super::*;
+        use egui_kittest::kittest::Queryable as _;
+
+        fn ndi_entry(id: &str, name: &str) -> crate::sources::SourceEntry {
+            crate::sources::SourceEntry {
+                id: id.to_string(),
+                name: name.to_string(),
+                kind: crate::sources::SourceKind::Ndi,
+                path: None,
+                device_index: 0,
+            }
+        }
+
+        fn inspector_for(peers: Vec<crate::sources::SourceEntry>) -> egui_kittest::Harness<'static> {
+            let mut app = KovvbojAppState::default();
+            app.mixer
+                .lock()
+                .unwrap()
+                .add_channel(rustjay_mixer::Channel::new(
+                    "ndi1",
+                    "NDI Layer",
+                    Box::new(crate::sources::testing::StubSource),
+                ))
+                .unwrap();
+            app.layer_sources
+                .insert("ndi1".to_string(), ndi_entry("ndi_any", "NDI…"));
+            app.registry.builtins = peers;
+            app.selection = crate::Selection::Layer {
+                layer: "ndi1".to_string(),
+            };
+
+            let mut engine = EngineState::new();
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size([420.0, 320.0])
+                .build_ui(move |ui| {
+                    draw_inspector(ui, &mut app, &mut engine);
+                });
+            harness.run();
+            harness
+        }
+
+        /// A device layer offers a source picker at all — a plain generator
+        /// layer must not, since it has nothing to connect to.
+        #[test]
+        fn a_device_layer_offers_a_source_picker() {
+            let harness = inspector_for(vec![
+                ndi_entry("ndi_any", "NDI…"),
+                ndi_entry("ndi_0", "STUDIO (Camera 1)"),
+            ]);
+            harness.get_by_label("Source:");
+            assert!(
+                harness
+                    .query_by_label("Nothing found — start the sender, then rescan.")
+                    .is_none(),
+                "a peer was discovered, so the empty hint must not show"
+            );
+        }
+
+        /// With nothing discovered the picker says so, rather than offering an
+        /// empty dropdown. The generic entry is filtered out, so a list holding
+        /// only that placeholder counts as empty.
+        #[test]
+        fn only_the_placeholder_counts_as_nothing_discovered() {
+            let harness = inspector_for(vec![ndi_entry("ndi_any", "NDI…")]);
+            harness.get_by_label("Source:");
+            harness.get_by_label("Nothing found — start the sender, then rescan.");
         }
     }
 

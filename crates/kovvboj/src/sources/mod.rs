@@ -43,3 +43,23 @@ pub use spout_source::SpoutSource;
 #[cfg(all(target_os = "macos", feature = "mixer"))]
 pub use syphon_source::SyphonSource;
 pub use watcher::ShaderWatcher;
+
+/// Test-only helpers.
+#[cfg(test)]
+pub mod testing {
+    use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
+
+    /// A source that needs no GPU — enough to stand a layer up in a test.
+    pub struct StubSource;
+
+    impl EffectInstance for StubSource {
+        fn render_to(
+            &mut self,
+            _ctx: &mut RenderCtx<'_>,
+            _inputs: &[EffectInput<'_>],
+            _target: RenderTarget<'_>,
+            _engine: &EngineState,
+        ) {
+        }
+    }
+}
