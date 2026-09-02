@@ -320,6 +320,16 @@ impl EguiControlGui {
         if let Some(mut shell) = self.shell.take() {
             shell.draw(ui, app_state, self);
             self.shell = Some(shell);
+            // A shell owns the panel layout, not the host's free-floating
+            // windows. Without these, a built-in tab drawn inside a shell can
+            // set the flag — "Open Routing Matrix" does — and nothing ever
+            // draws the window it asked for.
+            if self.show_preferences {
+                self.build_preferences_window(ui);
+            }
+            if self.show_routing_window {
+                self.build_routing_window(ui);
+            }
             return;
         }
 

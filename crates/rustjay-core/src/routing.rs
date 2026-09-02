@@ -264,27 +264,34 @@ impl AudioRoute {
     }
 }
 
+/// How many audio routes a matrix will hold.
+///
+/// A sanity bound, not a structural one — routes live in a `Vec` and are
+/// applied on the CPU, so this only exists to stop a runaway UI. It was a
+/// serialised per-matrix field fixed at 8, which meant raising it did nothing
+/// for anyone with a saved preset; as a constant, old presets pick up the new
+/// ceiling and their leftover `max_routes` key is simply ignored.
+pub const MAX_ROUTES: usize = 64;
+
 /// Manages all audio-to-parameter routings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingMatrix {
     routes: Vec<AudioRoute>,
     next_id: usize,
-    max_routes: usize,
 }
 
 impl RoutingMatrix {
     /// Create a new routing matrix
-    pub fn new(max_routes: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             routes: Vec::new(),
             next_id: 0,
-            max_routes,
         }
     }
 
     /// Create with default routes
     pub fn with_defaults() -> Self {
-        let mut matrix = Self::new(8);
+        let mut matrix = Self::new();
 
         // Add some default routes
         matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
@@ -297,7 +304,7 @@ impl RoutingMatrix {
     ///
     /// Returns the ID of the new route, or None if at max capacity
     pub fn add_route(&mut self, band: FftBand, target: ModulationTarget) -> Option<usize> {
-        if self.routes.len() >= self.max_routes {
+        if self.routes.len() >= MAX_ROUTES {
             return None;
         }
 
@@ -457,12 +464,12 @@ impl RoutingMatrix {
 
     /// Get max routes
     pub fn max_routes(&self) -> usize {
-        self.max_routes
+        MAX_ROUTES
     }
 
     /// Check if can add more routes
     pub fn can_add_route(&self) -> bool {
-        self.routes.len() < self.max_routes
+        self.routes.len() < MAX_ROUTES
     }
 
     /// Reset all smoothed values
@@ -544,7 +551,7 @@ impl RoutingMatrix {
 
 impl Default for RoutingMatrix {
     fn default() -> Self {
-        Self::new(8)
+        Self::new()
     }
 }
 
@@ -598,5 +605,43 @@ impl AudioRoutingState {
         self.base_hue = hue;
         self.base_saturation = saturation;
         self.base_brightness = brightness;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_matrix_holds_more_than_the_old_eight_routes() {
+        let mut matrix = RoutingMatrix::new();
+        for _ in 0..12 {
+            assert!(
+                matrix.add_route(FftBand::Bass, ModulationTarget::Brightness).is_some(),
+                "a route below the cap must be accepted"
+            );
+        }
+        assert_eq!(matrix.len(), 12);
+        assert_eq!(matrix.max_routes(), MAX_ROUTES);
+    }
+
+    #[test]
+    fn the_cap_still_holds_at_its_new_ceiling() {
+        let mut matrix = RoutingMatrix::new();
+        for _ in 0..MAX_ROUTES {
+            matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
+        }
+        assert!(!matrix.can_add_route());
+        assert!(matrix.add_route(FftBand::Bass, ModulationTarget::Brightness).is_none());
+    }
+
+    /// A preset written when `max_routes` was a serialised field still loads,
+    /// and picks up the new ceiling rather than staying pinned at 8.
+    #[test]
+    fn an_old_preset_is_not_stuck_at_eight() {
+        let json = r#"{"routes":[],"next_id":0,"max_routes":8}"#;
+        let matrix: RoutingMatrix = serde_json::from_str(json).expect("old preset loads");
+        assert_eq!(matrix.max_routes(), MAX_ROUTES);
+        assert!(matrix.can_add_route());
     }
 }
