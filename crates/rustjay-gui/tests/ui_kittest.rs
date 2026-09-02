@@ -185,3 +185,76 @@ fn settings_and_output_snapshots_via_sidebar() {
     click_painted_text(&mut harness, "OUTPUT");
     harness.snapshot("output_tab");
 }
+
+/// Binding a modulation source used to mean going to the Modulation window,
+/// making one, then coming back to the parameter. The map-mode popup creates
+/// and assigns in a single click.
+#[test]
+fn map_mode_popup_creates_and_assigns_a_source() {
+    let mut engine = EngineState::default();
+    engine.audio.enabled = false;
+    engine.lfo_assign_mode = true;
+    let shared = Arc::new(Mutex::new(engine));
+
+    let drawn = shared.clone();
+    let mut harness = Harness::builder()
+        .with_size([420.0, 320.0])
+        .with_theme(egui::Theme::Dark)
+        .build_ui(move |ui| {
+            let mut engine = drawn.lock().unwrap_or_else(|e| e.into_inner());
+            let rect = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(200.0, 24.0));
+            rustjay_gui::apply_param_map_overlay(
+                ui,
+                &mut engine,
+                rect,
+                "color/brightness",
+                "Brightness",
+                "color/brightness",
+                0.0,
+                1.0,
+            );
+        });
+    harness.run();
+
+    // A default engine already ships modulation sources, so count the change
+    // rather than the total.
+    let before = {
+        let e = shared.lock().unwrap_or_else(|p| p.into_inner());
+        let m = e.modulation.lock().unwrap_or_else(|p| p.into_inner());
+        m.sources.len()
+    };
+
+    // Nothing is offered until the parameter itself is clicked.
+    assert_painted(&harness, "+ Audio · Bass", false);
+
+    let pos = egui::pos2(120.0, 32.0);
+    harness.hover_at(pos);
+    harness.drag_at(pos);
+    harness.drop_at(pos);
+    harness.run();
+
+    assert_painted(&harness, "+ New LFO", true);
+    assert_painted(&harness, "+ Audio · Bass", true);
+
+    click_painted_text(&mut harness, "+ Audio · Bass");
+
+    let engine = shared.lock().unwrap_or_else(|p| p.into_inner());
+    let mod_eng = engine.modulation.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        mod_eng.sources.len(),
+        before + 1,
+        "one click makes exactly one source"
+    );
+    assert!(
+        matches!(
+            mod_eng.sources.last().map(|s| &s.source),
+            Some(rustjay_core::modulation::ModulationSource::AudioBand { .. })
+        ),
+        "and it is the audio band that was picked"
+    );
+    let bound = mod_eng
+        .assignments
+        .get("color/brightness")
+        .expect("the parameter is bound");
+    assert_eq!(bound.len(), 1, "one active source per parameter");
+}

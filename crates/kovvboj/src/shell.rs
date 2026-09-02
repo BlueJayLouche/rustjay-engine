@@ -576,6 +576,51 @@ impl KovvbojShell {
                         ui.add_space(10.0);
                         // The one output control you reach for mid-set; the rest
                         // of the routing lives in the Outputs window.
+                        // Map modes. These live only on the built-in host's top
+                        // bar, which this shell replaces — without them there is
+                        // no way into either mode here at all.
+                        let (mod_map, midi_map) = engine
+                            .lock()
+                            .map(|e| (e.lfo_assign_mode, e.midi_learn_mode))
+                            .unwrap_or((false, false));
+                        // A button rather than a `selectable_label`: selection
+                        // fills with the accent colour, and the state colour then
+                        // sits on top of it unreadably.
+                        if ui
+                            .button(
+                                egui::RichText::new("MIDI")
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(if midi_map { amber() } else { ink_3() }),
+                            )
+                            .on_hover_text("Click a parameter, then move a MIDI control")
+                            .clicked()
+                            && let Ok(mut e) = engine.lock()
+                        {
+                            e.midi_learn_mode = !e.midi_learn_mode;
+                            if e.midi_learn_mode {
+                                e.lfo_assign_mode = false;
+                            } else {
+                                e.midi_command = rustjay_core::MidiCommand::CancelLearn;
+                            }
+                        }
+                        if ui
+                            .button(
+                                egui::RichText::new("MOD")
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(if mod_map { amber() } else { ink_3() }),
+                            )
+                            .on_hover_text("Click a parameter to bind an LFO or audio band")
+                            .clicked()
+                            && let Ok(mut e) = engine.lock()
+                        {
+                            e.lfo_assign_mode = !e.lfo_assign_mode;
+                            if e.lfo_assign_mode {
+                                e.midi_learn_mode = false;
+                            }
+                        }
+
                         let rec = ui
                             .selectable_label(
                                 recording,

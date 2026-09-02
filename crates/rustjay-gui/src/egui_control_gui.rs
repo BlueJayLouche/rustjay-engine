@@ -1666,14 +1666,50 @@ pub fn apply_param_map_overlay(
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
-            ui.set_min_width(150.0);
+            use rustjay_core::modulation::{AudioBandPreset, ModulationSource};
+
+            ui.set_min_width(170.0);
             ui.label(egui::RichText::new(format!("Modulate {name}")).small().strong());
-            if sources.is_empty() {
-                ui.label(
-                    egui::RichText::new("No sources — add one in Modulation")
-                        .small()
-                        .weak(),
-                );
+
+            // Create-and-assign in one click. Without these the popup could
+            // only offer sources that already existed, so binding an LFO meant
+            // going to the Modulation window first, making one, and coming back.
+            let mut fresh: Option<ModulationSource> = None;
+            if ui.button("+ New LFO").clicked() {
+                fresh = Some(ModulationSource::LFO {
+                    waveform: rustjay_core::modulation::LFOWaveform::Sine,
+                    frequency: 1.0,
+                    phase: 0.0,
+                    amplitude: 0.5,
+                    bipolar: true,
+                    tempo_sync: false,
+                    division: 2,
+                    phase_offset_degrees: 0.0,
+                    enabled: true,
+                    last_beat_phase: 0.0,
+                });
+            }
+            for (preset, label) in [
+                (AudioBandPreset::Low, "+ Audio · Bass"),
+                (AudioBandPreset::Mid, "+ Audio · Mid"),
+                (AudioBandPreset::High, "+ Audio · High"),
+                (AudioBandPreset::Full, "+ Audio · Level"),
+            ] {
+                if ui.button(label).clicked() {
+                    fresh = Some(ModulationSource::audio_from_preset(preset));
+                }
+            }
+            if let Some(source) = fresh {
+                let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                let uuid = mod_eng.add_source(source);
+                // Single active source per param, as below.
+                mod_eng.assignments.remove(id);
+                mod_eng.assign(id, &uuid, 0.5, None);
+            }
+
+            if !sources.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Existing").small().weak());
             }
             for (uuid, ty) in &sources {
                 let tag = &uuid[..4.min(uuid.len())];
