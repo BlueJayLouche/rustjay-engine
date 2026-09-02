@@ -1,7 +1,7 @@
 //! Update default visual baselines with
-//! `UPDATE_SNAPSHOTS=1 cargo test -p vjarda --test ui_kittest`.
+//! `UPDATE_SNAPSHOTS=1 cargo test -p kovvboj --test ui_kittest`.
 //! Update projection baselines with
-//! `UPDATE_SNAPSHOTS=1 cargo test -p vjarda --features projection --test ui_kittest`.
+//! `UPDATE_SNAPSHOTS=1 cargo test -p kovvboj --features projection --test ui_kittest`.
 
 #[cfg(any(feature = "projection", feature = "ffmpeg"))]
 use egui::accesskit::Role;
@@ -11,8 +11,8 @@ use egui_kittest::{Harness, kittest::Queryable};
 use rustjay_core::EngineState;
 use rustjay_engine::prelude::AnyEguiTab;
 #[cfg(feature = "projection")]
-use vjarda::ui::StageTab;
-use vjarda::{
+use kovvboj::ui::StageTab;
+use kovvboj::{
     VardaAppState,
     ui::{DeckTab, OutputsTab},
 };
@@ -52,7 +52,7 @@ fn tab_harness_with_app<T: AnyEguiTab + 'static>(
 #[cfg(feature = "projection")]
 fn pad_surface_list_for_full_canvas(app: &mut VardaAppState) {
     for index in 1..=4 {
-        let mut surface = vjarda::stage::VardaSurface::full_frame(
+        let mut surface = kovvboj::stage::VardaSurface::full_frame(
             format!("Unused {index}"),
             format!("unused{index}"),
         );
@@ -82,7 +82,7 @@ fn deck_stream_paints_invalid_url_error() {
         .add_channel(rustjay_mixer::Channel::new(
             "test",
             "Test",
-            Box::new(vjarda::graph::DeckCompositor::new()),
+            Box::new(kovvboj::graph::DeckCompositor::new()),
         ))
         .unwrap();
     let mut harness = tab_harness_with_app(DeckTab::default(), [700.0, 500.0], app);
@@ -156,7 +156,7 @@ fn stage_edge_blend_preview_snapshot() {
     config.top.enabled = true;
     config.top.width = 0.16;
     app.stage.edge_blend_sync = Some(std::sync::Arc::new(std::sync::Mutex::new(
-        vjarda::stage::EdgeBlendSync { config, version: 1 },
+        kovvboj::stage::EdgeBlendSync { config, version: 1 },
     )));
     let mut harness = tab_harness_with_app(StageTab::default(), [900.0, 700.0], app);
 

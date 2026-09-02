@@ -19,7 +19,7 @@ paces transmission on a background thread.
 ```rust
 use rustjay_lighting::{DmxFrame, DmxSender, SacnTransport, Dest};
 
-let transport = SacnTransport::new(Dest::Multicast, 100, "vjarda").unwrap();
+let transport = SacnTransport::new(Dest::Multicast, 100, "kovvboj").unwrap();
 let sender = DmxSender::spawn(Box::new(transport), 44.0); // 44 Hz refresh
 
 let mut frame = DmxFrame::new();
@@ -62,12 +62,12 @@ cargo run -p ledmap-studio
 Calibrate your strips against a camera, then export `ledmap.json` for any
 engine app to sample.
 
-## In vjarda
+## In kovvboj
 
-vjarda's **LED Map tab** wraps the whole flow — calibration with background
+kovvboj's **LED Map tab** wraps the whole flow — calibration with background
 subtraction (capture an unlit reference, subtract it so only the flashed LED
 registers) plus live sACN playback of the rendered master output. See the
-[vjarda chapter](examples/vjarda.md).
+[kovvboj chapter](examples/kovvboj.md).
 
 ## Design notes
 

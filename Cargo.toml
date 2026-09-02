@@ -26,7 +26,7 @@ members = [
     "examples/delta-egui",
     "examples/mixer",
     "examples/projection",
-    "examples/vjarda",
+    "crates/kovvboj",
     "examples/decklink",
     "examples/shaderglass",
     "examples/videowall",

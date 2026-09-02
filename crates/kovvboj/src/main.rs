@@ -15,18 +15,18 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", feature = "projection"))]
     {
         let tabs = vec![
-            Box::new(vjarda::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(vjarda::ui::DeckTab::default()),
-            Box::new(vjarda::ui::EffectsTab::default()),
-            Box::new(vjarda::ui::MidiTab),
-            Box::new(vjarda::ui::StageTab::new()),
-            Box::new(vjarda::ui::OutputsTab::new()),
-            Box::new(vjarda::ui::SequencerTab),
-            Box::new(vjarda::ui::InspectorTab),
+            Box::new(kovvboj::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(kovvboj::ui::DeckTab::default()),
+            Box::new(kovvboj::ui::EffectsTab::default()),
+            Box::new(kovvboj::ui::MidiTab),
+            Box::new(kovvboj::ui::StageTab::new()),
+            Box::new(kovvboj::ui::OutputsTab::new()),
+            Box::new(kovvboj::ui::SequencerTab),
+            Box::new(kovvboj::ui::InspectorTab),
             #[cfg(feature = "webcam")]
-            Box::new(vjarda::ui::LedMapTab::new()),
+            Box::new(kovvboj::ui::LedMapTab::new()),
         ];
-        let plugin = vjarda::VardaRootPlugin::new();
+        let plugin = kovvboj::VardaRootPlugin::new();
         // Share the live sync states with the projector stages so GUI edits
         // actually reach the render output.
         let dome_sync = plugin.dome_sync();
@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
         // Load saved stage config (projector/headless list) so we can register
         // multiple projector windows at startup.
         let mut stage = plugin.default_state().stage;
-        let workspace = vjarda::persistence::default_workspace();
+        let workspace = kovvboj::persistence::default_workspace();
         if let Ok(loaded) = workspace.load_stage() {
             stage.projectors = loaded.projectors;
             stage.headless_outputs = loaded.headless_outputs;
@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
         );
 
         rustjay_engine::run_with_projection_egui_tabs(plugin, tabs, move |sub| {
-            use vjarda::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
+            use kovvboj::stage::{VardaDomeStage, VardaEdgeBlendStage, VardaSourceStage, VardaWarpStage};
             use winit::window::WindowAttributes;
             for (i, proj) in stage.projectors.iter().enumerate() {
                 if !proj.enabled {
@@ -82,13 +82,13 @@ fn main() -> anyhow::Result<()> {
                 }
                 let w = warp_syncs.get(i).cloned().unwrap_or_else(|| {
                     log::warn!("[Projector {}] warp_syncs missing, using default", i);
-                    std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::WarpSync::default()))
+                    std::sync::Arc::new(std::sync::Mutex::new(kovvboj::stage::WarpSync::default()))
                 });
                 log::info!("[Projector {}] warp_sync ptr={:p}", i, std::sync::Arc::as_ptr(&w));
                 let d = dome_sync.clone();
                 let e = edge_blend_sync.clone();
                 let s = source_syncs.get(i).cloned().unwrap_or_else(|| {
-                    std::sync::Arc::new(std::sync::Mutex::new(vjarda::stage::SourceSync::default()))
+                    std::sync::Arc::new(std::sync::Mutex::new(kovvboj::stage::SourceSync::default()))
                 });
                 let r = rotation_syncs.get(i).cloned().unwrap_or_else(|| {
                     std::sync::Arc::new(std::sync::Mutex::new(rustjay_projection::RotationSync::default()))
@@ -109,21 +109,21 @@ fn main() -> anyhow::Result<()> {
     #[cfg(all(feature = "egui", feature = "mixer", not(feature = "projection")))]
     {
         let tabs = vec![
-            Box::new(vjarda::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
-            Box::new(vjarda::ui::DeckTab::default()),
-            Box::new(vjarda::ui::EffectsTab::default()),
-            Box::new(vjarda::ui::MidiTab),
-            Box::new(vjarda::ui::StageTab::new()),
-            Box::new(vjarda::ui::OutputsTab::new()),
-            Box::new(vjarda::ui::SequencerTab),
-            Box::new(vjarda::ui::InspectorTab),
+            Box::new(kovvboj::ui::MixerTab::default()) as Box<dyn rustjay_engine::prelude::AnyEguiTab>,
+            Box::new(kovvboj::ui::DeckTab::default()),
+            Box::new(kovvboj::ui::EffectsTab::default()),
+            Box::new(kovvboj::ui::MidiTab),
+            Box::new(kovvboj::ui::StageTab::new()),
+            Box::new(kovvboj::ui::OutputsTab::new()),
+            Box::new(kovvboj::ui::SequencerTab),
+            Box::new(kovvboj::ui::InspectorTab),
             #[cfg(feature = "webcam")]
-            Box::new(vjarda::ui::LedMapTab::new()),
+            Box::new(kovvboj::ui::LedMapTab::new()),
         ];
-        rustjay_engine::run_with_egui_tabs(vjarda::VardaRootPlugin::new(), tabs)
+        rustjay_engine::run_with_egui_tabs(kovvboj::VardaRootPlugin::new(), tabs)
     }
     #[cfg(not(all(feature = "egui", feature = "mixer")))]
     {
-        rustjay_engine::run(vjarda::VardaRootPlugin::new())
+        rustjay_engine::run(kovvboj::VardaRootPlugin::new())
     }
 }

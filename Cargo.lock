@@ -3300,6 +3300,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "kovvboj"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "egui",
+ "egui_kittest",
+ "env_logger",
+ "hap-wgpu",
+ "image",
+ "log",
+ "notify",
+ "rfd",
+ "rustjay-api",
+ "rustjay-core",
+ "rustjay-engine",
+ "rustjay-io",
+ "rustjay-isf",
+ "rustjay-ledmap",
+ "rustjay-lighting",
+ "rustjay-mixer",
+ "rustjay-projection",
+ "rustjay-render",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6875,37 +6906,6 @@ dependencies = [
  "rustjay-projection",
  "serde",
  "serde_json",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "vjarda"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "egui",
- "egui_kittest",
- "env_logger",
- "hap-wgpu",
- "image",
- "log",
- "notify",
- "rfd",
- "rustjay-api",
- "rustjay-core",
- "rustjay-engine",
- "rustjay-io",
- "rustjay-isf",
- "rustjay-ledmap",
- "rustjay-lighting",
- "rustjay-mixer",
- "rustjay-projection",
- "rustjay-render",
- "serde",
- "serde_json",
- "sysinfo",
  "wgpu",
  "winit",
 ]

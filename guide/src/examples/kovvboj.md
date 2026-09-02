@@ -1,14 +1,14 @@
-# vjarda — Full Multi-Deck VJ App
+# kovvboj — Full Multi-Deck VJ App
 
-`examples/vjarda` is the flagship application built on the engine — a complete
+`crates/kovvboj` is the flagship application built on the engine — a complete
 performance tool rather than a single-effect demo. It assembles
 `rustjay-mixer`, `rustjay-isf`, `rustjay-api`, and the modulation stack into one
 runnable app.
 
 ```sh
-cargo run -p vjarda                       # default: mixer + egui + webcam + LED
-cargo run -p vjarda --features projection # add the Stage / projection-mapping output
-cargo run -p vjarda --all-features        # NDI, Syphon, ProDJ, HAP, ffmpeg, recording…
+cargo run -p kovvboj                       # default: mixer + egui + webcam + LED
+cargo run -p kovvboj --features projection # add the Stage / projection-mapping output
+cargo run -p kovvboj --all-features        # NDI, Syphon, ProDJ, HAP, ffmpeg, recording…
 ```
 
 ## What it is
@@ -16,7 +16,7 @@ cargo run -p vjarda --all-features        # NDI, Syphon, ProDJ, HAP, ffmpeg, rec
 Two (or more) **channels**, each composited through the mixer with a
 crossfader, blend modes, and transitions. Every channel is driven by a **deck
 graph**: a stack of sources and ISF effect instances you build at runtime. You
-bring `.fs` ISF shaders and video sources; vjarda handles the routing,
+bring `.fs` ISF shaders and video sources; kovvboj handles the routing,
 compositing, modulation, and output.
 
 ## Key concepts
@@ -53,6 +53,6 @@ compositing, modulation, and output.
 | LED calibration + sACN tab | `src/ui/ledmap_tab.rs` |
 | Web API snapshot types | `src/api_state.rs` |
 
-vjarda is the best reference for how the engine's pieces compose into a real
+kovvboj is the best reference for how the engine's pieces compose into a real
 app — read it alongside the [mixer](../rendering/render-graph.md) and
 [lighting](../lighting.md) chapters.
