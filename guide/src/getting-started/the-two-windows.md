@@ -19,7 +19,13 @@ When you go fullscreen, the control window stays open on whichever screen it's o
 
 ## The Control window
 
-The control window is an ImGui panel with a row of tabs. The built-in tabs are:
+The control window is an ImGui panel with a row of tabs.
+
+An app can replace this panel wholesale: [kovvboj](../examples/kovvboj.md)
+draws its own three-column egui shell (library, layer stack, inspector) and
+surfaces these tabs as windows from its View menu.
+
+The built-in tabs are:
 
 ### Input tab
 
