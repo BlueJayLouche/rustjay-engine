@@ -20,7 +20,7 @@ rustjay-engine is a Cargo workspace of focused crates that handles all the infra
 - **OSC** server
 - **Web** parameter server (REST + live push)
 - **Presets** with quick-slots (Shift+F1–F8)
-- **Multi-channel mixer** — N-deck compositing with FX chains and scene persistence
+- **Multi-channel mixer** — N-channel compositing with FX chains and scene persistence
 - **Projection mapping** — output post-processor with dome, warp, edge-blend, slicer
 - **DMX lighting output** — sACN / Art-Net with per-fixture pixel sampling
 - **ISF shaders** — load any Interactive Shader Format `.fs` at runtime
@@ -48,7 +48,7 @@ rustjay-engine/
 │   ├── rustjay-isf         # ISF shader support — GLSL→WGSL transpiler + EffectPlugin adapter
 │   ├── rustjay-api         # Optional REST/OpenAPI layer
 │   ├── ledmap-studio       # Standalone CV LED-mapping tool — calibrate strips, export ledmap.json
-│   ├── kovvboj             # Full multi-deck VJ application
+│   ├── kovvboj             # Full multi-layer VJ application
 │   └── rustjay-engine      # Facade — app runner, config, re-exports
 ├── examples/
 │   ├── template            # HSB colour + full I/O (reference app)
@@ -132,7 +132,7 @@ cargo run -p mixer         # 2-channel compositor
 cargo run -p projection    # Projection mapping
 cargo run -p videowall     # HDMI-matrix / video-wall mapper
 cargo run -p vp404         # SP-404-style video sampler
-cargo run -p kovvboj       # Full multi-deck VJ app (--all-features for NDI/Syphon/Spout)
+cargo run -p kovvboj       # Full multi-layer VJ app (--all-features for NDI/Syphon/Spout)
 cargo run -p webapp        # Web control panel (open http://localhost:3000)
 
 # Standalone CV LED-mapping tool (calibrate addressable strips over sACN):
@@ -210,7 +210,7 @@ fn build_uniforms(&self, s: &MyState, engine: &EngineState) -> MyUniforms {
 | SG-6 | ✅ | MIDI Timecode, explicit sync source selector, LFO beat-phase fix |
 | 7 | ✅ | ISF shader viewer, web remote, egui backend, user guide |
 | 8 | ✅ | Windows support — Spout I/O, NDI robustness, CI |
-| 9 | ✅ | Multi-deck VJ app (kovvboj) — mixer, FX chains, scene topology persistence |
+| 9 | ✅ | Layer-based VJ app (kovvboj) — mixer, FX chains, scene topology persistence |
 | 10 | ✅ | Projection mapping — output post-processor, headless NDI/Syphon/Spout/V4L2 sinks |
 | 11 | ✅ | DMX lighting output — sACN / Art-Net with per-fixture pixel sampling |
 

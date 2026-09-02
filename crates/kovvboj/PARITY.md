@@ -8,9 +8,17 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 
 ## Capabilities
 
+> **2026-09-02 — the layer model.** The deck/channel structure rows below
+> describe was replaced: a **layer** (one source + FX chain + opacity + blend)
+> is now a `rustjay_mixer::Channel` directly — decks and the channel post-FX
+> level are gone, and the crossfader was replaced by a master dimmer
+> (`master_dim`). See `KOVVBOJ_UI.md`, "Revision — the layer model". Rows that
+> mention decks or channels are kept as written for history; read "deck" as
+> "layer".
+
 | # | Capability | Task ID | Status |
 |---|-----------|---------|--------|
-| 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* |
+| 1 | **Routing matrix** (Sources → Decks → Channels → Mixer → Surfaces → Outputs) | T01.1–T01.4, T07.1, T08.1 | done *(deck compositor + `rustjay-mixer` channels + master chain)* — **2026-09:** decks became layers; a layer is a mixer channel, the channel level is gone |
 | 2 | **Sources — ISF** shaders (generators / filters) + hot-reload | T02.1 | done *(rustjay-isf + `EffectNode`; `notify` watcher + hot-reload recreates `EffectNode` on `.fs` change in `lib.rs::prepare`)* |
 | 3 | **Sources — video** (ffmpeg decode, loop/ping-pong/one-shot, speed, scrub, in/out) | T02.2 *(ffmpeg path)* | done *(Phase 16: `FfmpegSource` wraps `rustjay-io::FfmpegDecoder`; RGBA frames uploaded to GPU; playback params `speed`/`playing`/`loop`/`position`/`in_point`/`out_point` exposed via engine. Hardware decode is a future optimization.)* |
 | 4 | **Sources — HAP** GPU-native decode (BCn / YCoCg) | T02.2 *(HAP path)* | done *(Phase 15: `HapSource` wraps `hap-wgpu::HapPlayer`; BC-compressed textures uploaded directly to GPU; playback params `speed`/`playing`/`loop`/`position` exposed via engine. YCoCg→RGB conversion shader is a future polish item.)* |
@@ -22,11 +30,11 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 10 | **Sources — HLS / DASH** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure as SRT; protocol auto-detected from URL or explicit kind selection in UI)* |
 | 11 | **Sources — RTMP / RTMPS** receive | T02.2, T09.2 | done *(Phase 20: same `StreamDecoder`/`StreamSource` infrastructure; `assets/streams.txt` loads preset streams on startup)* |
 | 12 | **Source / effect registry** (library panel + API enumeration) | T02.4 | done *(scans ISF shaders dir + `assets_dir` for `.png`/`.jpg` images and `.mp4`/`.mov`/`.mkv`/`.avi`/`.webm` videos; HAP decode + ffmpeg decode both wired)* |
-| 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* |
-| 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* |
+| 13 | **Mixing** — N-channel compositing, A/B crossfader, per-deck opacity, 6 blend modes | T01.2, T01.3 | done *(deck compositor + `rustjay-mixer`)* — **2026-09:** crossfader removed, replaced by the `master_dim` dimmer; per-layer opacity; 15 blend modes |
+| 14 | **Transitions** — ISF shader transitions between channels | T12.1 | done *(engine `rustjay-mixer` `AutoCrossfade` / `BeatSyncCrossfade`)* — **2026-09:** engine primitives remain, but kovvboj disables the crossfader (`use_crossfader = false`) |
 | 15 | **Transitions** — deck auto-transitions (timer / clip-end triggers) | T12.1 | done *(mixer `AutoCrossfade` / `BeatSyncCrossfade` triggered from SequencerTab; timer-based via `timed_crossfade` / `timed_hold` sequencer steps)* |
 | 16 | **Transitions** — multi-channel sequencer (beat-synced or timed s/min/hr) | T12.2 | done *(SequencerTab drives `Mixer::sequencer`; beat-synced and timed step kinds both implemented in `rustjay-mixer`; pre-loaded demo sequence)* |
-| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | done *(stable FX UUID prefixes `fx<uuid>_` on deck FX; `reorder_fx`/`move_fx` APIs; per-effect enable on all 3 levels; GUI wiring is a follow-up)* |
+| 17 | **Effect chains** — 3-level hierarchy (deck / channel / master), reorder, per-effect enable | T03.1, T03.2 | done *(stable FX UUID prefixes `fx<uuid>_` on deck FX; `reorder_fx`/`move_fx` APIs; per-effect enable on all 3 levels; GUI wiring is a follow-up)* — **2026-09:** now 2 levels, per-layer and master; reorder/move by dragging chips in the chain strip |
 | 18 | **Modulation** — LFO (6 waveforms, beat-synced divisions) | T04.1 | done *(mixer `ModulationEngine` wired to crossfader, channel opacity, and deck opacity; `DeckCompositor` reads mixer modulation via shared `Arc<Mutex<ModulationEngine>>`)* |
 | 19 | **Modulation** — audio-reactive (bass/mid/treble → param) | T04.2 | done *(engine `rustjay-audio` 2048-bin FFT + `AudioBand` `ModulationSource`; demo assigns audio band to crossfader)* |
 | 20 | **Modulation** — ADSR envelope + step sequencer | T04.3 | done *(engine `ModulationSource::ADSR` / `StepSequencer`; demo assigns both to crossfader)* |
@@ -46,7 +54,7 @@ Legend: `todo` → `in-progress` → `done`. Experimental items are flagged; the
 | 34 | **Recording** — H.264, H.265, AV1, ProRes 422, HAP Q per-output | T10.1 | todo *(HAP Q encode available via local `hap-rs` workspace; H.264/H.265/AV1/ProRes via ffmpeg)* |
 | 35 | **Presets** — save/load deck and channel presets with modulation recipes | T11.2 | done *(`EffectPlugin::serialize_preset_state` / `deserialize_preset_state` / `on_preset_applied` wired; stores/restores `Scene` (mixer state + sequencer) via engine preset bank)* |
 | 36 | **Persistence** — `.kovvboj/` workspace (scene.json, stage.json, midi.json, keymap.json) | T11.1, T11.3 | done *(`.kovvboj/scene.json` = `MixerState` + sequencer; `.kovvboj/stage.json` = `KovvbojStage` (warp round-trips via `#[serde(skip)]` on `warp_sync`); `.kovvboj/keymap.json` = `Keymap`; Cmd+S in MixerTab; auto-save every 1800 frames)* |
-| 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* |
+| 37 | **GUI** — Mixer, Deck, Effects/Library, Modulation, Sequencer, MIDI, Stage, Outputs, Inspector tabs | T06.1–T06.11 | done *(non-replacing egui tabs, each with its own sidebar button via an engine-host fix in `rustjay-gui`. MixerTab: crossfader + channel opacity/blend (live, canonical ids); DeckTab: per-deck opacity/blend + deck FX toggles; EffectsTab: library list + live FX chain enable toggles; ModulationTab/MidiTab: **read-only** info panels (built-in LFO/MIDI retained); Stage/Outputs/Sequencer/Inspector stubbed. Live click-test pending)* — **2026-09:** superseded by the three-column shell (library / layer stack / inspector, MIX·STAGE·MAP modes); MixerTab and DeckTab became the layer rows and pinned MASTER row |
 | 38 | **Notifications** — toast overlay | T06.x | done *(generic `EngineState::notifications` queue + `rustjay-gui` toast overlay; Kovvboj posts toasts from deck creation and mod-on-mod assignment)* |
 | 39 | **Sysmon** — CPU/mem readout for status bar | (adhoc) | done *(`sysinfo` feature; `KovvbojRootPlugin::prepare()` refreshes every 60 frames; CPU % and MEM used/total GB in top bar)* |
 | 40 | **Dome projection** — fisheye→equirect + cubemap, lens correction, chromatic aberration | T13.1 | done *(`KovvbojDomeStage` wired into projector chain; StageTab shows dome config when surface source = Domemaster; drives `DomeSync` → projector)* 🧪 |
