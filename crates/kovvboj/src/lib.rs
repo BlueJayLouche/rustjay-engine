@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(all(feature = "mixer", feature = "api"))]
 use crate::api_state::{
-    KovvbojChannel, KovvbojDeck, KovvbojEffect, KovvbojLibrary, KovvbojSourceEntry, KovvbojStateSnapshot,
+    KovvbojChannel, KovvbojEffect, KovvbojLibrary, KovvbojSourceEntry, KovvbojStateSnapshot,
 };
 
 #[cfg(feature = "mixer")]
@@ -38,10 +38,6 @@ use crate::control::param_router::ParamRouter;
 
 #[cfg(feature = "mixer")]
 use crate::scene::Scene;
-#[cfg(all(feature = "mixer", feature = "ffmpeg"))]
-use crate::sources::FfmpegSource;
-#[cfg(feature = "hap")]
-use crate::sources::HapSource;
 #[cfg(feature = "mixer")]
 use crate::sources::{Registry, ShaderWatcher};
 
@@ -2782,34 +2778,10 @@ fn build_kovvboj_snapshot(
     let mut master_effects = Vec::new();
 
     for ch in &mixer.channels {
-        let mut decks = Vec::new();
+        // A layer has no nested decks any more; the list is kept in the API
+        // shape so existing clients keep parsing, and stays empty.
+        let decks = Vec::new();
         let mut ch_effects = Vec::new();
-
-        if let Some(compositor) = ch.effect.as_any() {
-            if let Some(compositor) = compositor.downcast_ref::<DeckCompositor>() {
-                for deck in &compositor.decks {
-                    let mut deck_effects = Vec::new();
-                    for slot in &deck.chain {
-                        deck_effects.push(KovvbojEffect {
-                            uuid: slot.uuid.clone(),
-                            name: slot.effect.label().to_string(),
-                            enabled: slot.enabled,
-                            param_prefix: format!("{}fx{}_", deck.full_prefix, slot.uuid),
-                        });
-                    }
-                    decks.push(KovvbojDeck {
-                        uuid: deck.uuid.clone(),
-                        name: deck.name.clone(),
-                        channel_uuid: ch.uuid.clone(),
-                        opacity_key: deck.opacity_key.clone(),
-                        blend_key: deck.blend_key.clone(),
-                        opacity: live(&deck.opacity_key, deck.opacity),
-                        blend: live_blend(&deck.blend_key, deck.blend_mode),
-                        effects: deck_effects,
-                    });
-                }
-            }
-        }
 
         for slot in &ch.chain {
             ch_effects.push(KovvbojEffect {

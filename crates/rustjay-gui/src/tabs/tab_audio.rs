@@ -197,7 +197,7 @@ impl ControlGui {
 
                 #[cfg(feature = "link")]
                 SyncSource::AbletonLink => {
-                    let (link_peers, link_bpm, link_phase, mut link_quantum, link_playing) = {
+                    let (link_peers, link_bpm, link_phase, link_quantum, link_playing) = {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                         (
                             state.link.num_peers,
