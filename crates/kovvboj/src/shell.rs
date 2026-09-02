@@ -80,9 +80,6 @@ pub struct KovvbojShell {
     prefs: crate::persistence::UiPrefs,
     /// One-shot: install the display font and apply the saved palette.
     initialised: bool,
-    /// Panel widths changed since the last save. Dragging an edge fires every
-    /// frame, so the write is deferred rather than done inline.
-    prefs_dirty: bool,
 }
 
 /// The KOVVBOJ display face, or monospace until it is available.
@@ -133,7 +130,6 @@ impl KovvbojShell {
             show_preview: true,
             prefs: crate::persistence::UiPrefs::default(),
             initialised: false,
-            prefs_dirty: false,
         }
     }
 
@@ -171,9 +167,51 @@ impl KovvbojShell {
         set_palette(Palette::by_id(&self.prefs.palette));
     }
 
+    /// A drag handle along one edge of a panel, returning the new width.
+    ///
+    /// Call this *after* the panel's contents: egui gives the pointer to the
+    /// last widget drawn over a spot, so a handle registered first is shadowed
+    /// by whatever is painted on top of it.
+    ///
+    /// egui's own `resizable(true)` does nothing here: the whole app is drawn
+    /// inside `run_ui`'s root `Ui` through the deprecated top-level
+    /// `Panel::show`, and the resize response never sees the pointer. The
+    /// built-in host sidesteps this by making its sidebar a fixed width. Owning
+    /// the interaction is simpler than changing how the host mounts its UI, and
+    /// it puts the width somewhere we can persist.
+    fn edge_drag(ui: &mut egui::Ui, id: &str, side: egui::Align, width: f32) -> Option<f32> {
+        use rustjay_gui::egui_theme::colors::*;
+        const GRIP: f32 = 6.0;
+        let panel = ui.max_rect();
+        let handle = match side {
+            // A right-hand panel is dragged by its left edge, and vice versa.
+            egui::Align::Min => egui::Rect::from_min_max(
+                egui::pos2(panel.right() - GRIP, panel.top()),
+                panel.right_bottom(),
+            ),
+            _ => egui::Rect::from_min_max(
+                panel.left_top(),
+                egui::pos2(panel.left() + GRIP, panel.bottom()),
+            ),
+        };
+        let resp = ui.interact(handle, ui.id().with(id), egui::Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            ui.painter().rect_filled(handle, 0.0, amber().gamma_multiply(0.5));
+        }
+        if !resp.dragged() {
+            return resp.drag_stopped().then_some(width);
+        }
+        let delta = resp.drag_delta().x;
+        let moved = match side {
+            egui::Align::Min => width + delta,
+            _ => width - delta,
+        };
+        Some(moved.clamp(140.0, (ui.ctx().content_rect().width() - 360.0).max(200.0)))
+    }
+
     /// Write UI preferences out.
     fn save_prefs(&mut self) {
-        self.prefs_dirty = false;
         if let Err(e) = crate::persistence::default_workspace().save_ui(&self.prefs) {
             log::warn!("[Shell] could not save UI prefs: {e}");
         }
@@ -239,16 +277,11 @@ impl AnyEguiShell for KovvbojShell {
 
         if self.show_library {
             #[allow(deprecated)] // top-level Panel::show, as in the built-in host
+            let mut new_width = None;
             egui::Panel::left("kovvboj_library")
-                .default_size(self.prefs.library_width)
-                .min_size(140.0)
-                .max_size(420.0)
-                .resizable(true)
+                .exact_size(self.prefs.library_width)
+                .resizable(false)
                 .show(ui, |ui| {
-                    // Children may not demand more than the panel currently has,
-                    // so dragging the edge decides the width — not the widest
-                    // label inside.
-                    ui.set_max_width(ui.available_width());
                     ui.horizontal(|ui| {
                         if ui
                             .small_button("◀")
@@ -261,14 +294,22 @@ impl AnyEguiShell for KovvbojShell {
                         }
                         ui.label(egui::RichText::new("LIBRARY").monospace().size(10.0));
                     });
-                    let width = ui.available_width();
-                    if (width - self.prefs.library_width).abs() > 1.0 {
-                        self.prefs.library_width = width;
-                        self.prefs_dirty = true;
-                    }
                     egui::ScrollArea::vertical()
                         .show(ui, |ui| tab(&mut self.library, ui, app_state, &engine));
+                    new_width = Self::edge_drag(
+                        ui,
+                        "library_resize",
+                        egui::Align::Min,
+                        self.prefs.library_width,
+                    );
                 });
+            if let Some(w) = new_width {
+                if (w - self.prefs.library_width).abs() > 0.5 {
+                    self.prefs.library_width = w;
+                } else {
+                    self.save_prefs();
+                }
+            }
         } else {
             // A thin strip to bring it back, so hiding it is not a trip to the
             // View menu.
@@ -291,24 +332,11 @@ impl AnyEguiShell for KovvbojShell {
 
         if self.show_preview {
             #[allow(deprecated)]
+            let mut new_width = None;
             egui::Panel::right("kovvboj_inspector")
-                .default_size(self.prefs.inspector_width)
-                .min_size(200.0)
-                // Capped: an ISF parameter can be named anything, and a long
-                // one used to widen this panel until the layer stack had no
-                // room left. Labels truncate inside it instead.
-                .max_size(560.0)
-                .resizable(true)
+                .exact_size(self.prefs.inspector_width)
+                .resizable(false)
                 .show(ui, |ui| {
-                    // The width you drag to is the width you keep: without this
-                    // the panel grows to whatever the widest parameter row asks
-                    // for, so selecting a different chip resized it under you.
-                    ui.set_max_width(ui.available_width());
-                    let width = ui.available_width();
-                    if (width - self.prefs.inspector_width).abs() > 1.0 {
-                        self.prefs.inspector_width = width;
-                        self.prefs_dirty = true;
-                    }
                     Self::preview(ui, host.output_preview_texture_id, &engine);
                     egui::ScrollArea::vertical()
                         .id_salt("inspector_scroll")
@@ -321,12 +349,20 @@ impl AnyEguiShell for KovvbojShell {
                                 engine.lock().unwrap_or_else(|e| e.into_inner());
                             crate::ui::draw_inspector(ui, state, &mut guard);
                         });
+                    new_width = Self::edge_drag(
+                        ui,
+                        "inspector_resize",
+                        egui::Align::Max,
+                        self.prefs.inspector_width,
+                    );
                 });
-        }
-
-        // Panel drags settle when the pointer is released; write once then.
-        if self.prefs_dirty && !ui.ctx().egui_is_using_pointer() {
-            self.save_prefs();
+            if let Some(w) = new_width {
+                if (w - self.prefs.inspector_width).abs() > 0.5 {
+                    self.prefs.inspector_width = w;
+                } else {
+                    self.save_prefs();
+                }
+            }
         }
 
         #[allow(deprecated)]
