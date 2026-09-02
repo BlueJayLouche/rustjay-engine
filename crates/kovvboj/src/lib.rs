@@ -193,6 +193,18 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub audio_routing_snapshot: rustjay_core::AudioRoutingState,
+    /// Library entry ids the user starred; these sort to the top of their
+    /// category. Persisted to `.kovvboj/favourites.json` as they are toggled.
+    #[serde(skip)]
+    pub favourites: std::collections::HashSet<String>,
+    /// Layers saved to the library, re-read when one is added or removed.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub saved_layers: Vec<crate::scene::SavedLayer>,
+    /// A layer the user asked to save, handled where the mixer is reachable.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_layer_save: Option<(String, String)>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -210,6 +222,9 @@ pub struct KovvbojAppState {
 pub struct PendingLayer {
     /// Source entry from the library registry.
     pub source: crate::sources::SourceEntry,
+    /// A saved layer to rebuild instead of a bare source: its FX chain, mix
+    /// settings, and parameter values. `None` for a plain library ➕.
+    pub saved: Option<crate::scene::SavedLayer>,
 }
 
 /// An FX slot queued for removal.
@@ -570,6 +585,11 @@ impl Default for KovvbojAppState {
             param_snapshot: std::collections::HashMap::new(),
             #[cfg(feature = "mixer")]
             audio_routing_snapshot: rustjay_core::AudioRoutingState::default(),
+            favourites: std::collections::HashSet::new(),
+            #[cfg(feature = "mixer")]
+            saved_layers: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_layer_save: None,
             #[cfg(feature = "mixer")]
             param_bases_cache: Vec::new(),
             workspace: crate::persistence::default_workspace(),
@@ -1395,6 +1415,8 @@ impl EffectPlugin for KovvbojRootPlugin {
             #[cfg(feature = "mixer")]
             {
                 state.engine_modulation = Some(engine.modulation.clone());
+                state.favourites = state.workspace.load_favourites();
+                state.saved_layers = state.workspace.load_layers();
 
                 // Restore the modulation snapshot loaded from the workspace scene
                 // in `init()` (topology already rebuilt there, so the param keys
@@ -1881,12 +1903,44 @@ impl EffectPlugin for KovvbojRootPlugin {
             // New layers.
             let pending: Vec<PendingLayer> = std::mem::take(&mut state.pending_layers);
             for req in pending {
-                let uuid = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-                match instantiate_source(&req.source, device, queue, engine) {
+                let uuid = crate::scene::new_uuid();
+                // A saved layer brings its own identity, mix settings and FX;
+                // the source it names is resolved the same way as any other.
+                let rebuilt = req.saved.as_ref().map(|saved| saved.instantiate(&uuid));
+                let base = crate::scene::topology_base();
+                let mut entry = req.source.clone();
+                if rebuilt.is_some()
+                    && let Some(path) = entry.path.take()
+                {
+                    entry.path = Some(crate::scene::resolve(&path, &base));
+                }
+                match instantiate_source(&entry, device, queue, engine) {
                     Ok(mut source) => {
                         source.set_param_prefix(&format!("ch_{uuid}_"));
                         let mut channel = Channel::new(uuid.clone(), &req.source.name, source);
                         channel.opacity = 1.0;
+                        if let Some((desc, params)) = &rebuilt {
+                            channel.opacity = desc.opacity;
+                            channel.blend_mode = desc.blend_mode;
+                            channel.solo = desc.solo;
+                            channel.mute = desc.mute;
+                            let prefix = format!("ch_{uuid}_");
+                            for fx in &desc.fx {
+                                if let Some(mut slot) =
+                                    build_fx_slot(fx, &base, device, queue, engine)
+                                {
+                                    slot.effect
+                                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
+                                    channel.chain.push(slot);
+                                }
+                            }
+                            // Values are applied by the engine once the rebuilt
+                            // chain's parameters have registered — the same
+                            // route a scene load takes.
+                            if let Ok(mut restore) = engine.param_restore.lock() {
+                                restore.extend(params.iter().map(|(k, v)| (k.clone(), *v)));
+                            }
+                        }
                         let name = req.source.name.clone();
                         let Ok(mut mixer) = state.mixer.lock() else {
                             continue;
@@ -1919,6 +1973,45 @@ impl EffectPlugin for KovvbojRootPlugin {
                 }
             }
 
+
+            if let Some((uuid, name)) = state.pending_layer_save.take() {
+                let desc = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                        .layers
+                        .into_iter()
+                        .find(|l| l.uuid == uuid)
+                };
+                match desc {
+                    Some(desc) => {
+                        let saved = crate::scene::SavedLayer::capture(
+                            name.clone(),
+                            desc,
+                            &state.param_snapshot,
+                        );
+                        match state.workspace.save_layer(&saved) {
+                            Ok(_) => {
+                                state.saved_layers = state.workspace.load_layers();
+                                engine.notify(
+                                    format!("Saved layer '{name}' to the library"),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => engine.notify(
+                                format!("Could not save '{name}': {e}"),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(5),
+                            ),
+                        }
+                    }
+                    None => engine.notify(
+                        format!("Layer '{name}' is no longer there to save"),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(4),
+                    ),
+                }
+            }
 
             let pending_effects: Vec<PendingEffect> = std::mem::take(&mut state.pending_effects);
             let mut mixer_guard = (!pending_effects.is_empty())

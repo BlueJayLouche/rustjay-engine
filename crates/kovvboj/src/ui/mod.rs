@@ -803,6 +803,7 @@ mod egui_impl {
                 path: Some(std::path::PathBuf::from(url)),
                 device_index: 0,
             },
+            saved: None,
         });
         engine.notify(
             format!("Queued stream '{}' for creation", name),
@@ -982,6 +983,42 @@ mod egui_impl {
 
         ui.label(egui::RichText::new(&heading).strong().monospace());
         ui.separator();
+
+        // Save the whole layer — source, chain, mix settings and every
+        // parameter value — into the library, to be dropped into any scene.
+        #[cfg(feature = "mixer")]
+        if let crate::Selection::Layer { layer } | crate::Selection::Source { layer } = &selection {
+            let layer = layer.clone();
+            let name = {
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                mixer
+                    .channels
+                    .iter()
+                    .find(|c| c.uuid == layer)
+                    .map(|c| c.name.clone())
+            };
+            if let Some(name) = name {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("💾 Save to library")
+                        .on_hover_text("Keep this layer, chain and all, to reuse later")
+                        .clicked()
+                    {
+                        state.pending_layer_save = Some((layer.clone(), name.clone()));
+                    }
+                    let known = state.saved_layers.iter().any(|s| s.name == name);
+                    if known {
+                        ui.label(
+                            egui::RichText::new("saved")
+                                .size(10.0)
+                                .color(rustjay_gui::egui_theme::colors::ink_4()),
+                        )
+                        .on_hover_text("A saved layer of this name will be replaced");
+                    }
+                });
+                ui.separator();
+            }
+        }
 
         // A device layer can be re-pointed while it runs: servers and senders
         // come and go, and the layer (with its chain and bindings) should
@@ -1442,6 +1479,17 @@ mod egui_impl {
                     };
                     let mut queue_layer: Option<crate::PendingLayer> = None;
                     let mut queue_fx: Option<crate::PendingEffect> = None;
+                    // Cloned so the row closure can read them while `state` is
+                    // borrowed by the registry iteration; the toggle is applied
+                    // afterwards, as with the queues above.
+                    let favourites = state.favourites.clone();
+                    let mut toggle_fav: Option<String> = None;
+                    let mut queue_layer_delete: Option<String> = None;
+                    // Separate from the pair above: `row` holds those mutably
+                    // for as long as it lives, and the saved-layer rows are
+                    // drawn while it does. Merged once it is out of scope.
+                    let mut queue_saved: Option<crate::PendingLayer> = None;
+                    let mut toggle_fav_saved: Option<String> = None;
                     // One library row: label (optionally a drag source for FX
                     // strips) plus the "➕ new deck" button.
                     // Two verbs. A source's ➕ makes a layer; an effect's ➕
@@ -1452,6 +1500,25 @@ mod egui_impl {
                                    entry: &crate::sources::SourceEntry,
                                    is_effect: bool| {
                         ui.horizontal(|ui| {
+                            // The star leads: the panel's right edge already
+                            // carries the scroll bar and the resize grip, and a
+                            // star tucked under either is unclickable.
+                            let starred = favourites.contains(&entry.id);
+                            if ui
+                                .add(
+                                    egui::Button::new(if starred { "★" } else { "☆" })
+                                        .small()
+                                        .frame(false),
+                                )
+                                .on_hover_text(if starred {
+                                    "Remove from favourites"
+                                } else {
+                                    "Favourite — keeps it at the top"
+                                })
+                                .clicked()
+                            {
+                                toggle_fav = Some(entry.id.clone());
+                            }
                             // Right-to-left so ➕ claims its space first and a
                             // long name truncates. Laid out the other way round,
                             // an NDI source named after a hostname pushed the
@@ -1487,6 +1554,7 @@ mod egui_impl {
                                     {
                                         queue_layer = Some(crate::PendingLayer {
                                             source: entry.clone(),
+                                            saved: None,
                                         });
                                     }
 
@@ -1568,34 +1636,127 @@ mod egui_impl {
                         });
                     };
 
+                    // Favourites rise to the top of their own category. A
+                    // stable sort, so everything else keeps the order the
+                    // category chose (discovered devices before generic ones,
+                    // shaders alphabetical).
+                    fn starred_first<'a>(
+                        mut v: Vec<&'a crate::sources::SourceEntry>,
+                        favs: &std::collections::HashSet<String>,
+                    ) -> Vec<&'a crate::sources::SourceEntry> {
+                        v.sort_by_key(|e| !favs.contains(&e.id));
+                        v
+                    }
+
+                    // Layers saved from the stack, offered before anything else
+                    // — they are the user's own, and the most specific thing in
+                    // the library.
+                    #[cfg(feature = "mixer")]
+                    if !state.saved_layers.is_empty() {
+                        heading(ui, "LAYERS", "➕ new layer");
+                        let mut saved: Vec<&crate::scene::SavedLayer> =
+                            state.saved_layers.iter().collect();
+                        saved.sort_by_key(|s| !favourites.contains(&s.name));
+                        for saved in saved {
+                            ui.horizontal(|ui| {
+                                let starred = favourites.contains(&saved.name);
+                                if ui
+                                    .add(
+                                        egui::Button::new(if starred { "★" } else { "☆" })
+                                            .small()
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    toggle_fav_saved = Some(saved.name.clone());
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .small_button("✖")
+                                            .on_hover_text("Delete this saved layer")
+                                            .clicked()
+                                        {
+                                            queue_layer_delete = Some(saved.name.clone());
+                                        }
+                                        if ui
+                                            .small_button("➕")
+                                            .on_hover_text("New layer from this saved one")
+                                            .clicked()
+                                        {
+                                            queue_saved = Some(crate::PendingLayer {
+                                                source: saved.layer.source.clone(),
+                                                saved: Some((*saved).clone()),
+                                            });
+                                        }
+                                        let fx = saved.layer.fx.len();
+                                        // The source's own icon, so a saved
+                                        // layer reads like the rest of the
+                                        // library rather than a foreign glyph.
+                                        let text = format!(
+                                            "{} {}",
+                                            source_icon(saved.layer.source.kind),
+                                            saved.name
+                                        );
+                                        let size = egui::vec2(
+                                            ui.available_width(),
+                                            ui.spacing().interact_size.y,
+                                        );
+                                        ui.allocate_ui_with_layout(
+                                            size,
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(egui::Label::new(text).truncate())
+                                                    .on_hover_text(format!(
+                                                        "{} · {} effect{}",
+                                                        saved.layer.source.name,
+                                                        fx,
+                                                        if fx == 1 { "" } else { "s" }
+                                                    ));
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                        ui.add_space(4.0);
+                    }
+
                     // Live inputs: cameras, plus NDI/Syphon/Spout. The generic
                     // entries come last in each kind so the discovered ones read
                     // first.
                     heading(ui, "DEVICES", "➕ new layer");
-                    for entry in state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| is_device(e) && !is_generic_device(e))
-                        .chain(
-                            state
-                                .registry
-                                .builtins
-                                .iter()
-                                .filter(|e| is_device(e) && is_generic_device(e)),
-                        )
-                    {
+                    for entry in starred_first(
+                        state
+                            .registry
+                            .builtins
+                            .iter()
+                            .filter(|e| is_device(e) && !is_generic_device(e))
+                            .chain(
+                                state
+                                    .registry
+                                    .builtins
+                                    .iter()
+                                    .filter(|e| is_device(e) && is_generic_device(e)),
+                            )
+                            .collect(),
+                        &favourites,
+                    ) {
                         row(ui, entry, false);
                     }
 
                     // Files and streams.
-                    let media: Vec<&crate::sources::SourceEntry> = state
-                        .registry
-                        .images
-                        .iter()
-                        .chain(state.registry.videos.iter())
-                        .chain(state.registry.streams.iter())
-                        .collect();
+                    let media: Vec<&crate::sources::SourceEntry> = starred_first(
+                        state
+                            .registry
+                            .images
+                            .iter()
+                            .chain(state.registry.videos.iter())
+                            .chain(state.registry.streams.iter())
+                            .collect(),
+                        &favourites,
+                    );
                     if !media.is_empty() {
                         ui.add_space(4.0);
                         heading(ui, "MEDIA", "➕ new layer");
@@ -1607,23 +1768,59 @@ mod egui_impl {
                     // Shaders that generate rather than filter.
                     ui.add_space(4.0);
                     heading(ui, "GENERATORS", "➕ new layer");
-                    for entry in state
-                        .registry
-                        .builtins
-                        .iter()
-                        .filter(|e| !is_device(e))
-                        .chain(state.registry.shaders.iter().filter(|e| !is_effect(e)))
-                    {
+                    for entry in starred_first(
+                        state
+                            .registry
+                            .builtins
+                            .iter()
+                            .filter(|e| !is_device(e))
+                            .chain(state.registry.shaders.iter().filter(|e| !is_effect(e)))
+                            .collect(),
+                        &favourites,
+                    ) {
                         row(ui, entry, false);
                     }
 
                     // EFFECTS — filters, which need something to filter.
                     ui.add_space(4.0);
                     heading(ui, "EFFECTS", "➕ to selected layer");
-                    for entry in state.registry.shaders.iter().filter(|e| is_effect(e)) {
+                    for entry in
+                        starred_first(
+                            state.registry.shaders.iter().filter(|e| is_effect(e)).collect(),
+                            &favourites,
+                        )
+                    {
                         row(ui, entry, true);
                     }
 
+                    let toggle_fav = toggle_fav.or(toggle_fav_saved);
+                    let queue_layer = queue_layer.or(queue_saved);
+                    if let Some(id) = toggle_fav {
+                        if !state.favourites.remove(&id) {
+                            state.favourites.insert(id);
+                        }
+                        if let Err(e) = state.workspace.save_favourites(&state.favourites) {
+                            log::warn!("[Library] could not save favourites: {e}");
+                        }
+                    }
+                    #[cfg(feature = "mixer")]
+                    if let Some(name) = queue_layer_delete {
+                        match state.workspace.delete_layer(&name) {
+                            Ok(()) => {
+                                state.saved_layers = state.workspace.load_layers();
+                                engine.notify(
+                                    format!("Deleted saved layer '{name}'"),
+                                    rustjay_core::NotificationLevel::Info,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => engine.notify(
+                                format!("Could not delete '{name}': {e}"),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            ),
+                        }
+                    }
                     if let Some(req) = queue_layer {
                         let name = req.source.name.clone();
                         state.pending_layers.push(req);
@@ -1668,6 +1865,7 @@ mod egui_impl {
                             path: Some(path),
                             device_index: 0,
                         },
+                        saved: None,
                     });
                 }
             }

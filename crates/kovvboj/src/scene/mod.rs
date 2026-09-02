@@ -183,6 +183,98 @@ pub struct Topology {
     pub master_fx: Vec<FxDesc>,
 }
 
+/// One layer saved to the library, to be dropped into any scene later.
+///
+/// The uuids inside `layer` are the ones it had when saved; recall replaces
+/// them so the same saved layer can be added twice without two channels
+/// claiming one parameter prefix. `params` is keyed by the *saved* prefixes and
+/// is rekeyed to match.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedLayer {
+    #[serde(default)]
+    pub version: u32,
+    /// What the library shows.
+    pub name: String,
+    /// Source, mix settings, and FX chain.
+    pub layer: LayerDesc,
+    /// Base values for everything under the layer's prefix.
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, f32>,
+}
+
+#[cfg(feature = "mixer")]
+impl SavedLayer {
+    /// Capture one live layer, with the params belonging to it.
+    ///
+    /// `params` is the whole scene's snapshot; only keys under this layer's
+    /// `ch_<uuid>_` prefix are kept, so a saved layer carries its own settings
+    /// and nothing else.
+    pub fn capture(
+        name: String,
+        layer: LayerDesc,
+        params: &std::collections::HashMap<String, f32>,
+    ) -> Self {
+        let prefix = format!("ch_{}_", layer.uuid);
+        Self {
+            version: SAVED_LAYER_VERSION,
+            name,
+            params: params
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            layer,
+        }
+    }
+
+    /// Rewrite this layer's identity for a fresh instance, returning the params
+    /// already rekeyed to match. Called on recall.
+    pub fn instantiate(
+        &self,
+        uuid: &str,
+    ) -> (LayerDesc, std::collections::HashMap<String, f32>) {
+        let mut layer = self.layer.clone();
+        let old_prefix = format!("ch_{}_", layer.uuid);
+        let new_prefix = format!("ch_{uuid}_");
+        layer.uuid = uuid.to_string();
+
+        // Each FX slot needs a fresh uuid too, for the same reason the layer
+        // does — its params live under `…fx<uuid>_`.
+        let mut fx_renames = Vec::new();
+        for fx in &mut layer.fx {
+            let fresh = new_uuid();
+            fx_renames.push((format!("fx{}_", fx.uuid), format!("fx{fresh}_")));
+            fx.uuid = fresh;
+        }
+
+        let params = self
+            .params
+            .iter()
+            .filter_map(|(key, value)| {
+                let tail = key.strip_prefix(&old_prefix)?;
+                let tail = fx_renames
+                    .iter()
+                    .find_map(|(from, to)| tail.strip_prefix(from.as_str()).map(|r| format!("{to}{r}")))
+                    .unwrap_or_else(|| tail.to_string());
+                Some((format!("{new_prefix}{tail}"), *value))
+            })
+            .collect();
+
+        (layer, params)
+    }
+}
+
+/// Short identity, matching the form used for layers and FX slots elsewhere.
+#[cfg(feature = "mixer")]
+pub fn new_uuid() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+}
+
+/// Current saved-layer format.
+#[cfg(feature = "mixer")]
+pub const SAVED_LAYER_VERSION: u32 = 1;
+
 /// Current topology format. Bumped when the graph shape changes in a way older
 /// files cannot express.
 #[cfg(feature = "mixer")]
@@ -310,6 +402,88 @@ mod tests {
         let json = serde_json::to_string(&scene_with_routes(3)).expect("serialise");
         let back: Scene = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back.audio_routing.matrix.len(), 3);
+    }
+
+    fn desc_with_fx(uuid: &str, fx: &[&str]) -> LayerDesc {
+        LayerDesc {
+            uuid: uuid.to_string(),
+            name: "Cam + Blur".into(),
+            source: crate::sources::SourceEntry {
+                id: "cam".into(),
+                name: "Camera".into(),
+                kind: crate::sources::SourceKind::Camera,
+                path: None,
+                device_index: 0,
+            },
+            opacity: 0.5,
+            blend_mode: rustjay_mixer::BlendMode::Add,
+            solo: false,
+            mute: true,
+            fx: fx
+                .iter()
+                .map(|u| FxDesc {
+                    uuid: (*u).to_string(),
+                    path: "blur.fs".into(),
+                    enabled: true,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_saved_layer_keeps_only_its_own_params() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("ch_aaa_opacity".to_string(), 0.25);
+        params.insert("ch_aaa_fx111_amount".to_string(), 0.75);
+        params.insert("ch_bbb_opacity".to_string(), 1.0); // another layer
+        let saved = SavedLayer::capture("Cam".into(), desc_with_fx("aaa", &["111"]), &params);
+        assert_eq!(saved.params.len(), 2);
+        assert!(saved.params.keys().all(|k| k.starts_with("ch_aaa_")));
+    }
+
+    /// Recall must not reuse the saved identity, or adding the same layer twice
+    /// would give two channels one parameter prefix.
+    #[test]
+    fn recall_rekeys_the_layer_and_every_fx_slot() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("ch_aaa_opacity".to_string(), 0.25);
+        params.insert("ch_aaa_fx111_amount".to_string(), 0.75);
+        params.insert("ch_aaa_fx222_amount".to_string(), 0.5);
+        let saved =
+            SavedLayer::capture("Cam".into(), desc_with_fx("aaa", &["111", "222"]), &params);
+
+        let (desc, keyed) = saved.instantiate("zzz");
+        assert_eq!(desc.uuid, "zzz");
+        assert_eq!(desc.opacity, 0.5, "mix settings come back");
+        assert!(desc.mute);
+        assert_eq!(desc.fx.len(), 2);
+
+        // Fresh slot ids, and the params follow them.
+        assert!(desc.fx.iter().all(|f| f.uuid != "111" && f.uuid != "222"));
+        assert_eq!(keyed.len(), 3);
+        assert_eq!(keyed.get("ch_zzz_opacity"), Some(&0.25));
+        assert_eq!(
+            keyed.get(&format!("ch_zzz_fx{}_amount", desc.fx[0].uuid)),
+            Some(&0.75)
+        );
+        assert_eq!(
+            keyed.get(&format!("ch_zzz_fx{}_amount", desc.fx[1].uuid)),
+            Some(&0.5)
+        );
+
+        // Two recalls must not collide.
+        let (other, _) = saved.instantiate("yyy");
+        assert_ne!(other.fx[0].uuid, desc.fx[0].uuid);
+    }
+
+    #[test]
+    fn a_saved_layer_round_trips_through_json() {
+        let saved = SavedLayer::capture("Cam".into(), desc_with_fx("aaa", &["111"]), &Default::default());
+        let json = serde_json::to_string(&saved).expect("serialise");
+        let back: SavedLayer = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.name, "Cam");
+        assert_eq!(back.layer.fx.len(), 1);
+        assert_eq!(back.layer.blend_mode, rustjay_mixer::BlendMode::Add);
     }
 
     /// A scene written before routes were persisted must not look like it

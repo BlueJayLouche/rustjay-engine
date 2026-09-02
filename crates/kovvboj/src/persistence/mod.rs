@@ -65,6 +65,95 @@ impl Workspace {
         std::fs::create_dir_all(&self.dir)
     }
 
+    /// Where saved layers live, one JSON file each so they can be copied
+    /// between workspaces by hand.
+    pub fn layers_dir(&self) -> PathBuf {
+        self.dir.join("layers")
+    }
+
+    pub fn favourites_path(&self) -> PathBuf {
+        self.dir.join("favourites.json")
+    }
+
+    /// Ids of library entries the user starred. A missing or unreadable file
+    /// just means none.
+    pub fn load_favourites(&self) -> std::collections::HashSet<String> {
+        std::fs::read_to_string(self.favourites_path())
+            .ok()
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_favourites(
+        &self,
+        favourites: &std::collections::HashSet<String>,
+    ) -> anyhow::Result<()> {
+        self.ensure_dir()?;
+        // Sorted, so the file does not churn between runs for no reason.
+        let mut ids: Vec<&String> = favourites.iter().collect();
+        ids.sort();
+        std::fs::write(
+            self.favourites_path(),
+            serde_json::to_string_pretty(&ids)?,
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "mixer")]
+impl Workspace {
+    /// Write a saved layer, returning the file it landed in. The name is
+    /// slugified so a layer called "Cam / Blur" cannot escape the directory.
+    pub fn save_layer(&self, layer: &crate::scene::SavedLayer) -> anyhow::Result<PathBuf> {
+        std::fs::create_dir_all(self.layers_dir())?;
+        let slug: String = layer
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        let slug = slug.trim_matches('_').to_string();
+        let slug = if slug.is_empty() { "layer".to_string() } else { slug };
+        let path = self.layers_dir().join(format!("{slug}.json"));
+        std::fs::write(&path, serde_json::to_string_pretty(layer)?)?;
+        Ok(path)
+    }
+
+    /// Every saved layer on disk, name-sorted. Unreadable files are skipped
+    /// rather than failing the whole listing.
+    pub fn load_layers(&self) -> Vec<crate::scene::SavedLayer> {
+        let mut out: Vec<crate::scene::SavedLayer> = std::fs::read_dir(self.layers_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(|e| {
+                let text = std::fs::read_to_string(e.path()).ok()?;
+                match serde_json::from_str(&text) {
+                    Ok(layer) => Some(layer),
+                    Err(err) => {
+                        log::warn!("[Layers] skipping {}: {err}", e.path().display());
+                        None
+                    }
+                }
+            })
+            .collect();
+        out.sort_by_key(|l| l.name.to_lowercase());
+        out
+    }
+
+    /// Remove a saved layer by name, matching how it was written.
+    pub fn delete_layer(&self, name: &str) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(self.layers_dir())?.flatten() {
+            let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            if let Ok(saved) = serde_json::from_str::<crate::scene::SavedLayer>(&text)
+                && saved.name == name
+            {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn save_scene(&self, scene: &Scene) -> anyhow::Result<()> {
         self.ensure_dir()?;
         let path = self.scene_path();
