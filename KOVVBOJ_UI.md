@@ -137,3 +137,79 @@ visibility persisted to the workspace, snapshot re-baseline.
 On-disk workspace stays `.varda/` (`persistence/mod.rs:111`). Zero migration,
 hidden directory, nobody sees it. Say the word and it becomes `.kovvboj/` with
 a one-line fallback read of `.varda/`.
+
+---
+
+# Revision — the layer model (2026-09-02)
+
+The deck/channel structure built in P1–P4 was incoherent, and this supersedes
+it. What was wrong, from the code rather than the plan:
+
+- Three FX levels (deck, channel post, master) drawn with identical strips.
+- Two hard-coded channels, A and B, with no way to add or remove one.
+- Decks could not be reordered — compositing order, the most consequential
+  ordering in the app, was fixed at creation, while FX order dragged freely.
+- `➕` on any library row created a **deck** with that entry as its source, so
+  clicking it on a filter produced a layer whose source has no input.
+
+## The model
+
+**A layer is one visual: a source, its FX chain, an opacity and a blend mode
+against the layers beneath.** Top composites over bottom. That is the whole
+structure — no channels, no decks.
+
+```
+MASTER  dim ████████░░   ─[Bloom]─[LUT]─▶ out
+
+≡  camera        [S][M]   op ███░  nrm  ✕
+   [▶ CAM 0]─[Blur]─[Kaleido]─[+]
+
+≡  waves         [S][M]   op ██░░  add  ✕
+   [▶ waves]─[+]
+```
+
+Two places FX live, not three: per layer, and master.
+
+## Mapping
+
+A layer **is** a `rustjay_mixer::Channel` — source in `effect`, FX in `chain`,
+with `opacity`, `blend_mode`, `solo`, `mute` and keying already on it. The
+mixer already composites N channels by opacity and blend; `DeckCompositor` was
+a second layer stack invented on top of the engine's own.
+
+Deleted: `DeckCompositor`, `Deck`, `ChainRef::Deck`, `Selection::Deck` /
+`DeckFx` / `ChannelFx`, the crossfader, the channel post-FX level, and the
+library's "Add to: Channel" selector.
+
+Added: channel reordering in `rustjay-mixer`; a master dimmer replacing the
+crossfader; `➕`/drag verbs that differ by kind.
+
+**The crossfader must go, not just be hidden.** `Mixer::effective_opacities`
+special-cases exactly two channels and scales both by the crossfader — so a
+two-layer stack would silently render at half brightness.
+
+## Library
+
+One panel, two sections, different verbs:
+
+- **SOURCES** — cameras, NDI, Syphon/Spout, videos, images, generator ISF,
+  solid colour. `➕` makes a new layer; drag inserts one at a position.
+- **EFFECTS** — filter ISF only (declares an `inputImage`). `➕` appends to the
+  selected layer's chain; drag drops into any chain.
+
+A filter can no longer become a source-less layer.
+
+## Saved scenes
+
+Topology gains a version. An older scene loads its params and stage but starts
+with an empty stack and says why; the file is left untouched. Flattening is
+lossy — a channel's post-FX ran once on the composite of its decks, and once
+those decks are sibling layers there is no honest equivalent.
+
+## What survives from P1–P4
+
+The shell, palette and font; the chain strip, chips and drag-and-drop;
+`rekey_prefix`; undo/redo; and the three bug fixes (ISF Y-flip, egui texture
+delta, shared-camera frames). `ChainRef` collapses to `Layer` / `Master` and
+`Selection` to `Layer` / `LayerFx` / `MasterFx`; `move_effect` stays and gets
+simpler. P5 (thumbnails) and P6 (modes, outputs, re-baseline) are unaffected.
