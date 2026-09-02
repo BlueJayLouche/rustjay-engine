@@ -308,6 +308,15 @@ pub struct Mixer {
     pub channels: Vec<Channel>,
     /// Ignored when `channels.len() != 2`.
     pub crossfader: f32,
+    /// Whether the crossfader scales the two channel opacities when there are
+    /// exactly two channels.
+    ///
+    /// A host that treats channels as a free-standing layer stack turns this
+    /// off: otherwise a stack that happens to hold exactly two layers renders
+    /// both at half opacity, which reads as a mysterious dimming rather than a
+    /// crossfade. Defaults to `true`, preserving the A/B behaviour every
+    /// existing host relies on.
+    pub use_crossfader: bool,
     /// Master effect chain (REQ-06).
     pub master: Vec<EffectSlot>,
     pub auto: Option<AutoCrossfade>,
@@ -334,6 +343,7 @@ impl Mixer {
         Self {
             channels: Vec::new(),
             crossfader: 0.5,
+            use_crossfader: true,
             master: Vec::new(),
             auto: None,
             beat_sync: None,
@@ -401,12 +411,26 @@ impl Mixer {
         self.master.insert(to, slot);
     }
 
+    /// Move the channel at `from` to `to`, shifting the rest.
+    ///
+    /// Channels composite in order, so for a host that presents them as layers
+    /// this is the restack operation. Out-of-range indices are ignored; uuids
+    /// are untouched, so parameter prefixes and modulation survive the move.
+    pub fn reorder_channel(&mut self, from: usize, to: usize) {
+        if from >= self.channels.len() || from == to {
+            return;
+        }
+        let to = to.min(self.channels.len() - 1);
+        let channel = self.channels.remove(from);
+        self.channels.insert(to, channel);
+    }
+
     /// Effective per-channel opacity for the current frame (REQ-02.4).
     ///
     /// With exactly 2 channels the crossfader scales the two opacities; otherwise
     /// each channel's own opacity is used directly.
     pub fn effective_opacities(&self) -> Vec<f32> {
-        if self.channels.len() == 2 {
+        if self.use_crossfader && self.channels.len() == 2 {
             vec![
                 if self.channels[0].active {
                     (1.0 - self.crossfader) * self.channels[0].opacity
@@ -971,5 +995,51 @@ mod tests {
         // Mixer::new() should compile and not contain a modulation field.
         assert!(mixer.channels.is_empty());
         assert_eq!(mixer.crossfader, 0.5);
+    }
+
+    /// A host presenting channels as layers turns the crossfader off, or a
+    /// two-layer stack renders both layers at half opacity.
+    #[test]
+    fn use_crossfader_false_leaves_two_channel_opacities_alone() {
+        let mut mixer = Mixer::new();
+        mixer.add_channel(Channel::new("a", "A", Box::new(Stub))).unwrap();
+        mixer.add_channel(Channel::new("b", "B", Box::new(Stub))).unwrap();
+        mixer.channels[0].opacity = 1.0;
+        mixer.channels[1].opacity = 1.0;
+        mixer.crossfader = 0.5;
+
+        // Default: the A/B behaviour every existing host relies on.
+        assert_eq!(mixer.effective_opacities(), vec![0.5, 0.5]);
+
+        mixer.use_crossfader = false;
+        assert_eq!(
+            mixer.effective_opacities(),
+            vec![1.0, 1.0],
+            "layers must composite at their own opacity"
+        );
+    }
+
+    #[test]
+    fn reorder_channel_restacks_and_ignores_bad_indices() {
+        let mut mixer = Mixer::new();
+        for id in ["a", "b", "c"] {
+            mixer.add_channel(Channel::new(id, id, Box::new(Stub))).unwrap();
+        }
+        let ids = |m: &Mixer| m.channels.iter().map(|c| c.uuid.clone()).collect::<Vec<_>>();
+
+        mixer.reorder_channel(0, 2);
+        assert_eq!(ids(&mixer), ["b", "c", "a"], "moved to the end");
+
+        mixer.reorder_channel(2, 0);
+        assert_eq!(ids(&mixer), ["a", "b", "c"], "and back to the front");
+
+        // Out of range, or a no-op move, must leave the stack untouched.
+        mixer.reorder_channel(9, 0);
+        mixer.reorder_channel(1, 1);
+        assert_eq!(ids(&mixer), ["a", "b", "c"]);
+
+        // Clamped rather than panicking.
+        mixer.reorder_channel(0, 99);
+        assert_eq!(ids(&mixer), ["b", "c", "a"]);
     }
 }
