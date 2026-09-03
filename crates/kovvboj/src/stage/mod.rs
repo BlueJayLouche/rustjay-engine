@@ -293,6 +293,16 @@ pub struct KovvbojStage {
     #[cfg(feature = "projection")]
     #[serde(skip)]
     pub warp_syncs: Vec<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
+    /// Per-headless-output warp and crop state, mirroring `warp_syncs` and
+    /// `source_syncs`. A headless output ran an `IdentityStage` and got no
+    /// geometry published to it, so a surface assigned to one was stored,
+    /// saved, and then ignored — the output emitted the raw master.
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub headless_warp_syncs: Vec<std::sync::Arc<std::sync::Mutex<WarpSync>>>,
+    #[cfg(feature = "projection")]
+    #[serde(skip)]
+    pub headless_source_syncs: Vec<std::sync::Arc<std::sync::Mutex<SourceSync>>>,
     /// Shared dome state, read by [`KovvbojDomeStage`]. Injected by the plugin.
     #[cfg(feature = "projection")]
     #[serde(skip)]
@@ -328,6 +338,10 @@ impl KovvbojStage {
             cached_source_options: Vec::new(),
             #[cfg(feature = "projection")]
             warp_syncs: Vec::new(),
+            #[cfg(feature = "projection")]
+            headless_warp_syncs: Vec::new(),
+            #[cfg(feature = "projection")]
+            headless_source_syncs: Vec::new(),
             #[cfg(feature = "projection")]
             dome_sync: None,
             #[cfg(feature = "projection")]
@@ -432,6 +446,25 @@ impl KovvbojStage {
                 }
             } else {
                 log::warn!("[publish_warp] proj {} has no warp_sync", i);
+            }
+        }
+
+        // Headless outputs carry a `surface_index` too, and until now nothing
+        // read it: they rendered the master untouched however the surface was
+        // warped.
+        for (i, hl) in self.headless_outputs.iter().enumerate() {
+            let Some(sync) = self.headless_warp_syncs.get(i) else {
+                continue;
+            };
+            let surface = hl
+                .surface_index
+                .and_then(|idx| self.surfaces.get(idx))
+                .or_else(|| self.surfaces.first());
+            if let Some(surf) = surface
+                && let Ok(mut g) = sync.lock()
+            {
+                g.mode = surf.warp.clone();
+                g.version = g.version.wrapping_add(1);
             }
         }
     }

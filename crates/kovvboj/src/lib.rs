@@ -1339,6 +1339,87 @@ impl KovvbojRootPlugin {
     }
 }
 
+
+/// Point one output's source stage at the surface assigned to it.
+///
+/// Shared by projector windows and headless outputs: both carry a
+/// `surface_index`, and until this was factored out only projectors consumed
+/// theirs, so a surface assigned to a headless output was stored, saved, and
+/// then ignored while the output emitted the raw master.
+#[cfg(all(feature = "projection", feature = "mixer"))]
+fn sync_surface_source(
+    sync: &std::sync::Arc<std::sync::Mutex<crate::stage::SourceSync>>,
+    surface: Option<&crate::stage::KovvbojSurface>,
+    mixer: &Mixer,
+) {
+    use crate::stage::SurfaceSource;
+
+    let source_key = surface.map(|s| s.source.label());
+    // Cropping is driven solely by the surface's `uv_crop_rect`
+    // (its position/size box over the master, kept in sync with
+    // the surface rectangle in the Stage tab). The cropped region
+    // fills the output quad, matching the Stage-tab canvas.
+    let uv_scale = [1.0, 1.0];
+    let uv_offset = [0.0, 0.0];
+    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    // Current generation of the routed source texture. A channel's
+    // output ping-pongs between two physical buffers as its FX-chain
+    // parity changes, so the cached view must be rebuilt when this
+    // moves — otherwise the surface samples a stale buffer and the
+    // FX appear to toggle at random.
+    let current_gen = surface.and_then(|surf| match &surf.source {
+        SurfaceSource::Channel(uuid) => {
+            mixer.channel_texture(uuid).map(|t| t.generation)
+        }
+        _ => None,
+    });
+    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
+        let source_changed = g.source_key.as_ref() != source_key.as_ref();
+        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
+        let gen_changed = g.output_generation != current_gen;
+        if !source_changed && !uv_changed && !gen_changed {
+            // Nothing changed — keep current state.
+            (false, g.override_view.clone())
+        } else {
+            // Source or UV changed — compute new view.
+            let view = match surface {
+                Some(surf) => match &surf.source {
+                    SurfaceSource::Master => None,
+                    SurfaceSource::Channel(uuid) => {
+                        mixer.channel_texture(uuid).map(|tex| {
+                            std::sync::Arc::new(tex.texture.create_view(
+                                &wgpu::TextureViewDescriptor::default(),
+                            ))
+                        })
+                    }
+                    SurfaceSource::Deck { .. } => {
+                        log::warn!(
+                            "Deck source routing not yet implemented, falling back to Master"
+                        );
+                        None
+                    }
+                    SurfaceSource::Domemaster => None,
+                },
+                None => None,
+            };
+            (true, view)
+        }
+    } else {
+        (false, None)
+    };
+    if needs_update {
+        if let Ok(mut g) = sync.lock() {
+            g.source_key = source_key;
+            g.override_view = override_view;
+            g.output_generation = current_gen;
+            g.uv_scale = uv_scale;
+            g.uv_offset = uv_offset;
+            g.uv_crop = uv_crop;
+            g.version = g.version.wrapping_add(1);
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DummyUniforms {
@@ -2095,14 +2176,36 @@ impl EffectPlugin for KovvbojRootPlugin {
                     {
                         for cfg in state.stage.headless_outputs.iter_mut() {
                             if cfg.enabled && !cfg.pushed {
+                                // Source (crop) then warp, the same pair a
+                                // projector window runs. Without these a headless
+                                // output was a passthrough and its assigned
+                                // surface did nothing.
+                                let slot = state.stage.headless_warp_syncs.len();
+                                let warp = std::sync::Arc::new(std::sync::Mutex::new(
+                                    crate::stage::WarpSync::default(),
+                                ));
+                                let source = std::sync::Arc::new(std::sync::Mutex::new(
+                                    crate::stage::SourceSync::default(),
+                                ));
+                                state.stage.headless_warp_syncs.push(warp.clone());
+                                state.stage.headless_source_syncs.push(source.clone());
+                                let _ = slot;
                                 sub.add_headless_output(
                                     cfg.width,
                                     cfg.height,
-                                    vec![Box::new(rustjay_projection::IdentityStage::new(
-                                        device,
-                                        // Must match HeadlessOutput's BGRA offscreen.
-                                        wgpu::TextureFormat::Bgra8Unorm,
-                                    ))],
+                                    vec![
+                                        Box::new(crate::stage::KovvbojSourceStage::new(
+                                            device,
+                                            // Must match HeadlessOutput's BGRA offscreen.
+                                            wgpu::TextureFormat::Bgra8Unorm,
+                                            source,
+                                        )),
+                                        Box::new(crate::stage::KovvbojWarpStage::new(
+                                            device,
+                                            wgpu::TextureFormat::Bgra8Unorm,
+                                            warp,
+                                        )),
+                                    ],
                                 );
                                 cfg.pushed = true;
                                 log::info!(
@@ -2807,82 +2910,27 @@ impl EffectPlugin for KovvbojRootPlugin {
                         .surface_index
                         .and_then(|idx| stage.surfaces.get(idx))
                         .or_else(|| stage.surfaces.first());
-
-                    let source_key = surface.map(|s| s.source.label());
-
-                    // Cropping is driven solely by the surface's `uv_crop_rect`
-                    // (its position/size box over the master, kept in sync with
-                    // the surface rectangle in the Stage tab). The cropped region
-                    // fills the output quad, matching the Stage-tab canvas.
-                    let uv_scale = [1.0, 1.0];
-                    let uv_offset = [0.0, 0.0];
-
-                    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
-
-                    // Current generation of the routed source texture. A channel's
-                    // output ping-pongs between two physical buffers as its FX-chain
-                    // parity changes, so the cached view must be rebuilt when this
-                    // moves — otherwise the surface samples a stale buffer and the
-                    // FX appear to toggle at random.
-                    let current_gen = surface.and_then(|surf| match &surf.source {
-                        SurfaceSource::Channel(uuid) => {
-                            mixer.channel_texture(uuid).map(|t| t.generation)
-                        }
-                        _ => None,
-                    });
-
-                    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
-                        let source_changed = g.source_key.as_ref() != source_key.as_ref();
-                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
-                        let gen_changed = g.output_generation != current_gen;
-                        if !source_changed && !uv_changed && !gen_changed {
-                            // Nothing changed — keep current state.
-                            (false, g.override_view.clone())
-                        } else {
-                            // Source or UV changed — compute new view.
-                            let view = match surface {
-                                Some(surf) => match &surf.source {
-                                    SurfaceSource::Master => None,
-                                    SurfaceSource::Channel(uuid) => {
-                                        mixer.channel_texture(uuid).map(|tex| {
-                                            std::sync::Arc::new(tex.texture.create_view(
-                                                &wgpu::TextureViewDescriptor::default(),
-                                            ))
-                                        })
-                                    }
-                                    SurfaceSource::Deck { .. } => {
-                                        log::warn!(
-                                            "Deck source routing not yet implemented, falling back to Master"
-                                        );
-                                        None
-                                    }
-                                    SurfaceSource::Domemaster => None,
-                                },
-                                None => None,
-                            };
-                            (true, view)
-                        }
-                    } else {
-                        (false, None)
-                    };
-
-                    if needs_update {
-                        if let Ok(mut g) = sync.lock() {
-                            g.source_key = source_key;
-                            g.override_view = override_view;
-                            g.output_generation = current_gen;
-                            g.uv_scale = uv_scale;
-                            g.uv_offset = uv_offset;
-                            g.uv_crop = uv_crop;
-                            g.version = g.version.wrapping_add(1);
-                        }
-                    }
+                    sync_surface_source(sync, surface, &mixer);
                 }
 
-                // TODO(S2): headless_outputs.surface_index is stored and UI-editable
-                // but not yet wired into the render hook. Headless outputs currently
-                // use a passthrough IdentityStage. Add per-headless source routing
-                // when the headless stage chain is made dynamic.
+                // Headless outputs route their assigned surface the same way,
+                // now that they run a real stage chain rather than a passthrough.
+                let mut enabled_hl = 0;
+                for hl in stage.headless_outputs.iter() {
+                    if !(hl.enabled && hl.pushed) {
+                        continue;
+                    }
+                    let idx = enabled_hl;
+                    enabled_hl += 1;
+                    let Some(sync) = stage.headless_source_syncs.get(idx) else {
+                        continue;
+                    };
+                    let surface = hl
+                        .surface_index
+                        .and_then(|i| stage.surfaces.get(i))
+                        .or_else(|| stage.surfaces.first());
+                    sync_surface_source(sync, surface, &mixer);
+                }
             }
 
             true
