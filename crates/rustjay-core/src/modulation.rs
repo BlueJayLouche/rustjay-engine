@@ -3227,3 +3227,51 @@ mod manual_gate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod unipolar_range_tests {
+    use super::*;
+
+    fn sweep(amplitude: f32, bipolar: bool) -> (f32, f32) {
+        let mut src = ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.0,
+            amplitude,
+            bipolar,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            enabled: true,
+            last_beat_phase: 0.0,
+        };
+        let audio = AudioValues::default();
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in 0..200 {
+            let v = src.calculate(i as f32 * 0.005, 0.005, 120.0, 0.0, &audio, 0.0);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        (lo, hi)
+    }
+
+    /// Unipolar centres on 0.5 and amplitude widens the swing around it, so the
+    /// trough only reaches zero at full amplitude. Documents today's behaviour.
+    #[test]
+    fn unipolar_pivots_around_a_half() {
+        let (lo, hi) = sweep(0.5, false);
+        assert!((lo - 0.25).abs() < 0.02, "trough was {lo}");
+        assert!((hi - 0.75).abs() < 0.02, "peak was {hi}");
+
+        let (lo, hi) = sweep(1.0, false);
+        assert!(lo < 0.02, "at full amplitude the trough reaches 0, was {lo}");
+        assert!(hi > 0.98, "peak was {hi}");
+    }
+
+    #[test]
+    fn bipolar_is_symmetric_about_zero() {
+        let (lo, hi) = sweep(0.5, true);
+        assert!((lo + 0.5).abs() < 0.02, "trough was {lo}");
+        assert!((hi - 0.5).abs() < 0.02, "peak was {hi}");
+    }
+}
