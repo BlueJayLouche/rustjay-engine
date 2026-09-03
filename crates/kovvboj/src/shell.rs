@@ -549,7 +549,7 @@ impl KovvbojShell {
 
         // Which optional built-ins have anything to show, so the View menu does
         // not offer empty panels. Mirrors the built-in host's own filter.
-        let (has_color, has_motion, fps, bpm, web, osc, recording) = {
+        let (has_color, has_motion, fps, bpm, beat_phase, web, osc, recording) = {
             let state = engine.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state
                 .performance
@@ -567,6 +567,11 @@ impl KovvbojShell {
                     .any(|d| d.category == rustjay_core::ParamCategory::Motion),
                 perf,
                 state.effective_bpm(),
+                // Only a real clock supplies a moving phase: Link and ProDJ
+                // always, audio only while it is analysing. Without one the
+                // tempo is a number nobody is counting, so the flash free-runs
+                // from it instead of sitting still.
+                state.audio.enabled.then(|| state.effective_beat_phase()),
                 state.web_enabled,
                 state.osc_enabled,
                 state.recording_active,
@@ -750,12 +755,35 @@ impl KovvbojShell {
                                 PillState::Neutral
                             },
                         );
+                        // Flash on the beat: brightest as the phase wraps, faded
+                        // by a quarter of the way through. Driven by the phase
+                        // rather than the audio beat flag so it still pulses on a
+                        // tapped or Link tempo with no audio coming in.
+                        let phase = beat_phase.unwrap_or_else(|| {
+                            // Free-run at the displayed tempo. Not aligned to the
+                            // music, but a steady metronome beats a dead label.
+                            let secs = ui.input(|i| i.time) as f32;
+                            (secs * bpm / 60.0).fract()
+                        });
+                        let flash = (1.0 - phase * 4.0).clamp(0.0, 1.0);
+                        let beat_color = if bpm > 0.0 {
+                            let dim = ink_2();
+                            let lit = amber();
+                            egui::Color32::from_rgb(
+                                (dim.r() as f32 + (lit.r() as f32 - dim.r() as f32) * flash) as u8,
+                                (dim.g() as f32 + (lit.g() as f32 - dim.g() as f32) * flash) as u8,
+                                (dim.b() as f32 + (lit.b() as f32 - dim.b() as f32) * flash) as u8,
+                            )
+                        } else {
+                            ink_2()
+                        };
                         ui.label(
                             egui::RichText::new(format!("{:.0} BPM", bpm))
                                 .size(11.0)
                                 .monospace()
-                                .color(ink_2()),
-                        );
+                                .color(beat_color),
+                        )
+                        .on_hover_text("Flashes on the beat");
                         ui.label(
                             egui::RichText::new(format!("{:.0} FPS", fps))
                                 .size(11.0)
