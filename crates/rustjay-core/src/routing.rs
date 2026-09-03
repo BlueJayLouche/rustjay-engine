@@ -85,6 +85,20 @@ impl FftBand {
             _ => None,
         }
     }
+
+    /// Frequency range covered by this band, in Hz.
+    pub fn freq_range(&self) -> (f32, f32) {
+        match self {
+            FftBand::SubBass => (20.0, 60.0),
+            FftBand::Bass => (60.0, 120.0),
+            FftBand::LowMid => (120.0, 250.0),
+            FftBand::Mid => (250.0, 500.0),
+            FftBand::HighMid => (500.0, 2000.0),
+            FftBand::High => (2000.0, 4000.0),
+            FftBand::VeryHigh => (4000.0, 8000.0),
+            FftBand::Presence => (8000.0, 16000.0),
+        }
+    }
 }
 
 /// Parameters that can be modulated by audio.
@@ -479,33 +493,27 @@ impl RoutingMatrix {
         }
     }
 
-    /// Convert enabled routes into modulation source entries.
+    /// Convert routes into modulation source entries.
     ///
-    /// Each enabled route becomes an [`crate::modulation::ModulationSource::AudioBand`]
+    /// Each route becomes an [`crate::modulation::ModulationSource::AudioBand`]
     /// entry with frequency bounds derived from the route's [`FftBand`].
+    /// Disabled routes migrate as disabled sources (rather than being
+    /// dropped) so they survive the move and can be re-enabled from the
+    /// routing window.
     pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
         use crate::modulation::{ModulationSource, ModulationSourceEntry};
         self.routes
             .iter()
-            .filter(|r| r.enabled)
             .map(|route| {
-                let (freq_low, freq_high) = match route.band {
-                    FftBand::SubBass => (20.0, 60.0),
-                    FftBand::Bass => (60.0, 120.0),
-                    FftBand::LowMid => (120.0, 250.0),
-                    FftBand::Mid => (250.0, 500.0),
-                    FftBand::HighMid => (500.0, 2000.0),
-                    FftBand::High => (2000.0, 4000.0),
-                    FftBand::VeryHigh => (4000.0, 8000.0),
-                    FftBand::Presence => (8000.0, 16000.0),
-                };
+                let (freq_low, freq_high) = route.band.freq_range();
                 let source = ModulationSource::AudioBand {
                     source_id: None,
                     freq_low,
                     freq_high,
                     gain: 1.0,
                     smoothing: route.release,
-                    attack: 0.0,
+                    attack: route.attack,
+                    enabled: route.enabled,
                     mode: crate::modulation::AudioReactMode::Direct,
                     noise_gate: 0.1,
                 };
@@ -519,26 +527,15 @@ impl RoutingMatrix {
         use crate::modulation::{ModulationEngine, ModulationSource};
         let mut engine = ModulationEngine::new();
         for route in &self.routes {
-            if !route.enabled {
-                continue;
-            }
-            let (freq_low, freq_high) = match route.band {
-                FftBand::SubBass => (20.0, 60.0),
-                FftBand::Bass => (60.0, 120.0),
-                FftBand::LowMid => (120.0, 250.0),
-                FftBand::Mid => (250.0, 500.0),
-                FftBand::HighMid => (500.0, 2000.0),
-                FftBand::High => (2000.0, 4000.0),
-                FftBand::VeryHigh => (4000.0, 8000.0),
-                FftBand::Presence => (8000.0, 16000.0),
-            };
+            let (freq_low, freq_high) = route.band.freq_range();
             let source = ModulationSource::AudioBand {
                 source_id: None,
                 freq_low,
                 freq_high,
                 gain: 1.0,
                 smoothing: route.release,
-                attack: 0.0,
+                attack: route.attack,
+                enabled: route.enabled,
                 mode: crate::modulation::AudioReactMode::Direct,
                 noise_gate: 0.1,
             };
@@ -608,6 +605,27 @@ impl AudioRoutingState {
         self.base_saturation = saturation;
         self.base_brightness = brightness;
     }
+
+    /// Convert the saved routing matrix into a modulation engine snapshot for
+    /// merging into `EngineState::modulation` on load.
+    ///
+    /// The global `enabled` switch has no equivalent in the modulation engine,
+    /// so a routing state saved with routing switched off migrates its sources
+    /// disabled — preserving the saved behaviour. They can be re-enabled
+    /// individually from the routing window.
+    pub fn to_modulation_engine(&self) -> crate::modulation::ModulationEngine {
+        let mut engine = self.matrix.to_modulation_engine();
+        if !self.enabled {
+            for entry in &mut engine.sources {
+                if let crate::modulation::ModulationSource::AudioBand { enabled, .. } =
+                    &mut entry.source
+                {
+                    *enabled = false;
+                }
+            }
+        }
+        engine
+    }
 }
 
 #[cfg(test)]
@@ -645,5 +663,97 @@ mod tests {
         let matrix: RoutingMatrix = serde_json::from_str(json).expect("old preset loads");
         assert_eq!(matrix.max_routes(), MAX_ROUTES);
         assert!(matrix.can_add_route());
+    }
+
+    // ── U2: migration into the modulation engine ─────────────────────
+
+    fn two_route_matrix() -> RoutingMatrix {
+        let mut matrix = RoutingMatrix::new();
+        matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
+        matrix.add_route(FftBand::High, ModulationTarget::Custom("spin".to_string()));
+        matrix
+    }
+
+    #[test]
+    fn a_matrix_migrates_to_matching_sources_and_assignments() {
+        let engine = two_route_matrix().to_modulation_engine();
+        assert_eq!(engine.sources.len(), 2);
+        assert!(engine.has_source("route_0"));
+        assert!(engine.has_source("route_1"));
+        assert_eq!(
+            engine.assignments.values().map(Vec::len).sum::<usize>(),
+            2
+        );
+        assert!(engine.has_modulation("brightness"));
+        assert!(engine.has_modulation("spin"));
+    }
+
+    #[test]
+    fn migrating_twice_updates_in_place_instead_of_duplicating() {
+        let mut engine = crate::modulation::ModulationEngine::new();
+        engine.merge(two_route_matrix().to_modulation_engine());
+        engine.merge(two_route_matrix().to_modulation_engine());
+        assert_eq!(engine.sources.len(), 2, "second load must not duplicate");
+        assert_eq!(
+            engine.assignments.values().map(Vec::len).sum::<usize>(),
+            2,
+            "assignments must not duplicate either"
+        );
+    }
+
+    #[test]
+    fn re_merging_picks_up_changed_route_values() {
+        let mut engine = crate::modulation::ModulationEngine::new();
+        engine.merge(two_route_matrix().to_modulation_engine());
+
+        let mut matrix = two_route_matrix();
+        matrix.get_route_mut(0).unwrap().amount = 0.9;
+        engine.merge(matrix.to_modulation_engine());
+
+        let mods = &engine.assignments["brightness"];
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].amount, 0.9, "the assignment is updated in place");
+    }
+
+    #[test]
+    fn a_routes_attack_and_release_survive_the_trip() {
+        let mut matrix = RoutingMatrix::new();
+        let id = matrix
+            .add_route(FftBand::Bass, ModulationTarget::Brightness)
+            .unwrap();
+        let route = matrix.get_route_mut(id).unwrap();
+        route.attack = 0.7;
+        route.release = 0.2;
+
+        let engine = matrix.to_modulation_engine();
+        let entry = engine.find_source_by_uuid("route_0").expect("migrated source");
+        match &entry.source {
+            crate::modulation::ModulationSource::AudioBand {
+                attack, smoothing, ..
+            } => {
+                assert_eq!(*attack, 0.7);
+                assert_eq!(*smoothing, 0.2, "release maps to smoothing");
+            }
+            other => panic!("expected AudioBand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_disabled_routing_state_migrates_its_sources_disabled() {
+        // AudioRoutingState::default() has enabled = false.
+        let routing = AudioRoutingState {
+            matrix: two_route_matrix(),
+            ..AudioRoutingState::default()
+        };
+        let engine = routing.to_modulation_engine();
+        assert_eq!(engine.sources.len(), 2);
+        for entry in &engine.sources {
+            match &entry.source {
+                crate::modulation::ModulationSource::AudioBand { enabled, .. } => {
+                    assert!(!enabled, "global disable must fold into the sources")
+                }
+                other => panic!("expected AudioBand, got {other:?}"),
+            }
+        }
     }
 }

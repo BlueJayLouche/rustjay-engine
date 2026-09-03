@@ -262,6 +262,9 @@ pub enum ModulationSource {
         /// falling edge. `#[serde(default)]` keeps older data loading.
         #[serde(default)]
         attack: f32,
+        /// Whether this source is active. Disabled sources output 0.0.
+        #[serde(default = "default_true")]
+        enabled: bool,
         /// React mode.
         #[serde(default)]
         mode: AudioReactMode,
@@ -345,6 +348,7 @@ impl ModulationSource {
                     attack: at1,
                     mode: m1,
                     noise_gate: ng1,
+                    ..
                 },
                 ModulationSource::AudioBand {
                     source_id: s2,
@@ -355,6 +359,7 @@ impl ModulationSource {
                     attack: at2,
                     mode: m2,
                     noise_gate: ng2,
+                    ..
                 },
             ) => {
                 s1 == s2
@@ -426,6 +431,7 @@ impl ModulationSource {
             gain: 1.0,
             smoothing: 0.6,
             attack: 0.0,
+            enabled: true,
             mode: AudioReactMode::Direct,
             noise_gate: 0.1,
         }
@@ -581,9 +587,13 @@ impl ModulationSource {
                 gain,
                 smoothing,
                 attack,
+                enabled,
                 mode,
                 noise_gate,
             } => {
+                if !*enabled {
+                    return 0.0;
+                }
                 let source_vals = if let Some(id) = source_id {
                     audio.sources.get(id)
                 } else {
@@ -822,6 +832,39 @@ impl ModulationEngine {
             .insert(uuid.clone(), self.sources.len() - 1);
         self.invalidate_evaluation_cache();
         uuid
+    }
+
+    /// Merge another engine's sources and assignments into this one.
+    ///
+    /// Sources are matched by UUID: an existing source with the same UUID is
+    /// updated in place, otherwise the source is added. Assignments are
+    /// matched by (param, source_id, component) and likewise updated in place.
+    /// Merging the same engine twice is therefore a no-op — this is what lets
+    /// a saved routing matrix migrate into the engine on every load without
+    /// duplicating its `route_<id>` sources.
+    pub fn merge(&mut self, other: ModulationEngine) {
+        for entry in other.sources {
+            if let Some(existing) = self.sources.iter_mut().find(|e| e.uuid == entry.uuid) {
+                existing.source = entry.source;
+            } else {
+                self.add_source_with_uuid(entry.uuid, entry.source);
+            }
+        }
+        for (param, mods) in other.assignments {
+            let target = self.assignments.entry(param).or_default();
+            for m in mods {
+                if let Some(existing) = target
+                    .iter_mut()
+                    .find(|e| e.source_id == m.source_id && e.component == m.component)
+                {
+                    *existing = m;
+                } else {
+                    target.push(m);
+                }
+            }
+        }
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
     }
 
     /// Remove a source by UUID.
@@ -1975,6 +2018,7 @@ mod tests {
             gain: 1.0,
             smoothing: 0.0,
             attack: 0.0,
+            enabled: true,
             mode: AudioReactMode::Direct,
             noise_gate: 0.5,
         };
@@ -2002,6 +2046,7 @@ mod tests {
             gain: 1.0,
             smoothing,
             attack,
+            enabled: true,
             mode: AudioReactMode::Direct,
             noise_gate: 0.1,
         };

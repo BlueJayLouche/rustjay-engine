@@ -530,7 +530,15 @@ impl<P: EffectPlugin> WgpuEngine<P> {
             .ok()
             .and_then(|mut r| r.take());
         if let Some(routing) = routing {
+            // Migrate the scene's routes into the unified engine (merge, not
+            // replace — the `route_<id>` uuids are stable across loads).
+            let migrated = routing.to_modulation_engine();
             engine_state.audio_routing = routing;
+            engine_state
+                .modulation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .merge(migrated);
         }
 
         let render_start = std::time::Instant::now();
