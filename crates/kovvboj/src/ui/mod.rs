@@ -688,11 +688,20 @@ mod egui_impl {
                         desc.min,
                         desc.max,
                     );
-                } else if ui
-                    .add(egui::Slider::new(&mut v, desc.min..=desc.max).text(short_param_name(desc)))
-                    .changed()
-                {
-                    engine.set_param_base(&desc.id, v);
+                } else {
+                    let resp = ui.add(
+                        egui::Slider::new(&mut v, desc.min..=desc.max)
+                            .text(short_param_name(desc)),
+                    );
+                    if resp.changed() {
+                        engine.set_param_base(&desc.id, v);
+                    }
+                    // Where the value actually is once modulation is applied.
+                    if let Some(live) = engine.get_param(&desc.id) {
+                        rustjay_gui::egui_widgets::modulation_ghost(
+                            ui, resp.rect, current, live, desc.min, desc.max,
+                        );
+                    }
                 }
             }
             ParamType::Int => {

@@ -67,6 +67,63 @@ pub fn hud_frame<R>(
 // Section header — ▌ TITLE · 03 CH · 01/04
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Where a modulation ghost's band starts and ends along a slider's rail, or
+/// `None` when there is nothing to draw.
+///
+/// Split out from the painting so the decision — and the clamping — can be
+/// tested without a `Ui`.
+fn ghost_span(
+    base: f32,
+    live: f32,
+    min: f32,
+    max: f32,
+    range: egui::Rangef,
+) -> Option<(f32, f32)> {
+    let span = max - min;
+    if span <= 0.0 || !live.is_finite() || !base.is_finite() {
+        return None;
+    }
+    // Nothing to say when the parameter is not being modulated.
+    if (live - base).abs() <= span * 0.001 {
+        return None;
+    }
+    let at = |v: f32| egui::lerp(range, ((v - min) / span).clamp(0.0, 1.0));
+    Some((at(base), at(live)))
+}
+
+/// Paint a parameter's live, post-modulation value as a ghost on a slider.
+///
+/// The slider handle shows the value you set. When an LFO or an audio band is
+/// driving the parameter the value actually in use is somewhere else, and
+/// nothing on screen says so — the handle just sits still while the output
+/// moves. This draws the swing from the set value to the live one, with a
+/// brighter mark where the live value currently is.
+///
+/// `slider_rect` is the response rect of an `egui::Slider`; its rail occupies
+/// `spacing().slider_width` from the left, whatever label follows.
+pub fn modulation_ghost(ui: &Ui, slider_rect: Rect, base: f32, live: f32, min: f32, max: f32) {
+    let rail_w = ui.spacing().slider_width.min(slider_rect.width());
+    let rail = Rect::from_min_size(slider_rect.min, Vec2::new(rail_w, slider_rect.height()));
+    // Matches `Slider`'s own geometry, so the mark lands under the handle.
+    let range = rail.x_range().shrink(rail.height() / 2.5);
+    let Some((x_base, x_live)) = ghost_span(base, live, min, max, range) else {
+        return;
+    };
+    let band = Rect::from_x_y_ranges(
+        egui::Rangef::new(x_base.min(x_live), x_base.max(x_live)),
+        egui::Rangef::new(rail.center().y - 3.0, rail.center().y + 3.0),
+    );
+    ui.painter()
+        .rect_filled(band, 1.0, amber().gamma_multiply(0.22));
+    ui.painter().line_segment(
+        [
+            egui::pos2(x_live, rail.center().y - 6.0),
+            egui::pos2(x_live, rail.center().y + 6.0),
+        ],
+        Stroke::new(1.5, amber().gamma_multiply(0.8)),
+    );
+}
+
 /// Ceiling for a widget that fills its row.
 ///
 /// `available_width` is unbounded inside an auto-sizing `egui::Window`: it
@@ -626,5 +683,51 @@ pub fn format_bound(v: f32) -> String {
         format!("{:.1}", v)
     } else {
         format!("{:.2}", v)
+    }
+}
+
+#[cfg(test)]
+mod ghost_tests {
+    use super::ghost_span;
+    use egui::Rangef;
+
+    const RAIL: Rangef = Rangef { min: 0.0, max: 100.0 };
+
+    #[test]
+    fn an_unmodulated_param_draws_nothing() {
+        assert!(ghost_span(0.5, 0.5, 0.0, 1.0, RAIL).is_none());
+        // Floating-point noise is not modulation either.
+        assert!(ghost_span(0.5, 0.5000001, 0.0, 1.0, RAIL).is_none());
+    }
+
+    #[test]
+    fn the_band_runs_from_the_set_value_to_the_live_one() {
+        let (base, live) = ghost_span(0.25, 0.75, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(base, 25.0);
+        assert_eq!(live, 75.0);
+    }
+
+    /// Modulation can pull a value below where it was set, and the band has to
+    /// be drawn in that direction too.
+    #[test]
+    fn it_handles_a_live_value_below_the_set_one() {
+        let (base, live) = ghost_span(0.75, 0.25, 0.0, 1.0, RAIL).expect("modulated");
+        assert!(live < base);
+    }
+
+    /// A source can drive a value past the parameter's range; the mark stays on
+    /// the rail rather than painting off the end of it.
+    #[test]
+    fn an_out_of_range_live_value_is_clamped_to_the_rail() {
+        let (_, live) = ghost_span(0.5, 9.0, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(live, 100.0);
+        let (_, live) = ghost_span(0.5, -9.0, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(live, 0.0);
+    }
+
+    #[test]
+    fn a_degenerate_range_draws_nothing() {
+        assert!(ghost_span(1.0, 2.0, 5.0, 5.0, RAIL).is_none());
+        assert!(ghost_span(0.5, f32::NAN, 0.0, 1.0, RAIL).is_none());
     }
 }

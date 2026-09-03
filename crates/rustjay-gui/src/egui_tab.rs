@@ -58,11 +58,13 @@ pub fn param_slider(
     max: f32,
 ) {
     let mut val = engine.get_param_base(id).unwrap_or(0.0);
-    if ui
-        .add(egui::Slider::new(&mut val, min..=max).text(label))
-        .changed()
-    {
+    let resp = ui.add(egui::Slider::new(&mut val, min..=max).text(label));
+    if resp.changed() {
         engine.set_param_base(id, val);
+    }
+    // Where the value actually sits once modulation is applied.
+    if let Some(live) = engine.get_param(id) {
+        crate::egui_widgets::modulation_ghost(ui, resp.rect, val, live, min, max);
     }
 }
 
