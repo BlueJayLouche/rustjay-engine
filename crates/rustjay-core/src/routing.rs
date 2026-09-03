@@ -875,9 +875,7 @@ mod route_helper_tests {
         let route = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
         let hand_made = {
             let mut eng = m.lock().unwrap();
-            eng.add_source(ModulationSource::audio_from_preset(
-                crate::modulation::AudioBandPreset::Low,
-            ))
+            eng.add_source(ModulationSource::audio_from_band(FftBand::Bass))
         };
 
         set_routing_enabled(&m, false);

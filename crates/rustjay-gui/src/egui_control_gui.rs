@@ -1808,7 +1808,8 @@ pub fn apply_param_map_overlay(
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
-            use rustjay_core::modulation::{AudioBandPreset, ModulationSource};
+            use rustjay_core::modulation::ModulationSource;
+            use rustjay_core::routing::FftBand;
 
             ui.set_min_width(170.0);
             ui.label(egui::RichText::new(format!("Modulate {name}")).small().strong());
@@ -1831,14 +1832,11 @@ pub fn apply_param_map_overlay(
                     last_beat_phase: 0.0,
                 });
             }
-            for (preset, label) in [
-                (AudioBandPreset::Low, "+ Audio · Bass"),
-                (AudioBandPreset::Mid, "+ Audio · Mid"),
-                (AudioBandPreset::High, "+ Audio · High"),
-                (AudioBandPreset::Full, "+ Audio · Level"),
-            ] {
-                if ui.button(label).clicked() {
-                    fresh = Some(ModulationSource::audio_from_preset(preset));
+            // The analyser's own eight bands, so this picker and the routing
+            // grid offer the same vocabulary.
+            for band in FftBand::all() {
+                if ui.button(format!("+ Audio · {}", band.name())).clicked() {
+                    fresh = Some(ModulationSource::audio_from_band(*band));
                 }
             }
             if let Some(source) = fresh {
@@ -1906,6 +1904,7 @@ fn mod_source_short(src: &rustjay_core::modulation::ModulationSource) -> &'stati
     match src {
         S::LFO { .. } => "LFO",
         S::AudioBand { .. } => "Audio",
+        S::AudioTrigger { .. } => "Trigger",
         S::ADSR { .. } => "ADSR",
         S::StepSequencer { .. } => "Step",
     }

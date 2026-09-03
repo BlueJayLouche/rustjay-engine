@@ -154,6 +154,7 @@ impl EguiControlGui {
             if ui.button("+ ADSR").clicked() {
                 let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                 let uuid = mod_eng.add_source(ModulationSource::ADSR {
+                    gate_source: None,
                     attack: 0.1,
                     decay: 0.2,
                     sustain: 0.5,
@@ -429,6 +430,7 @@ fn source_type_name(source: &ModulationSource) -> String {
     match source {
         ModulationSource::LFO { .. } => "LFO".to_string(),
         ModulationSource::AudioBand { .. } => "Audio".to_string(),
+        ModulationSource::AudioTrigger { .. } => "Trigger".to_string(),
         ModulationSource::ADSR { .. } => "ADSR".to_string(),
         ModulationSource::StepSequencer { .. } => "Step".to_string(),
     }
@@ -438,6 +440,7 @@ fn source_is_enabled(source: &ModulationSource) -> bool {
     match source {
         ModulationSource::LFO { enabled, .. } => *enabled,
         ModulationSource::AudioBand { .. } => true,
+        ModulationSource::AudioTrigger { .. } => true,
         ModulationSource::ADSR { .. } => true,
         ModulationSource::StepSequencer { .. } => true,
     }
