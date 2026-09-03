@@ -257,6 +257,11 @@ pub enum ModulationSource {
         gain: f32,
         /// Release smoothing (0–0.99).
         smoothing: f32,
+        /// Attack smoothing for the rising edge (0 = instant rise, matching
+        /// the pre-attack behaviour), applied the way `smoothing` smooths the
+        /// falling edge. `#[serde(default)]` keeps older data loading.
+        #[serde(default)]
+        attack: f32,
         /// React mode.
         #[serde(default)]
         mode: AudioReactMode,
@@ -337,6 +342,7 @@ impl ModulationSource {
                     freq_high: fh1,
                     gain: g1,
                     smoothing: sm1,
+                    attack: at1,
                     mode: m1,
                     noise_gate: ng1,
                 },
@@ -346,6 +352,7 @@ impl ModulationSource {
                     freq_high: fh2,
                     gain: g2,
                     smoothing: sm2,
+                    attack: at2,
                     mode: m2,
                     noise_gate: ng2,
                 },
@@ -355,6 +362,7 @@ impl ModulationSource {
                     && fh1 == fh2
                     && g1 == g2
                     && sm1 == sm2
+                    && at1 == at2
                     && m1 == m2
                     && ng1 == ng2
             }
@@ -417,6 +425,7 @@ impl ModulationSource {
             freq_high,
             gain: 1.0,
             smoothing: 0.6,
+            attack: 0.0,
             mode: AudioReactMode::Direct,
             noise_gate: 0.1,
         }
@@ -571,6 +580,7 @@ impl ModulationSource {
                 freq_high,
                 gain,
                 smoothing,
+                attack,
                 mode,
                 noise_gate,
             } => {
@@ -592,7 +602,10 @@ impl ModulationSource {
                 match mode {
                     AudioReactMode::Direct => {
                         if raw >= prev_value {
-                            raw.clamp(0.0, 1.0)
+                            // Attack smoothing on the rising edge; attack 0.0
+                            // is an instant rise, exactly as before U1.
+                            let attack_alpha = 1.0 - *attack;
+                            (prev_value + attack_alpha * (raw - prev_value)).clamp(0.0, 1.0)
                         } else {
                             let release_alpha = 1.0 - *smoothing;
                             (prev_value + release_alpha * (raw - prev_value)).clamp(0.0, 1.0)
@@ -1961,6 +1974,7 @@ mod tests {
             freq_high: 250.0,
             gain: 1.0,
             smoothing: 0.0,
+            attack: 0.0,
             mode: AudioReactMode::Direct,
             noise_gate: 0.5,
         };
@@ -1975,6 +1989,68 @@ mod tests {
         );
         let val = source.calculate(0.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0, "Below noise gate should be silent");
+    }
+
+    // ── Audio band attack smoothing ──────────────────────────────────
+
+    /// An AudioBand in Direct mode over a loud signal (energy 1.0 in band).
+    fn loud_band(attack: f32, smoothing: f32) -> (ModulationSource, AudioValues<'static>) {
+        let source = ModulationSource::AudioBand {
+            source_id: Some(0),
+            freq_low: 20.0,
+            freq_high: 250.0,
+            gain: 1.0,
+            smoothing,
+            attack,
+            mode: AudioReactMode::Direct,
+            noise_gate: 0.1,
+        };
+        let mut audio = AudioValues::default();
+        audio.sources.insert(
+            0,
+            AudioSourceValues {
+                fft: &[1.0; 256],
+                level: 1.0,
+                sample_rate: 48000.0,
+            },
+        );
+        (source, audio)
+    }
+
+    #[test]
+    fn audio_band_attack_zero_rises_instantly() {
+        let (mut source, audio) = loud_band(0.0, 0.5);
+        let val = source.calculate(0.0, 0.016, 120.0, 0.0, &audio, 0.0);
+        assert_eq!(val, 1.0, "attack 0.0 must behave exactly as before: instant rise");
+    }
+
+    #[test]
+    fn audio_band_attack_smooths_the_rising_edge() {
+        let (mut source, audio) = loud_band(0.9, 0.5);
+        let mut prev = 0.0;
+        let first = source.calculate(0.0, 0.016, 120.0, 0.0, &audio, prev);
+        assert!(first < 0.5, "a large attack must not reach the target in one update: {first}");
+        let mut last = first;
+        for i in 1..50 {
+            prev = last;
+            last = source.calculate(i as f32 * 0.016, 0.016, 120.0, 0.0, &audio, prev);
+            assert!(last > prev, "approach must be monotonic: {prev} -> {last}");
+        }
+        assert!(last > 0.99, "the value converges on the target: {last}");
+    }
+
+    #[test]
+    fn audio_band_attack_leaves_release_alone() {
+        // Falling edge: `smoothing` governs; `attack` must not matter.
+        for attack in [0.0, 0.9] {
+            let (mut source, _loud) = loud_band(attack, 0.5);
+            let quiet = AudioValues::default(); // no audio -> raw 0
+            let val = source.calculate(0.0, 0.016, 120.0, 0.0, &quiet, 1.0);
+            assert!(
+                (val - 0.5).abs() < 1e-6,
+                "release from 1.0 with smoothing 0.5 is 0.5 regardless of attack {attack}: {val}"
+            );
+        }
     }
 
     // ── config_eq tests ──────────────────────────────────────────────

@@ -505,6 +505,7 @@ impl RoutingMatrix {
                     freq_high,
                     gain: 1.0,
                     smoothing: route.release,
+                    attack: 0.0,
                     mode: crate::modulation::AudioReactMode::Direct,
                     noise_gate: 0.1,
                 };
@@ -537,6 +538,7 @@ impl RoutingMatrix {
                 freq_high,
                 gain: 1.0,
                 smoothing: route.release,
+                attack: 0.0,
                 mode: crate::modulation::AudioReactMode::Direct,
                 noise_gate: 0.1,
             };
