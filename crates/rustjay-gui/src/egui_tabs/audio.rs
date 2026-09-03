@@ -408,6 +408,11 @@ impl EguiControlGui {
         if ui.checkbox(&mut enabled, "Enable Audio Routing").changed() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.audio_routing.enabled = enabled;
+            // The per-frame path this used to gate is gone; routes are ordinary
+            // modulation sources now, so the switch mutes those instead. Only
+            // `route_*` sources — an audio band bound by hand in the MOD popup
+            // belongs to the user, not to this checkbox.
+            rustjay_core::routing::set_routing_enabled(&state.modulation, enabled);
         }
 
         if !enabled {

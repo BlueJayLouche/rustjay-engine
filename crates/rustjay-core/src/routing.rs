@@ -5,6 +5,7 @@
 
 use crate::params::{ParamType, ParameterDescriptor};
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use std::collections::HashMap;
 
 /// FFT frequency bands (8-band spectrum)
@@ -524,6 +525,97 @@ impl RoutingMatrix {
     }
 }
 
+/// Add an audio route as an `AudioBand` source assigned to `target`.
+///
+/// The single place a route is created. The routing window, the OSC command
+/// handler and the web remote all call this: when they each built routes their
+/// own way, only the window's survived U3 and the other two silently reached
+/// nothing.
+///
+/// Returns the new source's uuid, or `None` when the target has no parameter.
+pub fn add_route(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    band: FftBand,
+    target: &ModulationTarget,
+) -> Option<String> {
+    use crate::modulation::{AudioReactMode, ModulationSource};
+
+    let param_id = target.param_id()?;
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    let (freq_low, freq_high) = band.freq_range();
+
+    // Same uuid scheme as the load-time migration, so saving and reloading
+    // reuses the source rather than accumulating duplicates.
+    let mut n = 0;
+    while mod_eng.has_source(&format!("route_{n}")) {
+        n += 1;
+    }
+    let uuid = mod_eng.add_source_with_uuid(
+        format!("route_{n}"),
+        ModulationSource::AudioBand {
+            source_id: None,
+            freq_low,
+            freq_high,
+            gain: 1.0,
+            smoothing: 0.3,
+            attack: 0.1,
+            enabled: true,
+            mode: AudioReactMode::Direct,
+            noise_gate: 0.1,
+        },
+    );
+    mod_eng.assign(param_id, &uuid, 0.5, None);
+    Some(uuid)
+}
+
+/// Remove a route: its assignment and the source behind it.
+pub fn remove_route(modulation: &Mutex<crate::modulation::ModulationEngine>, source_uuid: &str) {
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    // `remove_source` drops the assignments referring to it.
+    mod_eng.remove_source(source_uuid);
+}
+
+/// Remove every route driving `param_id`, source and assignment alike.
+pub fn clear_routes_for(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    param_id: &str,
+) {
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    let uuids: Vec<String> = mod_eng
+        .assignments
+        .get(param_id)
+        .map(|mods| {
+            mods.iter()
+                .map(|m| m.source_id.clone())
+                .filter(|u| u.starts_with("route_"))
+                .collect()
+        })
+        .unwrap_or_default();
+    for uuid in uuids {
+        mod_eng.remove_source(&uuid);
+    }
+}
+
+/// Turn audio routing as a whole on or off.
+///
+/// Only touches route-derived sources (`route_*`). An `AudioBand` a user bound
+/// by hand through the MOD popup is theirs, and the global switch must leave it
+/// alone.
+pub fn set_routing_enabled(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    on: bool,
+) {
+    use crate::modulation::ModulationSource;
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    for entry in mod_eng.sources.iter_mut() {
+        if entry.uuid.starts_with("route_")
+            && let ModulationSource::AudioBand { enabled, .. } = &mut entry.source
+        {
+            *enabled = on;
+        }
+    }
+}
+
 impl Default for RoutingMatrix {
     fn default() -> Self {
         Self::new()
@@ -731,5 +823,72 @@ mod tests {
                 other => panic!("expected AudioBand, got {other:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod route_helper_tests {
+    use super::*;
+    use crate::modulation::{ModulationEngine, ModulationSource};
+    use std::sync::Mutex;
+
+    fn engine() -> Mutex<ModulationEngine> {
+        Mutex::new(ModulationEngine::new())
+    }
+
+    #[test]
+    fn adding_a_route_creates_a_source_and_an_assignment() {
+        let m = engine();
+        let uuid = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness)
+            .expect("brightness has a param id");
+        let eng = m.lock().unwrap();
+        assert!(eng.has_source(&uuid));
+        assert_eq!(eng.assignments.get("brightness").map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn removing_a_route_takes_the_source_with_it() {
+        let m = engine();
+        let uuid = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        remove_route(&m, &uuid);
+        let eng = m.lock().unwrap();
+        assert!(!eng.has_source(&uuid));
+        assert!(eng.assignments.get("brightness").is_none_or(Vec::is_empty));
+    }
+
+    #[test]
+    fn clearing_a_param_removes_only_its_routes() {
+        let m = engine();
+        add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        add_route(&m, FftBand::High, &ModulationTarget::Saturation).unwrap();
+        clear_routes_for(&m, "brightness");
+        let eng = m.lock().unwrap();
+        assert!(eng.assignments.get("brightness").is_none_or(Vec::is_empty));
+        assert_eq!(eng.assignments.get("saturation").map(Vec::len), Some(1));
+    }
+
+    /// The global switch owns the routes it made, and nothing else. An audio
+    /// band a user bound by hand through the MOD popup must survive it.
+    #[test]
+    fn the_global_switch_leaves_hand_made_sources_alone() {
+        let m = engine();
+        let route = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        let hand_made = {
+            let mut eng = m.lock().unwrap();
+            eng.add_source(ModulationSource::audio_from_preset(
+                crate::modulation::AudioBandPreset::Low,
+            ))
+        };
+
+        set_routing_enabled(&m, false);
+        let eng = m.lock().unwrap();
+        let is_on = |uuid: &str| {
+            matches!(
+                eng.find_source_by_uuid(uuid).map(|e| &e.source),
+                Some(ModulationSource::AudioBand { enabled: true, .. })
+            )
+        };
+        assert!(!is_on(&route), "the route is silenced");
+        assert!(is_on(&hand_made), "the hand-made source is untouched");
     }
 }
