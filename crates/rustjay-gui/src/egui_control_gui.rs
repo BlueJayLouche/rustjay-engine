@@ -1812,6 +1812,11 @@ pub fn apply_param_map_overlay(
             use rustjay_core::routing::FftBand;
 
             ui.set_min_width(170.0);
+            // Eight bands plus every existing source runs off the screen on a
+            // laptop; the popup has to carry its own scroll.
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
             ui.label(egui::RichText::new(format!("Modulate {name}")).small().strong());
 
             // Create-and-assign in one click. Without these the popup could
@@ -1850,7 +1855,8 @@ pub fn apply_param_map_overlay(
                 ui.label(egui::RichText::new("Existing").small().weak());
             }
             for (uuid, ty) in &sources {
-                let tag = &uuid[..4.min(uuid.len())];
+                // Short uuids (`lfo_0`) would all truncate to the same prefix.
+                let tag = short_tag(uuid);
                 if ui.button(format!("+ {ty} {tag}")).clicked() {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
@@ -1866,7 +1872,7 @@ pub fn apply_param_map_overlay(
                 let mut drop: Option<String> = None;
                 for (uuid, ty, amount) in &bound {
                     ui.horizontal(|ui| {
-                        let tag = &uuid[..4.min(uuid.len())];
+                        let tag = short_tag(uuid);
                         ui.label(
                             egui::RichText::new(format!("{ty} {tag}  ×{amount:.2}")).small(),
                         );
@@ -1894,8 +1900,20 @@ pub fn apply_param_map_overlay(
                     mod_eng.assignments.remove(id);
                 }
             }
+                });
         },
     );
+}
+
+/// A tag short enough to sit in a button but still telling two sources apart.
+///
+/// Truncating to four characters made every default LFO read `lfo_`.
+fn short_tag(uuid: &str) -> &str {
+    if uuid.len() <= 8 {
+        uuid
+    } else {
+        &uuid[..6]
+    }
 }
 
 /// Short label for a modulation source, used by the LFO-assign popup.
