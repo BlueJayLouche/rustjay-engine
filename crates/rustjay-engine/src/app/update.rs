@@ -226,15 +226,6 @@ impl<P: EffectPlugin> App<P> {
                 // Always reset modulated params to their base values before applying
                 // this frame's modulations — prevents accumulation across frames.
                 state.reset_custom_params_to_base();
-
-                if state.audio_routing.enabled {
-                    let delta_time = self.frame_delta_time;
-                    // Routes are migrated into the modulation engine on load
-                    // (U2) and applied through `modulation_offsets` like any
-                    // other source; the matrix is only ticked so the routing
-                    // window can display live values.
-                    state.audio_routing.matrix.process(&fft, delta_time);
-                }
             }
             // Refresh cache from state so next frame's push uses current values.
             self.cached_audio_amplitude = state.audio.amplitude;

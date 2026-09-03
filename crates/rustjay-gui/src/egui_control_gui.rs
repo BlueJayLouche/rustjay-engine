@@ -1136,8 +1136,47 @@ impl EguiControlGui {
 
     // ── Routing window ───────────────────────────────────────────────────────
 
+    /// Remove one routing-grid row: the assignment, plus the backing source if
+    /// no other assignment uses it.
+    fn remove_route_row(
+        mod_eng: &mut rustjay_core::modulation::ModulationEngine,
+        param_id: &str,
+        uuid: &str,
+    ) {
+        let mut empty = false;
+        if let Some(mods) = mod_eng.assignments.get_mut(param_id) {
+            mods.retain(|m| m.source_id != uuid);
+            empty = mods.is_empty();
+        }
+        if empty {
+            mod_eng.assignments.remove(param_id);
+        }
+        let still_used = mod_eng
+            .assignments
+            .values()
+            .any(|mods| mods.iter().any(|m| m.source_id == uuid));
+        if !still_used {
+            mod_eng.remove_source(uuid);
+        }
+    }
+
+    /// The grid is a view over the modulation engine (U4): one row per
+    /// assignment backed by an `AudioBand` source, edited in place.
     pub(crate) fn build_routing_window(&mut self, ui: &mut egui::Ui) {
-        use rustjay_core::routing::{FftBand, ModulationTarget};
+        use rustjay_core::modulation::ModulationSource;
+        use rustjay_core::routing::{FftBand, ModulationTarget, MAX_ROUTES};
+
+        struct RouteRow {
+            uuid: String,
+            param_id: String,
+            band: String,
+            target: String,
+            amount: f32,
+            attack: f32,
+            release: f32,
+            enabled: bool,
+            current: f32,
+        }
 
         let mut is_open = self.show_routing_window;
         let target_list = {
@@ -1146,26 +1185,75 @@ impl EguiControlGui {
         };
         let target_names: Vec<String> = target_list.iter().map(|t| t.name()).collect();
 
+        let rows: Vec<RouteRow> = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            let mut rows = Vec::new();
+            for (param_id, mods) in &mod_eng.assignments {
+                // Mod-on-mod keys target sources, not params — not grid rows.
+                if param_id.starts_with("mod:") {
+                    continue;
+                }
+                for m in mods {
+                    let Some(entry) = mod_eng.find_source_by_uuid(&m.source_id) else {
+                        continue;
+                    };
+                    let ModulationSource::AudioBand {
+                        freq_low,
+                        freq_high,
+                        smoothing,
+                        attack,
+                        enabled,
+                        ..
+                    } = &entry.source
+                    else {
+                        continue;
+                    };
+                    let band = FftBand::all()
+                        .iter()
+                        .find(|b| b.freq_range() == (*freq_low, *freq_high))
+                        .map(|b| b.short_name().to_string())
+                        .unwrap_or_else(|| format!("{freq_low:.0}–{freq_high:.0}Hz"));
+                    let target = target_list
+                        .iter()
+                        .find(|t| t.param_id() == Some(param_id.as_str()))
+                        .map(|t| t.name())
+                        .unwrap_or_else(|| param_id.clone());
+                    rows.push(RouteRow {
+                        uuid: entry.uuid.clone(),
+                        param_id: param_id.clone(),
+                        band,
+                        target,
+                        amount: m.amount,
+                        attack: *attack,
+                        release: *smoothing,
+                        enabled: *enabled,
+                        current: mod_eng.current_value_for(&entry.uuid) * m.amount,
+                    });
+                }
+            }
+            // HashMap iteration order is random; keep the grid stable.
+            rows.sort_by(|a, b| a.uuid.cmp(&b.uuid).then(a.param_id.cmp(&b.param_id)));
+            rows
+        };
+
         egui::Window::new("Audio Routing Matrix")
             .default_pos([500.0, 100.0])
             .default_size([450.0, 550.0])
             .open(&mut is_open)
             .show(ui, |ui| {
-                let (can_add, route_count, max_routes) = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let routing = &state.audio_routing;
-                    (
-                        routing.matrix.can_add_route(),
-                        routing.matrix.len(),
-                        routing.matrix.max_routes(),
-                    )
-                };
+                let route_count = rows.len();
+                let can_add = route_count < MAX_ROUTES;
 
-                ui.label(format!("Routes: {}/{}", route_count, max_routes));
+                ui.label(format!("Routes: {}/{}", route_count, MAX_ROUTES));
 
                 if ui.button("Clear All").clicked() {
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio_routing.matrix.clear();
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut mod_eng =
+                        state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    for row in &rows {
+                        Self::remove_route_row(&mut mod_eng, &row.param_id, &row.uuid);
+                    }
                 }
 
                 ui.separator();
@@ -1228,10 +1316,34 @@ impl EguiControlGui {
                 if can_add {
                     if ui.button("Add Route").clicked()
                         && let Some(band) = FftBand::from_index(band_idx)
-                            && let Some(target) = target_list.get(target_idx) {
-                                let mut state =
+                            && let Some(target) = target_list.get(target_idx)
+                                && let Some(param_id) = target.param_id() {
+                                let state =
                                     self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.audio_routing.matrix.add_route(band, target.clone());
+                                let mut mod_eng =
+                                    state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                let (freq_low, freq_high) = band.freq_range();
+                                // Same uuid scheme as the load-time migration (U2),
+                                // so re-saving and re-loading reuses the source.
+                                let mut n = 0;
+                                while mod_eng.has_source(&format!("route_{n}")) {
+                                    n += 1;
+                                }
+                                let uuid = mod_eng.add_source_with_uuid(
+                                    format!("route_{n}"),
+                                    ModulationSource::AudioBand {
+                                        source_id: None,
+                                        freq_low,
+                                        freq_high,
+                                        gain: 1.0,
+                                        smoothing: 0.3,
+                                        attack: 0.1,
+                                        enabled: true,
+                                        mode: rustjay_core::modulation::AudioReactMode::Direct,
+                                        noise_gate: 0.1,
+                                    },
+                                );
+                                mod_eng.assign(param_id, &uuid, 0.5, None);
                             }
                 } else {
                     ui.label(
@@ -1247,64 +1359,53 @@ impl EguiControlGui {
                         .strong(),
                 );
 
-                let routes_data: Vec<_> = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state
-                        .audio_routing
-                        .matrix
-                        .routes()
-                        .iter()
-                        .map(|r| {
-                            (
-                                r.id,
-                                r.band,
-                                r.target.clone(),
-                                r.amount,
-                                r.attack,
-                                r.release,
-                                r.enabled,
-                                r.current_value,
-                            )
-                        })
-                        .collect()
-                };
-
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        for (id, band, target, amount, attack, release, enabled, current) in
-                            &routes_data
-                        {
+                        for row in &rows {
                             ui.group(|ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    let mut is_enabled = *enabled;
+                                    let mut is_enabled = row.enabled;
                                     if ui.checkbox(&mut is_enabled, "").changed() {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            enabled, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.enabled = is_enabled;
+                                            *enabled = is_enabled;
                                         }
                                     }
-                                    ui.label(format!("{} → {}", band.short_name(), target.name()));
+                                    ui.label(format!("{} → {}", row.band, row.target));
                                     ui.colored_label(
                                         crate::egui_theme::colors::accent_green(),
-                                        format!("{:.2}", current),
+                                        format!("{:.2}", row.current),
                                     );
                                     if ui.button("✕").clicked() {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        state.audio_routing.matrix.remove_route(*id);
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        Self::remove_route_row(
+                                            &mut mod_eng,
+                                            &row.param_id,
+                                            &row.uuid,
+                                        );
                                     }
                                 });
 
-                                let mut amt = *amount;
+                                let mut amt = row.amount;
                                 if ui
                                     .add(
                                         egui::Slider::new(&mut amt, -1.0..=1.0)
@@ -1313,59 +1414,74 @@ impl EguiControlGui {
                                     )
                                     .changed()
                                 {
-                                    let mut state =
+                                    let state =
                                         self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(route) =
-                                        state.audio_routing.matrix.get_route_mut(*id)
+                                    let mut mod_eng = state
+                                        .modulation
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    if let Some(mods) = mod_eng.assignments.get_mut(&row.param_id)
+                                        && let Some(m) =
+                                            mods.iter_mut().find(|m| m.source_id == row.uuid)
                                     {
-                                        route.amount = amt;
+                                        m.amount = amt;
                                     }
                                 }
 
                                 ui.columns(2, |cols| {
-                                    let mut atk = *attack;
+                                    let mut atk = row.attack;
                                     if cols[0]
                                         .add(
-                                            egui::Slider::new(&mut atk, 0.001..=1.0)
+                                            egui::Slider::new(&mut atk, 0.0..=0.99)
                                                 .text("Attack")
                                                 .trailing_fill(true),
                                         )
                                         .changed()
                                     {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            attack, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.attack = atk;
+                                            *attack = atk;
                                         }
                                     }
-                                    let mut rel = *release;
+                                    let mut rel = row.release;
                                     if cols[1]
                                         .add(
-                                            egui::Slider::new(&mut rel, 0.001..=1.0)
+                                            egui::Slider::new(&mut rel, 0.0..=0.99)
                                                 .text("Release")
                                                 .trailing_fill(true),
                                         )
                                         .changed()
                                     {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            smoothing, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.release = rel;
+                                            *smoothing = rel;
                                         }
                                     }
                                 });
                             });
                         }
 
-                        if routes_data.is_empty() {
+                        if rows.is_empty() {
                             ui.label(
                                 egui::RichText::new("No routes configured. Add one above.")
                                     .color(crate::egui_theme::colors::text_secondary()),
