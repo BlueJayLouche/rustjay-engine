@@ -234,3 +234,29 @@ fn outputs_projector_panel_snapshot() {
     harness.get_by_label("Fullscreen");
     harness.snapshot("outputs_projector_panel");
 }
+
+/// The launch splash and the About box are one drawing shown two ways, so the
+/// About-only credits are what tells them apart.
+///
+/// No pixel baseline, for the reason given on `layer_row_is_drawn`.
+#[test]
+fn the_splash_grows_credits_only_when_invoked() {
+    fn harness_for(presentation: kovvboj::splash::Presentation) -> Harness<'static> {
+        let mut harness = Harness::builder()
+            .with_size([720.0, 400.0])
+            .with_theme(egui::Theme::Dark)
+            .build_ui(move |ui| {
+                kovvboj::splash::splash(ui, 0.0, presentation);
+            });
+        harness.run();
+        harness
+    }
+
+    let launch = harness_for(kovvboj::splash::Presentation::Launch);
+    launch.get_by_label("KOVVBOJ");
+    assert!(launch.query_by_label("Close").is_none());
+
+    let about = harness_for(kovvboj::splash::Presentation::About);
+    about.get_by_label("KOVVBOJ");
+    about.get_by_label("Close");
+}

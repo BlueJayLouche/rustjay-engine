@@ -17,6 +17,7 @@ pub mod stage;
 #[cfg(feature = "projection")]
 use stage::KovvbojStage;
 pub mod shell;
+pub mod splash;
 pub mod ui;
 
 #[cfg(feature = "mixer")]

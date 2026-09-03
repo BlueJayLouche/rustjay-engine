@@ -11,6 +11,7 @@
 
 #[cfg(feature = "webcam")]
 use crate::ui::LedMapTab;
+use crate::splash::{LAUNCH_HOLD, Presentation, backdrop_opacity, launch_opacity, splash};
 use crate::ui::{DeckTab, EffectsTab, MixerTab, OutputsTab, SequencerTab, StageTab};
 use rustjay_engine::prelude::{AnyEguiShell, AnyEguiTab, EguiControlGui, EngineState, GuiTab};
 use rustjay_gui::egui_theme::{Palette, set_palette};
@@ -75,6 +76,13 @@ pub struct KovvbojShell {
     show_library: bool,
     show_preview: bool,
 
+    /// Launch splash: pending until the first frame gives it a clock, then
+    /// timed from there so a slow startup doesn't eat the whole hold.
+    splash_pending: bool,
+    splash_started_at: Option<f64>,
+    /// When Help → About was opened, for the same drawing on no timer.
+    about_opened_at: Option<f64>,
+
     /// Persisted UI preferences (palette choice). Loaded on the first frame,
     /// because the shell is built before there is an egui context to theme.
     prefs: crate::persistence::UiPrefs,
@@ -128,6 +136,9 @@ impl KovvbojShell {
             show_sequencer: false,
             show_library: true,
             show_preview: true,
+            splash_pending: true,
+            splash_started_at: None,
+            about_opened_at: None,
             prefs: crate::persistence::UiPrefs::default(),
             initialised: false,
         }
@@ -456,10 +467,77 @@ impl AnyEguiShell for KovvbojShell {
             }
             });
         });
+
+        self.splash(ui.ctx());
     }
 }
 
 impl KovvbojShell {
+    /// The launch splash, then the About box — drawn over everything else, so
+    /// they go last.
+    fn splash(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+
+        if let Some((elapsed, remaining)) = self.launch_timing(now) {
+            let opacity = launch_opacity(remaining);
+            ctx.request_repaint_after(remaining.min(crate::splash::FRAME_INTERVAL));
+            egui::Modal::new(egui::Id::new("kovvboj_splash"))
+                .backdrop_color(
+                    Presentation::Launch
+                        .backdrop()
+                        .gamma_multiply(backdrop_opacity(remaining)),
+                )
+                .frame(Presentation::Launch.frame(&ctx.style_of(ctx.theme())))
+                .show(ctx, |ui| {
+                    ui.multiply_opacity(opacity);
+                    splash(ui, elapsed, Presentation::Launch);
+                });
+            // Cut, rather than jumping into the fade: at this length the tail
+            // of the curve is already invisible, so easing a skip would only
+            // read as a delay.
+            if ctx.input(|i| i.pointer.any_pressed() || !i.keys_down.is_empty()) {
+                self.splash_started_at = None;
+            }
+        } else if let Some(opened_at) = self.about_opened_at {
+            ctx.request_repaint_after(crate::splash::FRAME_INTERVAL);
+            let card = egui::Modal::new(egui::Id::new("kovvboj_splash"))
+                .backdrop_color(Presentation::About.backdrop())
+                .frame(Presentation::About.frame(&ctx.style_of(ctx.theme())))
+                .show(ctx, |ui| {
+                    splash(ui, (now - opened_at).max(0.0) as f32, Presentation::About)
+                });
+            // Escape is consumed rather than read, so dismissing the About box
+            // does not also drop the engine out of fullscreen.
+            if card.inner
+                || card.should_close()
+                || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                self.about_opened_at = None;
+            }
+        }
+    }
+
+    /// How far into the launch hold we are, or `None` once it is over.
+    ///
+    /// The clock starts on the first frame that asks rather than at
+    /// construction, so the splash gets its full run however long the engine
+    /// took to come up behind it.
+    fn launch_timing(&mut self, now: f64) -> Option<(f32, std::time::Duration)> {
+        if self.splash_pending {
+            self.splash_pending = false;
+            self.splash_started_at = Some(now);
+        }
+        let elapsed = (now - self.splash_started_at?).max(0.0);
+        if elapsed >= LAUNCH_HOLD.as_secs_f64() {
+            self.splash_started_at = None;
+            return None;
+        }
+        Some((
+            elapsed as f32,
+            std::time::Duration::from_secs_f64(LAUNCH_HOLD.as_secs_f64() - elapsed),
+        ))
+    }
+
     /// One 32px row: name, menus, then right-aligned status.
     fn menu_and_status_row(
         &mut self,
@@ -570,6 +648,13 @@ impl KovvbojShell {
                         ui.separator();
                         ui.checkbox(&mut self.show_library, "Library");
                         ui.checkbox(&mut self.show_preview, "Preview");
+                    });
+
+                    ui.menu_button("Help", |ui| {
+                        if ui.button("About KOVVBOJ").clicked() {
+                            self.about_opened_at = Some(ui.input(|i| i.time));
+                            ui.close();
+                        }
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
