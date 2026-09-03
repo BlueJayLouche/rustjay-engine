@@ -258,3 +258,70 @@ fn map_mode_popup_creates_and_assigns_a_source() {
         .expect("the parameter is bound");
     assert_eq!(bound.len(), 1, "one active source per parameter");
 }
+
+/// An LFO and an audio band on one parameter is the point, not a mistake: the
+/// engine sums every assignment, so the popup must add rather than replace.
+#[test]
+fn map_mode_popup_stacks_sources_on_one_param() {
+    let mut engine = EngineState::default();
+    engine.audio.enabled = false;
+    engine.lfo_assign_mode = true;
+    let shared = Arc::new(Mutex::new(engine));
+
+    let drawn = shared.clone();
+    let mut harness = Harness::builder()
+        .with_size([420.0, 420.0])
+        .with_theme(egui::Theme::Dark)
+        .build_ui(move |ui| {
+            let mut engine = drawn.lock().unwrap_or_else(|e| e.into_inner());
+            let rect = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(200.0, 24.0));
+            rustjay_gui::apply_param_map_overlay(
+                ui,
+                &mut engine,
+                rect,
+                "color/brightness",
+                "Brightness",
+                "color/brightness",
+                0.0,
+                1.0,
+            );
+        });
+    harness.run();
+
+    let open = |h: &mut Harness<'_>| {
+        let pos = egui::pos2(120.0, 32.0);
+        h.hover_at(pos);
+        h.drag_at(pos);
+        h.drop_at(pos);
+        h.run();
+    };
+
+    open(&mut harness);
+    click_painted_text(&mut harness, "+ New LFO");
+    open(&mut harness);
+    click_painted_text(&mut harness, "+ Audio · Bass");
+
+    let engine = shared.lock().unwrap_or_else(|p| p.into_inner());
+    let mod_eng = engine.modulation.lock().unwrap_or_else(|p| p.into_inner());
+    let bound = mod_eng
+        .assignments
+        .get("color/brightness")
+        .expect("the parameter is bound");
+    assert_eq!(bound.len(), 2, "the second source adds to the first");
+
+    let kinds: Vec<&str> = bound
+        .iter()
+        .filter_map(|m| {
+            mod_eng
+                .sources
+                .iter()
+                .find(|e| e.uuid == m.source_id)
+                .map(|e| match e.source {
+                    rustjay_core::modulation::ModulationSource::LFO { .. } => "LFO",
+                    rustjay_core::modulation::ModulationSource::AudioBand { .. } => "Audio",
+                    _ => "other",
+                })
+        })
+        .collect();
+    assert!(kinds.contains(&"LFO") && kinds.contains(&"Audio"), "{kinds:?}");
+}

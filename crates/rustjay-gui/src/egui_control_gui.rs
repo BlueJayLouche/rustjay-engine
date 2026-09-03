@@ -1641,16 +1641,34 @@ pub fn apply_param_map_overlay(
     }
 
     // LFO-assign mode.
-    let (assigned, sources) = {
+    let (bound, sources) = {
         let mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
-        let assigned = mod_eng.assignments.get(id).is_some_and(|v| !v.is_empty());
+        // What is already driving this parameter. Several sources can, and they
+        // sum — an LFO and an audio band together is the point, not a mistake.
+        let bound: Vec<(String, &'static str, f32)> = mod_eng
+            .assignments
+            .get(id)
+            .map(|mods| {
+                mods.iter()
+                    .filter_map(|m| {
+                        let entry = mod_eng.sources.iter().find(|e| e.uuid == m.source_id)?;
+                        Some((
+                            m.source_id.clone(),
+                            mod_source_short(&entry.source),
+                            m.amount,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let sources: Vec<(String, &'static str)> = mod_eng
             .sources
             .iter()
             .map(|e| (e.uuid.clone(), mod_source_short(&e.source)))
             .collect();
-        (assigned, sources)
+        (bound, sources)
     };
+    let assigned = !bound.is_empty();
     let color = if assigned { accent_green() } else { accent_cyan() };
     ui.painter().rect_stroke(
         rect.expand(2.0),
@@ -1702,8 +1720,6 @@ pub fn apply_param_map_overlay(
             if let Some(source) = fresh {
                 let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
                 let uuid = mod_eng.add_source(source);
-                // Single active source per param, as below.
-                mod_eng.assignments.remove(id);
                 mod_eng.assign(id, &uuid, 0.5, None);
             }
 
@@ -1716,14 +1732,41 @@ pub fn apply_param_map_overlay(
                 if ui.button(format!("+ {ty} {tag}")).clicked() {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                    // Single active source per param: replace any existing.
-                    mod_eng.assignments.remove(id);
                     mod_eng.assign(id, uuid, 0.5, None);
                 }
             }
+            // What is driving this parameter now. Several sources sum, so the
+            // stack has to be visible — otherwise a second one looks like it
+            // replaced the first rather than adding to it.
             if assigned {
                 ui.separator();
-                if ui.button(egui::RichText::new("✕ Clear").small()).clicked() {
+                ui.label(egui::RichText::new("Driving this").small().weak());
+                let mut drop: Option<String> = None;
+                for (uuid, ty, amount) in &bound {
+                    ui.horizontal(|ui| {
+                        let tag = &uuid[..4.min(uuid.len())];
+                        ui.label(
+                            egui::RichText::new(format!("{ty} {tag}  ×{amount:.2}")).small(),
+                        );
+                        if ui
+                            .small_button("✖")
+                            .on_hover_text("Stop this one driving the parameter")
+                            .clicked()
+                        {
+                            drop = Some(uuid.clone());
+                        }
+                    });
+                }
+                if let Some(uuid) = drop {
+                    let mut mod_eng =
+                        engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(mods) = mod_eng.assignments.get_mut(id) {
+                        mods.retain(|m| m.source_id != uuid);
+                    }
+                }
+                if bound.len() > 1
+                    && ui.button(egui::RichText::new("✕ Clear all").small()).clicked()
+                {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
                     mod_eng.assignments.remove(id);
