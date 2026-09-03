@@ -75,10 +75,14 @@ pub struct KovvbojShell {
     show_sequencer: bool,
     show_library: bool,
     show_preview: bool,
-    /// When the last beat landed, for the tempo flash. The phase is rebuilt
-    /// from this and the BPM, so the flash keeps ticking between detections
-    /// instead of freezing whenever the beat detector goes quiet.
-    beat_origin: Option<f64>,
+    /// Where the tempo flash is in its cycle, 0 on the beat.
+    ///
+    /// Accumulated per frame rather than derived from elapsed time × tempo:
+    /// that form jumps discontinuously whenever the BPM changes, by more the
+    /// longer the app has been running, so a tap sent the flash haywire.
+    /// Advancing it by `dt × bpm` means a tempo change alters the rate and
+    /// nothing else.
+    beat_phase: f32,
     /// Last frame's beat flag. `audio.beat` is only refreshed while analysis
     /// runs, so a stale `true` would re-anchor every frame and pin the flash on.
     beat_was_high: bool,
@@ -124,6 +128,21 @@ impl Default for KovvbojShell {
     }
 }
 
+/// Move the tempo flash on by one frame, restarting the cycle on a beat.
+///
+/// Accumulating beats deriving the phase from elapsed time × tempo: the derived
+/// form jumps whenever the BPM changes — further the longer the app has run —
+/// which made a single tap send the flash haywire.
+fn advance_beat_phase(phase: f32, dt: f32, bpm: f32, beat: bool) -> f32 {
+    if beat {
+        return 0.0;
+    }
+    if bpm <= 0.0 {
+        return phase;
+    }
+    (phase + dt * bpm / 60.0).fract()
+}
+
 impl KovvbojShell {
     /// Build the shell with every window closed and MIX selected.
     pub fn new() -> Self {
@@ -143,7 +162,7 @@ impl KovvbojShell {
             show_sequencer: false,
             show_library: true,
             show_preview: true,
-            beat_origin: None,
+            beat_phase: 0.0,
             beat_was_high: false,
             splash_pending: true,
             splash_started_at: None,
@@ -767,20 +786,18 @@ impl KovvbojShell {
                         // by a quarter of the way through. Driven by the phase
                         // rather than the audio beat flag so it still pulses on a
                         // tapped or Link tempo with no audio coming in.
-                        // Anchor on each detected beat and rebuild the phase from
-                        // the tempo in between, so the flash stays in step when
-                        // beats are coming and keeps counting when they stop.
-                        let now = ui.input(|i| i.time);
-                        if beat_hit && !self.beat_was_high {
-                            self.beat_origin = Some(now);
-                        }
+                        // Advance the flash by this frame's share of a beat, and
+                        // restart the cycle on a detected beat. Accumulating keeps
+                        // a tempo change from moving where we are in the bar.
+                        let dt = ui.input(|i| i.stable_dt).min(0.1);
+                        self.beat_phase = advance_beat_phase(
+                            self.beat_phase,
+                            dt,
+                            bpm,
+                            beat_hit && !self.beat_was_high,
+                        );
                         self.beat_was_high = beat_hit;
-                        let origin = *self.beat_origin.get_or_insert(now);
-                        let phase = if bpm > 0.0 {
-                            (((now - origin) * bpm as f64 / 60.0).fract()) as f32
-                        } else {
-                            1.0
-                        };
+                        let phase = if bpm > 0.0 { self.beat_phase } else { 1.0 };
                         let flash = (1.0 - phase * 4.0).clamp(0.0, 1.0);
                         let beat_color = if bpm > 0.0 {
                             let dim = ink_2();
@@ -932,5 +949,43 @@ impl KovvbojShell {
         let size = egui::vec2(width, width / aspect);
         ui.add(egui::Image::new((id, size)).fit_to_exact_size(size));
         ui.separator();
+    }
+}
+
+#[cfg(test)]
+mod beat_flash_tests {
+    use super::advance_beat_phase;
+
+    #[test]
+    fn a_beat_restarts_the_cycle() {
+        assert_eq!(advance_beat_phase(0.73, 0.016, 120.0, true), 0.0);
+    }
+
+    #[test]
+    fn it_advances_a_beat_per_beat() {
+        // 120 BPM is half a second a beat, so a quarter second is half a cycle.
+        let mut phase = 0.0;
+        for _ in 0..25 {
+            phase = advance_beat_phase(phase, 0.01, 120.0, false);
+        }
+        assert!((phase - 0.5).abs() < 0.01, "phase was {phase}");
+    }
+
+    /// The bug: deriving the phase from elapsed time × tempo moved the flash to
+    /// an unrelated point in the bar whenever the tempo changed. Accumulating
+    /// changes the rate and leaves the position alone.
+    #[test]
+    fn a_tempo_change_does_not_move_the_phase() {
+        let phase = 0.4;
+        let slow = advance_beat_phase(phase, 0.016, 60.0, false);
+        let fast = advance_beat_phase(phase, 0.016, 180.0, false);
+        assert!(slow > phase && fast > phase, "both move forward");
+        assert!(fast - phase > slow - phase, "faster tempo moves further");
+        assert!(fast < 0.5, "but neither jumps across the bar: {fast}");
+    }
+
+    #[test]
+    fn a_stopped_clock_leaves_it_where_it_is() {
+        assert_eq!(advance_beat_phase(0.31, 0.016, 0.0, false), 0.31);
     }
 }
