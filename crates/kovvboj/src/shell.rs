@@ -83,9 +83,9 @@ pub struct KovvbojShell {
     /// Advancing it by `dt × bpm` means a tempo change alters the rate and
     /// nothing else.
     beat_phase: f32,
-    /// Last frame's beat flag. `audio.beat` is only refreshed while analysis
-    /// runs, so a stale `true` would re-anchor every frame and pin the flash on.
-    beat_was_high: bool,
+    /// The tap we last saw, so a new one restarts the flash's cycle — the same
+    /// event that resets the LFOs.
+    last_tap_seen: f64,
 
     /// Launch splash: pending until the first frame gives it a clock, then
     /// timed from there so a slow startup doesn't eat the whole hold.
@@ -163,7 +163,7 @@ impl KovvbojShell {
             show_library: true,
             show_preview: true,
             beat_phase: 0.0,
-            beat_was_high: false,
+            last_tap_seen: 0.0,
             splash_pending: true,
             splash_started_at: None,
             about_opened_at: None,
@@ -577,7 +577,7 @@ impl KovvbojShell {
 
         // Which optional built-ins have anything to show, so the View menu does
         // not offer empty panels. Mirrors the built-in host's own filter.
-        let (has_color, has_motion, fps, bpm, beat_hit, web, osc, recording) = {
+        let (has_color, has_motion, fps, bpm, clock, web, osc, recording) = {
             let state = engine.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state
                 .performance
@@ -595,10 +595,16 @@ impl KovvbojShell {
                     .any(|d| d.category == rustjay_core::ParamCategory::Motion),
                 perf,
                 state.effective_bpm(),
-                // True on the frames a beat was actually detected. `audio.enabled`
-                // is not the same thing: analysis can be on and silent, leaving
-                // `beat_phase` frozen, which made the flash die between taps.
-                state.audio.beat,
+                // Follow the clock the LFO follows. Link and ProDJ give a stable
+                // ramp to lock onto; under Audio the detector fires at irregular
+                // intervals, which is why `stable_beat_phase` refuses it — so
+                // there we free-run and let a tap set the downbeat, exactly as a
+                // tap resets the LFOs.
+                (
+                    state.stable_beat_phase(),
+                    !matches!(state.sync_source, rustjay_core::SyncSource::Audio),
+                    state.audio.last_tap_time,
+                ),
                 state.web_enabled,
                 state.osc_enabled,
                 state.recording_active,
@@ -789,15 +795,18 @@ impl KovvbojShell {
                         // Advance the flash by this frame's share of a beat, and
                         // restart the cycle on a detected beat. Accumulating keeps
                         // a tempo change from moving where we are in the bar.
-                        let dt = ui.input(|i| i.stable_dt).min(0.1);
-                        self.beat_phase = advance_beat_phase(
-                            self.beat_phase,
-                            dt,
-                            bpm,
-                            beat_hit && !self.beat_was_high,
-                        );
-                        self.beat_was_high = beat_hit;
-                        let phase = if bpm > 0.0 { self.beat_phase } else { 1.0 };
+                        let (stable_phase, has_stable_clock, last_tap) = clock;
+                        let phase = if has_stable_clock {
+                            // A real ramp from Link or ProDJ: just read it.
+                            stable_phase
+                        } else {
+                            let dt = ui.input(|i| i.stable_dt).min(0.1);
+                            let tapped = last_tap > self.last_tap_seen;
+                            self.last_tap_seen = last_tap;
+                            self.beat_phase =
+                                advance_beat_phase(self.beat_phase, dt, bpm, tapped);
+                            if bpm > 0.0 { self.beat_phase } else { 1.0 }
+                        };
                         let flash = (1.0 - phase * 4.0).clamp(0.0, 1.0);
                         let beat_color = if bpm > 0.0 {
                             let dim = ink_2();
