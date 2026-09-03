@@ -67,7 +67,7 @@ v4l = "0.14"
 # NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
 default = ["webcam"]
 webcam  = ["nokhwa"]
-ndi     = ["grafton-ndi"]
+ndi     = ["grafton-ndi", "rustjay-core/ndi"]
 ffmpeg  = ["dep:ffmpeg-next"]
 # Mapped-LED (sACN) output from a ledmap.json.
 led     = ["dep:rustjay-ledmap", "dep:rustjay-lighting"]
