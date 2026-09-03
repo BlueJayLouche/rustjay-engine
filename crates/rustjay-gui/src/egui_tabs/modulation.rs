@@ -378,7 +378,29 @@ impl EguiControlGui {
                 *gate_source = pick;
             }
         }
-        if ui.button(gate_label).clicked() {
+        // A trigger re-applies the gate every frame, so firing by hand while one
+        // is attached does nothing you can see. Say so rather than offer a
+        // button that silently loses.
+        let driven_by = if is_adsr {
+            mod_eng
+                .find_source_by_uuid(uuid)
+                .and_then(|e| match &e.source {
+                    ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        let gate_btn = ui.add_enabled(driven_by.is_none(), egui::Button::new(gate_label));
+        let gate_btn = match &driven_by {
+            Some(src) => gate_btn.on_disabled_hover_text(format!(
+                "Driven by trigger {} — set \"Gated by\" to manual to fire it here",
+                &src[..6.min(src.len())]
+            )),
+            None if is_gated => gate_btn.on_hover_text("Close the gate; the envelope releases"),
+            None => gate_btn.on_hover_text("Open the gate; it stays open until released"),
+        };
+        if gate_btn.clicked() {
             if is_gated {
                 mod_eng.release_adsr(uuid);
             } else {

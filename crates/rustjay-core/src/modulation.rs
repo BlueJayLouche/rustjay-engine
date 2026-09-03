@@ -3149,3 +3149,81 @@ mod trigger_floor_tests {
         assert_eq!(tick(&mut t, 0.9, 0.016), 1.0, "a real hit fires");
     }
 }
+
+#[cfg(test)]
+mod manual_gate_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    fn quiet_update(engine: &mut ModulationEngine, t: f32) {
+        let vals = AudioSourceValues {
+            fft: &[0.0005; 64],
+            level: 0.0005,
+            sample_rate: 44100.0,
+        };
+        let mut sources = HashMap::new();
+        sources.insert(0u32, vals);
+        engine.update(t, 120.0, 0.0, &AudioValues { sources });
+    }
+
+    fn adsr(gate_source: Option<String>) -> ModulationSource {
+        ModulationSource::ADSR {
+            gate_source,
+            attack: 0.05,
+            decay: 0.1,
+            sustain: 0.8,
+            release: 0.2,
+            stage: ADSRStage::Idle,
+            stage_time: 0.0,
+            gate: false,
+            current_level: 0.0,
+        }
+    }
+
+    /// Firing by hand works while nothing else drives the envelope.
+    #[test]
+    fn the_manual_gate_works_without_a_trigger() {
+        let mut engine = ModulationEngine::new();
+        let a = engine.add_source(adsr(None));
+        engine.assign("spin", &a, 1.0, None);
+        engine.trigger_adsr(&a);
+        let mut t = 0.0;
+        for _ in 0..5 {
+            t += 0.016;
+            quiet_update(&mut engine, t);
+        }
+        assert!(engine.get_modulation("spin") > 0.0, "the envelope opened");
+    }
+
+    /// With a trigger attached, the gate is re-applied from that trigger every
+    /// frame — so pressing the button by hand is undone immediately.
+    #[test]
+    fn the_manual_gate_is_overridden_by_a_trigger_source() {
+        let mut engine = ModulationEngine::new();
+        let trig = engine.add_source(ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.3,
+            hysteresis: 0.3,
+            min_interval: 0.05,
+            hold: 0.1,
+            floor: 0.9,
+            armed: true,
+            since_fire: 10.0,
+            hold_left: 0.0,
+            average: 0.0,
+        });
+        let a = engine.add_source(adsr(Some(trig)));
+        engine.assign("spin", &a, 1.0, None);
+        engine.trigger_adsr(&a);
+        let mut t = 0.0;
+        for _ in 0..5 {
+            t += 0.016;
+            quiet_update(&mut engine, t);
+        }
+        assert_eq!(
+            engine.get_modulation("spin"),
+            0.0,
+            "the trigger closed the gate the button opened"
+        );
+    }
+}
