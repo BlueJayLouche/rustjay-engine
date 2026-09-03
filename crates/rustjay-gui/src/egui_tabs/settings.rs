@@ -45,7 +45,7 @@ impl EguiControlGui {
         // Resolution settings
         ui.label(
             egui::RichText::new("Resolution Settings")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
 
@@ -142,7 +142,7 @@ impl EguiControlGui {
                 .strong()
                 .color(Color32::BLACK),
         )
-        .fill(ACCENT_GREEN);
+        .fill(accent_green());
         if ui.add(apply_btn).clicked() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.resolution.internal_width = self.pending_internal_width;
@@ -166,7 +166,7 @@ impl EguiControlGui {
 
         ui.label(
             egui::RichText::new("Keyboard Shortcuts:")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
         ui.label("• Shift+F — Toggle Fullscreen");
@@ -180,7 +180,7 @@ impl EguiControlGui {
 
         ui.label(
             egui::RichText::new("Performance (Output Window)")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
         let (fps, frame_time_ms, cpu_update_ms, gpu_encode_ms, present_wait_ms) = {
@@ -286,7 +286,7 @@ impl EguiControlGui {
                 .strong()
                 .color(Color32::BLACK),
         )
-        .fill(ACCENT_CYAN);
+        .fill(accent_cyan());
         if ui.add(save_btn).clicked() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.save_settings_requested = true;
@@ -295,7 +295,7 @@ impl EguiControlGui {
         ui.label(
             egui::RichText::new("Settings are auto-saved on exit, or manually with this button.")
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
         );
     }
 }

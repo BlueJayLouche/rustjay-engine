@@ -40,40 +40,19 @@ pub enum LFOWaveform {
 /// How audio energy drives the modulation value.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum AudioReactMode {
-    /// Direct: output = audio energy (standard envelope follower).
+    /// Output follows audio energy — a standard envelope follower, and now the
+    /// only mode.
+    ///
+    /// `Increase` and `Decrease` integrated energy into upward or downward
+    /// drift that wrapped at the ends. They were awkward to reason about and
+    /// overlapped badly with a triggered envelope, which says the same thing
+    /// better. The aliases keep older scenes and presets loading; they fold to
+    /// following.
     #[default]
+    #[serde(alias = "Increase", alias = "Decrease")]
     Direct,
-    /// Increase: audio energy sweeps the value upward (accumulates).
-    Increase,
-    /// Decrease: audio energy sweeps the value downward (accumulates).
-    Decrease,
 }
 
-/// Audio frequency band presets (convenience for UI quick-select).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-pub enum AudioBandPreset {
-    /// 20–250 Hz.
-    #[default]
-    Low,
-    /// 250–2000 Hz.
-    Mid,
-    /// 2000–20000 Hz.
-    High,
-    /// 20–20000 Hz (overall level).
-    Full,
-}
-
-impl AudioBandPreset {
-    /// Get the frequency range for this preset.
-    pub fn freq_range(self) -> (f32, f32) {
-        match self {
-            AudioBandPreset::Low => (20.0, 250.0),
-            AudioBandPreset::Mid => (250.0, 2000.0),
-            AudioBandPreset::High => (2000.0, 20000.0),
-            AudioBandPreset::Full => (20.0, 20000.0),
-        }
-    }
-}
 
 /// ADSR envelope stage.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -230,7 +209,11 @@ pub enum ModulationSource {
         phase: f32,
         /// Amplitude multiplier.
         amplitude: f32,
-        /// Whether output is bipolar (-1..1) or unipolar (0..1).
+        /// Whether the output swings either side of zero.
+        ///
+        /// Bipolar spans `-amplitude..amplitude`; unipolar spans
+        /// `0..amplitude`, so a modulated parameter still reaches the value it
+        /// was set to at the trough.
         bipolar: bool,
         /// Whether tempo sync is enabled.
         tempo_sync: bool,
@@ -245,6 +228,45 @@ pub enum ModulationSource {
         #[serde(skip)]
         last_beat_phase: f32,
     },
+    /// Fires a gate when a band's energy jumps, for driving an ADSR.
+    ///
+    /// `AudioBand` follows energy continuously; this detects the *onset* and
+    /// holds a gate open, which is what "a hit fires an envelope" needs and what
+    /// no source could express before.
+    AudioTrigger {
+        /// Which of the analyser's eight bands to watch.
+        band: crate::routing::FftBand,
+        /// Energy above the running average needed to fire, as a ratio.
+        threshold: f32,
+        /// How far energy must fall back, as a ratio of the threshold, before
+        /// the trigger re-arms. Without it one hit fires repeatedly down its
+        /// own decay.
+        hysteresis: f32,
+        /// Shortest gap between fires, in seconds.
+        min_interval: f32,
+        /// How long the gate stays open. An onset has no note-off, so without
+        /// this an ADSR could never reach its sustain stage.
+        hold: f32,
+        /// Absolute energy a hit must reach, whatever the average says.
+        ///
+        /// `threshold` is a ratio, so in a quiet band a small noise can clear it
+        /// — the average is small too. This is the same idea as `AudioBand`'s
+        /// noise gate: below it, nothing is a hit.
+        #[serde(default)]
+        floor: f32,
+        /// Ready to fire (runtime).
+        #[serde(skip, default = "default_true")]
+        armed: bool,
+        /// Seconds since the last fire (runtime).
+        #[serde(skip)]
+        since_fire: f32,
+        /// Seconds of hold left; gate is open while positive (runtime).
+        #[serde(skip)]
+        hold_left: f32,
+        /// Running average of the band's energy (runtime).
+        #[serde(skip)]
+        average: f32,
+    },
     /// Audio FFT reactivity with custom frequency range.
     AudioBand {
         /// Optional audio source id (`None` = primary).
@@ -257,6 +279,14 @@ pub enum ModulationSource {
         gain: f32,
         /// Release smoothing (0–0.99).
         smoothing: f32,
+        /// Attack smoothing for the rising edge (0 = instant rise, matching
+        /// the pre-attack behaviour), applied the way `smoothing` smooths the
+        /// falling edge. `#[serde(default)]` keeps older data loading.
+        #[serde(default)]
+        attack: f32,
+        /// Whether this source is active. Disabled sources output 0.0.
+        #[serde(default = "default_true")]
+        enabled: bool,
         /// React mode.
         #[serde(default)]
         mode: AudioReactMode,
@@ -266,6 +296,11 @@ pub enum ModulationSource {
     },
     /// ADSR envelope generator.
     ADSR {
+        /// Uuid of a source whose value gates this envelope — an
+        /// `AudioTrigger`, normally. A rising edge opens the gate, a falling one
+        /// releases it. `None` means the envelope is fired programmatically.
+        #[serde(default)]
+        gate_source: Option<String>,
         /// Attack time in seconds.
         attack: f32,
         /// Decay time in seconds.
@@ -301,6 +336,22 @@ pub enum ModulationSource {
 }
 
 impl ModulationSource {
+    /// The band energy this trigger last saw, and the level it must beat.
+    ///
+    /// `threshold` is a ratio of a rolling average, which is impossible to tune
+    /// blind — this lets the editor show the two numbers side by side.
+    pub fn trigger_levels(&self) -> Option<(f32, f32)> {
+        match self {
+            ModulationSource::AudioTrigger {
+                average,
+                threshold,
+                floor,
+                ..
+            } => Some((*average, (*average * *threshold).max(*floor))),
+            _ => None,
+        }
+    }
+
     /// Compare two sources by configuration fields only.
     ///
     /// Ignores ADSR runtime state (`stage`, `stage_time`, `gate`, `current_level`).
@@ -337,8 +388,10 @@ impl ModulationSource {
                     freq_high: fh1,
                     gain: g1,
                     smoothing: sm1,
+                    attack: at1,
                     mode: m1,
                     noise_gate: ng1,
+                    ..
                 },
                 ModulationSource::AudioBand {
                     source_id: s2,
@@ -346,8 +399,10 @@ impl ModulationSource {
                     freq_high: fh2,
                     gain: g2,
                     smoothing: sm2,
+                    attack: at2,
                     mode: m2,
                     noise_gate: ng2,
+                    ..
                 },
             ) => {
                 s1 == s2
@@ -355,11 +410,13 @@ impl ModulationSource {
                     && fh1 == fh2
                     && g1 == g2
                     && sm1 == sm2
+                    && at1 == at2
                     && m1 == m2
                     && ng1 == ng2
             }
             (
                 ModulationSource::ADSR {
+                    gate_source: None,
                     attack: a1,
                     decay: d1,
                     sustain: s1,
@@ -367,6 +424,7 @@ impl ModulationSource {
                     ..
                 },
                 ModulationSource::ADSR {
+                    gate_source: None,
                     attack: a2,
                     decay: d2,
                     sustain: s2,
@@ -408,15 +466,22 @@ impl ModulationSource {
         }
     }
 
-    /// Create an audio band source from a preset.
-    pub fn audio_from_preset(preset: AudioBandPreset) -> Self {
-        let (freq_low, freq_high) = preset.freq_range();
+    /// Create an audio band source for one of the analyser's eight bands.
+    ///
+    /// `FftBand` is the single band vocabulary: it matches `AudioState.fft`,
+    /// which is what the analyser bins, and what every band picker offers. The
+    /// four-way `AudioBandPreset` that used to live here corresponded to none of
+    /// them and only re-derived frequency ranges.
+    pub fn audio_from_band(band: crate::routing::FftBand) -> Self {
+        let (freq_low, freq_high) = band.freq_range();
         ModulationSource::AudioBand {
             source_id: None,
             freq_low,
             freq_high,
             gain: 1.0,
             smoothing: 0.6,
+            attack: 0.0,
+            enabled: true,
             mode: AudioReactMode::Direct,
             noise_gate: 0.1,
         }
@@ -425,6 +490,7 @@ impl ModulationSource {
     /// Create an ADSR envelope.
     pub fn adsr(attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
         ModulationSource::ADSR {
+            gate_source: None,
             attack,
             decay,
             sustain,
@@ -483,6 +549,48 @@ impl ModulationSource {
     /// Returns value in range `[-1, 1]` for bipolar or `[0, 1]` for unipolar.
     pub fn calculate(&mut self, time: f32, dt: f32, bpm: f32, beat_phase: f32, audio: &AudioValues<'_>, prev_value: f32) -> f32 {
         match self {
+            ModulationSource::AudioTrigger {
+                band,
+                threshold,
+                hysteresis,
+                min_interval,
+                hold,
+                floor,
+                armed,
+                since_fire,
+                hold_left,
+                average,
+            } => {
+                let (low, high) = band.freq_range();
+                let energy = audio
+                    .primary()
+                    .map(|v| v.energy_in_range(low, high))
+                    .unwrap_or(0.0);
+
+                // Slow running average, so the threshold rides the material
+                // rather than a fixed level that only suits one track.
+                *average = if *average <= 0.0 {
+                    energy
+                } else {
+                    0.99 * *average + 0.01 * energy
+                };
+
+                *since_fire += dt;
+                *hold_left = (*hold_left - dt).max(0.0);
+
+                let fire_at = (*average * *threshold).max(*floor);
+                if *armed && energy > fire_at && *since_fire >= *min_interval {
+                    *armed = false;
+                    *since_fire = 0.0;
+                    *hold_left = *hold;
+                } else if !*armed && energy < fire_at * (1.0 - *hysteresis).clamp(0.0, 1.0) {
+                    // Re-arm only once the hit has decayed well below where it
+                    // fired, or the tail retriggers it.
+                    *armed = true;
+                }
+
+                if *hold_left > 0.0 { 1.0 } else { 0.0 }
+            }
             ModulationSource::LFO {
                 waveform,
                 frequency,
@@ -558,11 +666,18 @@ impl ModulationSource {
                         (hash as f32 / u32::MAX as f32) * 2.0 - 1.0
                     }
                 };
-                let scaled = raw * *amplitude;
                 if *bipolar {
-                    scaled
+                    raw * *amplitude
                 } else {
-                    scaled * 0.5 + 0.5
+                    // Offset first, then scale: `0 .. amplitude`, so the trough
+                    // is always zero and amplitude sets the peak.
+                    //
+                    // Scaling first (`raw * amplitude * 0.5 + 0.5`) narrowed the
+                    // swing around a fixed centre of 0.5, which meant a unipolar
+                    // LFO could never return a parameter to its set value — the
+                    // output feeds `base + offset * range`, so depth 0.5 sat
+                    // permanently between a quarter and three quarters above it.
+                    (raw * 0.5 + 0.5) * *amplitude
                 }
             }
             ModulationSource::AudioBand {
@@ -571,9 +686,16 @@ impl ModulationSource {
                 freq_high,
                 gain,
                 smoothing,
-                mode,
+                attack,
+                enabled,
+                // `mode` is kept on the struct so older data still loads, but
+                // there is only one behaviour now: follow.
+                mode: _,
                 noise_gate,
             } => {
+                if !*enabled {
+                    return 0.0;
+                }
                 let source_vals = if let Some(id) = source_id {
                     audio.sources.get(id)
                 } else {
@@ -589,42 +711,13 @@ impl ModulationSource {
                 } else {
                     raw_signal
                 };
-                match mode {
-                    AudioReactMode::Direct => {
-                        if raw >= prev_value {
-                            raw.clamp(0.0, 1.0)
-                        } else {
-                            let release_alpha = 1.0 - *smoothing;
-                            (prev_value + release_alpha * (raw - prev_value)).clamp(0.0, 1.0)
-                        }
-                    }
-                    AudioReactMode::Increase => {
-                        if raw <= 0.0 {
-                            prev_value
-                        } else {
-                            let speed = (1.0 - *smoothing * 0.9) * 4.0;
-                            let step = raw * dt * speed;
-                            let next = prev_value + step;
-                            if next >= 1.0 {
-                                next - 1.0
-                            } else {
-                                next
-                            }
-                        }
-                    }
-                    AudioReactMode::Decrease => {
-                        if raw <= 0.0 {
-                            prev_value
-                        } else {
-                            let speed = (1.0 - *smoothing * 0.9) * 4.0;
-                            let step = raw * dt * speed;
-                            let next = prev_value - step;
-                            if next <= 0.0 {
-                                next + 1.0
-                            } else {
-                                next
-                            }
-                        }
+                {
+                    if raw >= prev_value {
+                        let attack_alpha = 1.0 - *attack;
+                        (prev_value + attack_alpha * (raw - prev_value)).clamp(0.0, 1.0)
+                    } else {
+                        let release_alpha = 1.0 - *smoothing;
+                        (prev_value + release_alpha * (raw - prev_value)).clamp(0.0, 1.0)
                     }
                 }
             }
@@ -811,6 +904,39 @@ impl ModulationEngine {
         uuid
     }
 
+    /// Merge another engine's sources and assignments into this one.
+    ///
+    /// Sources are matched by UUID: an existing source with the same UUID is
+    /// updated in place, otherwise the source is added. Assignments are
+    /// matched by (param, source_id, component) and likewise updated in place.
+    /// Merging the same engine twice is therefore a no-op — this is what lets
+    /// a saved routing matrix migrate into the engine on every load without
+    /// duplicating its `route_<id>` sources.
+    pub fn merge(&mut self, other: ModulationEngine) {
+        for entry in other.sources {
+            if let Some(existing) = self.sources.iter_mut().find(|e| e.uuid == entry.uuid) {
+                existing.source = entry.source;
+            } else {
+                self.add_source_with_uuid(entry.uuid, entry.source);
+            }
+        }
+        for (param, mods) in other.assignments {
+            let target = self.assignments.entry(param).or_default();
+            for m in mods {
+                if let Some(existing) = target
+                    .iter_mut()
+                    .find(|e| e.source_id == m.source_id && e.component == m.component)
+                {
+                    *existing = m;
+                } else {
+                    target.push(m);
+                }
+            }
+        }
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
+    }
+
     /// Remove a source by UUID.
     pub fn remove_source(&mut self, uuid: &str) {
         if let Some(idx) = self.uuid_to_idx.get(uuid).copied() {
@@ -847,6 +973,33 @@ impl ModulationEngine {
                 removed,
                 prefix
             );
+        }
+        self.rebuild_mod_on_mod_flag();
+        self.invalidate_evaluation_cache();
+    }
+
+    /// Re-key every assignment whose key starts with `old_prefix` to start with
+    /// `new_prefix` instead. Used when an FX moves between chains and its
+    /// parameter prefix changes: the modulation routing must follow it.
+    /// Assignments landing on an already-keyed target are merged into it.
+    pub fn rekey_assignments(&mut self, old_prefix: &str, new_prefix: &str) {
+        if old_prefix == new_prefix {
+            return;
+        }
+        let old_keys: Vec<String> = self
+            .assignments
+            .keys()
+            .filter(|k| k.starts_with(old_prefix))
+            .cloned()
+            .collect();
+        if old_keys.is_empty() {
+            return;
+        }
+        for old_key in old_keys {
+            let new_key = format!("{new_prefix}{}", &old_key[old_prefix.len()..]);
+            if let Some(mods) = self.assignments.remove(&old_key) {
+                self.assignments.entry(new_key).or_default().extend(mods);
+            }
         }
         self.rebuild_mod_on_mod_flag();
         self.invalidate_evaluation_cache();
@@ -947,6 +1100,8 @@ impl ModulationEngine {
         let uuid = &self.sources[idx].uuid;
         let mut modified = source.clone();
         match &mut modified {
+            // Nothing continuous to modulate on a trigger — it is an edge.
+            ModulationSource::AudioTrigger { .. } => {}
             ModulationSource::LFO {
                 frequency,
                 amplitude,
@@ -1078,6 +1233,12 @@ impl ModulationEngine {
             let o = self.evaluation_order();
             self.cached_evaluation_order = Some(o);
         }
+        // Open or close each gated envelope before anything is evaluated, from
+        // the trigger's value last frame. Reading it this frame instead would
+        // mean ordering triggers ahead of the envelopes that read them; one
+        // frame of latency is not visible and the ordering stays simple.
+        self.apply_gates();
+
         let order = self.cached_evaluation_order.as_ref().unwrap();
         for &i in order {
             let value = if self.has_mod_on_mod {
@@ -1126,6 +1287,44 @@ impl ModulationEngine {
     /// Get the total modulation offset for a scalar parameter.
     pub fn get_modulation(&self, param_name: &str) -> f32 {
         self.get_modulation_for_component(param_name, None)
+    }
+
+    /// Drive every ADSR that names a `gate_source` from that source's value.
+    ///
+    /// A rising edge opens the gate, a falling one releases it, so an
+    /// `AudioTrigger`'s hold decides how long the envelope sustains.
+    fn apply_gates(&mut self) {
+        // Collect first: gating borrows the sources mutably.
+        let edges: Vec<(usize, bool)> = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                let ModulationSource::ADSR {
+                    gate_source: Some(uuid),
+                    ..
+                } = &entry.source
+                else {
+                    return None;
+                };
+                let src = *self.uuid_to_idx.get(uuid)?;
+                Some((i, self.current_values.get(src).copied().unwrap_or(0.0) > 0.5))
+            })
+            .collect();
+
+        for (i, wanted) in edges {
+            let ModulationSource::ADSR { gate, .. } = &self.sources[i].source else {
+                continue;
+            };
+            if *gate == wanted {
+                continue;
+            }
+            if wanted {
+                self.sources[i].source.gate_on();
+            } else {
+                self.sources[i].source.gate_off();
+            }
+        }
     }
 
     /// Get the total modulation offset for a specific component (color params).
@@ -1728,6 +1927,51 @@ mod tests {
     }
 
     #[test]
+    fn engine_rekey_assignments_swaps_prefix() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("ch_A_deck_7_fx3_angle", &uuid, 1.0, None);
+        engine.assign("ch_A_deck_7_fx3_speed", &uuid, 0.5, None);
+        // Same prefix text appearing mid-key is not a prefix — must not move.
+        engine.assign("master_fx9_ch_A_deck_7_fx3_angle", &uuid, 0.25, None);
+
+        engine.rekey_assignments("ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        assert!(engine.has_modulation("ch_B_deck_2_fx5_angle"));
+        assert!(engine.has_modulation("ch_B_deck_2_fx5_speed"));
+        assert!(engine.has_modulation("master_fx9_ch_A_deck_7_fx3_angle"));
+        assert!(!engine.has_modulation("ch_A_deck_7_fx3_angle"));
+        assert_eq!(engine.assignments.len(), 3);
+        // The assignment payload travels with the key.
+        let mods = &engine.assignments["ch_B_deck_2_fx5_angle"];
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].source_id, uuid);
+    }
+
+    #[test]
+    fn engine_rekey_assignments_merges_existing_target() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("old_fx_angle", &uuid, 1.0, None);
+        engine.assign("new_fx_angle", &uuid, 0.5, None);
+
+        engine.rekey_assignments("old_fx_", "new_fx_");
+
+        assert_eq!(engine.assignments["new_fx_angle"].len(), 2);
+        assert!(!engine.has_modulation("old_fx_angle"));
+    }
+
+    #[test]
+    fn engine_rekey_assignments_noop_on_same_prefix() {
+        let mut engine = ModulationEngine::new();
+        let uuid = engine.add_source(ModulationSource::sine_lfo(1.0));
+        engine.assign("fx_angle", &uuid, 1.0, None);
+        engine.rekey_assignments("fx_", "fx_");
+        assert_eq!(engine.assignments.len(), 1);
+        assert!(engine.has_modulation("fx_angle"));
+    }
+
+    #[test]
     fn engine_update_computes_values() {
         let mut engine = ModulationEngine::new();
         engine.add_source(ModulationSource::sine_lfo(1.0));
@@ -1820,31 +2064,19 @@ mod tests {
         );
     }
 
-    // ── AudioBandPreset tests ────────────────────────────────────────
+    // ── Band vocabulary ──────────────────────────────────────────────
 
     #[test]
-    fn audio_band_preset_ranges() {
-        assert_eq!(AudioBandPreset::Low.freq_range(), (20.0, 250.0));
-        assert_eq!(AudioBandPreset::Mid.freq_range(), (250.0, 2000.0));
-        assert_eq!(AudioBandPreset::High.freq_range(), (2000.0, 20000.0));
-        assert_eq!(AudioBandPreset::Full.freq_range(), (20.0, 20000.0));
-    }
-
-    #[test]
-    fn audio_band_from_preset_creates_valid_source() {
-        let source = ModulationSource::audio_from_preset(AudioBandPreset::Low);
+    fn audio_from_band_uses_the_analysers_own_ranges() {
+        let source = ModulationSource::audio_from_band(crate::routing::FftBand::Bass);
+        let (low, high) = crate::routing::FftBand::Bass.freq_range();
         match source {
             ModulationSource::AudioBand {
-                freq_low,
-                freq_high,
-                gain,
-                ..
+                freq_low, freq_high, ..
             } => {
-                assert_eq!(freq_low, 20.0);
-                assert_eq!(freq_high, 250.0);
-                assert_eq!(gain, 1.0);
+                assert_eq!((freq_low, freq_high), (low, high));
             }
-            _ => panic!("Expected AudioBand"),
+            _ => panic!("expected an AudioBand"),
         }
     }
 
@@ -1889,6 +2121,8 @@ mod tests {
             freq_high: 250.0,
             gain: 1.0,
             smoothing: 0.0,
+            attack: 0.0,
+            enabled: true,
             mode: AudioReactMode::Direct,
             noise_gate: 0.5,
         };
@@ -1903,6 +2137,69 @@ mod tests {
         );
         let val = source.calculate(0.0, 0.01, 120.0, 0.0, &audio, 0.0);
         assert_eq!(val, 0.0, "Below noise gate should be silent");
+    }
+
+    // ── Audio band attack smoothing ──────────────────────────────────
+
+    /// An AudioBand in Direct mode over a loud signal (energy 1.0 in band).
+    fn loud_band(attack: f32, smoothing: f32) -> (ModulationSource, AudioValues<'static>) {
+        let source = ModulationSource::AudioBand {
+            source_id: Some(0),
+            freq_low: 20.0,
+            freq_high: 250.0,
+            gain: 1.0,
+            smoothing,
+            attack,
+            enabled: true,
+            mode: AudioReactMode::Direct,
+            noise_gate: 0.1,
+        };
+        let mut audio = AudioValues::default();
+        audio.sources.insert(
+            0,
+            AudioSourceValues {
+                fft: &[1.0; 256],
+                level: 1.0,
+                sample_rate: 48000.0,
+            },
+        );
+        (source, audio)
+    }
+
+    #[test]
+    fn audio_band_attack_zero_rises_instantly() {
+        let (mut source, audio) = loud_band(0.0, 0.5);
+        let val = source.calculate(0.0, 0.016, 120.0, 0.0, &audio, 0.0);
+        assert_eq!(val, 1.0, "attack 0.0 must behave exactly as before: instant rise");
+    }
+
+    #[test]
+    fn audio_band_attack_smooths_the_rising_edge() {
+        let (mut source, audio) = loud_band(0.9, 0.5);
+        let mut prev = 0.0;
+        let first = source.calculate(0.0, 0.016, 120.0, 0.0, &audio, prev);
+        assert!(first < 0.5, "a large attack must not reach the target in one update: {first}");
+        let mut last = first;
+        for i in 1..50 {
+            prev = last;
+            last = source.calculate(i as f32 * 0.016, 0.016, 120.0, 0.0, &audio, prev);
+            assert!(last > prev, "approach must be monotonic: {prev} -> {last}");
+        }
+        assert!(last > 0.99, "the value converges on the target: {last}");
+    }
+
+    #[test]
+    fn audio_band_attack_leaves_release_alone() {
+        // Falling edge: `smoothing` governs; `attack` must not matter.
+        for attack in [0.0, 0.9] {
+            let (mut source, _loud) = loud_band(attack, 0.5);
+            let quiet = AudioValues::default(); // no audio -> raw 0
+            let val = source.calculate(0.0, 0.016, 120.0, 0.0, &quiet, 1.0);
+            assert!(
+                (val - 0.5).abs() < 1e-6,
+                "release from 1.0 with smoothing 0.5 is 0.5 regardless of attack {attack}: {val}"
+            );
+        }
     }
 
     // ── config_eq tests ──────────────────────────────────────────────
@@ -1924,6 +2221,7 @@ mod tests {
     #[test]
     fn config_eq_adsr_ignores_runtime() {
         let a = ModulationSource::ADSR {
+            gate_source: None,
             attack: 0.1,
             decay: 0.2,
             sustain: 0.7,
@@ -1934,6 +2232,7 @@ mod tests {
             current_level: 0.0,
         };
         let b = ModulationSource::ADSR {
+            gate_source: None,
             attack: 0.1,
             decay: 0.2,
             sustain: 0.7,
@@ -2327,6 +2626,7 @@ mod tests {
     #[test]
     fn chaos_adsr_nan_attack_does_not_panic() {
         let mut adsr = ModulationSource::ADSR {
+            gate_source: None,
             attack: f32::NAN,
             decay: 0.1,
             sustain: 0.5,
@@ -2594,5 +2894,397 @@ mod tests {
         } else {
             panic!("Expected LFO source");
         }
+    }
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    fn trigger(hold: f32) -> ModulationSource {
+        ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.3,
+            hysteresis: 0.3,
+            min_interval: 0.05,
+            hold,
+            floor: 0.0,
+            armed: true,
+            since_fire: 10.0,
+            hold_left: 0.0,
+            average: 0.0,
+        }
+    }
+
+    /// `energy_in_range` reads the spectrum, so a loud low band means a loud
+    /// first bin.
+    fn audio(level: f32) -> (Vec<f32>, f32) {
+        (vec![level; 64], level)
+    }
+
+    fn tick(src: &mut ModulationSource, level: f32, dt: f32) -> f32 {
+        let (spectrum, level) = audio(level);
+        let vals = AudioSourceValues {
+                fft: &spectrum,
+                level,
+                sample_rate: 44100.0,
+            };
+        let mut sources = HashMap::new();
+        sources.insert(0u32, vals);
+        let audio = AudioValues { sources };
+        src.calculate(0.0, dt, 120.0, 0.0, &audio, 0.0)
+    }
+
+    #[test]
+    fn a_jump_in_energy_opens_the_gate_for_the_hold() {
+        let mut t = trigger(0.2);
+        // Settle the running average low.
+        for _ in 0..50 {
+            tick(&mut t, 0.05, 0.016);
+        }
+        assert_eq!(tick(&mut t, 1.0, 0.016), 1.0, "a hit fires");
+        // Gate stays open across the hold, then closes.
+        assert_eq!(tick(&mut t, 0.05, 0.1), 1.0, "still held");
+        assert_eq!(tick(&mut t, 0.05, 0.2), 0.0, "released after the hold");
+    }
+
+    /// Without hysteresis a single hit refires all the way down its own decay.
+    #[test]
+    fn it_does_not_refire_before_re_arming() {
+        let mut t = trigger(0.01);
+        for _ in 0..50 {
+            tick(&mut t, 0.05, 0.016);
+        }
+        assert_eq!(tick(&mut t, 1.0, 0.016), 1.0);
+        // Energy still high: no second fire, and the hold has expired.
+        let mut fired_again = false;
+        for _ in 0..10 {
+            if tick(&mut t, 1.0, 0.05) == 1.0 {
+                fired_again = true;
+            }
+        }
+        assert!(!fired_again, "stayed disarmed while the band was still loud");
+    }
+
+    #[test]
+    fn a_gated_adsr_follows_its_trigger() {
+        let mut engine = ModulationEngine::new();
+        let trig = engine.add_source(trigger(0.2));
+        let adsr = engine.add_source(ModulationSource::ADSR {
+            gate_source: Some(trig.clone()),
+            attack: 0.01,
+            decay: 0.01,
+            sustain: 1.0,
+            release: 0.01,
+            stage: ADSRStage::Idle,
+            stage_time: 0.0,
+            gate: false,
+            current_level: 0.0,
+        });
+        engine.assign("spin", &adsr, 1.0, None);
+
+        let quiet = |e: &mut ModulationEngine, t: f32| {
+            let vals = AudioSourceValues {
+                fft: &[0.05; 64],
+                level: 0.05,
+                sample_rate: 44100.0,
+            };
+            let mut sources = HashMap::new();
+            sources.insert(0u32, vals);
+            e.update(t, 120.0, 0.0, &AudioValues { sources });
+        };
+        let loud = |e: &mut ModulationEngine, t: f32| {
+            let vals = AudioSourceValues {
+                fft: &[1.0; 64],
+                level: 1.0,
+                sample_rate: 44100.0,
+            };
+            let mut sources = HashMap::new();
+            sources.insert(0u32, vals);
+            e.update(t, 120.0, 0.0, &AudioValues { sources });
+        };
+
+        let mut t = 0.0;
+        for _ in 0..60 {
+            t += 0.016;
+            quiet(&mut engine, t);
+        }
+        assert_eq!(engine.get_modulation("spin"), 0.0, "silent before the hit");
+
+        t += 0.016;
+        loud(&mut engine, t);
+        // One more frame: the gate is applied from the trigger's value.
+        t += 0.016;
+        quiet(&mut engine, t);
+        for _ in 0..3 {
+            t += 0.016;
+            quiet(&mut engine, t);
+        }
+        assert!(
+            engine.get_modulation("spin") > 0.0,
+            "the hit opened the envelope"
+        );
+    }
+}
+
+#[cfg(test)]
+mod trigger_serde_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    /// A scene carrying a trigger and a gated envelope has to come back with
+    /// both, and with the gate still pointing at the trigger.
+    #[test]
+    fn a_trigger_and_its_envelope_round_trip() {
+        let mut engine = ModulationEngine::new();
+        let trig = engine.add_source(ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.4,
+            hysteresis: 0.25,
+            min_interval: 0.06,
+            hold: 0.15,
+            floor: 0.02,
+            armed: true,
+            since_fire: 0.0,
+            hold_left: 0.0,
+            average: 0.0,
+        });
+        engine.add_source(ModulationSource::ADSR {
+            gate_source: Some(trig.clone()),
+            attack: 0.05,
+            decay: 0.1,
+            sustain: 0.6,
+            release: 0.2,
+            stage: ADSRStage::Idle,
+            stage_time: 0.0,
+            gate: false,
+            current_level: 0.0,
+        });
+
+        let json = serde_json::to_string(&engine).expect("serialise");
+        let back: ModulationEngine = serde_json::from_str(&json).expect("deserialise");
+
+        let kinds: Vec<&str> = back
+            .sources
+            .iter()
+            .map(|e| match e.source {
+                ModulationSource::AudioTrigger { .. } => "trigger",
+                ModulationSource::ADSR { .. } => "adsr",
+                _ => "other",
+            })
+            .collect();
+        assert!(kinds.contains(&"trigger"), "{kinds:?}");
+
+        let gate = back.sources.iter().find_map(|e| match &e.source {
+            ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+            _ => None,
+        });
+        assert_eq!(gate.as_deref(), Some(trig.as_str()), "the gate survived");
+
+        // Band and hold are settings, not runtime state, so they must persist.
+        let held = back.sources.iter().find_map(|e| match &e.source {
+            ModulationSource::AudioTrigger { hold, band, .. } => Some((*hold, *band)),
+            _ => None,
+        });
+        assert_eq!(held, Some((0.15, FftBand::Bass)));
+    }
+}
+
+#[cfg(test)]
+mod trigger_floor_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    fn tick(src: &mut ModulationSource, level: f32, dt: f32) -> f32 {
+        let spectrum = vec![level; 64];
+        let vals = AudioSourceValues {
+            fft: &spectrum,
+            level,
+            sample_rate: 44100.0,
+        };
+        let mut sources = HashMap::new();
+        sources.insert(0u32, vals);
+        src.calculate(0.0, dt, 120.0, 0.0, &AudioValues { sources }, 0.0)
+    }
+
+    fn trigger(floor: f32) -> ModulationSource {
+        ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.3,
+            hysteresis: 0.3,
+            min_interval: 0.0,
+            hold: 0.05,
+            floor,
+            armed: true,
+            since_fire: 10.0,
+            hold_left: 0.0,
+            average: 0.0,
+        }
+    }
+
+    /// `threshold` is a ratio of a rolling average, so in a quiet band it scales
+    /// down with the material and a modest rise clears it. The floor is the
+    /// absolute level that says "that was not a hit".
+    ///
+    /// Levels here are what `energy_in_range` reports — dB-normalised into
+    /// 0..1, the same scale the frequency monitor draws — so an amplitude of
+    /// 0.05 reads as roughly 0.57, not 0.05.
+    #[test]
+    fn the_floor_holds_back_a_quiet_band() {
+        let mut with_floor = trigger(0.7);
+        let mut without = trigger(0.0);
+        for _ in 0..120 {
+            tick(&mut with_floor, 0.01, 0.016);
+            tick(&mut without, 0.01, 0.016);
+        }
+        // Beats the rolling average several times over, but is not loud.
+        assert_eq!(
+            tick(&mut without, 0.05, 0.016),
+            1.0,
+            "without a floor, a quiet rise fires"
+        );
+        assert_eq!(
+            tick(&mut with_floor, 0.05, 0.016),
+            0.0,
+            "with a floor, the same rise does not"
+        );
+    }
+
+    #[test]
+    fn a_loud_hit_still_clears_the_floor() {
+        let mut t = trigger(0.7);
+        for _ in 0..120 {
+            tick(&mut t, 0.01, 0.016);
+        }
+        assert_eq!(tick(&mut t, 0.9, 0.016), 1.0, "a real hit fires");
+    }
+}
+
+#[cfg(test)]
+mod manual_gate_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    fn quiet_update(engine: &mut ModulationEngine, t: f32) {
+        let vals = AudioSourceValues {
+            fft: &[0.0005; 64],
+            level: 0.0005,
+            sample_rate: 44100.0,
+        };
+        let mut sources = HashMap::new();
+        sources.insert(0u32, vals);
+        engine.update(t, 120.0, 0.0, &AudioValues { sources });
+    }
+
+    fn adsr(gate_source: Option<String>) -> ModulationSource {
+        ModulationSource::ADSR {
+            gate_source,
+            attack: 0.05,
+            decay: 0.1,
+            sustain: 0.8,
+            release: 0.2,
+            stage: ADSRStage::Idle,
+            stage_time: 0.0,
+            gate: false,
+            current_level: 0.0,
+        }
+    }
+
+    /// Firing by hand works while nothing else drives the envelope.
+    #[test]
+    fn the_manual_gate_works_without_a_trigger() {
+        let mut engine = ModulationEngine::new();
+        let a = engine.add_source(adsr(None));
+        engine.assign("spin", &a, 1.0, None);
+        engine.trigger_adsr(&a);
+        let mut t = 0.0;
+        for _ in 0..5 {
+            t += 0.016;
+            quiet_update(&mut engine, t);
+        }
+        assert!(engine.get_modulation("spin") > 0.0, "the envelope opened");
+    }
+
+    /// With a trigger attached, the gate is re-applied from that trigger every
+    /// frame — so pressing the button by hand is undone immediately.
+    #[test]
+    fn the_manual_gate_is_overridden_by_a_trigger_source() {
+        let mut engine = ModulationEngine::new();
+        let trig = engine.add_source(ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.3,
+            hysteresis: 0.3,
+            min_interval: 0.05,
+            hold: 0.1,
+            floor: 0.9,
+            armed: true,
+            since_fire: 10.0,
+            hold_left: 0.0,
+            average: 0.0,
+        });
+        let a = engine.add_source(adsr(Some(trig)));
+        engine.assign("spin", &a, 1.0, None);
+        engine.trigger_adsr(&a);
+        let mut t = 0.0;
+        for _ in 0..5 {
+            t += 0.016;
+            quiet_update(&mut engine, t);
+        }
+        assert_eq!(
+            engine.get_modulation("spin"),
+            0.0,
+            "the trigger closed the gate the button opened"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unipolar_range_tests {
+    use super::*;
+
+    fn sweep(amplitude: f32, bipolar: bool) -> (f32, f32) {
+        let mut src = ModulationSource::LFO {
+            waveform: LFOWaveform::Sine,
+            frequency: 1.0,
+            phase: 0.0,
+            amplitude,
+            bipolar,
+            tempo_sync: false,
+            division: 2,
+            phase_offset_degrees: 0.0,
+            enabled: true,
+            last_beat_phase: 0.0,
+        };
+        let audio = AudioValues::default();
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in 0..200 {
+            let v = src.calculate(i as f32 * 0.005, 0.005, 120.0, 0.0, &audio, 0.0);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        (lo, hi)
+    }
+
+    /// Unipolar runs `0 .. amplitude`: the trough is always zero, so a
+    /// modulated parameter still reaches the value it was set to, and amplitude
+    /// sets how far above it the peak goes.
+    #[test]
+    fn unipolar_runs_from_zero_to_amplitude() {
+        for depth in [0.25, 0.5, 1.0] {
+            let (lo, hi) = sweep(depth, false);
+            assert!(lo < 0.02, "trough at depth {depth} was {lo}, expected 0");
+            assert!(
+                (hi - depth).abs() < 0.02,
+                "peak at depth {depth} was {hi}, expected {depth}"
+            );
+        }
+    }
+
+    #[test]
+    fn bipolar_is_symmetric_about_zero() {
+        let (lo, hi) = sweep(0.5, true);
+        assert!((lo + 0.5).abs() < 0.02, "trough was {lo}");
+        assert!((hi - 0.5).abs() < 0.02, "peak was {hi}");
     }
 }

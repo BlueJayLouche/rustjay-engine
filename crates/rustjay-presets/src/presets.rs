@@ -128,6 +128,15 @@ impl Preset {
         // Legacy lfo_bank is no longer restored; unified modulation is the single source of truth.
         state.audio_routing.matrix = self.routing_matrix.clone();
         state.audio_routing.enabled = self.audio_routing_enabled;
+        // Migrate the saved routes into the unified engine. Merge, not replace:
+        // sources keep their `route_<id>` uuids, so a second load updates them
+        // in place instead of duplicating them.
+        let migrated = state.audio_routing.to_modulation_engine();
+        state
+            .modulation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .merge(migrated);
         for (id, value) in &self.custom_values {
             if let Some(i) = state.param_descriptors.iter().position(|d| &d.id == id) {
                 state.custom_param_bases[i] = *value;

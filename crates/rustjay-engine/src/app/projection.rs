@@ -1193,25 +1193,25 @@ mod tests {
     #[test]
     fn projector_notifications_include_context_and_severity() {
         let error = ProjectionNotification::error(
-            "Varda Projector 2 - Stage Right",
+            "Kovvboj Projector 2 - Stage Right",
             "surface creation",
             "adapter unavailable",
         );
         assert_eq!(error.level, NotificationLevel::Error);
         assert_eq!(
             error.message,
-            "Projector \"Varda Projector 2 - Stage Right\" surface creation failed: adapter unavailable"
+            "Projector \"Kovvboj Projector 2 - Stage Right\" surface creation failed: adapter unavailable"
         );
 
         let fallback = ProjectionNotification::monitor_fallback(
-            "Varda Projector 2 - Stage Right",
+            "Kovvboj Projector 2 - Stage Right",
             3,
             2,
         );
         assert_eq!(fallback.level, NotificationLevel::Warning);
         assert_eq!(
             fallback.message,
-            "Projector \"Varda Projector 2 - Stage Right\" requested monitor 3, but it was not found (available monitor count: 2); falling back to windowed mode"
+            "Projector \"Kovvboj Projector 2 - Stage Right\" requested monitor 3, but it was not found (available monitor count: 2); falling back to windowed mode"
         );
     }
 

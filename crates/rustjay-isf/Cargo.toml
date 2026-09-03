@@ -10,6 +10,7 @@ wgpu       = { workspace = true }
 isf        = { workspace = true }
 bytemuck   = { workspace = true }
 serde      = { workspace = true }
+serde_json = { workspace = true }
 anyhow     = { workspace = true }
 log        = { workspace = true }
 shaderc    = { version = "0.10", features = ["build-from-source"] }

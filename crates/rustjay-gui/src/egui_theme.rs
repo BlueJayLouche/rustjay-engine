@@ -19,24 +19,14 @@ use egui::{Color32, Context, CornerRadius, FontFamily, FontId, Stroke, Style, Te
 pub fn apply_professional_theme(ctx: &Context) {
     let mut style = Style::default();
 
-    // ── Palette (mirrors the web --css variables) ────────────────────────────
-    let bg = Color32::from_rgb(0x07, 0x09, 0x0b); // --bg
-    let surface = Color32::from_rgb(0x0c, 0x10, 0x14); // --surface
-    let surface_2 = Color32::from_rgb(0x11, 0x16, 0x1c); // --surface-2
-    let hair = Color32::from_rgba_premultiplied(15, 15, 16, 16); // ~rgba(255,255,255,0.06)
-    let hair_2 = Color32::from_rgba_premultiplied(30, 30, 32, 32); // ~rgba(255,255,255,0.12)
-    let hair_3 = Color32::from_rgba_premultiplied(56, 56, 60, 56); // ~rgba(255,255,255,0.22)
-
-    let ink = Color32::from_rgb(0xe8, 0xeb, 0xee); // --ink
-    let ink_2 = Color32::from_rgb(0xaa, 0xb1, 0xb9); // --ink-2
-    let _ink_3 = Color32::from_rgb(0x6a, 0x72, 0x80); // --ink-3
-    let _ink_4 = Color32::from_rgb(0x3a, 0x40, 0x48); // --ink-4
-
-    let amber = Color32::from_rgb(0xe8, 0xa0, 0x4a); // primary signal
-    let amber_dim = Color32::from_rgb(0x8a, 0x5e, 0x2b);
-    let _signal = Color32::from_rgb(0x46, 0xd4, 0x86); // online
-    let _alert = Color32::from_rgb(0xe8, 0x63, 0x4a); // alert
-    let _cool = Color32::from_rgb(0x7e, 0xc6, 0xd6); // secondary
+    // ── Palette ──────────────────────────────────────────────────────────────
+    // Read from the active palette so a preset swap repaints egui's own
+    // widget visuals, not just the hand-painted HUD chrome.
+    let p = palette();
+    let (bg, surface, surface_2) = (p.bg, p.surface, p.surface_2);
+    let (hair, hair_2, hair_3) = (p.hair, p.hair_2, p.hair_3);
+    let (ink, ink_2) = (p.ink, p.ink_2);
+    let (amber, amber_dim) = (p.accent, p.accent_dim);
 
     // ── Global visuals ───────────────────────────────────────────────────────
     style.visuals = Visuals::dark();
@@ -58,20 +48,20 @@ pub fn apply_professional_theme(ctx: &Context) {
     style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, ink_2);
 
     // Hovered
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(0x18, 0x1f, 0x27);
-    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x18, 0x1f, 0x27);
+    style.visuals.widgets.hovered.bg_fill = p.bg_hover;
+    style.visuals.widgets.hovered.weak_bg_fill = p.bg_hover;
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, hair_3);
     style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, ink);
 
     // Active (pressed, dragged)
-    style.visuals.widgets.active.bg_fill = Color32::from_rgb(0x22, 0x2c, 0x37);
-    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgb(0x22, 0x2c, 0x37);
+    style.visuals.widgets.active.bg_fill = p.bg_active;
+    style.visuals.widgets.active.weak_bg_fill = p.bg_active;
     style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, amber);
     style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, ink);
 
     // Open (combobox dropdown, etc.)
-    style.visuals.widgets.open.bg_fill = Color32::from_rgb(0x18, 0x1f, 0x27);
-    style.visuals.widgets.open.weak_bg_fill = Color32::from_rgb(0x18, 0x1f, 0x27);
+    style.visuals.widgets.open.bg_fill = p.bg_hover;
+    style.visuals.widgets.open.weak_bg_fill = p.bg_hover;
     style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, amber_dim);
     style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, ink);
 
@@ -128,52 +118,168 @@ pub fn apply_professional_theme(ctx: &Context) {
 /// Colour constants — names preserved from the previous theme for compatibility.
 /// `ACCENT_CYAN` now resolves to the HUD amber so existing call sites
 /// (`.color(ACCENT_CYAN)` for headings, highlights, etc.) automatically pick up the new look.
+/// Every colour role the GUI paints with.
+///
+/// Roles, not colours: `signal` means "this is online", not "this is green".
+/// A preset assigns colours to roles; call sites ask for the role. Swapping a
+/// preset therefore repaints the whole UI without touching a single call site.
+///
+/// The base roles (`bg`, `surface*`, `hair*`, `ink*`) are addressable even
+/// though the shipped presets currently only differ in their accents — a future
+/// preset can restyle the ground without any further plumbing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub bg: Color32,
+    pub surface: Color32,
+    pub surface_2: Color32,
+    pub hair: Color32,
+    pub hair_2: Color32,
+    pub hair_3: Color32,
+
+    pub ink: Color32,
+    pub ink_2: Color32,
+    pub ink_3: Color32,
+    pub ink_4: Color32,
+
+    /// Primary accent — selection, active strokes, the wordmark.
+    pub accent: Color32,
+    /// Dimmed primary, for open-but-not-active chrome.
+    pub accent_dim: Color32,
+    /// "Online" / healthy.
+    pub signal: Color32,
+    /// "Something is wrong".
+    pub alert: Color32,
+    /// Secondary accent.
+    pub cool: Color32,
+
+    pub bg_hover: Color32,
+    pub bg_active: Color32,
+
+    /// Eight FFT band colours, low to high.
+    pub fft_bands: [Color32; 8],
+}
+
+impl Palette {
+    /// The amber HUD the engine has always shipped. Default for every app.
+    pub const HUD_AMBER: Self = Self {
+        bg: Color32::from_rgb(0x07, 0x09, 0x0b),
+        surface: Color32::from_rgb(0x0c, 0x10, 0x14),
+        surface_2: Color32::from_rgb(0x11, 0x16, 0x1c),
+        hair: Color32::from_rgba_premultiplied(15, 15, 16, 16),
+        hair_2: Color32::from_rgba_premultiplied(30, 30, 32, 32),
+        hair_3: Color32::from_rgba_premultiplied(56, 56, 60, 56),
+        ink: Color32::from_rgb(0xe8, 0xeb, 0xee),
+        ink_2: Color32::from_rgb(0xaa, 0xb1, 0xb9),
+        ink_3: Color32::from_rgb(0x6a, 0x72, 0x80),
+        ink_4: Color32::from_rgb(0x3a, 0x40, 0x48),
+        accent: Color32::from_rgb(0xe8, 0xa0, 0x4a),
+        accent_dim: Color32::from_rgb(0x8a, 0x5e, 0x2b),
+        signal: Color32::from_rgb(0x46, 0xd4, 0x86),
+        alert: Color32::from_rgb(0xe8, 0x63, 0x4a),
+        cool: Color32::from_rgb(0x7e, 0xc6, 0xd6),
+        bg_hover: Color32::from_rgb(0x18, 0x1f, 0x27),
+        bg_active: Color32::from_rgb(0x22, 0x2c, 0x37),
+        fft_bands: [
+            Color32::from_rgb(0xe8, 0x63, 0x4a),
+            Color32::from_rgb(0xe8, 0x83, 0x3a),
+            Color32::from_rgb(0xe8, 0xa0, 0x4a),
+            Color32::from_rgb(0xd9, 0xc2, 0x5a),
+            Color32::from_rgb(0x9c, 0xd4, 0x6a),
+            Color32::from_rgb(0x46, 0xd4, 0x86),
+            Color32::from_rgb(0x7e, 0xc6, 0xd6),
+            Color32::from_rgb(0xa8, 0xa0, 0xd8),
+        ],
+    };
+
+    /// KOVVBOJ. Same dark ground, saturated accents.
+    pub const KOVVBOJ: Self = Self {
+        accent: Color32::from_rgb(0xFA, 0x32, 0xC1),     // magenta
+        accent_dim: Color32::from_rgb(0xA5, 0x5E, 0x58), // muted rose
+        signal: Color32::from_rgb(0x32, 0xFA, 0x8B),     // green
+        alert: Color32::from_rgb(0xF7, 0x40, 0x31),      // red
+        cool: Color32::from_rgb(0x32, 0xF8, 0xFA),       // cyan
+        fft_bands: [
+            Color32::from_rgb(0xF7, 0x40, 0x31),
+            Color32::from_rgb(0xF8, 0x39, 0x79),
+            Color32::from_rgb(0xFA, 0x32, 0xC1),
+            Color32::from_rgb(0xC5, 0x62, 0xDD),
+            Color32::from_rgb(0x8F, 0x93, 0xF9),
+            Color32::from_rgb(0x32, 0xF8, 0xFA),
+            Color32::from_rgb(0x32, 0xFA, 0xC2),
+            Color32::from_rgb(0x32, 0xFA, 0x8B),
+        ],
+        ..Self::HUD_AMBER
+    };
+
+    /// Every shipped preset, as (id, display name). `id` is what gets persisted.
+    pub const PRESETS: [(&'static str, &'static str); 2] =
+        [("hud_amber", "HUD Amber"), ("kovvboj", "KOVVBOJ")];
+
+    /// Look a preset up by its persisted id. Unknown ids fall back to the
+    /// default rather than failing — a workspace naming a preset this build
+    /// does not have should still open.
+    pub fn by_id(id: &str) -> Self {
+        match id {
+            "kovvboj" => Self::KOVVBOJ,
+            _ => Self::HUD_AMBER,
+        }
+    }
+}
+
+/// The palette every `colors::*` accessor reads.
+static ACTIVE: std::sync::RwLock<Palette> = std::sync::RwLock::new(Palette::HUD_AMBER);
+
+/// The palette currently in force.
+pub fn palette() -> Palette {
+    *ACTIVE.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Swap the palette. Takes effect on the next repaint; call
+/// [`apply_professional_theme`] afterwards so egui's own `Visuals` follow.
+pub fn set_palette(p: Palette) {
+    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
+/// Colour roles, resolved against the active palette.
+///
+/// These were `const`s until the palette became swappable. They are functions
+/// now so a preset change repaints without a restart; call sites read
+/// `colors::amber()` rather than `colors::AMBER`.
 pub mod colors {
+    use super::palette;
     use egui::Color32;
 
     // ── Primary palette ──────────────────────────────────────────────────────
-    pub const BG: Color32 = Color32::from_rgb(0x07, 0x09, 0x0b);
-    pub const SURFACE: Color32 = Color32::from_rgb(0x0c, 0x10, 0x14);
-    pub const SURFACE_2: Color32 = Color32::from_rgb(0x11, 0x16, 0x1c);
-    pub const HAIR: Color32 = Color32::from_rgba_premultiplied(15, 15, 16, 16);
-    pub const HAIR_2: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
-    pub const HAIR_3: Color32 = Color32::from_rgba_premultiplied(56, 56, 60, 56);
+    pub fn bg() -> Color32 { palette().bg }
+    pub fn surface() -> Color32 { palette().surface }
+    pub fn surface_2() -> Color32 { palette().surface_2 }
+    pub fn hair() -> Color32 { palette().hair }
+    pub fn hair_2() -> Color32 { palette().hair_2 }
+    pub fn hair_3() -> Color32 { palette().hair_3 }
 
-    pub const INK: Color32 = Color32::from_rgb(0xe8, 0xeb, 0xee);
-    pub const INK_2: Color32 = Color32::from_rgb(0xaa, 0xb1, 0xb9);
-    pub const INK_3: Color32 = Color32::from_rgb(0x6a, 0x72, 0x80);
-    pub const INK_4: Color32 = Color32::from_rgb(0x3a, 0x40, 0x48);
+    pub fn ink() -> Color32 { palette().ink }
+    pub fn ink_2() -> Color32 { palette().ink_2 }
+    pub fn ink_3() -> Color32 { palette().ink_3 }
+    pub fn ink_4() -> Color32 { palette().ink_4 }
 
-    pub const AMBER: Color32 = Color32::from_rgb(0xe8, 0xa0, 0x4a);
-    pub const AMBER_DIM: Color32 = Color32::from_rgb(0x8a, 0x5e, 0x2b);
-    pub const SIGNAL: Color32 = Color32::from_rgb(0x46, 0xd4, 0x86);
-    pub const ALERT: Color32 = Color32::from_rgb(0xe8, 0x63, 0x4a);
-    pub const COOL: Color32 = Color32::from_rgb(0x7e, 0xc6, 0xd6);
+    pub fn amber() -> Color32 { palette().accent }
+    pub fn amber_dim() -> Color32 { palette().accent_dim }
+    pub fn signal() -> Color32 { palette().signal }
+    pub fn alert() -> Color32 { palette().alert }
+    pub fn cool() -> Color32 { palette().cool }
 
-    // ── Back-compat aliases ──────────────────────────────────────────────────
-    // Existing tabs reference these names — remap them all onto the HUD palette
-    // so the rest of the codebase doesn't need to change.
-    pub const ACCENT_CYAN: Color32 = AMBER; // primary highlight = amber now
-    pub const ACCENT_AMBER: Color32 = AMBER;
-    pub const ACCENT_GREEN: Color32 = SIGNAL;
-    pub const ACCENT_RED: Color32 = ALERT;
-    pub const TEXT_PRIMARY: Color32 = INK;
-    pub const TEXT_SECONDARY: Color32 = INK_3;
-    pub const BG_WIDGET: Color32 = SURFACE_2;
-    pub const BG_HOVER: Color32 = Color32::from_rgb(0x18, 0x1f, 0x27);
-    pub const BG_ACTIVE: Color32 = Color32::from_rgb(0x22, 0x2c, 0x37);
-    pub const BORDER: Color32 = Color32::from_rgba_premultiplied(30, 30, 32, 32);
+    // ── Role aliases kept from the pre-palette theme ─────────────────────────
+    pub fn accent_cyan() -> Color32 { palette().accent }
+    pub fn accent_amber() -> Color32 { palette().accent }
+    pub fn accent_green() -> Color32 { palette().signal }
+    pub fn accent_red() -> Color32 { palette().alert }
+    pub fn text_primary() -> Color32 { palette().ink }
+    pub fn text_secondary() -> Color32 { palette().ink_3 }
+    pub fn bg_widget() -> Color32 { palette().surface_2 }
+    pub fn bg_hover() -> Color32 { palette().bg_hover }
+    pub fn bg_active() -> Color32 { palette().bg_active }
+    pub fn border() -> Color32 { palette().hair_2 }
 
-    /// FFT band colours — restained to harmonise with the HUD palette
-    /// (warmer overall, narrower hue range, keep them distinguishable).
-    pub const FFT_BANDS: [Color32; 8] = [
-        Color32::from_rgb(0xe8, 0x63, 0x4a), // Sub      — alert red
-        Color32::from_rgb(0xe8, 0x83, 0x3a), // Bass
-        Color32::from_rgb(0xe8, 0xa0, 0x4a), // Lo Mid   — amber
-        Color32::from_rgb(0xd9, 0xc2, 0x5a), // Mid
-        Color32::from_rgb(0x9c, 0xd4, 0x6a), // Hi Mid
-        Color32::from_rgb(0x46, 0xd4, 0x86), // High     — signal green
-        Color32::from_rgb(0x7e, 0xc6, 0xd6), // V.High   — cool
-        Color32::from_rgb(0xa8, 0xa0, 0xd8), // Pres
-    ];
+    /// FFT band colours, low to high.
+    pub fn fft_bands() -> [Color32; 8] { palette().fft_bands }
 }

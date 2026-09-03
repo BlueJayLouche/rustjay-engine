@@ -23,7 +23,7 @@ fn main() {
         }
         _ => {
             println!("sACN (multicast) → universe 1");
-            Box::new(SacnTransport::new(Dest::Multicast, 100, "vjarda").expect("sacn socket"))
+            Box::new(SacnTransport::new(Dest::Multicast, 100, "kovvboj").expect("sacn socket"))
         }
     };
 

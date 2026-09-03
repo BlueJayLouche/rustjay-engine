@@ -17,7 +17,7 @@ pub use lfo::{
     BEAT_DIVISION_NAMES,
 };
 pub use modulation::{
-    ADSRStage, AudioBandPreset, AudioReactMode, AudioSourceValues, AudioValues, LFOWaveform,
+    ADSRStage, AudioReactMode, AudioSourceValues, AudioValues, LFOWaveform,
     ModulationEngine, ModulationSource, ModulationSourceEntry, ParamModulation, StepInterpolation,
 };
 pub use params::{ParamCategory, ParamType, ParameterDescriptor};

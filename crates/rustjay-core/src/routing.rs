@@ -5,6 +5,7 @@
 
 use crate::params::{ParamType, ParameterDescriptor};
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use std::collections::HashMap;
 
 /// FFT frequency bands (8-band spectrum)
@@ -83,6 +84,20 @@ impl FftBand {
             6 => Some(FftBand::VeryHigh),
             7 => Some(FftBand::Presence),
             _ => None,
+        }
+    }
+
+    /// Frequency range covered by this band, in Hz.
+    pub fn freq_range(&self) -> (f32, f32) {
+        match self {
+            FftBand::SubBass => (20.0, 60.0),
+            FftBand::Bass => (60.0, 120.0),
+            FftBand::LowMid => (120.0, 250.0),
+            FftBand::Mid => (250.0, 500.0),
+            FftBand::HighMid => (500.0, 2000.0),
+            FftBand::High => (2000.0, 4000.0),
+            FftBand::VeryHigh => (4000.0, 8000.0),
+            FftBand::Presence => (8000.0, 16000.0),
         }
     }
 }
@@ -264,27 +279,34 @@ impl AudioRoute {
     }
 }
 
+/// How many audio routes a matrix will hold.
+///
+/// A sanity bound, not a structural one — routes live in a `Vec` and are
+/// applied on the CPU, so this only exists to stop a runaway UI. It was a
+/// serialised per-matrix field fixed at 8, which meant raising it did nothing
+/// for anyone with a saved preset; as a constant, old presets pick up the new
+/// ceiling and their leftover `max_routes` key is simply ignored.
+pub const MAX_ROUTES: usize = 64;
+
 /// Manages all audio-to-parameter routings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingMatrix {
     routes: Vec<AudioRoute>,
     next_id: usize,
-    max_routes: usize,
 }
 
 impl RoutingMatrix {
     /// Create a new routing matrix
-    pub fn new(max_routes: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             routes: Vec::new(),
             next_id: 0,
-            max_routes,
         }
     }
 
     /// Create with default routes
     pub fn with_defaults() -> Self {
-        let mut matrix = Self::new(8);
+        let mut matrix = Self::new();
 
         // Add some default routes
         matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
@@ -297,7 +319,7 @@ impl RoutingMatrix {
     ///
     /// Returns the ID of the new route, or None if at max capacity
     pub fn add_route(&mut self, band: FftBand, target: ModulationTarget) -> Option<usize> {
-        if self.routes.len() >= self.max_routes {
+        if self.routes.len() >= MAX_ROUTES {
             return None;
         }
 
@@ -402,7 +424,7 @@ impl RoutingMatrix {
     }
 
     /// Apply modulations to HSB parameters.
-    #[deprecated(note = "Use `apply_to_params` for generic parameter support.")]
+    #[deprecated(note = "Routes migrate into the modulation engine on load; use ModulationEngine.")]
     pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
         let hue_mod = self.get_modulation(ModulationTarget::HueShift);
         let sat_mod = self.get_modulation(ModulationTarget::Saturation);
@@ -414,30 +436,6 @@ impl RoutingMatrix {
         let new_bright = (base_bright + bright_mod * 2.0).clamp(0.0, 2.0);
 
         (new_hue, new_sat, new_bright)
-    }
-
-    /// Apply modulations to a parameter slice.
-    /// Reads base values from `bases`, applies audio routing modulations,
-    /// and writes modulated values into `params`.
-    pub fn apply_to_params(
-        &self,
-        params: &mut [f32],
-        bases: &[f32],
-        descriptors: &[ParameterDescriptor],
-    ) {
-        for (i, desc) in descriptors.iter().enumerate() {
-            if !desc.is_modulatable() {
-                continue;
-            }
-            let mod_value = self.get_modulation_for_str(&desc.id);
-            let base = bases[i];
-            let range = desc.max - desc.min;
-            params[i] = if range > 0.0 {
-                (base + mod_value * range).clamp(desc.min, desc.max)
-            } else {
-                base
-            };
-        }
     }
 
     /// Clear all routes
@@ -457,12 +455,12 @@ impl RoutingMatrix {
 
     /// Get max routes
     pub fn max_routes(&self) -> usize {
-        self.max_routes
+        MAX_ROUTES
     }
 
     /// Check if can add more routes
     pub fn can_add_route(&self) -> bool {
-        self.routes.len() < self.max_routes
+        self.routes.len() < MAX_ROUTES
     }
 
     /// Reset all smoothed values
@@ -472,32 +470,27 @@ impl RoutingMatrix {
         }
     }
 
-    /// Convert enabled routes into modulation source entries.
+    /// Convert routes into modulation source entries.
     ///
-    /// Each enabled route becomes an [`crate::modulation::ModulationSource::AudioBand`]
+    /// Each route becomes an [`crate::modulation::ModulationSource::AudioBand`]
     /// entry with frequency bounds derived from the route's [`FftBand`].
+    /// Disabled routes migrate as disabled sources (rather than being
+    /// dropped) so they survive the move and can be re-enabled from the
+    /// routing window.
     pub fn to_modulation_sources(&self) -> Vec<crate::modulation::ModulationSourceEntry> {
         use crate::modulation::{ModulationSource, ModulationSourceEntry};
         self.routes
             .iter()
-            .filter(|r| r.enabled)
             .map(|route| {
-                let (freq_low, freq_high) = match route.band {
-                    FftBand::SubBass => (20.0, 60.0),
-                    FftBand::Bass => (60.0, 120.0),
-                    FftBand::LowMid => (120.0, 250.0),
-                    FftBand::Mid => (250.0, 500.0),
-                    FftBand::HighMid => (500.0, 2000.0),
-                    FftBand::High => (2000.0, 4000.0),
-                    FftBand::VeryHigh => (4000.0, 8000.0),
-                    FftBand::Presence => (8000.0, 16000.0),
-                };
+                let (freq_low, freq_high) = route.band.freq_range();
                 let source = ModulationSource::AudioBand {
                     source_id: None,
                     freq_low,
                     freq_high,
                     gain: 1.0,
                     smoothing: route.release,
+                    attack: route.attack,
+                    enabled: route.enabled,
                     mode: crate::modulation::AudioReactMode::Direct,
                     noise_gate: 0.1,
                 };
@@ -511,25 +504,15 @@ impl RoutingMatrix {
         use crate::modulation::{ModulationEngine, ModulationSource};
         let mut engine = ModulationEngine::new();
         for route in &self.routes {
-            if !route.enabled {
-                continue;
-            }
-            let (freq_low, freq_high) = match route.band {
-                FftBand::SubBass => (20.0, 60.0),
-                FftBand::Bass => (60.0, 120.0),
-                FftBand::LowMid => (120.0, 250.0),
-                FftBand::Mid => (250.0, 500.0),
-                FftBand::HighMid => (500.0, 2000.0),
-                FftBand::High => (2000.0, 4000.0),
-                FftBand::VeryHigh => (4000.0, 8000.0),
-                FftBand::Presence => (8000.0, 16000.0),
-            };
+            let (freq_low, freq_high) = route.band.freq_range();
             let source = ModulationSource::AudioBand {
                 source_id: None,
                 freq_low,
                 freq_high,
                 gain: 1.0,
                 smoothing: route.release,
+                attack: route.attack,
+                enabled: route.enabled,
                 mode: crate::modulation::AudioReactMode::Direct,
                 noise_gate: 0.1,
             };
@@ -542,14 +525,105 @@ impl RoutingMatrix {
     }
 }
 
+/// Add an audio route as an `AudioBand` source assigned to `target`.
+///
+/// The single place a route is created. The routing window, the OSC command
+/// handler and the web remote all call this: when they each built routes their
+/// own way, only the window's survived U3 and the other two silently reached
+/// nothing.
+///
+/// Returns the new source's uuid, or `None` when the target has no parameter.
+pub fn add_route(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    band: FftBand,
+    target: &ModulationTarget,
+) -> Option<String> {
+    use crate::modulation::{AudioReactMode, ModulationSource};
+
+    let param_id = target.param_id()?;
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    let (freq_low, freq_high) = band.freq_range();
+
+    // Same uuid scheme as the load-time migration, so saving and reloading
+    // reuses the source rather than accumulating duplicates.
+    let mut n = 0;
+    while mod_eng.has_source(&format!("route_{n}")) {
+        n += 1;
+    }
+    let uuid = mod_eng.add_source_with_uuid(
+        format!("route_{n}"),
+        ModulationSource::AudioBand {
+            source_id: None,
+            freq_low,
+            freq_high,
+            gain: 1.0,
+            smoothing: 0.3,
+            attack: 0.1,
+            enabled: true,
+            mode: AudioReactMode::Direct,
+            noise_gate: 0.1,
+        },
+    );
+    mod_eng.assign(param_id, &uuid, 0.5, None);
+    Some(uuid)
+}
+
+/// Remove a route: its assignment and the source behind it.
+pub fn remove_route(modulation: &Mutex<crate::modulation::ModulationEngine>, source_uuid: &str) {
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    // `remove_source` drops the assignments referring to it.
+    mod_eng.remove_source(source_uuid);
+}
+
+/// Remove every route driving `param_id`, source and assignment alike.
+pub fn clear_routes_for(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    param_id: &str,
+) {
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    let uuids: Vec<String> = mod_eng
+        .assignments
+        .get(param_id)
+        .map(|mods| {
+            mods.iter()
+                .map(|m| m.source_id.clone())
+                .filter(|u| u.starts_with("route_"))
+                .collect()
+        })
+        .unwrap_or_default();
+    for uuid in uuids {
+        mod_eng.remove_source(&uuid);
+    }
+}
+
+/// Turn audio routing as a whole on or off.
+///
+/// Only touches route-derived sources (`route_*`). An `AudioBand` a user bound
+/// by hand through the MOD popup is theirs, and the global switch must leave it
+/// alone.
+pub fn set_routing_enabled(
+    modulation: &Mutex<crate::modulation::ModulationEngine>,
+    on: bool,
+) {
+    use crate::modulation::ModulationSource;
+    let mut mod_eng = modulation.lock().unwrap_or_else(|e| e.into_inner());
+    for entry in mod_eng.sources.iter_mut() {
+        if entry.uuid.starts_with("route_")
+            && let ModulationSource::AudioBand { enabled, .. } = &mut entry.source
+        {
+            *enabled = on;
+        }
+    }
+}
+
 impl Default for RoutingMatrix {
     fn default() -> Self {
-        Self::new(8)
+        Self::new()
     }
 }
 
 /// Audio routing state for the app
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioRoutingState {
     /// The routing matrix
     pub matrix: RoutingMatrix,
@@ -598,5 +672,221 @@ impl AudioRoutingState {
         self.base_hue = hue;
         self.base_saturation = saturation;
         self.base_brightness = brightness;
+    }
+
+    /// Convert the saved routing matrix into a modulation engine snapshot for
+    /// merging into `EngineState::modulation` on load.
+    ///
+    /// The global `enabled` switch has no equivalent in the modulation engine,
+    /// so a routing state saved with routing switched off migrates its sources
+    /// disabled — preserving the saved behaviour. They can be re-enabled
+    /// individually from the routing window.
+    pub fn to_modulation_engine(&self) -> crate::modulation::ModulationEngine {
+        let mut engine = self.matrix.to_modulation_engine();
+        if !self.enabled {
+            for entry in &mut engine.sources {
+                if let crate::modulation::ModulationSource::AudioBand { enabled, .. } =
+                    &mut entry.source
+                {
+                    *enabled = false;
+                }
+            }
+        }
+        engine
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_matrix_holds_more_than_the_old_eight_routes() {
+        let mut matrix = RoutingMatrix::new();
+        for _ in 0..12 {
+            assert!(
+                matrix.add_route(FftBand::Bass, ModulationTarget::Brightness).is_some(),
+                "a route below the cap must be accepted"
+            );
+        }
+        assert_eq!(matrix.len(), 12);
+        assert_eq!(matrix.max_routes(), MAX_ROUTES);
+    }
+
+    #[test]
+    fn the_cap_still_holds_at_its_new_ceiling() {
+        let mut matrix = RoutingMatrix::new();
+        for _ in 0..MAX_ROUTES {
+            matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
+        }
+        assert!(!matrix.can_add_route());
+        assert!(matrix.add_route(FftBand::Bass, ModulationTarget::Brightness).is_none());
+    }
+
+    /// A preset written when `max_routes` was a serialised field still loads,
+    /// and picks up the new ceiling rather than staying pinned at 8.
+    #[test]
+    fn an_old_preset_is_not_stuck_at_eight() {
+        let json = r#"{"routes":[],"next_id":0,"max_routes":8}"#;
+        let matrix: RoutingMatrix = serde_json::from_str(json).expect("old preset loads");
+        assert_eq!(matrix.max_routes(), MAX_ROUTES);
+        assert!(matrix.can_add_route());
+    }
+
+    // ── U2: migration into the modulation engine ─────────────────────
+
+    fn two_route_matrix() -> RoutingMatrix {
+        let mut matrix = RoutingMatrix::new();
+        matrix.add_route(FftBand::Bass, ModulationTarget::Brightness);
+        matrix.add_route(FftBand::High, ModulationTarget::Custom("spin".to_string()));
+        matrix
+    }
+
+    #[test]
+    fn a_matrix_migrates_to_matching_sources_and_assignments() {
+        let engine = two_route_matrix().to_modulation_engine();
+        assert_eq!(engine.sources.len(), 2);
+        assert!(engine.has_source("route_0"));
+        assert!(engine.has_source("route_1"));
+        assert_eq!(
+            engine.assignments.values().map(Vec::len).sum::<usize>(),
+            2
+        );
+        assert!(engine.has_modulation("brightness"));
+        assert!(engine.has_modulation("spin"));
+    }
+
+    #[test]
+    fn migrating_twice_updates_in_place_instead_of_duplicating() {
+        let mut engine = crate::modulation::ModulationEngine::new();
+        engine.merge(two_route_matrix().to_modulation_engine());
+        engine.merge(two_route_matrix().to_modulation_engine());
+        assert_eq!(engine.sources.len(), 2, "second load must not duplicate");
+        assert_eq!(
+            engine.assignments.values().map(Vec::len).sum::<usize>(),
+            2,
+            "assignments must not duplicate either"
+        );
+    }
+
+    #[test]
+    fn re_merging_picks_up_changed_route_values() {
+        let mut engine = crate::modulation::ModulationEngine::new();
+        engine.merge(two_route_matrix().to_modulation_engine());
+
+        let mut matrix = two_route_matrix();
+        matrix.get_route_mut(0).unwrap().amount = 0.9;
+        engine.merge(matrix.to_modulation_engine());
+
+        let mods = &engine.assignments["brightness"];
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].amount, 0.9, "the assignment is updated in place");
+    }
+
+    #[test]
+    fn a_routes_attack_and_release_survive_the_trip() {
+        let mut matrix = RoutingMatrix::new();
+        let id = matrix
+            .add_route(FftBand::Bass, ModulationTarget::Brightness)
+            .unwrap();
+        let route = matrix.get_route_mut(id).unwrap();
+        route.attack = 0.7;
+        route.release = 0.2;
+
+        let engine = matrix.to_modulation_engine();
+        let entry = engine.find_source_by_uuid("route_0").expect("migrated source");
+        match &entry.source {
+            crate::modulation::ModulationSource::AudioBand {
+                attack, smoothing, ..
+            } => {
+                assert_eq!(*attack, 0.7);
+                assert_eq!(*smoothing, 0.2, "release maps to smoothing");
+            }
+            other => panic!("expected AudioBand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_disabled_routing_state_migrates_its_sources_disabled() {
+        // AudioRoutingState::default() has enabled = false.
+        let routing = AudioRoutingState {
+            matrix: two_route_matrix(),
+            ..AudioRoutingState::default()
+        };
+        let engine = routing.to_modulation_engine();
+        assert_eq!(engine.sources.len(), 2);
+        for entry in &engine.sources {
+            match &entry.source {
+                crate::modulation::ModulationSource::AudioBand { enabled, .. } => {
+                    assert!(!enabled, "global disable must fold into the sources")
+                }
+                other => panic!("expected AudioBand, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_helper_tests {
+    use super::*;
+    use crate::modulation::{ModulationEngine, ModulationSource};
+    use std::sync::Mutex;
+
+    fn engine() -> Mutex<ModulationEngine> {
+        Mutex::new(ModulationEngine::new())
+    }
+
+    #[test]
+    fn adding_a_route_creates_a_source_and_an_assignment() {
+        let m = engine();
+        let uuid = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness)
+            .expect("brightness has a param id");
+        let eng = m.lock().unwrap();
+        assert!(eng.has_source(&uuid));
+        assert_eq!(eng.assignments.get("brightness").map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn removing_a_route_takes_the_source_with_it() {
+        let m = engine();
+        let uuid = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        remove_route(&m, &uuid);
+        let eng = m.lock().unwrap();
+        assert!(!eng.has_source(&uuid));
+        assert!(eng.assignments.get("brightness").is_none_or(Vec::is_empty));
+    }
+
+    #[test]
+    fn clearing_a_param_removes_only_its_routes() {
+        let m = engine();
+        add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        add_route(&m, FftBand::High, &ModulationTarget::Saturation).unwrap();
+        clear_routes_for(&m, "brightness");
+        let eng = m.lock().unwrap();
+        assert!(eng.assignments.get("brightness").is_none_or(Vec::is_empty));
+        assert_eq!(eng.assignments.get("saturation").map(Vec::len), Some(1));
+    }
+
+    /// The global switch owns the routes it made, and nothing else. An audio
+    /// band a user bound by hand through the MOD popup must survive it.
+    #[test]
+    fn the_global_switch_leaves_hand_made_sources_alone() {
+        let m = engine();
+        let route = add_route(&m, FftBand::Bass, &ModulationTarget::Brightness).unwrap();
+        let hand_made = {
+            let mut eng = m.lock().unwrap();
+            eng.add_source(ModulationSource::audio_from_band(FftBand::Bass))
+        };
+
+        set_routing_enabled(&m, false);
+        let eng = m.lock().unwrap();
+        let is_on = |uuid: &str| {
+            matches!(
+                eng.find_source_by_uuid(uuid).map(|e| &e.source),
+                Some(ModulationSource::AudioBand { enabled: true, .. })
+            )
+        };
+        assert!(!is_on(&route), "the route is silenced");
+        assert!(is_on(&hand_made), "the hand-made source is untouched");
     }
 }

@@ -25,11 +25,11 @@ impl EguiControlGui {
 
         for slot in 1..=8usize {
             let has_preset = slot_names[slot - 1].is_some();
-            let color = if has_preset { ACCENT_CYAN } else { BG_WIDGET };
+            let color = if has_preset { accent_cyan() } else { bg_widget() };
             let text_color = if has_preset {
                 Color32::BLACK
             } else {
-                TEXT_SECONDARY
+                text_secondary()
             };
             let label = if let Some(ref name) = slot_names[slot - 1] {
                 let short: String = name.chars().take(7).collect();
@@ -100,7 +100,7 @@ impl EguiControlGui {
 
         // ── Preset List ──────────────────────────────────────────────────────
         if preset_names.is_empty() {
-            ui.label(egui::RichText::new("No presets saved yet.").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("No presets saved yet.").color(text_secondary()));
         } else {
             ui.label(format!(
                 "{} preset(s) — click to load, right-click to assign to slot",
@@ -121,7 +121,7 @@ impl EguiControlGui {
 
                     // Right-click context menu
                     response.context_menu(|ui| {
-                        ui.label(egui::RichText::new(name).strong().color(TEXT_SECONDARY));
+                        ui.label(egui::RichText::new(name).strong().color(text_secondary()));
                         ui.separator();
                         if ui.button("Load").clicked() {
                             let mut state =

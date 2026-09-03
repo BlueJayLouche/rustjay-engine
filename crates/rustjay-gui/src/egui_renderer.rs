@@ -162,6 +162,16 @@ impl EguiRenderer {
         texture_id
     }
 
+    /// Register a texture the *caller* owns and keeps alive, for an app that
+    /// renders its own thumbnails. Unlike `create_preview_texture` this
+    /// allocates nothing: the app blits into its own texture at whatever size
+    /// it likes, so a per-layer preview costs a small target rather than a
+    /// full-resolution copy.
+    pub fn register_texture_view(&mut self, view: &wgpu::TextureView) -> egui::TextureId {
+        self.renderer
+            .register_native_texture(&self.device, view, wgpu::FilterMode::Linear)
+    }
+
     /// Get the underlying wgpu texture for a preview.
     pub fn get_preview_texture(&self, texture_id: egui::TextureId) -> Option<&wgpu::Texture> {
         self.preview_textures.get(&texture_id)
@@ -210,7 +220,7 @@ impl EguiRenderer {
         // Run egui
         // egui 0.36: run_ui hands out a root Ui rather than the Context;
         // panels are shown inside it.
-        let full_output = self.context.run_ui(raw_input, |ui| {
+        let mut full_output = self.context.run_ui(raw_input, |ui| {
             build_ui(ui);
         });
 
@@ -237,7 +247,15 @@ impl EguiRenderer {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             _ => {
+                // Bailing out here still has to settle the frame's texture
+                // delta: `set` was applied above, and dropping the rest
+                // unhandled trips the `Drop` assert in a debug build. The
+                // window being occluded must not take the app down.
                 self.surface.configure(&self.device, &self.surface_config);
+                for id in &full_output.textures_delta.free {
+                    self.renderer.free_texture(id);
+                }
+                full_output.textures_delta.clear();
                 return Ok(());
             }
         };
@@ -308,6 +326,13 @@ impl EguiRenderer {
         for id in &full_output.textures_delta.free {
             self.renderer.free_texture(id);
         }
+
+        // Both halves of the delta have now been handed to the renderer. Say so:
+        // `TexturesDelta`'s `Drop` carries a `debug_assert!` that fires if it is
+        // dropped still holding entries, so without this a debug build panics on
+        // any frame that produced one — the first frame's font atlas, or any
+        // later `set_fonts`.
+        full_output.textures_delta.clear();
 
         Ok(())
     }

@@ -44,7 +44,7 @@ impl EguiControlGui {
 
         // Refresh button
         if is_discovering {
-            ui.label(egui::RichText::new("⏳ Discovering sources...").color(ACCENT_AMBER));
+            ui.label(egui::RichText::new("⏳ Discovering sources...").color(accent_amber()));
         } else if ui.button("🔄 Refresh Sources").clicked() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.input_command = InputCommand::RefreshDevices;
@@ -66,7 +66,7 @@ impl EguiControlGui {
                 state.input_command = InputCommand::StopInput;
             }
         } else {
-            ui.label(egui::RichText::new("No input active").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("No input active").color(text_secondary()));
         }
 
         ui.add_space(12.0);
@@ -89,7 +89,7 @@ impl EguiControlGui {
                 state.second_input_command = InputCommand::StopInput;
             }
         } else {
-            ui.label(egui::RichText::new("No input active").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("No input active").color(text_secondary()));
         }
 
         ui.add_space(12.0);
@@ -156,7 +156,7 @@ impl EguiControlGui {
                         "Capture devices are opened at the closest mode they support.",
                     )
                     .small()
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
                 );
                 ui.horizontal(|ui| {
                     if ui.button("▶ Start Input 1").clicked() {
@@ -179,7 +179,7 @@ impl EguiControlGui {
                     }
                 });
             } else {
-                ui.label(egui::RichText::new("No webcams found").color(TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No webcams found").color(text_secondary()));
             }
         }
 
@@ -220,7 +220,7 @@ impl EguiControlGui {
                     }
                 });
             } else {
-                ui.label(egui::RichText::new("No NDI sources found").color(TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No NDI sources found").color(text_secondary()));
             }
         }
 
@@ -273,7 +273,7 @@ impl EguiControlGui {
                         }
                 });
             } else {
-                ui.label(egui::RichText::new("No Syphon servers found").color(TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No Syphon servers found").color(text_secondary()));
             }
         }
 
@@ -317,7 +317,7 @@ impl EguiControlGui {
                     }
                 });
             } else {
-                ui.label(egui::RichText::new("No Spout senders found").color(TEXT_SECONDARY));
+                ui.label(egui::RichText::new("No Spout senders found").color(text_secondary()));
             }
         }
 
@@ -373,7 +373,7 @@ impl EguiControlGui {
                 });
             } else {
                 ui.label(
-                    egui::RichText::new("No V4L2 capture devices found").color(TEXT_SECONDARY),
+                    egui::RichText::new("No V4L2 capture devices found").color(text_secondary()),
                 );
             }
         }

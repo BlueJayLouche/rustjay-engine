@@ -1,4 +1,4 @@
-//! A deck-style ISF effect chain, modelled on `examples/vjarda`'s deck: an
+//! A deck-style ISF effect chain, modelled on `crates/kovvboj`'s deck: an
 //! ordered list of `IsfEffect`s, ping-ponged source → fx0 → fx1 → … → output.
 //!
 //! Each slot's parameters are exposed under a stable prefix (`s<n>_`) so they're

@@ -468,6 +468,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                                     log::info!("Created egui preview textures");
 
                                     gui.custom_tabs = std::mem::take(&mut self.custom_tabs_egui);
+                                    gui.shell = self.egui_shell.take();
 
                                     self.egui_control_gui = Some(gui);
                                     self.egui_renderer = Some(renderer);
@@ -989,6 +990,15 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     let app_state = &mut self.app_state as &mut dyn std::any::Any;
                     if let Err(err) = renderer.render_frame(|ctx| gui.build_ui(ctx, app_state)) {
                         log::error!("egui render error: {}", err);
+                    }
+
+                    // An app can only ask for a texture id while it is drawing,
+                    // and registering one needs the renderer it cannot reach
+                    // from there. Settle the requests now, so the id is waiting
+                    // on the next frame.
+                    for (key, view) in gui.pending_textures.drain(..) {
+                        let id = renderer.register_texture_view(&view);
+                        gui.registered_textures.insert(key, id);
                     }
                 }
             } else if let (Some(window), Some(ref mut renderer), Some(ref mut gui)) = (

@@ -52,7 +52,7 @@
 - [ISF Shader Viewer](examples/isf-example.md)
 - [videowall — HDMI-Matrix Mapper](examples/videowall.md)
 - [VP-404 — Live Video Sampler](examples/vp404.md)
-- [vjarda — Full Multi-Deck VJ App](examples/vjarda.md)
+- [kovvboj — Multi-Layer VJ App](examples/kovvboj.md)
 - [Web App (WebGPU + WASM)](examples/webapp.md)
 
 # Deployment

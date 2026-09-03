@@ -40,10 +40,10 @@ jobs:
       - run: cargo test --workspace
       # The kittest UI suites hide behind off-by-default features, so the
       # workspace run above never executes them: rustjay-gui's tests need
-      # `egui`, and vjarda's Stage/projector tests need `projection`.
+      # `egui`, and kovvboj's Stage/projector tests need `projection`.
       # Snapshots render on lavapipe (mesa-vulkan-drivers above).
       - run: cargo test -p rustjay-gui --features egui
-      - run: cargo test -p vjarda --features projection
+      - run: cargo test -p kovvboj --features projection
       # Snapshot failures are otherwise invisible here: egui_kittest writes the
       # actual render and a diff next to the committed baseline, and without
       # this you cannot see what changed, or take the Linux-rendered PNGs when

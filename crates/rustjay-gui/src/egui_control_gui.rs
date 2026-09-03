@@ -17,9 +17,22 @@ pub struct EguiControlGui {
     pub second_input_preview_texture_id: Option<egui::TextureId>,
     pub output_preview_texture_id: Option<egui::TextureId>,
 
+    /// Texture views an app wants to draw in its own UI, keyed by an
+    /// app-chosen id. Registering one needs the renderer, which a shell never
+    /// sees, so requests are queued here and drained by the host after the
+    /// frame; the id shows up in `registered_textures` on the next one.
+    pub pending_textures: Vec<(u64, wgpu::TextureView)>,
+    /// Ids for everything registered so far. An app keeps its own texture
+    /// alive; dropping it while an id is still here paints garbage.
+    pub registered_textures: std::collections::HashMap<u64, egui::TextureId>,
+
     // Custom tabs
     pub custom_tabs: Vec<Box<dyn crate::AnyEguiTab>>,
     pub(crate) custom_tab_active: Option<usize>,
+
+    /// App-supplied replacement for the whole window layout. When set,
+    /// `build_ui` delegates the frame to it and draws none of its own chrome.
+    pub shell: Option<Box<dyn crate::AnyEguiShell>>,
 
     // Window toggles
     pub(crate) show_preferences: bool,
@@ -129,11 +142,14 @@ impl EguiControlGui {
 
         Ok(Self {
             shared_state,
+            pending_textures: Vec::new(),
+            registered_textures: std::collections::HashMap::new(),
             input_preview_texture_id: None,
             second_input_preview_texture_id: None,
             output_preview_texture_id: None,
             custom_tabs: Vec::new(),
             custom_tab_active: None,
+            shell: None,
             show_preferences: false,
             show_routing_window: false,
             webcam_devices: Vec::new(),
@@ -201,7 +217,7 @@ impl EguiControlGui {
     }
     pub fn set_output_preview_texture(&mut self, id: egui::TextureId) {
         self.output_preview_texture_id = Some(id);
-        // Publish the raw id so custom egui tabs (e.g. vjarda's Stage tab) can
+        // Publish the raw id so custom egui tabs (e.g. kovvboj's Stage tab) can
         // draw the live master output as a canvas background. They reconstruct
         // it with `egui::TextureId::User(id)`.
         let raw = match id {
@@ -299,6 +315,24 @@ impl EguiControlGui {
     pub fn build_ui(&mut self, ui: &mut egui::Ui, app_state: &mut dyn std::any::Any) {
         crate::egui_theme::apply_professional_theme(ui.ctx());
 
+        // An app-supplied shell owns the whole frame. Taken out and put back so
+        // the shell can borrow the host mutably while it draws.
+        if let Some(mut shell) = self.shell.take() {
+            shell.draw(ui, app_state, self);
+            self.shell = Some(shell);
+            // A shell owns the panel layout, not the host's free-floating
+            // windows. Without these, a built-in tab drawn inside a shell can
+            // set the flag — "Open Routing Matrix" does — and nothing ever
+            // draws the window it asked for.
+            if self.show_preferences {
+                self.build_preferences_window(ui);
+            }
+            if self.show_routing_window {
+                self.build_routing_window(ui);
+            }
+            return;
+        }
+
         self.build_top_bar(ui);
         self.build_left_sidebar(ui);
         self.build_preview_panel(ui);
@@ -372,8 +406,8 @@ impl EguiControlGui {
             .exact_size(56.0)
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_2)
-                    .stroke(egui::Stroke::new(1.0_f32, HAIR_2)),
+                    .fill(surface_2())
+                    .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
                 ui.add_space(6.0);
@@ -387,18 +421,18 @@ impl EguiControlGui {
                         egui::RichText::new(head)
                             .strong()
                             .size(18.0)
-                            .color(INK)
+                            .color(ink())
                             .monospace(),
                     );
-                    ui.label(egui::RichText::new("/").color(AMBER).size(18.0).monospace());
+                    ui.label(egui::RichText::new("/").color(amber()).size(18.0).monospace());
                     if !tail.is_empty() {
-                        ui.label(egui::RichText::new(tail).size(18.0).color(INK).monospace());
+                        ui.label(egui::RichText::new(tail).size(18.0).color(ink()).monospace());
                     }
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("CONTROL · v1.0")
                             .size(10.0)
-                            .color(INK_4)
+                            .color(ink_4())
                             .monospace(),
                     );
 
@@ -406,11 +440,11 @@ impl EguiControlGui {
 
                     // BPM readout — big tabular numerics
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("BPM").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("BPM").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>5.1}", bpm))
                                 .size(15.0)
-                                .color(AMBER)
+                                .color(amber())
                                 .strong()
                                 .monospace(),
                         );
@@ -420,11 +454,11 @@ impl EguiControlGui {
 
                     // FPS readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("FPS").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("FPS").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>4.0}", fps))
                                 .size(15.0)
-                                .color(INK)
+                                .color(ink())
                                 .monospace(),
                         );
                     });
@@ -433,11 +467,11 @@ impl EguiControlGui {
 
                     // CPU readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("CPU").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("CPU").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!("{:>4.0}%", cpu))
                                 .size(15.0)
-                                .color(INK)
+                                .color(ink())
                                 .monospace(),
                         );
                     });
@@ -446,7 +480,7 @@ impl EguiControlGui {
 
                     // Memory readout
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("MEM").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("MEM").size(9.5).color(ink_4()));
                         ui.label(
                             egui::RichText::new(format!(
                                 "{:.2}/{:.2} GB",
@@ -454,7 +488,7 @@ impl EguiControlGui {
                                 mem_total as f32 / 1024.0
                             ))
                             .size(15.0)
-                            .color(INK)
+                            .color(ink())
                             .monospace(),
                         );
                     });
@@ -463,14 +497,14 @@ impl EguiControlGui {
 
                     // Mini volume meter — flat bar w/ amber fill, square edges
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("VOL").size(9.5).color(INK_4));
+                        ui.label(egui::RichText::new("VOL").size(9.5).color(ink_4()));
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(72.0, 10.0), egui::Sense::hover());
                         let p = ui.painter();
                         p.rect_stroke(
                             rect,
                             0.0,
-                            egui::Stroke::new(1.0_f32, HAIR_2),
+                            egui::Stroke::new(1.0_f32, hair_2()),
                             egui::StrokeKind::Inside,
                         );
                         let fill_w = rect.width() * volume.clamp(0.0, 1.0);
@@ -479,7 +513,7 @@ impl EguiControlGui {
                                 rect.min,
                                 egui::vec2(fill_w, rect.height()),
                             );
-                            let col = if volume > 0.8 { ALERT } else { SIGNAL };
+                            let col = if volume > 0.8 { alert() } else { signal() };
                             p.rect_filled(fr, 0.0, col);
                         }
                         // Tick marks
@@ -490,7 +524,7 @@ impl EguiControlGui {
                                     egui::pos2(x, rect.bottom() - 2.0),
                                     egui::pos2(x, rect.bottom()),
                                 ],
-                                egui::Stroke::new(1.0_f32, HAIR_3),
+                                egui::Stroke::new(1.0_f32, hair_3()),
                             );
                         }
                     });
@@ -502,7 +536,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("⚙  PREFS")
                                     .size(11.0)
-                                    .color(if self.show_preferences { AMBER } else { INK_2 }),
+                                    .color(if self.show_preferences { amber() } else { ink_2() }),
                             )
                             .clicked()
                         {
@@ -514,7 +548,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("〰 LFO MAP")
                                     .size(11.0)
-                                    .color(if lfo_assign_mode { AMBER } else { INK_2 }),
+                                    .color(if lfo_assign_mode { amber() } else { ink_2() }),
                             )
                             .on_hover_text("Click a parameter to assign a modulation source")
                             .clicked()
@@ -532,7 +566,7 @@ impl EguiControlGui {
                             .button(
                                 egui::RichText::new("🎹 MIDI MAP")
                                     .size(11.0)
-                                    .color(if midi_learn_mode { AMBER } else { INK_2 }),
+                                    .color(if midi_learn_mode { amber() } else { ink_2() }),
                             )
                             .on_hover_text("Click a parameter, then move/press a MIDI control")
                             .clicked()
@@ -557,9 +591,9 @@ impl EguiControlGui {
                                 })
                                 .size(11.0)
                                 .color(if show_preview {
-                                    AMBER
+                                    amber()
                                 } else {
-                                    INK_2
+                                    ink_2()
                                 }),
                             )
                             .clicked()
@@ -570,7 +604,7 @@ impl EguiControlGui {
                         }
                         ui.add_space(6.0);
                         if ui
-                            .button(egui::RichText::new("🔄 REFRESH").size(11.0).color(INK_2))
+                            .button(egui::RichText::new("🔄 REFRESH").size(11.0).color(ink_2()))
                             .clicked()
                         {
                             let mut state =
@@ -581,7 +615,7 @@ impl EguiControlGui {
                         }
                         ui.add_space(6.0);
                         if ui
-                            .button(egui::RichText::new("💾 SAVE").size(11.0).color(INK_2))
+                            .button(egui::RichText::new("💾 SAVE").size(11.0).color(ink_2()))
                             .clicked()
                         {
                             let mut state =
@@ -677,10 +711,10 @@ impl EguiControlGui {
                 ui.vertical(|ui| {
                     for n in notifs {
                         let (bg, text) = match n.level {
-                            NotificationLevel::Error => (ALERT, INK),
-                            NotificationLevel::Warning => (AMBER, INK),
-                            NotificationLevel::Success => (SIGNAL, INK),
-                            NotificationLevel::Info => (SURFACE, INK_2),
+                            NotificationLevel::Error => (alert(), ink()),
+                            NotificationLevel::Warning => (amber(), ink()),
+                            NotificationLevel::Success => (signal(), ink()),
+                            NotificationLevel::Info => (surface(), ink_2()),
                         };
                         egui::Frame::NONE
                             .fill(bg)
@@ -732,8 +766,8 @@ impl EguiControlGui {
             .resizable(false)
             .frame(
                 egui::Frame::NONE
-                    .fill(BG)
-                    .stroke(egui::Stroke::new(1.0_f32, HAIR_2)),
+                    .fill(bg())
+                    .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
                 ui.add_space(10.0);
@@ -851,7 +885,7 @@ impl EguiControlGui {
 
         // Background
         let bg = if active {
-            SURFACE_2
+            surface_2()
         } else if resp.hovered() {
             egui::Color32::from_rgba_premultiplied(8, 12, 16, 24)
         } else {
@@ -861,7 +895,7 @@ impl EguiControlGui {
 
         // Left accent bar — amber on active
         let accent_w = if active { 3.0 } else { 1.0 };
-        let accent_color = if active { AMBER } else { HAIR_2 };
+        let accent_color = if active { amber() } else { hair_2() };
         p.rect_filled(
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(accent_w, rect.height())),
             0.0,
@@ -869,7 +903,7 @@ impl EguiControlGui {
         );
 
         // Label
-        let label_color = if active { INK } else { INK_2 };
+        let label_color = if active { ink() } else { ink_2() };
         let galley = p.layout_no_wrap(
             label.to_string(),
             egui::FontId::monospace(12.0),
@@ -883,14 +917,14 @@ impl EguiControlGui {
 
         // Tab index on the right when active
         if active {
-            let idx_g = p.layout_no_wrap("▶".to_string(), egui::FontId::monospace(11.0), AMBER);
+            let idx_g = p.layout_no_wrap("▶".to_string(), egui::FontId::monospace(11.0), amber());
             p.galley(
                 egui::pos2(
                     rect.right() - idx_g.size().x - 10.0,
                     rect.center().y - idx_g.size().y / 2.0,
                 ),
                 idx_g,
-                AMBER,
+                amber(),
             );
         }
 
@@ -900,8 +934,6 @@ impl EguiControlGui {
     // ── Central panel ────────────────────────────────────────────────────────
 
     fn build_central_panel(&mut self, ui: &mut egui::Ui, app_state: &mut dyn std::any::Any) {
-        use rustjay_core::GuiTab;
-
         #[allow(deprecated)] // top-level CentralPanel::show; see note on the top panel
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -928,23 +960,42 @@ impl EguiControlGui {
                             ct.draw(ui, app_state, &mut state);
                         }
                 } else {
-                    match self.active_tab {
-                        GuiTab::Input => self.build_input_tab(ui),
-                        GuiTab::Output => self.build_output_tab(ui),
-                        GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
-                        GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
-                        GuiTab::Audio => self.build_audio_tab(ui),
-                        GuiTab::Modulation => self.build_modulation_tab(ui),
-                        GuiTab::Midi => self.build_midi_tab(ui),
-                        GuiTab::Osc => self.build_osc_tab(ui),
-                        GuiTab::Web => self.build_web_tab(ui),
-                        GuiTab::Presets => self.build_presets_tab(ui),
-                        GuiTab::Settings => self.build_settings_tab(ui),
-                        GuiTab::Sync => { /* Sync is folded into Audio */ }
-                    }
+                    self.draw_builtin_tab(ui, self.active_tab);
                 }
             });
         });
+    }
+
+    /// Draw one built-in tab's body into `ui`.
+    ///
+    /// The host normally calls this for whichever sidebar tab is active. It is
+    /// public so an [`AnyEguiShell`](crate::AnyEguiShell) can place a built-in
+    /// tab wherever it likes — a floating window, a docked panel — without
+    /// reimplementing it.
+    pub fn draw_builtin_tab(&mut self, ui: &mut egui::Ui, tab: GuiTab) {
+        match tab {
+            GuiTab::Input => self.build_input_tab(ui),
+            GuiTab::Output => self.build_output_tab(ui),
+            GuiTab::Color => self.build_param_category_tab(ui, ParamCategory::Color),
+            GuiTab::Motion => self.build_param_category_tab(ui, ParamCategory::Motion),
+            GuiTab::Audio => self.build_audio_tab(ui),
+            GuiTab::Modulation => self.build_modulation_tab(ui),
+            GuiTab::Midi => self.build_midi_tab(ui),
+            GuiTab::Osc => self.build_osc_tab(ui),
+            GuiTab::Web => self.build_web_tab(ui),
+            GuiTab::Presets => self.build_presets_tab(ui),
+            GuiTab::Settings => self.build_settings_tab(ui),
+            GuiTab::Sync => { /* Sync is folded into Audio */ }
+        }
+    }
+
+    /// The engine state this GUI reads and writes.
+    ///
+    /// A shell needs this to pass `&mut EngineState` into tab bodies and param
+    /// widgets. Lock it for as short a time as possible — the render thread
+    /// wants it too.
+    pub fn engine(&self) -> &Arc<std::sync::Mutex<EngineState>> {
+        &self.shared_state
     }
 
     // ── Preview panel ────────────────────────────────────────────────────────
@@ -1022,7 +1073,7 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new(label)
                     .size(11.0)
-                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                    .color(crate::egui_theme::colors::text_secondary()),
             );
 
             // Allocate space for the image (label already consumed its portion)
@@ -1054,13 +1105,13 @@ impl EguiControlGui {
                 ui.put(image_rect, image);
             } else {
                 ui.painter()
-                    .rect_filled(rect, 4.0, crate::egui_theme::colors::BG_WIDGET);
+                    .rect_filled(rect, 4.0, crate::egui_theme::colors::bg_widget());
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "No preview",
                     egui::FontId::proportional(12.0),
-                    crate::egui_theme::colors::TEXT_SECONDARY,
+                    crate::egui_theme::colors::text_secondary(),
                 );
             }
         });
@@ -1085,8 +1136,47 @@ impl EguiControlGui {
 
     // ── Routing window ───────────────────────────────────────────────────────
 
+    /// Remove one routing-grid row: the assignment, plus the backing source if
+    /// no other assignment uses it.
+    fn remove_route_row(
+        mod_eng: &mut rustjay_core::modulation::ModulationEngine,
+        param_id: &str,
+        uuid: &str,
+    ) {
+        let mut empty = false;
+        if let Some(mods) = mod_eng.assignments.get_mut(param_id) {
+            mods.retain(|m| m.source_id != uuid);
+            empty = mods.is_empty();
+        }
+        if empty {
+            mod_eng.assignments.remove(param_id);
+        }
+        let still_used = mod_eng
+            .assignments
+            .values()
+            .any(|mods| mods.iter().any(|m| m.source_id == uuid));
+        if !still_used {
+            mod_eng.remove_source(uuid);
+        }
+    }
+
+    /// The grid is a view over the modulation engine (U4): one row per
+    /// assignment backed by an `AudioBand` source, edited in place.
     pub(crate) fn build_routing_window(&mut self, ui: &mut egui::Ui) {
-        use rustjay_core::routing::{FftBand, ModulationTarget};
+        use rustjay_core::modulation::ModulationSource;
+        use rustjay_core::routing::{FftBand, ModulationTarget, MAX_ROUTES};
+
+        struct RouteRow {
+            uuid: String,
+            param_id: String,
+            band: String,
+            target: String,
+            amount: f32,
+            attack: f32,
+            release: f32,
+            enabled: bool,
+            current: f32,
+        }
 
         let mut is_open = self.show_routing_window;
         let target_list = {
@@ -1095,32 +1185,81 @@ impl EguiControlGui {
         };
         let target_names: Vec<String> = target_list.iter().map(|t| t.name()).collect();
 
+        let rows: Vec<RouteRow> = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+            let mut rows = Vec::new();
+            for (param_id, mods) in &mod_eng.assignments {
+                // Mod-on-mod keys target sources, not params — not grid rows.
+                if param_id.starts_with("mod:") {
+                    continue;
+                }
+                for m in mods {
+                    let Some(entry) = mod_eng.find_source_by_uuid(&m.source_id) else {
+                        continue;
+                    };
+                    let ModulationSource::AudioBand {
+                        freq_low,
+                        freq_high,
+                        smoothing,
+                        attack,
+                        enabled,
+                        ..
+                    } = &entry.source
+                    else {
+                        continue;
+                    };
+                    let band = FftBand::all()
+                        .iter()
+                        .find(|b| b.freq_range() == (*freq_low, *freq_high))
+                        .map(|b| b.short_name().to_string())
+                        .unwrap_or_else(|| format!("{freq_low:.0}–{freq_high:.0}Hz"));
+                    let target = target_list
+                        .iter()
+                        .find(|t| t.param_id() == Some(param_id.as_str()))
+                        .map(|t| t.name())
+                        .unwrap_or_else(|| param_id.clone());
+                    rows.push(RouteRow {
+                        uuid: entry.uuid.clone(),
+                        param_id: param_id.clone(),
+                        band,
+                        target,
+                        amount: m.amount,
+                        attack: *attack,
+                        release: *smoothing,
+                        enabled: *enabled,
+                        current: mod_eng.current_value_for(&entry.uuid) * m.amount,
+                    });
+                }
+            }
+            // HashMap iteration order is random; keep the grid stable.
+            rows.sort_by(|a, b| a.uuid.cmp(&b.uuid).then(a.param_id.cmp(&b.param_id)));
+            rows
+        };
+
         egui::Window::new("Audio Routing Matrix")
             .default_pos([500.0, 100.0])
             .default_size([450.0, 550.0])
             .open(&mut is_open)
             .show(ui, |ui| {
-                let (can_add, route_count, max_routes) = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let routing = &state.audio_routing;
-                    (
-                        routing.matrix.can_add_route(),
-                        routing.matrix.len(),
-                        routing.matrix.max_routes(),
-                    )
-                };
+                let route_count = rows.len();
+                let can_add = route_count < MAX_ROUTES;
 
-                ui.label(format!("Routes: {}/{}", route_count, max_routes));
+                ui.label(format!("Routes: {}/{}", route_count, MAX_ROUTES));
 
                 if ui.button("Clear All").clicked() {
-                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.audio_routing.matrix.clear();
+                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut mod_eng =
+                        state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    for row in &rows {
+                        Self::remove_route_row(&mut mod_eng, &row.param_id, &row.uuid);
+                    }
                 }
 
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Add New Route")
-                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .color(crate::egui_theme::colors::accent_cyan())
                         .strong(),
                 );
 
@@ -1177,83 +1316,96 @@ impl EguiControlGui {
                 if can_add {
                     if ui.button("Add Route").clicked()
                         && let Some(band) = FftBand::from_index(band_idx)
-                            && let Some(target) = target_list.get(target_idx) {
-                                let mut state =
+                            && let Some(target) = target_list.get(target_idx)
+                                && let Some(param_id) = target.param_id() {
+                                let state =
                                     self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                state.audio_routing.matrix.add_route(band, target.clone());
+                                let mut mod_eng =
+                                    state.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                                let (freq_low, freq_high) = band.freq_range();
+                                // Same uuid scheme as the load-time migration (U2),
+                                // so re-saving and re-loading reuses the source.
+                                let mut n = 0;
+                                while mod_eng.has_source(&format!("route_{n}")) {
+                                    n += 1;
+                                }
+                                let uuid = mod_eng.add_source_with_uuid(
+                                    format!("route_{n}"),
+                                    ModulationSource::AudioBand {
+                                        source_id: None,
+                                        freq_low,
+                                        freq_high,
+                                        gain: 1.0,
+                                        smoothing: 0.3,
+                                        attack: 0.1,
+                                        enabled: true,
+                                        mode: rustjay_core::modulation::AudioReactMode::Direct,
+                                        noise_gate: 0.1,
+                                    },
+                                );
+                                mod_eng.assign(param_id, &uuid, 0.5, None);
                             }
                 } else {
                     ui.label(
                         egui::RichText::new("Max routes reached")
-                            .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                            .color(crate::egui_theme::colors::text_secondary()),
                     );
                 }
 
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Active Routes")
-                        .color(crate::egui_theme::colors::ACCENT_CYAN)
+                        .color(crate::egui_theme::colors::accent_cyan())
                         .strong(),
                 );
-
-                let routes_data: Vec<_> = {
-                    let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state
-                        .audio_routing
-                        .matrix
-                        .routes()
-                        .iter()
-                        .map(|r| {
-                            (
-                                r.id,
-                                r.band,
-                                r.target.clone(),
-                                r.amount,
-                                r.attack,
-                                r.release,
-                                r.enabled,
-                                r.current_value,
-                            )
-                        })
-                        .collect()
-                };
 
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        for (id, band, target, amount, attack, release, enabled, current) in
-                            &routes_data
-                        {
+                        for row in &rows {
                             ui.group(|ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    let mut is_enabled = *enabled;
+                                    let mut is_enabled = row.enabled;
                                     if ui.checkbox(&mut is_enabled, "").changed() {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            enabled, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.enabled = is_enabled;
+                                            *enabled = is_enabled;
                                         }
                                     }
-                                    ui.label(format!("{} → {}", band.short_name(), target.name()));
+                                    ui.label(format!("{} → {}", row.band, row.target));
                                     ui.colored_label(
-                                        crate::egui_theme::colors::ACCENT_GREEN,
-                                        format!("{:.2}", current),
+                                        crate::egui_theme::colors::accent_green(),
+                                        format!("{:.2}", row.current),
                                     );
                                     if ui.button("✕").clicked() {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        state.audio_routing.matrix.remove_route(*id);
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        Self::remove_route_row(
+                                            &mut mod_eng,
+                                            &row.param_id,
+                                            &row.uuid,
+                                        );
                                     }
                                 });
 
-                                let mut amt = *amount;
+                                let mut amt = row.amount;
                                 if ui
                                     .add(
                                         egui::Slider::new(&mut amt, -1.0..=1.0)
@@ -1262,62 +1414,85 @@ impl EguiControlGui {
                                     )
                                     .changed()
                                 {
-                                    let mut state =
+                                    let state =
                                         self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(route) =
-                                        state.audio_routing.matrix.get_route_mut(*id)
+                                    let mut mod_eng = state
+                                        .modulation
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    if let Some(mods) = mod_eng.assignments.get_mut(&row.param_id)
+                                        && let Some(m) =
+                                            mods.iter_mut().find(|m| m.source_id == row.uuid)
                                     {
-                                        route.amount = amt;
+                                        m.amount = amt;
                                     }
                                 }
 
+                                // These were route time constants; they are
+                                // smoothing factors now, and the labels alone
+                                // would still read as seconds.
+                                ui.label(
+                                    egui::RichText::new("smoothing — 0 instant, 0.99 very slow")
+                                        .small()
+                                        .weak(),
+                                );
                                 ui.columns(2, |cols| {
-                                    let mut atk = *attack;
+                                    let mut atk = row.attack;
                                     if cols[0]
                                         .add(
-                                            egui::Slider::new(&mut atk, 0.001..=1.0)
+                                            egui::Slider::new(&mut atk, 0.0..=0.99)
                                                 .text("Attack")
                                                 .trailing_fill(true),
                                         )
                                         .changed()
                                     {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            attack, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.attack = atk;
+                                            *attack = atk;
                                         }
                                     }
-                                    let mut rel = *release;
+                                    let mut rel = row.release;
                                     if cols[1]
                                         .add(
-                                            egui::Slider::new(&mut rel, 0.001..=1.0)
+                                            egui::Slider::new(&mut rel, 0.0..=0.99)
                                                 .text("Release")
                                                 .trailing_fill(true),
                                         )
                                         .changed()
                                     {
-                                        let mut state = self
+                                        let state = self
                                             .shared_state
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(route) =
-                                            state.audio_routing.matrix.get_route_mut(*id)
+                                        let mut mod_eng = state
+                                            .modulation
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if let Some(ModulationSource::AudioBand {
+                                            smoothing, ..
+                                        }) = mod_eng.source_mut(&row.uuid)
                                         {
-                                            route.release = rel;
+                                            *smoothing = rel;
                                         }
                                     }
                                 });
                             });
                         }
 
-                        if routes_data.is_empty() {
+                        if rows.is_empty() {
                             ui.label(
                                 egui::RichText::new("No routes configured. Add one above.")
-                                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                                    .color(crate::egui_theme::colors::text_secondary()),
                             );
                         }
                     });
@@ -1342,7 +1517,7 @@ impl EguiControlGui {
         if descriptors.is_empty() {
             ui.label(
                 egui::RichText::new("No parameters declared for this category.")
-                    .color(crate::egui_theme::colors::TEXT_SECONDARY),
+                    .color(crate::egui_theme::colors::text_secondary()),
             );
             return;
         }
@@ -1385,7 +1560,7 @@ impl EguiControlGui {
             if active_lfos > 0 {
                 ui.horizontal(|ui| {
                     ui.colored_label(
-                        crate::egui_theme::colors::ACCENT_GREEN,
+                        crate::egui_theme::colors::accent_green(),
                         format!("({} active)", active_lfos),
                     );
                 });
@@ -1590,17 +1765,35 @@ pub fn apply_param_map_overlay(
     }
 
     // LFO-assign mode.
-    let (assigned, sources) = {
+    let (bound, sources) = {
         let mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
-        let assigned = mod_eng.assignments.get(id).is_some_and(|v| !v.is_empty());
+        // What is already driving this parameter. Several sources can, and they
+        // sum — an LFO and an audio band together is the point, not a mistake.
+        let bound: Vec<(String, &'static str, f32)> = mod_eng
+            .assignments
+            .get(id)
+            .map(|mods| {
+                mods.iter()
+                    .filter_map(|m| {
+                        let entry = mod_eng.sources.iter().find(|e| e.uuid == m.source_id)?;
+                        Some((
+                            m.source_id.clone(),
+                            mod_source_short(&entry.source),
+                            m.amount,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let sources: Vec<(String, &'static str)> = mod_eng
             .sources
             .iter()
             .map(|e| (e.uuid.clone(), mod_source_short(&e.source)))
             .collect();
-        (assigned, sources)
+        (bound, sources)
     };
-    let color = if assigned { ACCENT_GREEN } else { ACCENT_CYAN };
+    let assigned = !bound.is_empty();
+    let color = if assigned { accent_green() } else { accent_cyan() };
     ui.painter().rect_stroke(
         rect.expand(2.0),
         0.0,
@@ -1615,35 +1808,112 @@ pub fn apply_param_map_overlay(
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
-            ui.set_min_width(150.0);
+            use rustjay_core::modulation::ModulationSource;
+            use rustjay_core::routing::FftBand;
+
+            ui.set_min_width(170.0);
+            // Eight bands plus every existing source runs off the screen on a
+            // laptop; the popup has to carry its own scroll.
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
             ui.label(egui::RichText::new(format!("Modulate {name}")).small().strong());
-            if sources.is_empty() {
-                ui.label(
-                    egui::RichText::new("No sources — add one in Modulation")
-                        .small()
-                        .weak(),
-                );
+
+            // Create-and-assign in one click. Without these the popup could
+            // only offer sources that already existed, so binding an LFO meant
+            // going to the Modulation window first, making one, and coming back.
+            let mut fresh: Option<ModulationSource> = None;
+            if ui.button("+ New LFO").clicked() {
+                fresh = Some(ModulationSource::LFO {
+                    waveform: rustjay_core::modulation::LFOWaveform::Sine,
+                    frequency: 1.0,
+                    phase: 0.0,
+                    amplitude: 0.5,
+                    bipolar: true,
+                    tempo_sync: false,
+                    division: 2,
+                    phase_offset_degrees: 0.0,
+                    enabled: true,
+                    last_beat_phase: 0.0,
+                });
+            }
+            // The analyser's own eight bands, so this picker and the routing
+            // grid offer the same vocabulary.
+            for band in FftBand::all() {
+                if ui.button(format!("+ Audio · {}", band.name())).clicked() {
+                    fresh = Some(ModulationSource::audio_from_band(*band));
+                }
+            }
+            if let Some(source) = fresh {
+                let mut mod_eng = engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                let uuid = mod_eng.add_source(source);
+                mod_eng.assign(id, &uuid, 0.5, None);
+            }
+
+            if !sources.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Existing").small().weak());
             }
             for (uuid, ty) in &sources {
-                let tag = &uuid[..4.min(uuid.len())];
+                // Short uuids (`lfo_0`) would all truncate to the same prefix.
+                let tag = short_tag(uuid);
                 if ui.button(format!("+ {ty} {tag}")).clicked() {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
-                    // Single active source per param: replace any existing.
-                    mod_eng.assignments.remove(id);
                     mod_eng.assign(id, uuid, 0.5, None);
                 }
             }
+            // What is driving this parameter now. Several sources sum, so the
+            // stack has to be visible — otherwise a second one looks like it
+            // replaced the first rather than adding to it.
             if assigned {
                 ui.separator();
-                if ui.button(egui::RichText::new("✕ Clear").small()).clicked() {
+                ui.label(egui::RichText::new("Driving this").small().weak());
+                let mut drop: Option<String> = None;
+                for (uuid, ty, amount) in &bound {
+                    ui.horizontal(|ui| {
+                        let tag = short_tag(uuid);
+                        ui.label(
+                            egui::RichText::new(format!("{ty} {tag}  ×{amount:.2}")).small(),
+                        );
+                        if ui
+                            .small_button("✖")
+                            .on_hover_text("Stop this one driving the parameter")
+                            .clicked()
+                        {
+                            drop = Some(uuid.clone());
+                        }
+                    });
+                }
+                if let Some(uuid) = drop {
+                    let mut mod_eng =
+                        engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(mods) = mod_eng.assignments.get_mut(id) {
+                        mods.retain(|m| m.source_id != uuid);
+                    }
+                }
+                if bound.len() > 1
+                    && ui.button(egui::RichText::new("✕ Clear all").small()).clicked()
+                {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());
                     mod_eng.assignments.remove(id);
                 }
             }
+                });
         },
     );
+}
+
+/// A tag short enough to sit in a button but still telling two sources apart.
+///
+/// Truncating to four characters made every default LFO read `lfo_`.
+fn short_tag(uuid: &str) -> &str {
+    if uuid.len() <= 8 {
+        uuid
+    } else {
+        &uuid[..6]
+    }
 }
 
 /// Short label for a modulation source, used by the LFO-assign popup.
@@ -1652,6 +1922,7 @@ fn mod_source_short(src: &rustjay_core::modulation::ModulationSource) -> &'stati
     match src {
         S::LFO { .. } => "LFO",
         S::AudioBand { .. } => "Audio",
+        S::AudioTrigger { .. } => "Trigger",
         S::ADSR { .. } => "ADSR",
         S::StepSequencer { .. } => "Step",
     }

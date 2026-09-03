@@ -5,6 +5,7 @@
 //! `shared_state` → `modulation` is never violated.
 
 use crate::egui_control_gui::EguiControlGui;
+use rustjay_core::routing::FftBand;
 use crate::egui_theme::colors::*;
 use egui::Color32;
 use rustjay_core::modulation::{LFOWaveform, ModulationSource};
@@ -24,9 +25,9 @@ impl EguiControlGui {
     pub(crate) fn build_modulation_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Modulation");
         ui.label(
-            egui::RichText::new("LFO · ADSR · Step Sequencer · Audio Band")
+            egui::RichText::new("LFO · ADSR · Step Sequencer · Audio Band · Trigger")
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
         );
         ui.add_space(12.0);
 
@@ -82,11 +83,11 @@ impl EguiControlGui {
 
         for (uuid, typ, value, enabled) in &sources_snapshot {
             let is_expanded = expanded_uuid == *uuid;
-            let header_color = if *enabled { ACCENT_CYAN } else { TEXT_SECONDARY };
+            let header_color = if *enabled { accent_cyan() } else { text_secondary() };
 
             egui::Frame::group(ui.style())
-                .fill(BG_WIDGET)
-                .stroke(egui::Stroke::new(1.0_f32, if is_expanded { ACCENT_CYAN } else { BORDER }))
+                .fill(bg_widget())
+                .stroke(egui::Stroke::new(1.0_f32, if is_expanded { accent_cyan() } else { border() }))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
 
@@ -96,7 +97,7 @@ impl EguiControlGui {
                         let btn = egui::Button::new(
                             egui::RichText::new(label).color(header_color).strong(),
                         )
-                        .fill(if is_expanded { BG_HOVER } else { BG_WIDGET });
+                        .fill(if is_expanded { bg_hover() } else { bg_widget() });
                         if ui.add(btn).clicked() {
                             self.modulation_expanded_source = if is_expanded {
                                 None
@@ -154,6 +155,7 @@ impl EguiControlGui {
             if ui.button("+ ADSR").clicked() {
                 let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                 let uuid = mod_eng.add_source(ModulationSource::ADSR {
+                    gate_source: None,
                     attack: 0.1,
                     decay: 0.2,
                     sustain: 0.5,
@@ -162,6 +164,22 @@ impl EguiControlGui {
                     stage_time: 0.0,
                     gate: false,
                     current_level: 0.0,
+                });
+                self.modulation_expanded_source = Some(uuid);
+            }
+            if ui.button("+ Trigger").clicked() {
+                let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                let uuid = mod_eng.add_source(ModulationSource::AudioTrigger {
+                    band: FftBand::Bass,
+                    threshold: 1.3,
+                    hysteresis: 0.3,
+                    min_interval: 0.05,
+                    hold: 0.1,
+                    floor: 0.02,
+                    armed: true,
+                    since_fire: 0.0,
+                    hold_left: 0.0,
+                    average: 0.0,
                 });
                 self.modulation_expanded_source = Some(uuid);
             }
@@ -208,7 +226,7 @@ impl EguiControlGui {
                     ui.label(
                         egui::RichText::new(format!("BPM: {:.1}", bpm))
                             .size(11.0)
-                            .color(TEXT_SECONDARY),
+                            .color(text_secondary()),
                     );
                 }
             });
@@ -220,10 +238,10 @@ impl EguiControlGui {
                     let selected = *waveform == *wf;
                     let btn = if selected {
                         egui::Button::new(egui::RichText::new(*name).strong().color(Color32::BLACK))
-                            .fill(ACCENT_CYAN)
+                            .fill(accent_cyan())
                     } else {
-                        egui::Button::new(egui::RichText::new(*name).color(TEXT_PRIMARY))
-                            .fill(BG_HOVER)
+                        egui::Button::new(egui::RichText::new(*name).color(text_primary()))
+                            .fill(bg_hover())
                     };
                     if ui.add_sized(egui::vec2(64.0, 22.0), btn).clicked() && !selected {
                         *waveform = *wf;
@@ -253,7 +271,7 @@ impl EguiControlGui {
                         beat_division_to_hz(*division, bpm)
                     ))
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
                 );
             } else {
                 ui.add(
@@ -303,7 +321,86 @@ impl EguiControlGui {
             })
             .unwrap_or(false);
         let gate_label = if is_gated { "Release Gate" } else { "Trigger Gate" };
-        if ui.button(gate_label).clicked() {
+        let is_adsr = matches!(
+            mod_eng.find_source_by_uuid(uuid).map(|e| &e.source),
+            Some(ModulationSource::ADSR { .. })
+        );
+        if is_adsr {
+            // What fires this envelope. Without a source it can only be gated by
+            // hand from the button beside it, which is no use during a set.
+            let triggers: Vec<(String, String)> = mod_eng
+                .sources
+                .iter()
+                .filter(|e| matches!(e.source, ModulationSource::AudioTrigger { .. }))
+                .map(|e| (e.uuid.clone(), e.uuid[..4.min(e.uuid.len())].to_string()))
+                .collect();
+            let current = mod_eng
+                .find_source_by_uuid(uuid)
+                .and_then(|e| match &e.source {
+                    ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+                    _ => None,
+                });
+            let mut chosen: Option<Option<String>> = None;
+            ui.horizontal(|ui| {
+                ui.label("Gated by:");
+                egui::ComboBox::from_id_salt(("gatesrc", uuid))
+                    .selected_text(match &current {
+                        Some(u) => format!("Trigger {}", &u[..4.min(u.len())]),
+                        None => "— manual —".to_string(),
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "— manual —").clicked() {
+                            chosen = Some(None);
+                        }
+                        for (id, tag) in &triggers {
+                            if ui
+                                .selectable_label(
+                                    current.as_deref() == Some(id.as_str()),
+                                    format!("Trigger {tag}"),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(Some(id.clone()));
+                            }
+                        }
+                    });
+                if triggers.is_empty() {
+                    ui.label(
+                        egui::RichText::new("add a Trigger source first")
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+            if let Some(pick) = chosen
+                && let Some(ModulationSource::ADSR { gate_source, .. }) = mod_eng.source_mut(uuid)
+            {
+                *gate_source = pick;
+            }
+        }
+        // A trigger re-applies the gate every frame, so firing by hand while one
+        // is attached does nothing you can see. Say so rather than offer a
+        // button that silently loses.
+        let driven_by = if is_adsr {
+            mod_eng
+                .find_source_by_uuid(uuid)
+                .and_then(|e| match &e.source {
+                    ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        let gate_btn = ui.add_enabled(driven_by.is_none(), egui::Button::new(gate_label));
+        let gate_btn = match &driven_by {
+            Some(src) => gate_btn.on_disabled_hover_text(format!(
+                "Driven by trigger {} — set \"Gated by\" to manual to fire it here",
+                &src[..6.min(src.len())]
+            )),
+            None if is_gated => gate_btn.on_hover_text("Close the gate; the envelope releases"),
+            None => gate_btn.on_hover_text("Open the gate; it stays open until released"),
+        };
+        if gate_btn.clicked() {
             if is_gated {
                 mod_eng.release_adsr(uuid);
             } else {
@@ -331,10 +428,113 @@ impl EguiControlGui {
         }
 
         // ── Audio Band ───────────────────────────────────────────────────────
-        if mod_eng.find_source_by_uuid(uuid).is_some()
-            && matches!(mod_eng.find_source_by_uuid(uuid).unwrap().source, ModulationSource::AudioBand { .. })
+        if let Some(ModulationSource::AudioBand {
+            freq_low,
+            freq_high,
+            gain,
+            smoothing,
+            attack,
+            enabled,
+            noise_gate,
+            ..
+        }) = mod_eng.source_mut(uuid)
         {
-            ui.label("Audio Band configuration coming soon.");
+            ui.checkbox(enabled, "Enabled");
+            // The analyser's own bands, the same set the routing grid offers.
+            // The range stays editable underneath for anything custom.
+            let current = FftBand::all()
+                .iter()
+                .find(|b| {
+                    let (lo, hi) = b.freq_range();
+                    (lo - *freq_low).abs() < 0.5 && (hi - *freq_high).abs() < 0.5
+                })
+                .copied();
+            ui.horizontal(|ui| {
+                ui.label("Band:");
+                egui::ComboBox::from_id_salt(("band", uuid))
+                    .selected_text(match current {
+                        Some(b) => b.name().to_string(),
+                        None => format!("{freq_low:.0}–{freq_high:.0} Hz"),
+                    })
+                    .show_ui(ui, |ui| {
+                        for band in FftBand::all() {
+                            if ui
+                                .selectable_label(current == Some(*band), band.name())
+                                .clicked()
+                            {
+                                let (lo, hi) = band.freq_range();
+                                *freq_low = lo;
+                                *freq_high = hi;
+                            }
+                        }
+                    });
+            });
+            ui.add(
+                egui::Slider::new(attack, 0.0..=0.99)
+                    .text("Attack")
+                    .custom_formatter(|v, _| format!("{v:.2}")),
+            )
+            .on_hover_text("Rise smoothing — 0 is instant, 0.99 very slow");
+            ui.add(egui::Slider::new(smoothing, 0.0..=0.99).text("Release"))
+                .on_hover_text("Fall smoothing — 0 is instant, 0.99 very slow");
+            ui.add(egui::Slider::new(gain, 0.0..=8.0).text("Gain"));
+            ui.add(egui::Slider::new(noise_gate, 0.0..=1.0).text("Noise gate"))
+                .on_hover_text("Energy below this counts as silence");
+        }
+
+        // ── Audio Trigger ────────────────────────────────────────────────────
+        // Read before the mutable borrow below.
+        let levels = mod_eng
+            .find_source_by_uuid(uuid)
+            .and_then(|e| e.source.trigger_levels());
+        if let Some(ModulationSource::AudioTrigger {
+            band,
+            threshold,
+            hysteresis,
+            min_interval,
+            hold,
+            floor,
+            ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.horizontal(|ui| {
+                ui.label("Band:");
+                egui::ComboBox::from_id_salt(("trigband", uuid))
+                    .selected_text(band.name())
+                    .show_ui(ui, |ui| {
+                        for b in FftBand::all() {
+                            if ui.selectable_label(*band == *b, b.name()).clicked() {
+                                *band = *b;
+                            }
+                        }
+                    });
+            });
+            ui.add(egui::Slider::new(threshold, 1.0..=4.0).text("Threshold ×"))
+                .on_hover_text(
+                    "A multiple of the band's rolling average, not the level on \
+                     the frequency monitor. 1.0 fires on anything above average.",
+                );
+            ui.add(egui::Slider::new(floor, 0.0..=1.0).text("Floor"))
+                .on_hover_text(
+                    "Absolute energy a hit must also reach, so a quiet band \
+                     cannot fire on nothing.",
+                );
+            ui.add(egui::Slider::new(hysteresis, 0.0..=0.9).text("Hysteresis"))
+                .on_hover_text("How far it must fall back before firing again");
+            ui.add(egui::Slider::new(min_interval, 0.0..=1.0).text("Min gap (s)"));
+            ui.add(egui::Slider::new(hold, 0.0..=2.0).text("Hold (s)"))
+                .on_hover_text("How long the gate stays open — an envelope's sustain needs this");
+            if let Some((average, fires_at)) = levels {
+                // The whole point: the threshold is relative, so show what it is
+                // relative to and where the bar currently sits.
+                ui.label(
+                    egui::RichText::new(format!(
+                        "average {average:.3}  ·  fires above {fires_at:.3}"
+                    ))
+                    .small()
+                    .weak(),
+                );
+            }
         }
     }
 
@@ -395,7 +595,7 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new("No assignments — select a parameter below")
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         }
 
@@ -429,6 +629,7 @@ fn source_type_name(source: &ModulationSource) -> String {
     match source {
         ModulationSource::LFO { .. } => "LFO".to_string(),
         ModulationSource::AudioBand { .. } => "Audio".to_string(),
+        ModulationSource::AudioTrigger { .. } => "Trigger".to_string(),
         ModulationSource::ADSR { .. } => "ADSR".to_string(),
         ModulationSource::StepSequencer { .. } => "Step".to_string(),
     }
@@ -438,6 +639,7 @@ fn source_is_enabled(source: &ModulationSource) -> bool {
     match source {
         ModulationSource::LFO { enabled, .. } => *enabled,
         ModulationSource::AudioBand { .. } => true,
+        ModulationSource::AudioTrigger { .. } => true,
         ModulationSource::ADSR { .. } => true,
         ModulationSource::StepSequencer { .. } => true,
     }

@@ -74,14 +74,14 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new("None found — click Refresh")
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         } else {
             for device in &available_devices {
                 let is_selected = selected_device.as_deref() == Some(device.as_str());
                 ui.horizontal(|ui| {
                     if is_selected {
-                        ui.label(egui::RichText::new("▶").color(ACCENT_CYAN));
+                        ui.label(egui::RichText::new("▶").color(accent_cyan()));
                     } else {
                         ui.label("  ");
                     }
@@ -117,14 +117,14 @@ impl EguiControlGui {
                     };
                     ui.label(
                         egui::RichText::new(format!("{k} ch{ch} #{sel} v{val}"))
-                            .color(ACCENT_CYAN)
+                            .color(accent_cyan())
                             .monospace(),
                     );
                 }
                 None => {
                     ui.label(
                         egui::RichText::new("none yet — move a control")
-                            .color(TEXT_SECONDARY),
+                            .color(text_secondary()),
                     );
                 }
             }
@@ -136,7 +136,7 @@ impl EguiControlGui {
 
         ui.label(
             egui::RichText::new("MIDI Learn")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
 
@@ -168,7 +168,7 @@ impl EguiControlGui {
         ui.add_space(8.0);
 
         if descriptors.is_empty() {
-            ui.label(egui::RichText::new("No effect-declared parameters.").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("No effect-declared parameters.").color(text_secondary()));
         } else {
             for cat in &sorted_categories(&descriptors) {
                 let cat_params: Vec<_> =
@@ -213,7 +213,7 @@ impl EguiControlGui {
                                     ui.label(
                                         egui::RichText::new("(unlearned)")
                                             .size(11.0)
-                                            .color(TEXT_SECONDARY),
+                                            .color(text_secondary()),
                                     );
                                 }
                             });
@@ -229,7 +229,7 @@ impl EguiControlGui {
         if midi_mappings.is_empty() {
             ui.label(
                 egui::RichText::new("No mappings configured yet — use MIDI Learn above")
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         } else {
             for m in &midi_mappings {
@@ -307,7 +307,7 @@ impl EguiControlGui {
 
         ui.label(
             egui::RichText::new("OSC Addresses")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
         ui.label("Send OSC messages to control parameters:");
@@ -318,7 +318,7 @@ impl EguiControlGui {
         };
 
         if descriptors.is_empty() {
-            ui.label(egui::RichText::new("No effect-declared parameters.").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("No effect-declared parameters.").color(text_secondary()));
         } else {
             for cat in &sorted_categories(&descriptors) {
                 let cat_params: Vec<_> =
@@ -340,7 +340,7 @@ impl EguiControlGui {
                                     desc.min, desc.max, desc.step
                                 ))
                                 .size(11.0)
-                                .color(TEXT_SECONDARY),
+                                .color(text_secondary()),
                             );
                         }
                     });
@@ -358,7 +358,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 - 1.0 (maps to 0 to 5)")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
                 ui.label(
                     egui::RichText::new("/rustjay/audio/smoothing")
@@ -368,7 +368,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 - 1.0")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
                 ui.label(
                     egui::RichText::new("/rustjay/audio/enabled")
@@ -378,7 +378,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 or 1.0")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
             });
 
@@ -393,7 +393,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 or 1.0")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
                 ui.label(
                     egui::RichText::new("/rustjay/output/width")
@@ -403,7 +403,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 - 1.0 (maps to 320 to 4096)")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
                 ui.label(
                     egui::RichText::new("/rustjay/output/height")
@@ -413,7 +413,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("  Range: 0.0 - 1.0 (maps to 240 to 2160)")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
             });
 
@@ -421,14 +421,14 @@ impl EguiControlGui {
         ui.label(
             egui::RichText::new("Send an OSC message to the address above to confirm connectivity")
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
         );
         ui.label(
             egui::RichText::new(
                 "OSC is receive-only — Rustjay listens for incoming control messages.",
             )
             .size(11.0)
-            .color(TEXT_SECONDARY),
+            .color(text_secondary()),
         );
 
         ui.add_space(8.0);
@@ -437,7 +437,7 @@ impl EguiControlGui {
 
         ui.label(
             egui::RichText::new("Recent Messages")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
         let messages = {
@@ -448,7 +448,7 @@ impl EguiControlGui {
             ui.label(
                 egui::RichText::new("No messages received yet.")
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         } else {
             egui::ScrollArea::vertical()
@@ -574,7 +574,7 @@ impl EguiControlGui {
                 ui.label(
                     egui::RichText::new("Scan with your phone to connect instantly")
                         .size(11.0)
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
             }
 
@@ -585,25 +585,25 @@ impl EguiControlGui {
             // ── URL + copy button ────────────────────────────────────────────────
             ui.label(
                 egui::RichText::new("Access URL:")
-                    .color(ACCENT_CYAN)
+                    .color(accent_cyan())
                     .strong(),
             );
             ui.label(
                 egui::RichText::new(&full_url)
                     .monospace()
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
             if ui.button("📋 Copy URL").clicked()
                 && let Err(e) = crate::control_gui::copy_to_clipboard(&full_url) {
                     log::warn!("Failed to copy URL to clipboard: {}", e);
                 }
         } else if enabled {
-            ui.label(egui::RichText::new("Server starting…").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("Server starting…").color(text_secondary()));
         } else {
             ui.label(
                 egui::RichText::new("Start the server to get the QR code and URL.")
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
             // Clear cached QR when server is stopped.
             self.qr_cache = None;
@@ -614,7 +614,7 @@ impl EguiControlGui {
         ui.add_space(8.0);
 
         // ── LAN Trust toggle ─────────────────────────────────────────────────
-        ui.label(egui::RichText::new("Security").color(ACCENT_CYAN).strong());
+        ui.label(egui::RichText::new("Security").color(accent_cyan()).strong());
         let mut lan_trust_mut = lan_trust;
         if ui
             .checkbox(&mut lan_trust_mut, "Trusted LAN Mode")
@@ -637,7 +637,7 @@ impl EguiControlGui {
                     "Token auth required — only devices with the QR code or URL can connect.",
                 )
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
             );
         }
 
@@ -645,7 +645,7 @@ impl EguiControlGui {
         ui.separator();
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new("Features:").color(ACCENT_CYAN).strong());
+        ui.label(egui::RichText::new("Features:").color(accent_cyan()).strong());
         ui.label("• Real-time bidirectional sync");
         ui.label("• Works on any device with a browser");
         ui.label("• Mobile-optimized touch interface");

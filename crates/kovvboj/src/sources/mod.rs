@@ -1,0 +1,65 @@
+//! Sources — ISF, video, image, camera, NDI, streams.
+//!
+//! Delegates to engine crates where possible:
+//! - ISF      → `rustjay-isf`
+//! - Camera   → `rustjay-io/input` (webcam)
+//! - NDI      → `rustjay-io/ndi_runtime`
+//! - Video decode / HAP / SRT / HLS / DASH / RTMP → coverage gaps;
+//!   see `PARITY.md` Phase 2 / 9 / 10 probes.
+
+mod camera_source;
+mod image_source;
+pub mod registry;
+mod solid_color_source;
+mod watcher;
+
+#[cfg(feature = "ffmpeg")]
+mod ffmpeg_source;
+#[cfg(feature = "ffmpeg")]
+mod stream_source;
+#[cfg(feature = "hap")]
+mod hap_source;
+#[cfg(feature = "ndi")]
+mod ndi_source;
+#[cfg(all(target_os = "windows", feature = "mixer"))]
+mod spout_source;
+#[cfg(all(target_os = "macos", feature = "mixer"))]
+mod syphon_source;
+
+pub use camera_source::CameraSource;
+#[cfg(feature = "ffmpeg")]
+pub use ffmpeg_source::FfmpegSource;
+#[cfg(feature = "ffmpeg")]
+pub use stream_source::StreamSource;
+#[cfg(feature = "hap")]
+pub use hap_source::HapSource;
+pub use image_source::ImageSource;
+#[cfg(feature = "ndi")]
+pub use ndi_source::NdiSource;
+pub use registry::{Registry, SourceEntry, SourceKind, classify_stream_url};
+pub use solid_color_source::SolidColorSource;
+#[cfg(all(target_os = "windows", feature = "mixer"))]
+pub use spout_source::SpoutSource;
+#[cfg(all(target_os = "macos", feature = "mixer"))]
+pub use syphon_source::SyphonSource;
+pub use watcher::ShaderWatcher;
+
+/// Test-only helpers.
+#[cfg(test)]
+pub mod testing {
+    use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
+
+    /// A source that needs no GPU — enough to stand a layer up in a test.
+    pub struct StubSource;
+
+    impl EffectInstance for StubSource {
+        fn render_to(
+            &mut self,
+            _ctx: &mut RenderCtx<'_>,
+            _inputs: &[EffectInput<'_>],
+            _target: RenderTarget<'_>,
+            _engine: &EngineState,
+        ) {
+        }
+    }
+}

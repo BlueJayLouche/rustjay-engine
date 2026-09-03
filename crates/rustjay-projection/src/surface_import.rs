@@ -1,6 +1,6 @@
 //! Surface import — contour-detection pipeline (REQ-06).
 //!
-//! Ports Varda's `surface/{detect,import}.rs` contour pipeline into the
+//! Ports Kovvboj's `surface/{detect,import}.rs` contour pipeline into the
 //! projection crate. Detects geometric contours from SVG, DXF, and raster
 //! (PNG/JPG) sources, normalises them to `[0..1]`, and converts them into
 //! [`Surface`] polygons and [`WarpMesh`]es (via ear-clipping triangulation) so
@@ -780,7 +780,7 @@ pub fn contour_to_warp_mesh(vertices: &[[f32; 2]]) -> WarpMesh {
     }
 }
 
-// ── Geometry helpers (ported from Varda detect.rs) ──────────────────────────
+// ── Geometry helpers (ported from Kovvboj detect.rs) ──────────────────────────
 
 /// Compute the (unsigned) area of a polygon using the shoelace formula.
 pub fn shoelace_area(vertices: &[[f32; 2]]) -> f32 {
@@ -1373,7 +1373,7 @@ mod tests {
     // ── Acceptance test (REQ-06 / T07) ─────────────────────────────────
 
     #[test]
-    fn import_varda_stage_svg() {
+    fn import_kovvboj_stage_svg() {
         let path = std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/stage.svg"

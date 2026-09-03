@@ -1135,23 +1135,29 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                 let target = param_id_to_modulation_target(&param_id);
                                 let mut state =
                                     shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                let ids_to_remove: Vec<usize> = state
-                                    .audio_routing
-                                    .matrix
-                                    .routes()
-                                    .iter()
-                                    .filter(|r| r.band == band && r.target == target)
-                                    .map(|r| r.id)
-                                    .collect();
-                                for id in ids_to_remove {
-                                    state.audio_routing.matrix.remove_route(id);
+                                // Through the shared helper, so a route made from the web
+                                // reaches parameters the same way the routing window's does.
+                                if let Some(param) = target.param_id() {
+                                    rustjay_core::routing::clear_routes_for(
+                                        &state.modulation,
+                                        param,
+                                    );
                                 }
-                                if let Some(id) = state.audio_routing.matrix.add_route(band, target)
+                                if let Some(uuid) = rustjay_core::routing::add_route(
+                                    &state.modulation,
+                                    band,
+                                    &target,
+                                ) && let Some(param) = target.param_id()
                                 {
-                                    if let Some(route) =
-                                        state.audio_routing.matrix.get_route_mut(id)
+                                    let mut m = state
+                                        .modulation
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    if let Some(mods) = m.assignments.get_mut(param)
+                                        && let Some(a) =
+                                            mods.iter_mut().find(|a| a.source_id == uuid)
                                     {
-                                        route.amount = depth;
+                                        a.amount = depth;
                                     }
                                 }
                                 web_server.modulation_dirty = true;
@@ -1160,16 +1166,11 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                 let target = param_id_to_modulation_target(&param_id);
                                 let mut state =
                                     shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                                let ids_to_remove: Vec<usize> = state
-                                    .audio_routing
-                                    .matrix
-                                    .routes()
-                                    .iter()
-                                    .filter(|r| r.target == target)
-                                    .map(|r| r.id)
-                                    .collect();
-                                for id in ids_to_remove {
-                                    state.audio_routing.matrix.remove_route(id);
+                                if let Some(param) = target.param_id() {
+                                    rustjay_core::routing::clear_routes_for(
+                                        &state.modulation,
+                                        param,
+                                    );
                                 }
                                 web_server.modulation_dirty = true;
                             }

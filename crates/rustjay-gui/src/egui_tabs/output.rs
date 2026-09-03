@@ -23,7 +23,7 @@ impl EguiControlGui {
         ui.label(
             egui::RichText::new("Press Shift+F to toggle fullscreen")
                 .size(11.0)
-                .color(TEXT_SECONDARY),
+                .color(text_secondary()),
         );
 
         ui.add_space(12.0);
@@ -35,7 +35,7 @@ impl EguiControlGui {
         {
             ui.label(
                 egui::RichText::new("NDI Output")
-                    .color(ACCENT_GREEN)
+                    .color(accent_green())
                     .strong(),
             );
             let ndi_active = {
@@ -66,7 +66,7 @@ impl EguiControlGui {
         {
             ui.label(
                 egui::RichText::new("Syphon Output (macOS)")
-                    .color(ACCENT_AMBER)
+                    .color(accent_amber())
                     .strong(),
             );
             let syphon_enabled = {
@@ -97,7 +97,7 @@ impl EguiControlGui {
         {
             ui.label(
                 egui::RichText::new("Spout Output (Windows)")
-                    .color(ACCENT_CYAN)
+                    .color(accent_cyan())
                     .strong(),
             );
             let spout_active = {
@@ -129,13 +129,13 @@ impl EguiControlGui {
         {
             ui.label(
                 egui::RichText::new("V4L2 Loopback Output (Linux)")
-                    .color(ACCENT_AMBER)
+                    .color(accent_amber())
                     .strong(),
             );
             ui.label(
                 egui::RichText::new("Requires v4l2loopback kernel module")
                     .size(11.0)
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
 
             let v4l2_active = {
@@ -173,7 +173,7 @@ impl EguiControlGui {
             } else {
                 ui.label(
                     egui::RichText::new("No v4l2loopback devices found — see README for setup")
-                        .color(TEXT_SECONDARY),
+                        .color(text_secondary()),
                 );
                 ui.text_edit_singleline(&mut self.v4l2_device_path);
             }

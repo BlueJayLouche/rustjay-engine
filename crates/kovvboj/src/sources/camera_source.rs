@@ -1,0 +1,420 @@
+//! Camera source — captures from a webcam via `rustjay-io` and uploads frames
+//! to a GPU texture each frame.
+//!
+//! One physical camera is shared across all `CameraSource` instances with the
+//! same `device_index` (T02.3b). The first deck opens the session; subsequent
+//! decks join it. Frames are cached in an `Arc<Vec<u8>>` so each deck can
+//! upload to its own texture without per-frame cloning.
+
+use rustjay_core::{EffectInput, EffectInstance, EngineState, RenderCtx, RenderTarget};
+use rustjay_io::InputManager;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The most recent frame from one camera, readable by every deck sharing it.
+///
+/// `InputManager::take_frame` *removes* the frame, so with a session shared per
+/// device the first deck to render each frame consumed it and the others got
+/// nothing — two decks on one camera raced, and only one updated. The frame is
+/// stored here instead and stamped with a sequence number; a consumer uploads
+/// when the stamp differs from the one it last saw.
+#[derive(Default)]
+struct FrameCache {
+    frame: Option<Arc<Vec<u8>>>,
+    seq: u64,
+}
+
+impl FrameCache {
+    /// Replace the stored frame and stamp it.
+    fn store(&mut self, frame: Vec<u8>) {
+        self.frame = Some(Arc::new(frame));
+        self.seq = self.seq.wrapping_add(1);
+    }
+
+    /// The stored frame, if the caller has not already seen this one.
+    ///
+    /// Advances `last_seq` to what was handed out, so each consumer takes any
+    /// given frame exactly once while every consumer still gets it.
+    fn take_if_new(&self, last_seq: &mut u64) -> Option<Arc<Vec<u8>>> {
+        if self.seq == *last_seq {
+            return None;
+        }
+        *last_seq = self.seq;
+        self.frame.clone()
+    }
+}
+
+struct CameraSession {
+    manager: InputManager,
+    resolution: (u32, u32),
+    /// Shared by every deck on this device — see [`FrameCache`].
+    cache: FrameCache,
+}
+
+static CAMERA_SESSIONS: OnceLock<Mutex<HashMap<usize, Arc<Mutex<CameraSession>>>>> =
+    OnceLock::new();
+
+fn get_session(device_index: usize) -> Arc<Mutex<CameraSession>> {
+    let map = CAMERA_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    guard
+        .entry(device_index)
+        .or_insert_with(|| {
+            Arc::new(Mutex::new(CameraSession {
+                manager: InputManager::new(),
+                resolution: (1280, 720),
+                cache: FrameCache::default(),
+            }))
+        })
+        .clone()
+}
+
+/// Renders live webcam frames to the target.
+pub struct CameraSource {
+    session: Arc<Mutex<CameraSession>>,
+    /// Sequence of the last frame this deck uploaded; see [`FrameCache`].
+    last_seq: u64,
+    device_index: usize,
+    started: bool,
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group: Option<wgpu::BindGroup>,
+    texture: Option<wgpu::Texture>,
+    view: Option<wgpu::TextureView>,
+    sampler: wgpu::Sampler,
+    width: u32,
+    height: u32,
+}
+
+impl CameraSource {
+    pub fn new(device: &wgpu::Device, device_index: usize) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("CameraSource Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                struct VertexOutput {
+                    @builtin(position) position: vec4<f32>,
+                    @location(0) texcoord: vec2<f32>,
+                };
+
+                @group(0) @binding(0) var tex: texture_2d<f32>;
+                @group(0) @binding(1) var sam: sampler;
+
+                @vertex
+                fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.position = vec4<f32>(position, 0.0, 1.0);
+                    out.texcoord = texcoord;
+                    return out;
+                }
+
+                @fragment
+                fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+                    return textureSample(tex, sam, in.texcoord);
+                }
+                "#
+                .into(),
+            ),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("CameraSource BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("CameraSource Pipeline Layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            ..Default::default()
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("CameraSource Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(rustjay_core::Vertex::desc())],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: rustjay_core::working_format(),
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Self {
+            session: get_session(device_index),
+            last_seq: 0,
+            device_index,
+            started: false,
+            pipeline,
+            bind_group_layout,
+            bind_group: None,
+            texture: None,
+            view: None,
+            sampler,
+            width: 1280,
+            height: 720,
+        }
+    }
+
+    fn ensure_texture(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if self.texture.is_some() && self.width == width && self.height == height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Camera Source Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("CameraSource BG"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }));
+        self.texture = Some(texture);
+        self.view = Some(view);
+    }
+}
+
+impl Drop for CameraSource {
+    fn drop(&mut self) {
+        let map = CAMERA_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+        let Ok(mut guard) = map.lock() else { return };
+        if let Some(entry) = guard.get(&self.device_index) {
+            // If strong_count is 2, only this CameraSource and the map hold the Arc.
+            // Remove from map so the session is dropped and the webcam stops.
+            if Arc::strong_count(entry) <= 2
+                && let Some(session) = guard.remove(&self.device_index)
+                    && let Ok(mut s) = session.lock() {
+                        s.manager.stop();
+                        log::info!("CameraSource stopped webcam {}", self.device_index);
+                    }
+        }
+    }
+}
+
+impl EffectInstance for CameraSource {
+    fn prepare(&mut self, _engine: &EngineState, _device: &wgpu::Device, _queue: &wgpu::Queue) {
+        let mut session = self.session.lock().unwrap();
+        if !self.started {
+            if !session.manager.is_active() {
+                match session
+                        .manager
+                        .start_webcam(self.device_index, self.width, self.height, 30)
+                { Err(e) => {
+                    log::warn!(
+                        "CameraSource failed to start webcam {}: {}",
+                        self.device_index,
+                        e
+                    );
+                } _ => {
+                    self.started = true;
+                    log::info!("CameraSource started webcam {}", self.device_index);
+                }}
+            } else {
+                self.started = true;
+                log::info!("CameraSource joined existing webcam {}", self.device_index);
+            }
+        }
+        // Discover devices in background (nokhwa may need this on some platforms)
+        if !session.manager.is_discovering() {
+            session.manager.begin_refresh_devices();
+        }
+        let _ = session.manager.poll_discovery();
+    }
+
+    fn render_to(
+        &mut self,
+        ctx: &mut RenderCtx<'_>,
+        _inputs: &[EffectInput<'_>],
+        target: RenderTarget<'_>,
+        _engine: &EngineState,
+    ) {
+        if !self.started {
+            return;
+        }
+
+        {
+            // Only upload to the GPU when the camera delivered a NEW frame.
+            // The webcam runs ~30fps while the render loop runs >=60, so
+            // re-uploading the same frame every render (on the main thread)
+            // was pure waste. self.texture persists between uploads, so the
+            // pass below keeps sampling the most recent frame.
+            let (new_frame, w, h) = {
+                let mut session = self.session.lock().unwrap();
+                session.manager.update();
+                // Whoever gets here first for a given frame stores it; everyone
+                // sharing this camera then reads it from the cache.
+                if let Some(frame) = session.manager.take_frame() {
+                    session.cache.store(frame);
+                    session.resolution = session.manager.resolution();
+                }
+                let new_frame = session.cache.take_if_new(&mut self.last_seq);
+                let (w, h) = session.resolution;
+                (new_frame, w, h)
+            };
+
+            if let Some(frame) = new_frame {
+                self.ensure_texture(ctx.device, w, h);
+                if let Some(ref texture) = self.texture {
+                    ctx.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &frame,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(w * 4),
+                            rows_per_image: Some(h),
+                        },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Some(ref bind_group) = self.bind_group {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("CameraSource Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameCache;
+
+    /// Two decks on one camera must both see every frame.
+    ///
+    /// The old path called `InputManager::take_frame`, which removes the frame,
+    /// so whichever deck rendered first consumed it and the other got nothing.
+    #[test]
+    fn every_consumer_sees_each_frame_exactly_once() {
+        let mut cache = FrameCache::default();
+        let (mut deck_a, mut deck_b) = (0_u64, 0_u64);
+
+        // Nothing stored yet.
+        assert!(cache.take_if_new(&mut deck_a).is_none());
+
+        cache.store(vec![1, 2, 3]);
+        assert_eq!(
+            cache.take_if_new(&mut deck_a).as_deref(),
+            Some(&vec![1, 2, 3]),
+            "the first deck gets the frame"
+        );
+        assert_eq!(
+            cache.take_if_new(&mut deck_b).as_deref(),
+            Some(&vec![1, 2, 3]),
+            "and so does the second — this is the bug that was fixed"
+        );
+
+        // Neither takes the same frame twice.
+        assert!(cache.take_if_new(&mut deck_a).is_none());
+        assert!(cache.take_if_new(&mut deck_b).is_none());
+
+        // A new frame reaches both again.
+        cache.store(vec![4, 5, 6]);
+        assert_eq!(cache.take_if_new(&mut deck_a).as_deref(), Some(&vec![4, 5, 6]));
+        assert_eq!(cache.take_if_new(&mut deck_b).as_deref(), Some(&vec![4, 5, 6]));
+    }
+
+    /// A deck joining late must not wait for the *next* frame to appear.
+    #[test]
+    fn a_deck_added_later_picks_up_the_current_frame() {
+        let mut cache = FrameCache::default();
+        let mut existing = 0_u64;
+        cache.store(vec![9]);
+        cache.take_if_new(&mut existing);
+
+        let mut joined = 0_u64;
+        assert_eq!(
+            cache.take_if_new(&mut joined).as_deref(),
+            Some(&vec![9]),
+            "a deck created mid-stream shows the live frame, not black"
+        );
+    }
+}

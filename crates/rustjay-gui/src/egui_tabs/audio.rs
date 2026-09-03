@@ -64,7 +64,7 @@ impl EguiControlGui {
                 } else {
                     ui.label(
                         egui::RichText::new("No audio devices found. Click Refresh.")
-                            .color(TEXT_SECONDARY),
+                            .color(text_secondary()),
                     );
                 }
 
@@ -110,7 +110,7 @@ impl EguiControlGui {
                         ui.label(
                             egui::RichText::new("(0 = instant, 0.99 = very slow)")
                                 .size(11.0)
-                                .color(TEXT_SECONDARY),
+                                .color(text_secondary()),
                         );
                     });
                     if ui
@@ -155,7 +155,7 @@ impl EguiControlGui {
                         ui.label(
                             egui::RichText::new("(Auto-gain across all bands)")
                                 .size(11.0)
-                                .color(TEXT_SECONDARY),
+                                .color(text_secondary()),
                         );
                     });
 
@@ -170,7 +170,7 @@ impl EguiControlGui {
                         ui.label(
                             egui::RichText::new("(Compensates for pink noise spectrum)")
                                 .size(11.0)
-                                .color(TEXT_SECONDARY),
+                                .color(text_secondary()),
                         );
                     });
                 });
@@ -231,13 +231,13 @@ impl EguiControlGui {
                                 if ui.button(egui::RichText::new("TAP").strong().size(16.0)).clicked() {
                                     self.handle_tap_tempo();
                                 }
-                                ui.label(egui::RichText::new(&tap_info).size(11.0).color(TEXT_SECONDARY));
+                                ui.label(egui::RichText::new(&tap_info).size(11.0).color(text_secondary()));
                             });
                         }
 
                         #[cfg(feature = "link")]
                         SyncSource::AbletonLink => {
-                            let (link_peers, link_bpm, link_phase, mut link_quantum, link_playing) = {
+                            let (link_peers, link_bpm, link_phase, link_quantum, link_playing) = {
                                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 (
                                     state.link.num_peers,
@@ -287,13 +287,13 @@ impl EguiControlGui {
                                     ));
                                 }
                             } else {
-                                ui.label(egui::RichText::new("No devices discovered yet...").color(TEXT_SECONDARY));
+                                ui.label(egui::RichText::new("No devices discovered yet...").color(text_secondary()));
                             }
                         }
 
                         #[allow(unreachable_patterns)]
                         _ => {
-                            ui.label(egui::RichText::new("Selected source is not compiled in.").color(TEXT_SECONDARY));
+                            ui.label(egui::RichText::new("Selected source is not compiled in.").color(text_secondary()));
                         }
                     }
 
@@ -301,17 +301,17 @@ impl EguiControlGui {
                     #[cfg(feature = "mtc")]
                     {
                         ui.add_space(12.0);
-                        ui.label(egui::RichText::new("MIDI Timecode (MTC)").color(ACCENT_CYAN).strong());
+                        ui.label(egui::RichText::new("MIDI Timecode (MTC)").color(accent_cyan()).strong());
                         let (running, playing, position, source) = {
                             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                             (state.mtc.running, state.mtc.playing, state.mtc.position, state.mtc.source_device.clone())
                         };
                         let (status_color, status_text) = if playing {
-                            (ACCENT_GREEN, "Playing")
+                            (accent_green(), "Playing")
                         } else if running {
-                            (ACCENT_AMBER, "Stopped")
+                            (accent_amber(), "Stopped")
                         } else {
-                            (TEXT_SECONDARY, "No signal")
+                            (text_secondary(), "No signal")
                         };
                         ui.horizontal(|ui| {
                             ui.label("Status:");
@@ -321,7 +321,7 @@ impl EguiControlGui {
                             ui.label(format!("Source: {}", source));
                         }
                         ui.label(format!("Position: {}  [{}]", position, position.frame_rate.name()));
-                        ui.label(egui::RichText::new("Listening on all MIDI ports automatically.").size(11.0).color(TEXT_SECONDARY));
+                        ui.label(egui::RichText::new("Listening on all MIDI ports automatically.").size(11.0).color(text_secondary()));
                     }
                 });
 
@@ -334,18 +334,25 @@ impl EguiControlGui {
                     const BAND_NAMES: [&str; 8] = [
                         "Sub", "Bass", "Lo Mid", "Mid", "Hi Mid", "High", "V.High", "Pres",
                     ];
-                    let avail_w = ui.available_width();
-                    let label_col = 50.0;
                     let val_col = 34.0;
                     let gap = 6.0;
-                    let bar_w = (avail_w - label_col - val_col - gap).max(20.0);
 
                     for (i, (&value, &name)) in fft.iter().zip(BAND_NAMES.iter()).enumerate() {
-                        let color = FFT_BANDS[i];
+                        let color = fft_bands()[i];
                         ui.horizontal(|ui| {
                             ui.add_space(4.0);
                             ui.colored_label(color, name);
                             ui.add_space(4.0);
+                            // Measured after the label, so the bar takes only what is
+                            // actually left — and capped, which is the part that
+                            // matters. Inside an auto-sizing window `available_width`
+                            // is not the window's width but the largest egui would
+                            // allow, so a bar sized from it alone asks for the whole
+                            // screen and the window opens at full width. The cap gives
+                            // the row an intrinsic size; it still shrinks when the
+                            // window is made narrower.
+                            let bar_w =
+                                (ui.available_width() - val_col - gap).clamp(20.0, 220.0);
                             let rect = ui.available_rect_before_wrap();
                             let bar_rect = egui::Rect::from_min_size(
                                 egui::pos2(rect.min.x, rect.min.y + 3.0),
@@ -355,7 +362,7 @@ impl EguiControlGui {
                                 egui::pos2(rect.min.x, rect.min.y + 3.0),
                                 egui::vec2(bar_w, 11.0),
                             );
-                            ui.painter().rect_filled(bg_rect, 2.0, BG_WIDGET);
+                            ui.painter().rect_filled(bg_rect, 2.0, bg_widget());
                             if bar_rect.width() > 0.5 {
                                 ui.painter().rect_filled(bar_rect, 2.0, color);
                             }
@@ -383,7 +390,7 @@ impl EguiControlGui {
     fn build_audio_routing_section(&mut self, ui: &mut egui::Ui) {
         ui.label(
             egui::RichText::new("Audio Reactivity Routing")
-                .color(ACCENT_CYAN)
+                .color(accent_cyan())
                 .strong(),
         );
 
@@ -401,10 +408,15 @@ impl EguiControlGui {
         if ui.checkbox(&mut enabled, "Enable Audio Routing").changed() {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.audio_routing.enabled = enabled;
+            // The per-frame path this used to gate is gone; routes are ordinary
+            // modulation sources now, so the switch mutes those instead. Only
+            // `route_*` sources — an audio band bound by hand in the MOD popup
+            // belongs to the user, not to this checkbox.
+            rustjay_core::routing::set_routing_enabled(&state.modulation, enabled);
         }
 
         if !enabled {
-            ui.label(egui::RichText::new("Audio routing is disabled").color(TEXT_SECONDARY));
+            ui.label(egui::RichText::new("Audio routing is disabled").color(text_secondary()));
             return;
         }
 
@@ -439,7 +451,7 @@ impl EguiControlGui {
                     if remaining > 0 {
                         ui.label(
                             egui::RichText::new(format!("  ... and {} more", remaining))
-                                .color(TEXT_SECONDARY),
+                                .color(text_secondary()),
                         );
                     }
                     break;
@@ -448,7 +460,7 @@ impl EguiControlGui {
         } else {
             ui.label(
                 egui::RichText::new("No active routes. Click 'Open Routing Matrix' to add.")
-                    .color(TEXT_SECONDARY),
+                    .color(text_secondary()),
             );
         }
     }

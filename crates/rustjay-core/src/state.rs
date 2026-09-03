@@ -923,6 +923,11 @@ pub struct EngineState {
     /// holds `&EngineState` and so cannot call `set_param_base` itself. Empty for
     /// apps that don't use it.
     pub param_restore: Arc<Mutex<Vec<(String, f32)>>>,
+    /// An audio-routing snapshot an app wants applied, for the same reason as
+    /// [`param_restore`](Self::param_restore): `audio_routing` has no interior
+    /// mutability, and an app restoring a saved scene inside the frame loop
+    /// holds only `&EngineState`. `None` for apps that don't use it.
+    pub audio_routing_restore: Arc<Mutex<Option<AudioRoutingState>>>,
     /// Pre-computed modulation offsets for each param id, updated once per frame after
     /// `ModulationEngine::update()`. `get_param()` reads this without locking.
     ///
@@ -984,7 +989,7 @@ pub struct EngineState {
     pub show_stage_preview: bool,
     /// Raw value of the egui `TextureId` backing the live master-output preview,
     /// published by the egui control GUI each time the preview texture is
-    /// (re)created. Custom egui tabs (e.g. vjarda's Stage tab) read this to draw
+    /// (re)created. Custom egui tabs (e.g. kovvboj's Stage tab) read this to draw
     /// the live master output as a canvas background. `None` until the GUI is up,
     /// or when not using the egui front-end. Reconstruct with
     /// `egui::TextureId::User(id)` — `register_native_texture` always returns the
@@ -1107,14 +1112,14 @@ pub struct EngineState {
     pub param_lookup_prefix: RefCell<Option<String>>,
 
     /// Optional callback for resolving hierarchical parameter paths to flat
-    /// engine ids. Used by app-specific param routers (e.g. Varda's
+    /// engine ids. Used by app-specific param routers (e.g. Kovvboj's
     /// `deck/<uuid>/param/<name>` → `ch_<uuid>_deck_<uuid>_<name>`) without
     /// forking the core parameter system.
     pub param_resolver: Option<ParamResolver>,
 
     /// Optional app-published API snapshot, stored as opaque JSON so the
     /// generic engine does not need to know the concrete app schema. Apps
-    /// (e.g. `examples/vjarda`) publish their structure/state here; the API
+    /// (e.g. `crates/kovvboj`) publish their structure/state here; the API
     /// layer serves it verbatim via `GET /api/app/state` and includes it in
     /// the WebSocket delta stream.
     pub app_state: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
@@ -1296,6 +1301,7 @@ impl EngineState {
             notifications: Arc::new(Mutex::new(Vec::new())),
             output_sinks: Arc::new(Mutex::new(Vec::new())),
             param_restore: Arc::new(Mutex::new(Vec::new())),
+            audio_routing_restore: Arc::new(Mutex::new(None)),
             next_notification_id: AtomicU64::new(0),
             recording_active: false,
             shift_space_pressed: false,
@@ -1394,10 +1400,10 @@ impl EngineState {
             .unwrap_or(0.0)
     }
 
-    /// For custom params: if a modulation assignment exists in
-    /// [`modulation_offsets`](Self::modulation_offsets), returns `base + offset * range`.
-    /// Otherwise falls back to `custom_params[i]` so audio-routing values (which are
-    /// still pre-computed in `update_audio()`) remain visible during the transition.
+    /// For custom params: `base + offset * range`, where `offset` is the sum of
+    /// this parameter's modulation assignments (pre-computed per frame in
+    /// [`modulation_offsets`](Self::modulation_offsets)). With no assignments the
+    /// base value is returned unchanged.
     ///
     /// If [`param_lookup_prefix`](Self::param_lookup_prefix) is set, the prefix
     /// is prepended to `id` first. This lets nested effects (e.g. a channel's
@@ -1435,20 +1441,18 @@ impl EngineState {
             _ => {}
         }
 
-        // Custom effect params
+        // Custom effect params. `custom_params[i]` is the base value: the
+        // routing matrix no longer bakes its contribution in here (U3), so a
+        // param is base + modulation offsets and nothing else.
         let i = self.param_index(&resolved)?;
         let desc = self.param_descriptors.get(i)?;
-        let routed = self.custom_params.get(i).copied()?;
+        let base = self.custom_params.get(i).copied()?;
         let range = desc.max - desc.min;
         let offset = self.modulation_offset(&resolved);
         if offset != 0.0 {
-            // Sum audio-routing value (in `custom_params`) + modulation offset.
-            // When audio routing is inactive, `routed == base`, so this reduces
-            // to the base + modulation path.
-            Some((routed + offset * range).clamp(desc.min, desc.max))
+            Some((base + offset * range).clamp(desc.min, desc.max))
         } else {
-            // No modulation — return the audio-routed (or plain base) value.
-            Some(routed)
+            Some(base)
         }
     }
 
@@ -1515,6 +1519,33 @@ impl Default for EngineState {
     }
 }
 
+/// Re-key every engine store that references a parameter prefix after a
+/// structural move (e.g. an FX dragged to another chain changes its prefix).
+///
+/// The two stores are NOT the same shape:
+/// - `ModulationEngine::assignments` is keyed by the **raw parameter id**
+///   (`ch_A_deck_7_fx3_angle`) — a straight prefix swap.
+/// - `EngineState::midi_mappings` stores a `param_path` of the form
+///   `"<category>/<param_id>"` (`color/ch_A_deck_7_fx3_angle`) — only the
+///   segment after the first `/` carries the prefix; the category is left
+///   alone even when its name happens to contain the prefix text.
+pub fn rekey_prefix(state: &mut EngineState, old_prefix: &str, new_prefix: &str) {
+    if old_prefix == new_prefix {
+        return;
+    }
+    if let Ok(mut modulation) = state.modulation.lock() {
+        modulation.rekey_assignments(old_prefix, new_prefix);
+    }
+    for mapping in &mut state.midi_mappings {
+        let Some((category, param_id)) = mapping.param_path.split_once('/') else {
+            continue;
+        };
+        if let Some(rest) = param_id.strip_prefix(old_prefix) {
+            mapping.param_path = format!("{category}/{new_prefix}{rest}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1534,27 +1565,62 @@ mod tests {
         assert_eq!(state.get_param("spin"), Some(0.6));
     }
 
+    /// U3: a param with a migrated route and an LFO assignment receives each
+    /// contribution exactly once — `base + modulation offsets`, with no
+    /// routed value baked into `custom_params` on top.
     #[test]
-    fn get_param_composes_audio_routing_and_modulation() {
+    fn get_param_counts_route_and_lfo_exactly_once() {
+        use crate::modulation::{AudioSourceValues, AudioValues, ModulationSource};
+        use crate::routing::{FftBand, ModulationTarget, RoutingMatrix};
+
         let mut state = EngineState::new();
         state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
         state.custom_param_bases = vec![0.5];
-        // Audio routing pushed the value to 0.8
-        state.custom_params = vec![0.8];
-        state.modulation_offsets.push(("spin".to_string(), 0.1));
+        state.custom_params = vec![0.5];
 
-        // 0.8 (routed) + 0.1 * 1.0 (range) = 0.9
-        assert!((state.get_param("spin").unwrap() - 0.9).abs() < 1e-5);
-    }
+        // A routing-matrix route, migrated the way a scene load does (U2).
+        let mut matrix = RoutingMatrix::new();
+        let id = matrix
+            .add_route(FftBand::Bass, ModulationTarget::Custom("spin".to_string()))
+            .unwrap();
+        matrix.get_route_mut(id).unwrap().amount = 0.2;
 
-    #[test]
-    fn get_param_returns_routed_value_when_no_modulation() {
-        let mut state = EngineState::new();
-        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
-        state.custom_param_bases = vec![0.5];
-        state.custom_params = vec![0.8];
+        // Loud audio, so the migrated AudioBand source reads full energy.
+        let mut audio = AudioValues::default();
+        audio.sources.insert(
+            0,
+            AudioSourceValues {
+                fft: &[1.0; 256],
+                level: 1.0,
+                sample_rate: 48000.0,
+            },
+        );
 
-        assert_eq!(state.get_param("spin"), Some(0.8));
+        let (route_contrib, lfo_contrib, total_offset) = {
+            let mut m = state.modulation.lock().unwrap();
+            m.merge(matrix.to_modulation_engine());
+            let lfo = m.add_source(ModulationSource::sine_lfo(1.0));
+            m.assign("spin", &lfo, 0.2, None);
+            m.update(0.0, 120.0, 0.0, &audio);
+            (
+                m.current_value_for("route_0") * 0.2,
+                m.current_value_for(&lfo) * 0.2,
+                m.get_modulation("spin"),
+            )
+        };
+        assert!(route_contrib > 0.0 && lfo_contrib > 0.0, "both sources are live");
+        assert!((total_offset - (route_contrib + lfo_contrib)).abs() < 1e-6);
+
+        // Mimic update_lfo: publish the offsets the engine computed.
+        state.modulation_offsets = vec![("spin".to_string(), total_offset)];
+
+        let expected = 0.5 + route_contrib + lfo_contrib; // range = 1.0
+        let got = state.get_param("spin").unwrap();
+        assert!((got - expected).abs() < 1e-5, "got {got}, expected {expected}");
+        assert!(
+            (got - (expected + route_contrib)).abs() > 1e-3,
+            "the route's contribution must not be applied twice"
+        );
     }
 
     #[test]
@@ -1584,5 +1650,82 @@ mod tests {
     fn registered_param_ids_empty_by_default() {
         let state = EngineState::new();
         assert!(state.registered_param_ids.is_empty());
+    }
+
+    fn midi_snapshot(param_path: &str) -> MidiMappingSnapshot {
+        MidiMappingSnapshot {
+            name: param_path.to_string(),
+            param_path: param_path.to_string(),
+            kind: MidiMsgKind::Cc,
+            selector: 1,
+            channel: 0,
+            min_value: 0.0,
+            max_value: 1.0,
+        }
+    }
+
+    #[test]
+    fn rekey_prefix_rekeys_modulation_assignments_by_raw_id() {
+        let mut state = EngineState::new();
+        {
+            let mut m = state.modulation.lock().unwrap();
+            m.assignments.insert(
+                "ch_A_deck_7_fx3_angle".to_string(),
+                vec![crate::modulation::ParamModulation {
+                    source_id: "lfo_0".to_string(),
+                    amount: 1.0,
+                    component: None,
+                }],
+            );
+            m.assignments.insert("master_fx9_angle".to_string(), Vec::new());
+        }
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        let m = state.modulation.lock().unwrap();
+        assert!(m.assignments.contains_key("ch_B_deck_2_fx5_angle"));
+        assert!(!m.assignments.contains_key("ch_A_deck_7_fx3_angle"));
+        assert!(m.assignments.contains_key("master_fx9_angle"));
+    }
+
+    #[test]
+    fn rekey_prefix_rewrites_midi_param_path_after_first_slash() {
+        let mut state = EngineState::new();
+        state.midi_mappings = vec![
+            midi_snapshot("color/ch_A_deck_7_fx3_angle"),
+            midi_snapshot("motion/master_fx9_speed"),
+        ];
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_deck_2_fx5_");
+
+        assert_eq!(
+            state.midi_mappings[0].param_path,
+            "color/ch_B_deck_2_fx5_angle"
+        );
+        assert_eq!(state.midi_mappings[1].param_path, "motion/master_fx9_speed");
+    }
+
+    #[test]
+    fn rekey_prefix_leaves_category_containing_prefix_text_alone() {
+        // The category segment may itself contain the prefix text — only the
+        // segment after the first '/' is the param id.
+        let mut state = EngineState::new();
+        state.midi_mappings =
+            vec![midi_snapshot("ch_A_deck_7_fx3_color/ch_A_deck_7_fx3_angle")];
+
+        rekey_prefix(&mut state, "ch_A_deck_7_fx3_", "ch_B_");
+
+        assert_eq!(
+            state.midi_mappings[0].param_path,
+            "ch_A_deck_7_fx3_color/ch_B_angle"
+        );
+    }
+
+    #[test]
+    fn rekey_prefix_same_prefix_is_noop() {
+        let mut state = EngineState::new();
+        state.midi_mappings = vec![midi_snapshot("color/fx_angle")];
+        rekey_prefix(&mut state, "fx_", "fx_");
+        assert_eq!(state.midi_mappings[0].param_path, "color/fx_angle");
     }
 }

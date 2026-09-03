@@ -12,9 +12,10 @@ name: Release Apps
 # to an existing apps-v* tag to re-release — same-name assets on that release are
 # replaced.
 #
-# Per-app icon slots — dropped-in files are picked up automatically:
-#   examples/<app>/packaging/AppIcon.icns  -> macOS bundle icon
-#   examples/<app>/packaging/icon.ico      -> Windows Start-menu shortcut icon
+# Per-app icon slots — dropped-in files are picked up automatically
+# (`dir` from the matrix include, defaulting to examples/<app>):
+#   <dir>/packaging/AppIcon.icns  -> macOS bundle icon
+#   <dir>/packaging/icon.ico      -> Windows Start-menu shortcut icon
 # (Embedding the .ico into the .exe itself needs a winresource build.rs per app —
 #  not done yet.)
 #
@@ -31,7 +32,7 @@ on:
       app:
         description: "App to build (all = full matrix)"
         type: choice
-        options: [all, vjarda, vp404, shaderglass, videowall]
+        options: [all, kovvboj, vp404, shaderglass, videowall]
         default: all
       release_tag:
         description: "Existing apps-v* tag to attach the packages to (empty = artifacts-only dry run)"
@@ -61,9 +62,9 @@ jobs:
           cat > matrix.json <<'JSON'
           {
             "os": ["macos-latest", "ubuntu-latest", "windows-latest"],
-            "app": ["vjarda", "vp404", "shaderglass", "videowall"],
+            "app": ["kovvboj", "vp404", "shaderglass", "videowall"],
             "include": [
-              {"app": "vjarda", "ffmpeg": true, "ndi": true},
+              {"app": "kovvboj", "display": "KOVVBOJ", "ffmpeg": true, "ndi": true, "dir": "crates/kovvboj"},
               {"app": "vp404", "display": "VP-404", "ndi": true},
               {"app": "shaderglass", "display": "ShaderGlass", "ndi": true},
               {"app": "videowall", "display": "VideoWall", "ndi": true}
@@ -72,7 +73,7 @@ jobs:
           }
           JSON
           # Notes carried over from the old inline matrix:
-          #  - vjarda: --all-features enables its ffmpeg feature
+          #  - kovvboj: --all-features enables its ffmpeg feature
           if [ "$APP" != "all" ]; then
             jq -c --arg app "$APP" \
               '.app = [$app]
@@ -203,7 +204,7 @@ jobs:
           APP="dist/$DISPLAY_NAME.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" out
           cp "$TD/release/${{ matrix.app }}" "$APP/Contents/MacOS/"
-          ICNS="examples/${{ matrix.app }}/packaging/AppIcon.icns"
+          ICNS="${{ matrix.dir || format('examples/{0}', matrix.app) }}/packaging/AppIcon.icns"
           [ -f "$ICNS" ] && cp "$ICNS" "$APP/Contents/Resources/"
           sed -e "s/__NAME__/$DISPLAY_NAME/g" \
               -e "s/__BIN__/${{ matrix.app }}/g" \
@@ -255,6 +256,7 @@ jobs:
         run: |
           $app = '${{ matrix.app }}'
           $display = '${{ matrix.display || matrix.app }}'
+          $pkgdir = '${{ matrix.dir || format('examples/{0}', matrix.app) }}'.Replace('/', '\')
           $td = 'target'
           $dist = "dist\$app"
           New-Item -ItemType Directory -Force $dist, out | Out-Null
@@ -268,7 +270,7 @@ jobs:
           Compress-Archive -Path "$dist\*" -DestinationPath "out\$app-windows-x86_64.zip"
           .github\scripts\make-msi.ps1 -Name $display -Version $env:VERSION `
             -SourceDir $dist -Exe "$app.exe" `
-            -Icon "examples\$app\packaging\icon.ico" `
+            -Icon "$pkgdir\packaging\icon.ico" `
             -Out "out\$app-windows-x86_64.msi"
 
       - name: Upload artifact

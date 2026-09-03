@@ -2,6 +2,8 @@
 
 rustjay-engine can lock to three external tempo sources. Enabling them is a feature-flag choice; selecting between them at runtime is a user choice from the Audio tab.
 
+In [kovvboj](../examples/kovvboj.md) the tab row is replaced by the app's own shell — open **Audio** as a window from the View menu; the Sync section is folded into it.
+
 ## Sources
 
 ### Audio beat detection (always available)

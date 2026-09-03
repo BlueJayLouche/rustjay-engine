@@ -38,6 +38,15 @@ pub struct IsfManifest {
     pub has_sampler: bool,
     /// Fragment entry point name in the emitted WGSL (from the naga module).
     pub frag_entry: String,
+    /// Whether the vertex stage should deliver `isf_FragNormCoord` Y-flipped
+    /// into ISF's bottom-left convention.
+    ///
+    /// That flip only exists to be undone by the `IMG_*` sampling rewrite. A
+    /// shader that samples its inputs directly — the baked kovvboj dialect,
+    /// which declares its own bindings and calls `texture(sampler2D(...), uv)`
+    /// — never goes through that rewrite, so flipping for it inverts the output
+    /// once per pass.
+    pub flip_frag_norm_coord: bool,
 }
 
 /// One std140 field of the `IsfInputs` block.
@@ -132,6 +141,7 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         has_sampler: !merged.textures.is_empty(),
         textures: merged.textures,
         frag_entry,
+        flip_frag_norm_coord: merged.uses_img_macros,
     };
     Ok(CompileOutput { wgsl, manifest })
 }
@@ -188,6 +198,8 @@ struct Merged {
     glsl: String,
     members: Vec<MemberDecl>,
     textures: Vec<TextureBinding>,
+    /// See [`IsfManifest::flip_frag_norm_coord`].
+    uses_img_macros: bool,
 }
 
 fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
@@ -227,7 +239,14 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         .chain(isf.imported.keys().cloned())
         .collect();
 
-    // 1.5 vjarda dialect: strip baked varda preludes (blocks/layout decls/aliases).
+    // Does this shader sample through the IMG_* macros? Checked before the
+    // rewrite below replaces them. Only those get the Y-flipped coordinate; see
+    // `IsfManifest::flip_frag_norm_coord`.
+    let uses_img_macros = ["IMG_THIS_PIXEL", "IMG_NORM_PIXEL", "IMG_PIXEL"]
+        .iter()
+        .any(|m| body.contains(m));
+
+    // 1.5 kovvboj dialect: strip baked kovvboj preludes (blocks/layout decls/aliases).
     let mut baked_members: Vec<MemberDecl> = Vec::new();
     let mut baked_textures: Vec<String> = Vec::new();
     let (b, baked_needs_out, bool_as_float) = strip_baked_prelude(
@@ -311,7 +330,7 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
             InputType::Float(_) => Some(FieldTy::F32),
             InputType::Long(_) => Some(FieldTy::I32),
             InputType::Bool(_) | InputType::Event => {
-                // vjarda dialect: baked blocks declare bools as float and bodies
+                // kovvboj dialect: baked blocks declare bools as float and bodies
                 // compare against floats
                 Some(if bool_as_float {
                     FieldTy::F32
@@ -379,6 +398,7 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         glsl: p,
         members,
         textures,
+        uses_img_macros,
     }
 }
 
@@ -425,8 +445,8 @@ fn layout_std140(members: &[MemberDecl]) -> (Vec<InputField>, usize) {
 // Body rewrite passes (line/char scanners — see module docs)
 // ---------------------------------------------------------------------------
 
-/// Strip a baked varda-style prelude from the body (the 115 shaders bundled with
-/// examples/vjarda were generated with declarations baked into the `.fs` file:
+/// Strip a baked kovvboj-style prelude from the body (the 115 shaders bundled with
+/// crates/kovvboj were generated with declarations baked into the `.fs` file:
 /// `ISFUniforms`/`UserParams`/`*Params` blocks, layout-qualified in/out, sampler and
 /// texture decls). Triggered only when the body mentions `ISFUniforms` — stock ISF
 /// never does. Members not provided by our own prelude are re-homed (into

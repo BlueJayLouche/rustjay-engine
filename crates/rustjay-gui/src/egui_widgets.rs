@@ -50,13 +50,13 @@ pub fn hud_frame<R>(
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     egui::Frame::NONE
-        .fill(SURFACE_2)
-        .stroke(Stroke::new(1.0_f32, HAIR_2))
+        .fill(surface_2())
+        .stroke(Stroke::new(1.0_f32, hair_2()))
         .inner_margin(egui::Margin::same(pad as i8))
         .show(ui, |ui| {
             let r = add_contents(ui);
             if brackets {
-                corner_brackets(ui, ui.min_rect(), AMBER);
+                corner_brackets(ui, ui.min_rect(), amber());
             }
             r
         })
@@ -67,13 +67,84 @@ pub fn hud_frame<R>(
 // Section header — ▌ TITLE · 03 CH · 01/04
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Where a modulation ghost's band starts and ends along a slider's rail, or
+/// `None` when there is nothing to draw.
+///
+/// Split out from the painting so the decision — and the clamping — can be
+/// tested without a `Ui`.
+fn ghost_span(
+    base: f32,
+    live: f32,
+    min: f32,
+    max: f32,
+    range: egui::Rangef,
+) -> Option<(f32, f32)> {
+    let span = max - min;
+    if span <= 0.0 || !live.is_finite() || !base.is_finite() {
+        return None;
+    }
+    // Nothing to say when the parameter is not being modulated.
+    if (live - base).abs() <= span * 0.001 {
+        return None;
+    }
+    let at = |v: f32| egui::lerp(range, ((v - min) / span).clamp(0.0, 1.0));
+    Some((at(base), at(live)))
+}
+
+/// Paint a parameter's live, post-modulation value as a ghost on a slider.
+///
+/// The slider handle shows the value you set. When an LFO or an audio band is
+/// driving the parameter the value actually in use is somewhere else, and
+/// nothing on screen says so — the handle just sits still while the output
+/// moves. This draws the swing from the set value to the live one, with a
+/// brighter mark where the live value currently is.
+///
+/// `slider_rect` is the response rect of an `egui::Slider`; its rail occupies
+/// `spacing().slider_width` from the left, whatever label follows.
+pub fn modulation_ghost(ui: &Ui, slider_rect: Rect, base: f32, live: f32, min: f32, max: f32) {
+    let rail_w = ui.spacing().slider_width.min(slider_rect.width());
+    let rail = Rect::from_min_size(slider_rect.min, Vec2::new(rail_w, slider_rect.height()));
+    // Matches `Slider`'s own geometry, so the mark lands under the handle.
+    let range = rail.x_range().shrink(rail.height() / 2.5);
+    let Some((x_base, x_live)) = ghost_span(base, live, min, max, range) else {
+        return;
+    };
+    let band = Rect::from_x_y_ranges(
+        egui::Rangef::new(x_base.min(x_live), x_base.max(x_live)),
+        egui::Rangef::new(rail.center().y - 3.0, rail.center().y + 3.0),
+    );
+    ui.painter()
+        .rect_filled(band, 1.0, amber().gamma_multiply(0.22));
+    ui.painter().line_segment(
+        [
+            egui::pos2(x_live, rail.center().y - 6.0),
+            egui::pos2(x_live, rail.center().y + 6.0),
+        ],
+        Stroke::new(1.5, amber().gamma_multiply(0.8)),
+    );
+}
+
+/// Ceiling for a widget that fills its row.
+///
+/// `available_width` is unbounded inside an auto-sizing `egui::Window`: it
+/// reports the widest egui would allow, not the window's width. A widget that
+/// allocates it outright therefore asks for the whole screen, and any window
+/// hosting one opens at full width. These widgets were written for the host's
+/// fixed-width sidebar, where the ceiling never bites.
+const MAX_ROW_WIDTH: f32 = 560.0;
+
+/// Width for a widget that fills its row. See [`MAX_ROW_WIDTH`].
+fn row_width(ui: &Ui) -> f32 {
+    ui.available_width().min(MAX_ROW_WIDTH)
+}
+
 /// HUD section header: amber tick glyph, uppercase title, dashed rule, optional counter.
 /// Use instead of `ui.heading(...)` / `ui.separator()`.
 pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
     ui.add_space(8.0);
     let row_height = 18.0;
     let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::hover());
+        ui.allocate_exact_size(Vec2::new(row_width(ui), row_height), Sense::hover());
     let painter = ui.painter();
 
     // Amber tick glyph ▌
@@ -83,26 +154,26 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
             Vec2::new(3.0, row_height - 4.0),
         ),
         0.0,
-        AMBER,
+        amber(),
     );
 
     // Title (uppercase, letterspaced visually via tracking)
     let title_pos = rect.left_top() + Vec2::new(10.0, row_height / 2.0);
-    let title_galley = painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
+    let title_galley = painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), ink_2());
     painter.galley(
         Pos2::new(title_pos.x, title_pos.y - title_galley.size().y / 2.0),
         title_galley.clone(),
-        INK_2,
+        ink_2(),
     );
 
     // Counter on the right (e.g. "03 CH · 01/04")
     let counter_w = if let Some(c) = counter {
-        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), INK_4);
+        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), ink_4());
         let w = g.size().x;
         painter.galley(
             Pos2::new(rect.right() - w, rect.center().y - g.size().y / 2.0),
             g,
-            INK_4,
+            ink_4(),
         );
         w + 12.0
     } else {
@@ -121,7 +192,7 @@ pub fn hud_section_header(ui: &mut Ui, title: &str, counter: Option<&str>) {
             let end = (x + dash).min(rule_right);
             painter.line_segment(
                 [Pos2::new(x, y), Pos2::new(end, y)],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
             x = end + gap;
         }
@@ -141,7 +212,7 @@ pub fn hud_collapsible_section_header(
     ui.add_space(8.0);
     let row_height = 18.0;
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+        ui.allocate_exact_size(Vec2::new(row_width(ui), row_height), Sense::click());
     let painter = ui.painter();
 
     // Subtle hover feedback
@@ -152,12 +223,12 @@ pub fn hud_collapsible_section_header(
     // Chevron (▶ collapsed / ▼ expanded)
     let chevron_text = if collapsed { "▶" } else { "▼" };
     let chevron_galley =
-        painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), INK_3);
+        painter.layout_no_wrap(chevron_text.to_string(), FontId::monospace(9.0), ink_3());
     let chevron_w = chevron_galley.size().x;
     painter.galley(
         Pos2::new(rect.left(), rect.center().y - chevron_galley.size().y / 2.0),
         chevron_galley,
-        INK_3,
+        ink_3(),
     );
 
     // Amber tick glyph ▌
@@ -168,27 +239,27 @@ pub fn hud_collapsible_section_header(
             Vec2::new(3.0, row_height - 4.0),
         ),
         0.0,
-        AMBER,
+        amber(),
     );
 
     // Title (uppercase, letterspaced visually via tracking)
     let title_x = tick_x + 10.0;
     let title_galley =
-        painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), INK_2);
+        painter.layout_no_wrap(title.to_uppercase(), FontId::monospace(11.0), ink_2());
     painter.galley(
         Pos2::new(title_x, rect.center().y - title_galley.size().y / 2.0),
         title_galley.clone(),
-        INK_2,
+        ink_2(),
     );
 
     // Counter on the right (e.g. "03 CH · 01/04")
     let counter_w = if let Some(c) = counter {
-        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), INK_4);
+        let g = painter.layout_no_wrap(c.to_string(), FontId::monospace(10.0), ink_4());
         let w = g.size().x;
         painter.galley(
             Pos2::new(rect.right() - w, rect.center().y - g.size().y / 2.0),
             g,
-            INK_4,
+            ink_4(),
         );
         w + 12.0
     } else {
@@ -207,7 +278,7 @@ pub fn hud_collapsible_section_header(
             let end = (x + dash).min(rule_right);
             painter.line_segment(
                 [Pos2::new(x, y), Pos2::new(end, y)],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
             x = end + gap;
         }
@@ -250,7 +321,7 @@ pub fn segmented_select(
         return None;
     }
     let height = 28.0;
-    let total_w = ui.available_width();
+    let total_w = row_width(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total_w, height), Sense::hover());
     let seg_w = total_w / options.len() as f32;
     let painter = ui.painter();
@@ -259,7 +330,7 @@ pub fn segmented_select(
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, HAIR_2),
+        Stroke::new(1.0_f32, hair_2()),
         egui::StrokeKind::Inside,
     );
     painter.rect_filled(rect, 0.0, Color32::from_rgba_premultiplied(2, 3, 4, 8));
@@ -277,7 +348,7 @@ pub fn segmented_select(
         let hovered = resp.hovered();
 
         if active {
-            painter.rect_filled(seg_rect, 0.0, AMBER);
+            painter.rect_filled(seg_rect, 0.0, amber());
         } else if hovered {
             painter.rect_filled(
                 seg_rect,
@@ -288,14 +359,14 @@ pub fn segmented_select(
         if i > 0 {
             painter.line_segment(
                 [seg_rect.left_top(), seg_rect.left_bottom()],
-                Stroke::new(1.0_f32, HAIR_2),
+                Stroke::new(1.0_f32, hair_2()),
             );
         }
 
         let color = if active {
             Color32::from_rgb(0x0a, 0x0a, 0x0a)
         } else {
-            INK_3
+            ink_3()
         };
         let galley = painter.layout_no_wrap(label.to_uppercase(), FontId::monospace(12.0), color);
         let pos = seg_rect.center() - galley.size() / 2.0;
@@ -332,10 +403,10 @@ pub enum PillState {
 /// A status pill: filled dot + uppercase label. Online dot pulses subtly.
 pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     let (fg, dot) = match state {
-        PillState::Online => (SIGNAL, SIGNAL),
-        PillState::Offline => (ALERT, ALERT),
-        PillState::Warn => (AMBER, AMBER),
-        PillState::Neutral => (INK_3, INK_4),
+        PillState::Online => (signal(), signal()),
+        PillState::Offline => (alert(), alert()),
+        PillState::Warn => (amber(), amber()),
+        PillState::Neutral => (ink_3(), ink_4()),
     };
 
     let text = label.to_uppercase();
@@ -353,7 +424,7 @@ pub fn status_pill(ui: &mut Ui, label: &str, state: PillState) -> Response {
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0_f32, HAIR_2),
+        Stroke::new(1.0_f32, hair_2()),
         egui::StrokeKind::Inside,
     );
 
@@ -415,13 +486,19 @@ pub fn parameter_card_f32(
     let mut changed = false;
 
     let frame = egui::Frame::NONE
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0_f32, HAIR))
+        .fill(surface())
+        .stroke(Stroke::new(1.0_f32, hair()))
         .inner_margin(egui::Margin::symmetric(12, 10));
 
     let frame_resp = frame.show(ui, |ui| {
+        // The right-to-left layouts below claim the whole available width in
+        // order to pin the value to the right edge. Inside an auto-sizing
+        // window that width is the screen, so the card — and the window
+        // holding it — opens as wide as egui allows.
+        ui.set_max_width(row_width(ui));
+
         // Left accent bar — amber when "active" (value != min)
-        let accent_color = if *value != min { AMBER } else { INK_4 };
+        let accent_color = if *value != min { amber() } else { ink_4() };
         let panel_rect = ui.max_rect();
         ui.painter().rect_filled(
             Rect::from_min_size(
@@ -434,10 +511,10 @@ pub fn parameter_card_f32(
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(name).color(INK).size(13.0));
+                ui.label(egui::RichText::new(name).color(ink()).size(13.0));
                 ui.label(
                     egui::RichText::new(id_tag.to_uppercase())
-                        .color(INK_4)
+                        .color(ink_4())
                         .size(10.0)
                         .monospace(),
                 );
@@ -447,7 +524,7 @@ pub fn parameter_card_f32(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         ui.label(
                             egui::RichText::new(format!("{}{}", format_value(*value), unit))
-                                .color(AMBER)
+                                .color(amber())
                                 .size(20.0)
                                 .strong()
                                 .monospace(),
@@ -460,7 +537,7 @@ pub fn parameter_card_f32(
                                 format_bound(min),
                                 format_bound(max)
                             ))
-                            .color(INK_4)
+                            .color(ink_4())
                             .size(10.0)
                             .monospace(),
                         );
@@ -484,7 +561,7 @@ pub fn parameter_card_f32(
 
         // Tick row under the slider
         let tick_rect = ui
-            .allocate_exact_size(Vec2::new(ui.available_width(), 4.0), Sense::hover())
+            .allocate_exact_size(Vec2::new(row_width(ui), 4.0), Sense::hover())
             .0;
         let painter = ui.painter();
         let tick_count = 20;
@@ -497,7 +574,7 @@ pub fn parameter_card_f32(
                     Pos2::new(x, tick_rect.top()),
                     Pos2::new(x, tick_rect.top() + h),
                 ],
-                Stroke::new(1.0_f32, if major { HAIR_3 } else { HAIR_2 }),
+                Stroke::new(1.0_f32, if major { hair_3() } else { hair_2() }),
             );
         }
 
@@ -505,7 +582,7 @@ pub fn parameter_card_f32(
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(format_bound(min))
-                    .color(INK_4)
+                    .color(ink_4())
                     .size(10.0)
                     .monospace(),
             );
@@ -514,7 +591,7 @@ pub fn parameter_card_f32(
                 |ui| {
                     ui.label(
                         egui::RichText::new(format_bound((min + max) / 2.0))
-                            .color(INK_4)
+                            .color(ink_4())
                             .size(10.0)
                             .monospace(),
                     );
@@ -523,7 +600,7 @@ pub fn parameter_card_f32(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 ui.label(
                     egui::RichText::new(format_bound(max))
-                        .color(INK_4)
+                        .color(ink_4())
                         .size(10.0)
                         .monospace(),
                 );
@@ -606,5 +683,51 @@ pub fn format_bound(v: f32) -> String {
         format!("{:.1}", v)
     } else {
         format!("{:.2}", v)
+    }
+}
+
+#[cfg(test)]
+mod ghost_tests {
+    use super::ghost_span;
+    use egui::Rangef;
+
+    const RAIL: Rangef = Rangef { min: 0.0, max: 100.0 };
+
+    #[test]
+    fn an_unmodulated_param_draws_nothing() {
+        assert!(ghost_span(0.5, 0.5, 0.0, 1.0, RAIL).is_none());
+        // Floating-point noise is not modulation either.
+        assert!(ghost_span(0.5, 0.5000001, 0.0, 1.0, RAIL).is_none());
+    }
+
+    #[test]
+    fn the_band_runs_from_the_set_value_to_the_live_one() {
+        let (base, live) = ghost_span(0.25, 0.75, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(base, 25.0);
+        assert_eq!(live, 75.0);
+    }
+
+    /// Modulation can pull a value below where it was set, and the band has to
+    /// be drawn in that direction too.
+    #[test]
+    fn it_handles_a_live_value_below_the_set_one() {
+        let (base, live) = ghost_span(0.75, 0.25, 0.0, 1.0, RAIL).expect("modulated");
+        assert!(live < base);
+    }
+
+    /// A source can drive a value past the parameter's range; the mark stays on
+    /// the rail rather than painting off the end of it.
+    #[test]
+    fn an_out_of_range_live_value_is_clamped_to_the_rail() {
+        let (_, live) = ghost_span(0.5, 9.0, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(live, 100.0);
+        let (_, live) = ghost_span(0.5, -9.0, 0.0, 1.0, RAIL).expect("modulated");
+        assert_eq!(live, 0.0);
+    }
+
+    #[test]
+    fn a_degenerate_range_draws_nothing() {
+        assert!(ghost_span(1.0, 2.0, 5.0, 5.0, RAIL).is_none());
+        assert!(ghost_span(0.5, f32::NAN, 0.0, 1.0, RAIL).is_none());
     }
 }
