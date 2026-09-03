@@ -1428,6 +1428,14 @@ impl EguiControlGui {
                                     }
                                 }
 
+                                // These were route time constants; they are
+                                // smoothing factors now, and the labels alone
+                                // would still read as seconds.
+                                ui.label(
+                                    egui::RichText::new("smoothing — 0 instant, 0.99 very slow")
+                                        .small()
+                                        .weak(),
+                                );
                                 ui.columns(2, |cols| {
                                     let mut atk = row.attack;
                                     if cols[0]
