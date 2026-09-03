@@ -243,6 +243,13 @@ pub enum ModulationSource {
         /// How long the gate stays open. An onset has no note-off, so without
         /// this an ADSR could never reach its sustain stage.
         hold: f32,
+        /// Absolute energy a hit must reach, whatever the average says.
+        ///
+        /// `threshold` is a ratio, so in a quiet band a small noise can clear it
+        /// — the average is small too. This is the same idea as `AudioBand`'s
+        /// noise gate: below it, nothing is a hit.
+        #[serde(default)]
+        floor: f32,
         /// Ready to fire (runtime).
         #[serde(skip, default = "default_true")]
         armed: bool,
@@ -325,6 +332,22 @@ pub enum ModulationSource {
 }
 
 impl ModulationSource {
+    /// The band energy this trigger last saw, and the level it must beat.
+    ///
+    /// `threshold` is a ratio of a rolling average, which is impossible to tune
+    /// blind — this lets the editor show the two numbers side by side.
+    pub fn trigger_levels(&self) -> Option<(f32, f32)> {
+        match self {
+            ModulationSource::AudioTrigger {
+                average,
+                threshold,
+                floor,
+                ..
+            } => Some((*average, (*average * *threshold).max(*floor))),
+            _ => None,
+        }
+    }
+
     /// Compare two sources by configuration fields only.
     ///
     /// Ignores ADSR runtime state (`stage`, `stage_time`, `gate`, `current_level`).
@@ -528,6 +551,7 @@ impl ModulationSource {
                 hysteresis,
                 min_interval,
                 hold,
+                floor,
                 armed,
                 since_fire,
                 hold_left,
@@ -550,7 +574,7 @@ impl ModulationSource {
                 *since_fire += dt;
                 *hold_left = (*hold_left - dt).max(0.0);
 
-                let fire_at = *average * *threshold;
+                let fire_at = (*average * *threshold).max(*floor);
                 if *armed && energy > fire_at && *since_fire >= *min_interval {
                     *armed = false;
                     *since_fire = 0.0;
@@ -2874,6 +2898,7 @@ mod trigger_tests {
             hysteresis: 0.3,
             min_interval: 0.05,
             hold,
+            floor: 0.0,
             armed: true,
             since_fire: 10.0,
             hold_left: 0.0,
@@ -3008,6 +3033,7 @@ mod trigger_serde_tests {
             hysteresis: 0.25,
             min_interval: 0.06,
             hold: 0.15,
+            floor: 0.02,
             armed: true,
             since_fire: 0.0,
             hold_left: 0.0,
@@ -3051,5 +3077,75 @@ mod trigger_serde_tests {
             _ => None,
         });
         assert_eq!(held, Some((0.15, FftBand::Bass)));
+    }
+}
+
+#[cfg(test)]
+mod trigger_floor_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    fn tick(src: &mut ModulationSource, level: f32, dt: f32) -> f32 {
+        let spectrum = vec![level; 64];
+        let vals = AudioSourceValues {
+            fft: &spectrum,
+            level,
+            sample_rate: 44100.0,
+        };
+        let mut sources = HashMap::new();
+        sources.insert(0u32, vals);
+        src.calculate(0.0, dt, 120.0, 0.0, &AudioValues { sources }, 0.0)
+    }
+
+    fn trigger(floor: f32) -> ModulationSource {
+        ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.3,
+            hysteresis: 0.3,
+            min_interval: 0.0,
+            hold: 0.05,
+            floor,
+            armed: true,
+            since_fire: 10.0,
+            hold_left: 0.0,
+            average: 0.0,
+        }
+    }
+
+    /// `threshold` is a ratio of a rolling average, so in a quiet band it scales
+    /// down with the material and a modest rise clears it. The floor is the
+    /// absolute level that says "that was not a hit".
+    ///
+    /// Levels here are what `energy_in_range` reports — dB-normalised into
+    /// 0..1, the same scale the frequency monitor draws — so an amplitude of
+    /// 0.05 reads as roughly 0.57, not 0.05.
+    #[test]
+    fn the_floor_holds_back_a_quiet_band() {
+        let mut with_floor = trigger(0.7);
+        let mut without = trigger(0.0);
+        for _ in 0..120 {
+            tick(&mut with_floor, 0.01, 0.016);
+            tick(&mut without, 0.01, 0.016);
+        }
+        // Beats the rolling average several times over, but is not loud.
+        assert_eq!(
+            tick(&mut without, 0.05, 0.016),
+            1.0,
+            "without a floor, a quiet rise fires"
+        );
+        assert_eq!(
+            tick(&mut with_floor, 0.05, 0.016),
+            0.0,
+            "with a floor, the same rise does not"
+        );
+    }
+
+    #[test]
+    fn a_loud_hit_still_clears_the_floor() {
+        let mut t = trigger(0.7);
+        for _ in 0..120 {
+            tick(&mut t, 0.01, 0.016);
+        }
+        assert_eq!(tick(&mut t, 0.9, 0.016), 1.0, "a real hit fires");
     }
 }

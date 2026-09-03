@@ -175,6 +175,7 @@ impl EguiControlGui {
                     hysteresis: 0.3,
                     min_interval: 0.05,
                     hold: 0.1,
+                    floor: 0.02,
                     armed: true,
                     since_fire: 0.0,
                     hold_left: 0.0,
@@ -460,12 +461,17 @@ impl EguiControlGui {
         }
 
         // ── Audio Trigger ────────────────────────────────────────────────────
+        // Read before the mutable borrow below.
+        let levels = mod_eng
+            .find_source_by_uuid(uuid)
+            .and_then(|e| e.source.trigger_levels());
         if let Some(ModulationSource::AudioTrigger {
             band,
             threshold,
             hysteresis,
             min_interval,
             hold,
+            floor,
             ..
         }) = mod_eng.source_mut(uuid)
         {
@@ -481,13 +487,32 @@ impl EguiControlGui {
                         }
                     });
             });
-            ui.add(egui::Slider::new(threshold, 1.0..=4.0).text("Threshold"))
-                .on_hover_text("How far above the running average a hit must be");
+            ui.add(egui::Slider::new(threshold, 1.0..=4.0).text("Threshold ×"))
+                .on_hover_text(
+                    "A multiple of the band's rolling average, not the level on \
+                     the frequency monitor. 1.0 fires on anything above average.",
+                );
+            ui.add(egui::Slider::new(floor, 0.0..=1.0).text("Floor"))
+                .on_hover_text(
+                    "Absolute energy a hit must also reach, so a quiet band \
+                     cannot fire on nothing.",
+                );
             ui.add(egui::Slider::new(hysteresis, 0.0..=0.9).text("Hysteresis"))
                 .on_hover_text("How far it must fall back before firing again");
             ui.add(egui::Slider::new(min_interval, 0.0..=1.0).text("Min gap (s)"));
             ui.add(egui::Slider::new(hold, 0.0..=2.0).text("Hold (s)"))
                 .on_hover_text("How long the gate stays open — an envelope's sustain needs this");
+            if let Some((average, fires_at)) = levels {
+                // The whole point: the threshold is relative, so show what it is
+                // relative to and where the bar currently sits.
+                ui.label(
+                    egui::RichText::new(format!(
+                        "average {average:.3}  ·  fires above {fires_at:.3}"
+                    ))
+                    .small()
+                    .weak(),
+                );
+            }
         }
     }
 
