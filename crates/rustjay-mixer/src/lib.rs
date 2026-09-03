@@ -445,16 +445,31 @@ impl Mixer {
         scaled
     }
 
+    /// Whether anything is soloed, which changes what every other channel does.
+    pub fn any_solo(&self) -> bool {
+        self.channels.iter().any(|c| c.solo)
+    }
+
+    /// Whether a channel contributes to the mix at all.
+    ///
+    /// Mute always silences a channel; solo silences everything that is not
+    /// itself soloed. A channel that is both stays muted — the explicit switch
+    /// wins over the implicit one.
+    pub fn audible(ch: &Channel, any_solo: bool) -> bool {
+        ch.active && !ch.mute && (!any_solo || ch.solo)
+    }
+
     /// Per-channel opacity before the master dimmer.
     fn raw_effective_opacities(&self) -> Vec<f32> {
+        let any_solo = self.any_solo();
         if self.use_crossfader && self.channels.len() == 2 {
             vec![
-                if self.channels[0].active {
+                if Self::audible(&self.channels[0], any_solo) {
                     (1.0 - self.crossfader) * self.channels[0].opacity
                 } else {
                     0.0
                 },
-                if self.channels[1].active {
+                if Self::audible(&self.channels[1], any_solo) {
                     self.crossfader * self.channels[1].opacity
                 } else {
                     0.0
@@ -463,7 +478,13 @@ impl Mixer {
         } else {
             self.channels
                 .iter()
-                .map(|c| if c.active { c.opacity } else { 0.0 })
+                .map(|c| {
+                    if Self::audible(c, any_solo) {
+                        c.opacity
+                    } else {
+                        0.0
+                    }
+                })
                 .collect()
         }
     }
@@ -719,15 +740,16 @@ impl EffectInstance for Mixer {
         // Modulation offsets are already applied by EngineState::get_param().
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
 
+        let any_solo = self.any_solo();
         let eff: Vec<f32> = if self.channels.len() == 2 {
-            let ch0_opacity = if self.channels[0].active {
+            let ch0_opacity = if Self::audible(&self.channels[0], any_solo) {
                 engine
                     .get_param(&self.channels[0].opacity_key)
                     .unwrap_or(self.channels[0].opacity)
             } else {
                 0.0
             };
-            let ch1_opacity = if self.channels[1].active {
+            let ch1_opacity = if Self::audible(&self.channels[1], any_solo) {
                 engine
                     .get_param(&self.channels[1].opacity_key)
                     .unwrap_or(self.channels[1].opacity)
@@ -740,7 +762,7 @@ impl EffectInstance for Mixer {
             self.channels
                 .iter()
                 .map(|ch| {
-                    if ch.active {
+                    if Self::audible(ch, any_solo) {
                         engine
                             .get_param(&ch.opacity_key)
                             .unwrap_or(ch.opacity)
@@ -948,7 +970,7 @@ mod tests {
     use super::*;
 
     /// A headless `EffectInstance` stub — records nothing, only has to compile.
-    struct Stub;
+    pub(super) struct Stub;
 
     impl EffectInstance for Stub {
         fn render_to(
@@ -1061,5 +1083,81 @@ mod tests {
         // Clamped rather than panicking.
         mixer.reorder_channel(0, 99);
         assert_eq!(ids(&mixer), ["b", "c", "a"]);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    fn stack(ids: &[&str]) -> Mixer {
+        let mut mixer = Mixer::new();
+        mixer.use_crossfader = false;
+        for id in ids {
+            mixer
+                .add_channel(Channel::new(*id, *id, Box::new(tests::Stub)))
+                .unwrap();
+        }
+        mixer
+    }
+
+    #[test]
+    fn mute_silences_only_that_layer() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        mixer.channels[1].mute = true;
+        assert_eq!(mixer.effective_opacities(), vec![1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn solo_silences_everything_else() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        mixer.channels[2].solo = true;
+        assert_eq!(mixer.effective_opacities(), vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn several_solos_all_play() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        mixer.channels[0].solo = true;
+        mixer.channels[2].solo = true;
+        assert_eq!(mixer.effective_opacities(), vec![1.0, 0.0, 1.0]);
+    }
+
+    /// The explicit switch wins over the implicit one, so a soloed layer that
+    /// is also muted stays silent rather than coming back.
+    #[test]
+    fn mute_wins_over_solo_on_the_same_layer() {
+        let mut mixer = stack(&["a", "b"]);
+        mixer.channels[0].solo = true;
+        mixer.channels[0].mute = true;
+        assert_eq!(mixer.effective_opacities(), vec![0.0, 0.0]);
+    }
+
+    /// The flags belong to the layer, not to its position in the stack.
+    #[test]
+    fn mute_follows_a_layer_through_a_restack() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        mixer.channels[0].mute = true; // "a"
+        mixer.reorder_channel(0, 2); // a moves to the top
+        assert_eq!(
+            mixer.channels.iter().map(|c| c.uuid.clone()).collect::<Vec<_>>(),
+            ["b", "c", "a"]
+        );
+        assert_eq!(mixer.effective_opacities(), vec![1.0, 1.0, 0.0]);
+    }
+
+    /// Opacity is read from the engine under a per-layer key, so a restack must
+    /// not hand one layer's value to another.
+    #[test]
+    fn opacity_keys_travel_with_their_layer() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        let keys = |m: &Mixer| {
+            m.channels
+                .iter()
+                .map(|c| c.opacity_key.clone())
+                .collect::<Vec<_>>()
+        };
+        mixer.reorder_channel(0, 2);
+        assert_eq!(keys(&mixer), ["ch_b_opacity", "ch_c_opacity", "ch_a_opacity"]);
     }
 }
