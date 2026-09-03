@@ -1,6 +1,7 @@
 # Modulation Unification — one engine, one grid, one envelope story
 
-Status: **plan**, not implemented. Decisions taken 2026-09-03.
+Status: **U1–U4 implemented** on 2026-09-03 (branch `modulation-unify`, merged).
+U5 and U6 remain. Decisions taken 2026-09-03.
 
 ## 1. Why
 
@@ -98,10 +99,10 @@ This also gives the MOD popup a coherent vocabulary: **Follow** a band,
 
 | Phase | Work | Gate |
 |---|---|---|
-| **U1** | Add `attack` to `AudioBand` beside `smoothing` (rename to `release`), so a route migrates without losing feel. Serde defaults keep old data loading. | Existing audio mods behave as before; a migrated route matches its old attack/release. |
-| **U2** | Migrate `AudioRoutingState` on load through `to_modulation_engine()`, as `LfoBank` already does. Keep deserialising the field; do not delete it. | An old scene's routes come back as sources + assignments, and are saved in the new shape. |
-| **U3** | Delete the `apply_to_params` per-frame path and the `routed +` term in `get_param`. | No parameter can receive a contribution twice; `get_param` is `base + offsets`. |
-| **U4** | Rebuild the routing-matrix window as a grid view over `AudioBand` sources and their assignments. Rows edit sources; the grid gains nothing of its own. | Editing in the grid and in the MOD popup show the same state. |
+| **U1** ✅ | Add `attack` to `AudioBand` beside `smoothing` (rename to `release`), so a route migrates without losing feel. Serde defaults keep old data loading. | Existing audio mods behave as before; a migrated route matches its old attack/release. |
+| **U2** ✅ | Migrate `AudioRoutingState` on load through `to_modulation_engine()`, as `LfoBank` already does. Keep deserialising the field; do not delete it. | An old scene's routes come back as sources + assignments, and are saved in the new shape. |
+| **U3** ✅ | Delete the `apply_to_params` per-frame path and the `routed +` term in `get_param`. | No parameter can receive a contribution twice; `get_param` is `base + offsets`. |
+| **U4** ✅ | Rebuild the routing-matrix window as a grid view over `AudioBand` sources and their assignments. Rows edit sources; the grid gains nothing of its own. | Editing in the grid and in the MOD popup show the same state. |
 | **U5** | Fold `Increase`/`Decrease` to `Direct` on load; drop the variants from the live enum. | Old presets load; nothing references the removed variants. |
 | **U6** | `ModulationSource::AudioTrigger`, and the ADSR gate as a mod-on-mod target. | A drum hit fires an ADSR bound to a parameter. |
 
