@@ -1400,10 +1400,10 @@ impl EngineState {
             .unwrap_or(0.0)
     }
 
-    /// For custom params: if a modulation assignment exists in
-    /// [`modulation_offsets`](Self::modulation_offsets), returns `base + offset * range`.
-    /// Otherwise falls back to `custom_params[i]` so audio-routing values (which are
-    /// still pre-computed in `update_audio()`) remain visible during the transition.
+    /// For custom params: `base + offset * range`, where `offset` is the sum of
+    /// this parameter's modulation assignments (pre-computed per frame in
+    /// [`modulation_offsets`](Self::modulation_offsets)). With no assignments the
+    /// base value is returned unchanged.
     ///
     /// If [`param_lookup_prefix`](Self::param_lookup_prefix) is set, the prefix
     /// is prepended to `id` first. This lets nested effects (e.g. a channel's
@@ -1441,20 +1441,18 @@ impl EngineState {
             _ => {}
         }
 
-        // Custom effect params
+        // Custom effect params. `custom_params[i]` is the base value: the
+        // routing matrix no longer bakes its contribution in here (U3), so a
+        // param is base + modulation offsets and nothing else.
         let i = self.param_index(&resolved)?;
         let desc = self.param_descriptors.get(i)?;
-        let routed = self.custom_params.get(i).copied()?;
+        let base = self.custom_params.get(i).copied()?;
         let range = desc.max - desc.min;
         let offset = self.modulation_offset(&resolved);
         if offset != 0.0 {
-            // Sum audio-routing value (in `custom_params`) + modulation offset.
-            // When audio routing is inactive, `routed == base`, so this reduces
-            // to the base + modulation path.
-            Some((routed + offset * range).clamp(desc.min, desc.max))
+            Some((base + offset * range).clamp(desc.min, desc.max))
         } else {
-            // No modulation — return the audio-routed (or plain base) value.
-            Some(routed)
+            Some(base)
         }
     }
 
@@ -1567,27 +1565,62 @@ mod tests {
         assert_eq!(state.get_param("spin"), Some(0.6));
     }
 
+    /// U3: a param with a migrated route and an LFO assignment receives each
+    /// contribution exactly once — `base + modulation offsets`, with no
+    /// routed value baked into `custom_params` on top.
     #[test]
-    fn get_param_composes_audio_routing_and_modulation() {
+    fn get_param_counts_route_and_lfo_exactly_once() {
+        use crate::modulation::{AudioSourceValues, AudioValues, ModulationSource};
+        use crate::routing::{FftBand, ModulationTarget, RoutingMatrix};
+
         let mut state = EngineState::new();
         state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
         state.custom_param_bases = vec![0.5];
-        // Audio routing pushed the value to 0.8
-        state.custom_params = vec![0.8];
-        state.modulation_offsets.push(("spin".to_string(), 0.1));
+        state.custom_params = vec![0.5];
 
-        // 0.8 (routed) + 0.1 * 1.0 (range) = 0.9
-        assert!((state.get_param("spin").unwrap() - 0.9).abs() < 1e-5);
-    }
+        // A routing-matrix route, migrated the way a scene load does (U2).
+        let mut matrix = RoutingMatrix::new();
+        let id = matrix
+            .add_route(FftBand::Bass, ModulationTarget::Custom("spin".to_string()))
+            .unwrap();
+        matrix.get_route_mut(id).unwrap().amount = 0.2;
 
-    #[test]
-    fn get_param_returns_routed_value_when_no_modulation() {
-        let mut state = EngineState::new();
-        state.param_descriptors = Arc::new(vec![dummy_descriptor("spin")]);
-        state.custom_param_bases = vec![0.5];
-        state.custom_params = vec![0.8];
+        // Loud audio, so the migrated AudioBand source reads full energy.
+        let mut audio = AudioValues::default();
+        audio.sources.insert(
+            0,
+            AudioSourceValues {
+                fft: &[1.0; 256],
+                level: 1.0,
+                sample_rate: 48000.0,
+            },
+        );
 
-        assert_eq!(state.get_param("spin"), Some(0.8));
+        let (route_contrib, lfo_contrib, total_offset) = {
+            let mut m = state.modulation.lock().unwrap();
+            m.merge(matrix.to_modulation_engine());
+            let lfo = m.add_source(ModulationSource::sine_lfo(1.0));
+            m.assign("spin", &lfo, 0.2, None);
+            m.update(0.0, 120.0, 0.0, &audio);
+            (
+                m.current_value_for("route_0") * 0.2,
+                m.current_value_for(&lfo) * 0.2,
+                m.get_modulation("spin"),
+            )
+        };
+        assert!(route_contrib > 0.0 && lfo_contrib > 0.0, "both sources are live");
+        assert!((total_offset - (route_contrib + lfo_contrib)).abs() < 1e-6);
+
+        // Mimic update_lfo: publish the offsets the engine computed.
+        state.modulation_offsets = vec![("spin".to_string(), total_offset)];
+
+        let expected = 0.5 + route_contrib + lfo_contrib; // range = 1.0
+        let got = state.get_param("spin").unwrap();
+        assert!((got - expected).abs() < 1e-5, "got {got}, expected {expected}");
+        assert!(
+            (got - (expected + route_contrib)).abs() > 1e-3,
+            "the route's contribution must not be applied twice"
+        );
     }
 
     #[test]

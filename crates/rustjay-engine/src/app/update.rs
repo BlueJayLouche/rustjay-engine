@@ -229,18 +229,11 @@ impl<P: EffectPlugin> App<P> {
 
                 if state.audio_routing.enabled {
                     let delta_time = self.frame_delta_time;
-                    let descriptors = Arc::clone(&state.param_descriptors);
+                    // Routes are migrated into the modulation engine on load
+                    // (U2) and applied through `modulation_offsets` like any
+                    // other source; the matrix is only ticked so the routing
+                    // window can display live values.
                     state.audio_routing.matrix.process(&fft, delta_time);
-                    // Temporarily take slices to avoid split-borrow on `state`.
-                    let mut custom_params = std::mem::take(&mut state.custom_params);
-                    let custom_param_bases = std::mem::take(&mut state.custom_param_bases);
-                    state.audio_routing.matrix.apply_to_params(
-                        &mut custom_params,
-                        &custom_param_bases,
-                        &descriptors,
-                    );
-                    state.custom_params = custom_params;
-                    state.custom_param_bases = custom_param_bases;
                 }
             }
             // Refresh cache from state so next frame's push uses current values.

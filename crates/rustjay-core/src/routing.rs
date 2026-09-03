@@ -423,7 +423,7 @@ impl RoutingMatrix {
     }
 
     /// Apply modulations to HSB parameters.
-    #[deprecated(note = "Use `apply_to_params` for generic parameter support.")]
+    #[deprecated(note = "Routes migrate into the modulation engine on load; use ModulationEngine.")]
     pub fn apply_to_hsb(&self, base_hue: f32, base_sat: f32, base_bright: f32) -> (f32, f32, f32) {
         let hue_mod = self.get_modulation(ModulationTarget::HueShift);
         let sat_mod = self.get_modulation(ModulationTarget::Saturation);
@@ -435,30 +435,6 @@ impl RoutingMatrix {
         let new_bright = (base_bright + bright_mod * 2.0).clamp(0.0, 2.0);
 
         (new_hue, new_sat, new_bright)
-    }
-
-    /// Apply modulations to a parameter slice.
-    /// Reads base values from `bases`, applies audio routing modulations,
-    /// and writes modulated values into `params`.
-    pub fn apply_to_params(
-        &self,
-        params: &mut [f32],
-        bases: &[f32],
-        descriptors: &[ParameterDescriptor],
-    ) {
-        for (i, desc) in descriptors.iter().enumerate() {
-            if !desc.is_modulatable() {
-                continue;
-            }
-            let mod_value = self.get_modulation_for_str(&desc.id);
-            let base = bases[i];
-            let range = desc.max - desc.min;
-            params[i] = if range > 0.0 {
-                (base + mod_value * range).clamp(desc.min, desc.max)
-            } else {
-                base
-            };
-        }
     }
 
     /// Clear all routes
