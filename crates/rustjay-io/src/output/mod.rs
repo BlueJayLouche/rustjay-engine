@@ -502,7 +502,11 @@ impl OutputManager {
             return true;
         }
         #[cfg(feature = "ndi")]
-        if self.ndi_output.is_some() {
+        if self
+            .ndi_output
+            .as_ref()
+            .is_some_and(|ndi| ndi.has_connections())
+        {
             return true;
         }
         #[cfg(target_os = "windows")]
