@@ -209,7 +209,11 @@ pub enum ModulationSource {
         phase: f32,
         /// Amplitude multiplier.
         amplitude: f32,
-        /// Whether output is bipolar (-1..1) or unipolar (0..1).
+        /// Whether the output swings either side of zero.
+        ///
+        /// Bipolar spans `-amplitude..amplitude`; unipolar spans
+        /// `0..amplitude`, so a modulated parameter still reaches the value it
+        /// was set to at the trough.
         bipolar: bool,
         /// Whether tempo sync is enabled.
         tempo_sync: bool,
@@ -662,11 +666,18 @@ impl ModulationSource {
                         (hash as f32 / u32::MAX as f32) * 2.0 - 1.0
                     }
                 };
-                let scaled = raw * *amplitude;
                 if *bipolar {
-                    scaled
+                    raw * *amplitude
                 } else {
-                    scaled * 0.5 + 0.5
+                    // Offset first, then scale: `0 .. amplitude`, so the trough
+                    // is always zero and amplitude sets the peak.
+                    //
+                    // Scaling first (`raw * amplitude * 0.5 + 0.5`) narrowed the
+                    // swing around a fixed centre of 0.5, which meant a unipolar
+                    // LFO could never return a parameter to its set value — the
+                    // output feeds `base + offset * range`, so depth 0.5 sat
+                    // permanently between a quarter and three quarters above it.
+                    (raw * 0.5 + 0.5) * *amplitude
                 }
             }
             ModulationSource::AudioBand {
@@ -3255,17 +3266,19 @@ mod unipolar_range_tests {
         (lo, hi)
     }
 
-    /// Unipolar centres on 0.5 and amplitude widens the swing around it, so the
-    /// trough only reaches zero at full amplitude. Documents today's behaviour.
+    /// Unipolar runs `0 .. amplitude`: the trough is always zero, so a
+    /// modulated parameter still reaches the value it was set to, and amplitude
+    /// sets how far above it the peak goes.
     #[test]
-    fn unipolar_pivots_around_a_half() {
-        let (lo, hi) = sweep(0.5, false);
-        assert!((lo - 0.25).abs() < 0.02, "trough was {lo}");
-        assert!((hi - 0.75).abs() < 0.02, "peak was {hi}");
-
-        let (lo, hi) = sweep(1.0, false);
-        assert!(lo < 0.02, "at full amplitude the trough reaches 0, was {lo}");
-        assert!(hi > 0.98, "peak was {hi}");
+    fn unipolar_runs_from_zero_to_amplitude() {
+        for depth in [0.25, 0.5, 1.0] {
+            let (lo, hi) = sweep(depth, false);
+            assert!(lo < 0.02, "trough at depth {depth} was {lo}, expected 0");
+            assert!(
+                (hi - depth).abs() < 0.02,
+                "peak at depth {depth} was {hi}, expected {depth}"
+            );
+        }
     }
 
     #[test]
