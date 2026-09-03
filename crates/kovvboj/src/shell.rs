@@ -75,6 +75,13 @@ pub struct KovvbojShell {
     show_sequencer: bool,
     show_library: bool,
     show_preview: bool,
+    /// When the last beat landed, for the tempo flash. The phase is rebuilt
+    /// from this and the BPM, so the flash keeps ticking between detections
+    /// instead of freezing whenever the beat detector goes quiet.
+    beat_origin: Option<f64>,
+    /// Last frame's beat flag. `audio.beat` is only refreshed while analysis
+    /// runs, so a stale `true` would re-anchor every frame and pin the flash on.
+    beat_was_high: bool,
 
     /// Launch splash: pending until the first frame gives it a clock, then
     /// timed from there so a slow startup doesn't eat the whole hold.
@@ -136,6 +143,8 @@ impl KovvbojShell {
             show_sequencer: false,
             show_library: true,
             show_preview: true,
+            beat_origin: None,
+            beat_was_high: false,
             splash_pending: true,
             splash_started_at: None,
             about_opened_at: None,
@@ -549,7 +558,7 @@ impl KovvbojShell {
 
         // Which optional built-ins have anything to show, so the View menu does
         // not offer empty panels. Mirrors the built-in host's own filter.
-        let (has_color, has_motion, fps, bpm, beat_phase, web, osc, recording) = {
+        let (has_color, has_motion, fps, bpm, beat_hit, web, osc, recording) = {
             let state = engine.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state
                 .performance
@@ -567,11 +576,10 @@ impl KovvbojShell {
                     .any(|d| d.category == rustjay_core::ParamCategory::Motion),
                 perf,
                 state.effective_bpm(),
-                // Only a real clock supplies a moving phase: Link and ProDJ
-                // always, audio only while it is analysing. Without one the
-                // tempo is a number nobody is counting, so the flash free-runs
-                // from it instead of sitting still.
-                state.audio.enabled.then(|| state.effective_beat_phase()),
+                // True on the frames a beat was actually detected. `audio.enabled`
+                // is not the same thing: analysis can be on and silent, leaving
+                // `beat_phase` frozen, which made the flash die between taps.
+                state.audio.beat,
                 state.web_enabled,
                 state.osc_enabled,
                 state.recording_active,
@@ -759,12 +767,20 @@ impl KovvbojShell {
                         // by a quarter of the way through. Driven by the phase
                         // rather than the audio beat flag so it still pulses on a
                         // tapped or Link tempo with no audio coming in.
-                        let phase = beat_phase.unwrap_or_else(|| {
-                            // Free-run at the displayed tempo. Not aligned to the
-                            // music, but a steady metronome beats a dead label.
-                            let secs = ui.input(|i| i.time) as f32;
-                            (secs * bpm / 60.0).fract()
-                        });
+                        // Anchor on each detected beat and rebuild the phase from
+                        // the tempo in between, so the flash stays in step when
+                        // beats are coming and keeps counting when they stop.
+                        let now = ui.input(|i| i.time);
+                        if beat_hit && !self.beat_was_high {
+                            self.beat_origin = Some(now);
+                        }
+                        self.beat_was_high = beat_hit;
+                        let origin = *self.beat_origin.get_or_insert(now);
+                        let phase = if bpm > 0.0 {
+                            (((now - origin) * bpm as f64 / 60.0).fract()) as f32
+                        } else {
+                            1.0
+                        };
                         let flash = (1.0 - phase * 4.0).clamp(0.0, 1.0);
                         let beat_color = if bpm > 0.0 {
                             let dim = ink_2();
