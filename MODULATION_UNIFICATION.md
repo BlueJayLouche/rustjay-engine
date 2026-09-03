@@ -1,7 +1,7 @@
 # Modulation Unification — one engine, one grid, one envelope story
 
 Status: **U1–U4 implemented** on 2026-09-03 (branch `modulation-unify`, merged).
-U5 and U6 remain. Decisions taken 2026-09-03.
+U5, U6 and the band-vocabulary fold remain; U6 and the fold are specified in 5b/5c. Decisions taken 2026-09-03.
 
 ## 1. Why
 
@@ -105,6 +105,42 @@ This also gives the MOD popup a coherent vocabulary: **Follow** a band,
 | **U4** ✅ | Rebuild the routing-matrix window as a grid view over `AudioBand` sources and their assignments. Rows edit sources; the grid gains nothing of its own. | Editing in the grid and in the MOD popup show the same state. |
 | **U5** | Fold `Increase`/`Decrease` to `Direct` on load; drop the variants from the live enum. | Old presets load; nothing references the removed variants. |
 | **U6** | `ModulationSource::AudioTrigger`, and the ADSR gate as a mod-on-mod target. | A drum hit fires an ADSR bound to a parameter. |
+
+## 5b. U6 spec — triggers (decided 2026-09-03)
+
+**Per-band, not broadband.** Skip wiring the existing `AudioState.beat`; it is
+whole-spectrum, and telling a kick from a hat is the point.
+
+```rust
+ModulationSource::AudioTrigger {
+    band: FftBand,        // the eight the analyser already bins
+    threshold: f32,       // energy above local average to fire
+    hysteresis: f32,      // must fall back below before re-arming
+    min_interval: f32,    // retrigger lockout, seconds
+    hold: f32,            // gate stays on this long, then releases
+}
+```
+
+**`hold` is required, not optional.** ADSR's sustain stage only exists while a
+gate is held, and an onset is instantaneous. Without `hold` the envelope
+degenerates to AD and the `sustain` control does nothing.
+
+Gate the ADSR through an explicit `gate_source: Option<String>` naming the
+trigger, evaluated before it — not through `assign_mod_on_mod`, which applies a
+*continuous* value to a source parameter and would force the ADSR to infer an
+edge from a threshold crossing.
+
+## 5c. One band vocabulary
+
+`FftBand` has eight variants matching `AudioState.fft: [f32; 8]` — the bands the
+analyser actually computes, and the ones the routing grid offers.
+`AudioBandPreset` has four (Low/Mid/High/Full) that correspond to nothing and
+are re-derived into frequency ranges on use. The MOD popup offers those four,
+so the same app presents two different band sets.
+
+Fold `AudioBandPreset` into `FftBand`: one vocabulary, eight bands, everywhere
+a band is chosen. `AudioBand` keeps arbitrary `freq_low`/`freq_high` underneath
+for anyone who wants a custom range — only the *pickers* standardise.
 
 ## 6. Compatibility
 
