@@ -5,6 +5,7 @@
 //! `shared_state` → `modulation` is never violated.
 
 use crate::egui_control_gui::EguiControlGui;
+use rustjay_core::routing::FftBand;
 use crate::egui_theme::colors::*;
 use egui::Color32;
 use rustjay_core::modulation::{LFOWaveform, ModulationSource};
@@ -24,7 +25,7 @@ impl EguiControlGui {
     pub(crate) fn build_modulation_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Modulation");
         ui.label(
-            egui::RichText::new("LFO · ADSR · Step Sequencer · Audio Band")
+            egui::RichText::new("LFO · ADSR · Step Sequencer · Audio Band · Trigger")
                 .size(11.0)
                 .color(text_secondary()),
         );
@@ -166,6 +167,21 @@ impl EguiControlGui {
                 });
                 self.modulation_expanded_source = Some(uuid);
             }
+            if ui.button("+ Trigger").clicked() {
+                let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
+                let uuid = mod_eng.add_source(ModulationSource::AudioTrigger {
+                    band: FftBand::Bass,
+                    threshold: 1.3,
+                    hysteresis: 0.3,
+                    min_interval: 0.05,
+                    hold: 0.1,
+                    armed: true,
+                    since_fire: 0.0,
+                    hold_left: 0.0,
+                    average: 0.0,
+                });
+                self.modulation_expanded_source = Some(uuid);
+            }
             if ui.button("+ Step Seq").clicked() {
                 let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                 let uuid = mod_eng.add_source(ModulationSource::StepSequencer {
@@ -304,6 +320,63 @@ impl EguiControlGui {
             })
             .unwrap_or(false);
         let gate_label = if is_gated { "Release Gate" } else { "Trigger Gate" };
+        let is_adsr = matches!(
+            mod_eng.find_source_by_uuid(uuid).map(|e| &e.source),
+            Some(ModulationSource::ADSR { .. })
+        );
+        if is_adsr {
+            // What fires this envelope. Without a source it can only be gated by
+            // hand from the button beside it, which is no use during a set.
+            let triggers: Vec<(String, String)> = mod_eng
+                .sources
+                .iter()
+                .filter(|e| matches!(e.source, ModulationSource::AudioTrigger { .. }))
+                .map(|e| (e.uuid.clone(), e.uuid[..4.min(e.uuid.len())].to_string()))
+                .collect();
+            let current = mod_eng
+                .find_source_by_uuid(uuid)
+                .and_then(|e| match &e.source {
+                    ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+                    _ => None,
+                });
+            let mut chosen: Option<Option<String>> = None;
+            ui.horizontal(|ui| {
+                ui.label("Gated by:");
+                egui::ComboBox::from_id_salt(("gatesrc", uuid))
+                    .selected_text(match &current {
+                        Some(u) => format!("Trigger {}", &u[..4.min(u.len())]),
+                        None => "— manual —".to_string(),
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "— manual —").clicked() {
+                            chosen = Some(None);
+                        }
+                        for (id, tag) in &triggers {
+                            if ui
+                                .selectable_label(
+                                    current.as_deref() == Some(id.as_str()),
+                                    format!("Trigger {tag}"),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(Some(id.clone()));
+                            }
+                        }
+                    });
+                if triggers.is_empty() {
+                    ui.label(
+                        egui::RichText::new("add a Trigger source first")
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+            if let Some(pick) = chosen
+                && let Some(ModulationSource::ADSR { gate_source, .. }) = mod_eng.source_mut(uuid)
+            {
+                *gate_source = pick;
+            }
+        }
         if ui.button(gate_label).clicked() {
             if is_gated {
                 mod_eng.release_adsr(uuid);
@@ -332,10 +405,89 @@ impl EguiControlGui {
         }
 
         // ── Audio Band ───────────────────────────────────────────────────────
-        if mod_eng.find_source_by_uuid(uuid).is_some()
-            && matches!(mod_eng.find_source_by_uuid(uuid).unwrap().source, ModulationSource::AudioBand { .. })
+        if let Some(ModulationSource::AudioBand {
+            freq_low,
+            freq_high,
+            gain,
+            smoothing,
+            attack,
+            enabled,
+            noise_gate,
+            ..
+        }) = mod_eng.source_mut(uuid)
         {
-            ui.label("Audio Band configuration coming soon.");
+            ui.checkbox(enabled, "Enabled");
+            // The analyser's own bands, the same set the routing grid offers.
+            // The range stays editable underneath for anything custom.
+            let current = FftBand::all()
+                .iter()
+                .find(|b| {
+                    let (lo, hi) = b.freq_range();
+                    (lo - *freq_low).abs() < 0.5 && (hi - *freq_high).abs() < 0.5
+                })
+                .copied();
+            ui.horizontal(|ui| {
+                ui.label("Band:");
+                egui::ComboBox::from_id_salt(("band", uuid))
+                    .selected_text(match current {
+                        Some(b) => b.name().to_string(),
+                        None => format!("{freq_low:.0}–{freq_high:.0} Hz"),
+                    })
+                    .show_ui(ui, |ui| {
+                        for band in FftBand::all() {
+                            if ui
+                                .selectable_label(current == Some(*band), band.name())
+                                .clicked()
+                            {
+                                let (lo, hi) = band.freq_range();
+                                *freq_low = lo;
+                                *freq_high = hi;
+                            }
+                        }
+                    });
+            });
+            ui.add(
+                egui::Slider::new(attack, 0.0..=0.99)
+                    .text("Attack")
+                    .custom_formatter(|v, _| format!("{v:.2}")),
+            )
+            .on_hover_text("Rise smoothing — 0 is instant, 0.99 very slow");
+            ui.add(egui::Slider::new(smoothing, 0.0..=0.99).text("Release"))
+                .on_hover_text("Fall smoothing — 0 is instant, 0.99 very slow");
+            ui.add(egui::Slider::new(gain, 0.0..=8.0).text("Gain"));
+            ui.add(egui::Slider::new(noise_gate, 0.0..=1.0).text("Noise gate"))
+                .on_hover_text("Energy below this counts as silence");
+        }
+
+        // ── Audio Trigger ────────────────────────────────────────────────────
+        if let Some(ModulationSource::AudioTrigger {
+            band,
+            threshold,
+            hysteresis,
+            min_interval,
+            hold,
+            ..
+        }) = mod_eng.source_mut(uuid)
+        {
+            ui.horizontal(|ui| {
+                ui.label("Band:");
+                egui::ComboBox::from_id_salt(("trigband", uuid))
+                    .selected_text(band.name())
+                    .show_ui(ui, |ui| {
+                        for b in FftBand::all() {
+                            if ui.selectable_label(*band == *b, b.name()).clicked() {
+                                *band = *b;
+                            }
+                        }
+                    });
+            });
+            ui.add(egui::Slider::new(threshold, 1.0..=4.0).text("Threshold"))
+                .on_hover_text("How far above the running average a hit must be");
+            ui.add(egui::Slider::new(hysteresis, 0.0..=0.9).text("Hysteresis"))
+                .on_hover_text("How far it must fall back before firing again");
+            ui.add(egui::Slider::new(min_interval, 0.0..=1.0).text("Min gap (s)"));
+            ui.add(egui::Slider::new(hold, 0.0..=2.0).text("Hold (s)"))
+                .on_hover_text("How long the gate stays open — an envelope's sustain needs this");
         }
     }
 

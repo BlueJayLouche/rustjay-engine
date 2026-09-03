@@ -2991,3 +2991,65 @@ mod trigger_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod trigger_serde_tests {
+    use super::*;
+    use crate::routing::FftBand;
+
+    /// A scene carrying a trigger and a gated envelope has to come back with
+    /// both, and with the gate still pointing at the trigger.
+    #[test]
+    fn a_trigger_and_its_envelope_round_trip() {
+        let mut engine = ModulationEngine::new();
+        let trig = engine.add_source(ModulationSource::AudioTrigger {
+            band: FftBand::Bass,
+            threshold: 1.4,
+            hysteresis: 0.25,
+            min_interval: 0.06,
+            hold: 0.15,
+            armed: true,
+            since_fire: 0.0,
+            hold_left: 0.0,
+            average: 0.0,
+        });
+        engine.add_source(ModulationSource::ADSR {
+            gate_source: Some(trig.clone()),
+            attack: 0.05,
+            decay: 0.1,
+            sustain: 0.6,
+            release: 0.2,
+            stage: ADSRStage::Idle,
+            stage_time: 0.0,
+            gate: false,
+            current_level: 0.0,
+        });
+
+        let json = serde_json::to_string(&engine).expect("serialise");
+        let back: ModulationEngine = serde_json::from_str(&json).expect("deserialise");
+
+        let kinds: Vec<&str> = back
+            .sources
+            .iter()
+            .map(|e| match e.source {
+                ModulationSource::AudioTrigger { .. } => "trigger",
+                ModulationSource::ADSR { .. } => "adsr",
+                _ => "other",
+            })
+            .collect();
+        assert!(kinds.contains(&"trigger"), "{kinds:?}");
+
+        let gate = back.sources.iter().find_map(|e| match &e.source {
+            ModulationSource::ADSR { gate_source, .. } => gate_source.clone(),
+            _ => None,
+        });
+        assert_eq!(gate.as_deref(), Some(trig.as_str()), "the gate survived");
+
+        // Band and hold are settings, not runtime state, so they must persist.
+        let held = back.sources.iter().find_map(|e| match &e.source {
+            ModulationSource::AudioTrigger { hold, band, .. } => Some((*hold, *band)),
+            _ => None,
+        });
+        assert_eq!(held, Some((0.15, FftBand::Bass)));
+    }
+}
