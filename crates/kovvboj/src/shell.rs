@@ -466,12 +466,19 @@ impl AnyEguiShell for KovvbojShell {
                     // MASTER is pinned to the bottom so the crossfader stays
                     // reachable however far the deck list scrolls.
                     #[allow(deprecated)]
-                    // Tall enough to clear the master row, the chain-name row
-                    // and the FX strip under it — the strip is the last thing
-                    // in the tab, so anything shorter cuts the chips in half.
+                    // The floor, not the default, is what actually holds this
+                    // open: `default_size` only applies on the frame before the
+                    // panel has stored a size, and something narrower than the
+                    // content was winning from then on — a drag was the only
+                    // thing that rewrote it. egui clamps the size it loads to
+                    // this range every frame, so a floor survives that.
+                    // ponytail: 200 clears the master row, the chain-name row
+                    // and the FX strip. If the master area ever needs to shrink
+                    // below that, it wants the inspector's arrangement — own the
+                    // resize, keep the height in `UiPrefs` — not a lower floor.
                     egui::Panel::bottom("kovvboj_master")
                         .default_size(220.0)
-                        .min_size(80.0)
+                        .min_size(200.0)
                         .resizable(true)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
