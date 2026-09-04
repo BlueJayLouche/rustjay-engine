@@ -118,6 +118,57 @@ impl Workspace {
         Ok(path)
     }
 
+    /// Write a saved master chain. Same slug rules as a saved layer.
+    pub fn save_chain(&self, chain: &crate::scene::SavedChain) -> anyhow::Result<PathBuf> {
+        let dir = self.dir.join("chains");
+        std::fs::create_dir_all(&dir)?;
+        let slug: String = chain
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        let slug = slug.trim_matches('_').to_string();
+        let slug = if slug.is_empty() { "chain".to_string() } else { slug };
+        let path = dir.join(format!("{slug}.json"));
+        std::fs::write(&path, serde_json::to_string_pretty(chain)?)?;
+        Ok(path)
+    }
+
+    /// Every saved master chain on disk, name-sorted.
+    pub fn load_chains(&self) -> Vec<crate::scene::SavedChain> {
+        let mut out: Vec<crate::scene::SavedChain> = std::fs::read_dir(self.dir.join("chains"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(|e| {
+                let text = std::fs::read_to_string(e.path()).ok()?;
+                match serde_json::from_str(&text) {
+                    Ok(chain) => Some(chain),
+                    Err(err) => {
+                        log::warn!("[Chains] skipping {}: {err}", e.path().display());
+                        None
+                    }
+                }
+            })
+            .collect();
+        out.sort_by_key(|c| c.name.to_lowercase());
+        out
+    }
+
+    /// Remove a saved chain by name.
+    pub fn delete_chain(&self, name: &str) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(self.dir.join("chains"))?.flatten() {
+            let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            if let Ok(saved) = serde_json::from_str::<crate::scene::SavedChain>(&text)
+                && saved.name == name
+            {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every saved layer on disk, name-sorted. Unreadable files are skipped
     /// rather than failing the whole listing.
     pub fn load_layers(&self) -> Vec<crate::scene::SavedLayer> {

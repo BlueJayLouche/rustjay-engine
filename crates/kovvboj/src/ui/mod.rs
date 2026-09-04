@@ -859,6 +859,25 @@ mod egui_impl {
                 ui.add_space(8.0);
                 param_slider(ui, engine, super::MASTER_DIM, "Dim", 0.0, 1.0);
             });
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("💾 Save chain")
+                    .on_hover_text("Keep this master chain, with its settings, to reuse later")
+                    .clicked()
+                {
+                    // Named for what it is; the library lists them by name and
+                    // saving over one replaces it.
+                    let n = state.saved_chains.len() + 1;
+                    state.pending_chain_save = Some(format!("Master {n}"));
+                }
+                if !state.saved_chains.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("{} saved", state.saved_chains.len()))
+                            .size(10.0)
+                            .color(rustjay_gui::egui_theme::colors::ink_4()),
+                    );
+                }
+            });
             ui.separator();
 
             let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
@@ -868,13 +887,23 @@ mod egui_impl {
                 crate::Selection::MasterFx { fx } => Some(fx.as_str()),
                 _ => None,
             };
-            let out = fx_strip(
-                ui,
-                &mixer.master,
-                &crate::ChainRef::Master,
-                selected_fx,
-                &self.pending_effect,
-            );
+            // Horizontal, and scrolling, exactly as a layer's strip is — the
+            // master chain reads as one more signal path, not a list.
+            let out = egui::ScrollArea::horizontal()
+                .id_salt("master_strip")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        fx_strip(
+                            ui,
+                            &mixer.master,
+                            &crate::ChainRef::Master,
+                            selected_fx,
+                            &self.pending_effect,
+                        )
+                    })
+                    .inner
+                })
+                .inner;
             if let Some(i) = out.toggle {
                 let on = mixer.master[i].enabled;
                 mixer.master[i].enabled = !on;
@@ -1499,6 +1528,9 @@ mod egui_impl {
                     // drawn while it does. Merged once it is out of scope.
                     let mut queue_saved: Option<crate::PendingLayer> = None;
                     let mut toggle_fav_saved: Option<String> = None;
+                    #[cfg(feature = "mixer")]
+                    let mut queue_chain_recall: Option<crate::scene::SavedChain> = None;
+                    let mut queue_chain_delete: Option<String> = None;
                     // One library row: label (optionally a drag source for FX
                     // strips) plus the "➕ new deck" button.
                     // Two verbs. A source's ➕ makes a layer; an effect's ➕
@@ -1732,6 +1764,70 @@ mod egui_impl {
                         ui.add_space(4.0);
                     }
 
+                    // Saved master chains, next to saved layers — both are the
+                    // user's own work rather than something discovered on disk.
+                    #[cfg(feature = "mixer")]
+                    if !state.saved_chains.is_empty() {
+                        heading(ui, "CHAINS", "➕ replaces master");
+                        let mut chains: Vec<&crate::scene::SavedChain> =
+                            state.saved_chains.iter().collect();
+                        chains.sort_by_key(|c| !favourites.contains(&c.name));
+                        for chain in chains {
+                            ui.horizontal(|ui| {
+                                let starred = favourites.contains(&chain.name);
+                                if ui
+                                    .add(
+                                        egui::Button::new(if starred { "★" } else { "☆" })
+                                            .small()
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    toggle_fav_saved = Some(chain.name.clone());
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .small_button("✖")
+                                            .on_hover_text("Delete this saved chain")
+                                            .clicked()
+                                        {
+                                            queue_chain_delete = Some(chain.name.clone());
+                                        }
+                                        if ui
+                                            .small_button("➕")
+                                            .on_hover_text("Load into the master chain, replacing it")
+                                            .clicked()
+                                        {
+                                            queue_chain_recall = Some((*chain).clone());
+                                        }
+                                        let n = chain.fx.len();
+                                        let size = egui::vec2(
+                                            ui.available_width(),
+                                            ui.spacing().interact_size.y,
+                                        );
+                                        ui.allocate_ui_with_layout(
+                                            size,
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(format!("⛓ {}", chain.name))
+                                                        .truncate(),
+                                                )
+                                                .on_hover_text(format!(
+                                                    "{n} effect{}",
+                                                    if n == 1 { "" } else { "s" }
+                                                ));
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                        ui.add_space(4.0);
+                    }
+
                     // Live inputs: cameras, plus NDI/Syphon/Spout. The generic
                     // entries come last in each kind so the discovered ones read
                     // first.
@@ -1810,6 +1906,17 @@ mod egui_impl {
                         }
                         if let Err(e) = state.workspace.save_favourites(&state.favourites) {
                             log::warn!("[Library] could not save favourites: {e}");
+                        }
+                    }
+                    #[cfg(feature = "mixer")]
+                    if let Some(chain) = queue_chain_recall {
+                        state.pending_chain_recall = Some(chain);
+                    }
+                    #[cfg(feature = "mixer")]
+                    if let Some(name) = queue_chain_delete {
+                        match state.workspace.delete_chain(&name) {
+                            Ok(()) => state.saved_chains = state.workspace.load_chains(),
+                            Err(e) => log::warn!("[Chains] delete failed: {e}"),
                         }
                     }
                     #[cfg(feature = "mixer")]

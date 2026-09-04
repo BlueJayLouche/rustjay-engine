@@ -265,6 +265,72 @@ impl SavedLayer {
     }
 }
 
+/// The master FX chain saved to the library, to be recalled into any scene.
+///
+/// The master chain is the one every layer passes through on the way out, so
+/// it is worth keeping independently of the layers that feed it.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedChain {
+    #[serde(default)]
+    pub version: u32,
+    pub name: String,
+    /// Ordered FX, as saved.
+    pub fx: Vec<FxDesc>,
+    /// Base values for everything under `master_fx<uuid>_`.
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, f32>,
+}
+
+#[cfg(feature = "mixer")]
+impl SavedChain {
+    /// Capture the live master chain and the params belonging to it.
+    pub fn capture(
+        name: String,
+        fx: Vec<FxDesc>,
+        params: &std::collections::HashMap<String, f32>,
+    ) -> Self {
+        let keys: Vec<String> = fx.iter().map(|f| format!("master_fx{}_", f.uuid)).collect();
+        Self {
+            version: SAVED_LAYER_VERSION,
+            name,
+            params: params
+                .iter()
+                .filter(|(k, _)| keys.iter().any(|p| k.starts_with(p)))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            fx,
+        }
+    }
+
+    /// Fresh uuids for a new instance, with the params rekeyed to match, so the
+    /// same saved chain can be recalled twice without two slots claiming one
+    /// parameter prefix.
+    pub fn instantiate(&self) -> (Vec<FxDesc>, std::collections::HashMap<String, f32>) {
+        let mut fx = self.fx.clone();
+        let mut renames = Vec::new();
+        for slot in &mut fx {
+            let fresh = new_uuid();
+            renames.push((
+                format!("master_fx{}_", slot.uuid),
+                format!("master_fx{fresh}_"),
+            ));
+            slot.uuid = fresh;
+        }
+        let params = self
+            .params
+            .iter()
+            .filter_map(|(key, value)| {
+                renames.iter().find_map(|(from, to)| {
+                    key.strip_prefix(from.as_str())
+                        .map(|tail| (format!("{to}{tail}"), *value))
+                })
+            })
+            .collect();
+        (fx, params)
+    }
+}
+
 /// Short identity, matching the form used for layers and FX slots elsewhere.
 #[cfg(feature = "mixer")]
 pub fn new_uuid() -> String {
@@ -484,6 +550,50 @@ mod tests {
         assert_eq!(back.name, "Cam");
         assert_eq!(back.layer.fx.len(), 1);
         assert_eq!(back.layer.blend_mode, rustjay_mixer::BlendMode::Add);
+    }
+
+    fn chain(fx: &[&str]) -> Vec<FxDesc> {
+        fx.iter()
+            .map(|u| FxDesc {
+                uuid: (*u).to_string(),
+                path: "glow.fs".into(),
+                enabled: true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_saved_chain_keeps_only_master_params() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("master_fx11_amount".to_string(), 0.4);
+        params.insert("ch_aaa_fx22_amount".to_string(), 0.9); // a layer's FX
+        let saved = SavedChain::capture("Master 1".into(), chain(&["11"]), &params);
+        assert_eq!(saved.params.len(), 1);
+        assert!(saved.params.contains_key("master_fx11_amount"));
+    }
+
+    /// Recalling the same chain twice must not give two slots one prefix.
+    #[test]
+    fn recalling_a_chain_rekeys_every_slot() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("master_fx11_amount".to_string(), 0.4);
+        params.insert("master_fx22_amount".to_string(), 0.7);
+        let saved = SavedChain::capture("Master 1".into(), chain(&["11", "22"]), &params);
+
+        let (fx, keyed) = saved.instantiate();
+        assert_eq!(fx.len(), 2);
+        assert!(fx.iter().all(|f| f.uuid != "11" && f.uuid != "22"));
+        assert_eq!(
+            keyed.get(&format!("master_fx{}_amount", fx[0].uuid)),
+            Some(&0.4)
+        );
+        assert_eq!(
+            keyed.get(&format!("master_fx{}_amount", fx[1].uuid)),
+            Some(&0.7)
+        );
+
+        let (again, _) = saved.instantiate();
+        assert_ne!(again[0].uuid, fx[0].uuid, "two recalls do not collide");
     }
 
     /// A scene written before routes were persisted must not look like it

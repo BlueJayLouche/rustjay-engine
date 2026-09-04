@@ -206,6 +206,18 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_layer_save: Option<(String, String)>,
+    /// Master chains saved to the library.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub saved_chains: Vec<crate::scene::SavedChain>,
+    /// A master chain the user asked to save, by name.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_chain_save: Option<String>,
+    /// A saved chain to load into the master, replacing what is there.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_chain_recall: Option<crate::scene::SavedChain>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -591,6 +603,12 @@ impl Default for KovvbojAppState {
             saved_layers: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_layer_save: None,
+            #[cfg(feature = "mixer")]
+            saved_chains: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_chain_save: None,
+            #[cfg(feature = "mixer")]
+            pending_chain_recall: None,
             #[cfg(feature = "mixer")]
             param_bases_cache: Vec::new(),
             workspace: crate::persistence::default_workspace(),
@@ -1499,6 +1517,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.engine_modulation = Some(engine.modulation.clone());
                 state.favourites = state.workspace.load_favourites();
                 state.saved_layers = state.workspace.load_layers();
+                state.saved_chains = state.workspace.load_chains();
 
                 // Restore the modulation snapshot loaded from the workspace scene
                 // in `init()` (topology already rebuilt there, so the param keys
@@ -2055,6 +2074,58 @@ impl EffectPlugin for KovvbojRootPlugin {
                 }
             }
 
+
+            if let Some(name) = state.pending_chain_save.take() {
+                let fx = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::scene::Topology::from_mixer(&mixer, &state.layer_sources).master_fx
+                };
+                let saved =
+                    crate::scene::SavedChain::capture(name.clone(), fx, &state.param_snapshot);
+                match state.workspace.save_chain(&saved) {
+                    Ok(_) => {
+                        state.saved_chains = state.workspace.load_chains();
+                        engine.notify(
+                            format!("Saved master chain '{name}'"),
+                            rustjay_core::NotificationLevel::Success,
+                            std::time::Duration::from_secs(3),
+                        );
+                    }
+                    Err(e) => engine.notify(
+                        format!("Could not save '{name}': {e}"),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(5),
+                    ),
+                }
+            }
+
+            if let Some(saved) = state.pending_chain_recall.take() {
+                let (fx, params) = saved.instantiate();
+                let base = crate::scene::topology_base();
+                {
+                    let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    // Recall replaces: a chain is a whole signal path, and
+                    // appending it to whatever is already there would just
+                    // stack two copies of the same idea.
+                    mixer.master.clear();
+                    for desc in &fx {
+                        if let Some(mut slot) = build_fx_slot(desc, &base, device, queue, engine) {
+                            slot.effect
+                                .set_param_prefix(&format!("master_fx{}_", slot.uuid));
+                            mixer.master.push(slot);
+                        }
+                    }
+                }
+                if let Ok(mut restore) = engine.param_restore.lock() {
+                    restore.extend(params);
+                }
+                self.params_dirty = true;
+                engine.notify(
+                    format!("Loaded master chain '{}'", saved.name),
+                    rustjay_core::NotificationLevel::Info,
+                    std::time::Duration::from_secs(3),
+                );
+            }
 
             if let Some((uuid, name)) = state.pending_layer_save.take() {
                 let desc = {
