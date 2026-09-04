@@ -85,6 +85,36 @@ pub struct CompileOutput {
 ///
 /// `isf` is the parsed header metadata; `glsl_src` is the full shader file
 /// (header comment included — it is stripped here).
+/// GLSL libraries a shader may `#include` by name.
+///
+/// MadMapper publishes its own under Apache-2.0, so the real files are
+/// vendored (see `libraries/README.md`) rather than shimmed. Includes resolve
+/// by basename only — a shader cannot reach the filesystem through one.
+const LIBRARIES: [(&str, &str); 3] = [
+    ("MadCommon.glsl", include_str!("libraries/MadCommon.glsl")),
+    ("MadNoise.glsl", include_str!("libraries/MadNoise.glsl")),
+    ("MadSDF.glsl", include_str!("libraries/MadSDF.glsl")),
+];
+
+/// Resolve one `#include`, or say which names are on offer.
+fn resolve_include(requested: &str, requesting: &str) -> shaderc::IncludeCallbackResult {
+    let name = requested.rsplit(['/', '\\']).next().unwrap_or(requested);
+    LIBRARIES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(known, content)| shaderc::ResolvedInclude {
+            resolved_name: (*known).to_string(),
+            content: (*content).to_string(),
+        })
+        .ok_or_else(|| {
+            let known: Vec<_> = LIBRARIES.iter().map(|(n, _)| *n).collect();
+            format!(
+                "{requesting} includes `{requested}`, which is not bundled (have: {})",
+                known.join(", ")
+            )
+        })
+}
+
 pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
     let body = strip_header(glsl_src)?;
     let merged = build_glsl(isf, &body);
@@ -100,6 +130,9 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         shaderc::EnvVersion::Vulkan1_2 as u32,
     );
     opts.set_optimization_level(shaderc::OptimizationLevel::Zero); // keep names for error msgs
+    opts.set_include_callback(|requested, _ty, requesting, _depth| {
+        resolve_include(requested, requesting)
+    });
     let artifact = compiler
         .compile_into_spirv(&merged.glsl, shaderc::ShaderKind::Fragment, "isf.fs", "main", Some(&opts))
         .map_err(|e| trim_err(&e.to_string()))?;
