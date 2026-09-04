@@ -40,12 +40,17 @@ pub use ledmap_tab::LedMapTab;
 pub struct MixerTab {
     /// Async result from the native file picker for master FX.
     pending_effect: std::sync::Arc<std::sync::Mutex<Option<crate::PendingEffect>>>,
+    /// What the next saved chain will be called. Transient: a name is for
+    /// finding the chain again later, so it is worth typing rather than
+    /// numbering.
+    chain_name: String,
 }
 
 impl Default for MixerTab {
     fn default() -> Self {
         Self {
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            chain_name: String::new(),
         }
     }
 }
@@ -860,17 +865,35 @@ mod egui_impl {
                 param_slider(ui, engine, super::MASTER_DIM, "Dim", 0.0, 1.0);
             });
             ui.horizontal(|ui| {
-                if ui
-                    .small_button("💾 Save chain")
+                let entry = ui.add(
+                    egui::TextEdit::singleline(&mut self.chain_name)
+                        .hint_text("chain name")
+                        .desired_width(140.0),
+                );
+                let name = self.chain_name.trim().to_string();
+                let named = !name.is_empty();
+                // Enter saves, so naming and saving is one gesture.
+                let entered = entry.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && named;
+                let clicked = ui
+                    .add_enabled(named, egui::Button::new("💾 Save chain").small())
                     .on_hover_text("Keep this master chain, with its settings, to reuse later")
-                    .clicked()
-                {
-                    // Named for what it is; the library lists them by name and
-                    // saving over one replaces it.
-                    let n = state.saved_chains.len() + 1;
-                    state.pending_chain_save = Some(format!("Master {n}"));
+                    .on_disabled_hover_text("Give the chain a name first")
+                    .clicked();
+                if entered || clicked {
+                    state.pending_chain_save = Some(name.clone());
+                    self.chain_name.clear();
                 }
-                if !state.saved_chains.is_empty() {
+                // Saving over a name replaces that chain, so say so before it
+                // happens rather than after.
+                if named && state.saved_chains.iter().any(|c| c.name == name) {
+                    ui.label(
+                        egui::RichText::new("replaces")
+                            .size(10.0)
+                            .color(rustjay_gui::egui_theme::colors::amber()),
+                    );
+                } else if !state.saved_chains.is_empty() {
                     ui.label(
                         egui::RichText::new(format!("{} saved", state.saved_chains.len()))
                             .size(10.0)
