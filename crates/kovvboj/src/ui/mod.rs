@@ -1300,12 +1300,21 @@ mod egui_impl {
                 {
                     acts.ungroup = Some(uuid.clone());
                 }
-                let mut op = mixer.groups[gi].opacity;
+                // Through the parameter, not the field: the render reads
+                // `grp_<uuid>_opacity` from the engine now that groups declare
+                // their parameters, so writing the field alone moved nothing —
+                // and it is what makes the fader MIDI-mappable and modulatable,
+                // exactly as a layer's is.
+                let key = format!("grp_{uuid}_opacity");
+                let mut op = engine
+                    .get_param_base(&key)
+                    .unwrap_or(mixer.groups[gi].opacity);
                 if ui
                     .add_sized([80.0, 18.0], egui::Slider::new(&mut op, 0.0..=1.0).show_value(false))
                     .on_hover_text("Group opacity")
                     .changed()
                 {
+                    engine.set_param_base(&key, op);
                     mixer.groups[gi].opacity = op;
                 }
                 let mut mute = mixer.groups[gi].mute;
@@ -1349,7 +1358,6 @@ mod egui_impl {
                     }
                 });
             });
-        let _ = engine;
     }
 
     /// The layer stack: top of the list composites over the bottom.
