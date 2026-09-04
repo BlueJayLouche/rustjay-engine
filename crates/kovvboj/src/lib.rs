@@ -2078,6 +2078,9 @@ impl EffectPlugin for KovvbojRootPlugin {
                         };
                         ch.effect = source;
                         ch.name = req.source.name.clone();
+                        // The composite samples this slot's texture through a
+                        // cached bind group; the new source is a new texture.
+                        mixer.invalidate_composite_cache();
                         drop(mixer);
                         state
                             .layer_sources

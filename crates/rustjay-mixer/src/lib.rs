@@ -465,9 +465,7 @@ impl Mixer {
         self.channels.push(channel);
         // The new channel's textures are allocated lazily at the top of the next
         // `render_to` call (via `ensure_resources`), once the render size is known.
-        // Bump generation: channel-index → texture mapping changed, so the
-        // composite bind-group cache (keyed by slot) must be rebuilt.
-        self.generation = self.generation.wrapping_add(1);
+        self.invalidate_composite_cache();
         Ok(self.channels.len() - 1)
     }
 
@@ -481,8 +479,7 @@ impl Mixer {
         if index >= self.channels.len() {
             return Err("channel index out of bounds");
         }
-        // Removing shifts channel indices, invalidating slot-keyed bind groups.
-        self.generation = self.generation.wrapping_add(1);
+        self.invalidate_composite_cache();
         Ok(self.channels.remove(index))
     }
 
@@ -520,6 +517,23 @@ impl Mixer {
         let to = to.min(self.channels.len() - 1);
         let channel = self.channels.remove(from);
         self.channels.insert(to, channel);
+        self.invalidate_composite_cache();
+    }
+
+    /// Declare that the channel-index → source-texture mapping has changed, so
+    /// the composite pipelines must rebuild their slot-keyed bind groups.
+    ///
+    /// Both the master compositor and each group's own one cache bind groups by
+    /// `(slot, dest parity)` while rewriting each slot's uniform (opacity, blend,
+    /// key) every frame. Skip this after a restack or a source swap and slot `i`
+    /// keeps sampling the *previous* occupant's pixels while wearing the
+    /// *current* occupant's opacity — a layer's fader appears to drive its
+    /// neighbour.
+    ///
+    /// Call after anything that moves a channel between indices or replaces the
+    /// effect behind one. Adding, removing and resizing already call it.
+    pub fn invalidate_composite_cache(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Effective per-channel opacity for the current frame (REQ-02.4).
@@ -528,8 +542,7 @@ impl Mixer {
     /// each channel's own opacity is used directly.
     pub fn effective_opacities(&self) -> Vec<f32> {
         let dim = self.master_dim.clamp(0.0, 1.0);
-        let scaled: Vec<f32> = self.raw_effective_opacities().iter().map(|o| o * dim).collect();
-        scaled
+        self.raw_effective_opacities().iter().map(|o| o * dim).collect()
     }
 
     /// Whether anything is soloed, which changes what every other channel does.
@@ -595,6 +608,7 @@ impl Mixer {
             }
         }
         self.groups.push(ChannelGroup::new(uuid.clone(), name));
+        self.invalidate_composite_cache();
         Some(uuid)
     }
 
@@ -629,6 +643,7 @@ impl Mixer {
         for (n, ch) in taken.into_iter().enumerate() {
             self.channels.insert(at + n, ch);
         }
+        self.invalidate_composite_cache();
     }
 
     /// Put one layer into a group, or take it out with `None`.
@@ -651,6 +666,7 @@ impl Mixer {
         if let Some(c) = self.channels.iter_mut().find(|c| c.uuid == layer) {
             c.group = group;
         }
+        self.invalidate_composite_cache();
     }
 
     /// Dissolve a group, leaving its members in the stack.
@@ -661,6 +677,7 @@ impl Mixer {
             }
         }
         self.groups.retain(|g| g.uuid != uuid);
+        self.invalidate_composite_cache();
     }
 
     /// Whether a channel contributes to the mix at all.
@@ -674,39 +691,34 @@ impl Mixer {
 
     /// Per-channel opacity before the master dimmer.
     fn raw_effective_opacities(&self) -> Vec<f32> {
+        self.raw_opacities(self.crossfader, |c| c.opacity)
+    }
+
+    /// The one place mute, solo, groups, the crossfader and opacity are combined.
+    ///
+    /// `base` supplies each channel's own opacity: the stored field for the
+    /// UI-facing [`effective_opacities`](Self::effective_opacities), the
+    /// engine's modulated value at render time. Both callers must go through
+    /// here, or the mixer renders something other than what the UI reports.
+    fn raw_opacities(&self, crossfader: f32, base: impl Fn(&Channel) -> f32) -> Vec<f32> {
         let any_solo = self.any_solo();
+        let of = |i: usize, c: &Channel| {
+            let group = self.group_of(i);
+            // A member of a soloed group is audible: the solo is on the group,
+            // and silencing what it contains would leave it soloing nothing.
+            let live = c.active
+                && !c.mute
+                && !group.is_some_and(|g| g.mute)
+                && (Self::audible(c, any_solo) || group.is_some_and(|g| g.solo));
+            if live { base(c).clamp(0.0, 1.0) } else { 0.0 }
+        };
         if self.use_crossfader && self.channels.len() == 2 {
             vec![
-                if Self::audible(&self.channels[0], any_solo) {
-                    (1.0 - self.crossfader) * self.channels[0].opacity
-                } else {
-                    0.0
-                },
-                if Self::audible(&self.channels[1], any_solo) {
-                    self.crossfader * self.channels[1].opacity
-                } else {
-                    0.0
-                },
+                (1.0 - crossfader) * of(0, &self.channels[0]),
+                crossfader * of(1, &self.channels[1]),
             ]
         } else {
-            self.channels
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    // A member of a soloed group is audible: the solo is on the
-                    // group, and silencing what it contains would leave it
-                    // soloing nothing.
-                    let solo_ok = !any_solo
-                        || c.solo
-                        || self.group_of(i).is_some_and(|g| g.solo);
-                    let muted = c.mute || self.group_of(i).is_some_and(|g| g.mute);
-                    if c.active && !muted && solo_ok {
-                        c.opacity
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
+            self.channels.iter().enumerate().map(|(i, c)| of(i, c)).collect()
         }
     }
 
@@ -994,38 +1006,17 @@ impl EffectInstance for Mixer {
         let crossfader = engine.get_param("crossfader").unwrap_or(self.crossfader);
 
         let any_solo = self.any_solo();
-        let eff: Vec<f32> = if self.channels.len() == 2 {
-            let ch0_opacity = if Self::audible(&self.channels[0], any_solo) {
-                engine
-                    .get_param(&self.channels[0].opacity_key)
-                    .unwrap_or(self.channels[0].opacity)
-            } else {
-                0.0
-            };
-            let ch1_opacity = if Self::audible(&self.channels[1], any_solo) {
-                engine
-                    .get_param(&self.channels[1].opacity_key)
-                    .unwrap_or(self.channels[1].opacity)
-            } else {
-                0.0
-            };
-
-            vec![(1.0 - crossfader) * ch0_opacity, crossfader * ch1_opacity]
-        } else {
-            self.channels
-                .iter()
-                .map(|ch| {
-                    if Self::audible(ch, any_solo) {
-                        engine
-                            .get_param(&ch.opacity_key)
-                            .unwrap_or(ch.opacity)
-                            .clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        };
+        // Same mute/solo/group/crossfader rules the UI reports, over the
+        // *modulated* opacity. The crossfader is passed in rather than stored:
+        // it carries modulation offsets, so writing it back would let modulation
+        // ratchet the base value frame after frame.
+        //
+        // Before the master dimmer: a grouped member is blended into its group
+        // with this, and the group itself is dimmed once when it joins the
+        // master stack. Dimming here too would dim a grouped layer twice.
+        let eff: Vec<f32> = self.raw_opacities(crossfader, |ch| {
+            engine.get_param(&ch.opacity_key).unwrap_or(ch.opacity)
+        });
 
         for (i, ch) in self.channels.iter_mut().enumerate() {
             if eff.get(i).copied().unwrap_or(0.0) < 0.001 {
@@ -1240,7 +1231,7 @@ impl EffectInstance for Mixer {
                 &src.view,
                 &read_acc.view,
                 &write_acc.view,
-                eff[i],
+                eff[i] * self.master_dim.clamp(0.0, 1.0),
                 blend_mode,
                 key,
                 ctx.vertex_buffer,
@@ -1490,6 +1481,46 @@ mod gate_tests {
                 .unwrap();
         }
         mixer
+    }
+
+    /// The composite pipeline caches bind groups by channel *index* while
+    /// rewriting each index's opacity every frame. A restack that does not bump
+    /// the generation therefore paints layer N's fader onto layer N-1's pixels.
+    #[test]
+    fn restacking_invalidates_the_composite_cache() {
+        let mut mixer = stack(&["a", "b", "c"]);
+        let before = mixer.generation;
+        mixer.reorder_channel(0, 2);
+        assert_ne!(
+            mixer.generation, before,
+            "a restack remaps index → texture; the slot-keyed cache must be dropped"
+        );
+
+        // A no-op move changes nothing, so it need not invalidate.
+        let settled = mixer.generation;
+        mixer.reorder_channel(1, 1);
+        assert_eq!(mixer.generation, settled);
+    }
+
+    /// Every group operation restacks the channels underneath it, so each one
+    /// remaps index → texture just as a plain restack does.
+    #[test]
+    fn group_operations_invalidate_the_composite_cache() {
+        let mut mixer = stack(&["a", "b", "c"]);
+
+        let before = mixer.generation;
+        let g = mixer
+            .group_channels("g1", "Group", &["a".into(), "c".into()])
+            .expect("two layers group");
+        assert_ne!(mixer.generation, before, "grouping restacks the members");
+
+        let before = mixer.generation;
+        mixer.set_channel_group("b", Some(g.clone()));
+        assert_ne!(mixer.generation, before, "joining moves the layer");
+
+        let before = mixer.generation;
+        mixer.ungroup(&g);
+        assert_ne!(mixer.generation, before, "dissolving drops the group's slots");
     }
 
     #[test]
