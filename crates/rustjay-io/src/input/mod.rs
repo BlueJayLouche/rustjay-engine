@@ -616,12 +616,12 @@ impl InputManager {
 
         // Handle NDI frames
         #[cfg(feature = "ndi")]
-        if let Some(ref mut ndi) = self.ndi_receiver {
-            if let Some(frame) = ndi.get_latest_frame() {
-                self.resolution = (frame.width, frame.height);
-                self.current_frame = Some(frame.data);
-                self.has_new_frame = true;
-            }
+        if let Some(ref mut ndi) = self.ndi_receiver
+            && let Some(frame) = ndi.get_latest_frame()
+        {
+            self.resolution = (frame.width, frame.height);
+            self.current_frame = Some(frame.data);
+            self.has_new_frame = true;
         }
 
         // Handle Syphon frames (zero-copy texture path)
