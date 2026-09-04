@@ -1727,6 +1727,7 @@ mod egui_impl {
                         crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
                     });
                     mixer.ungroup(&gid);
+                    state.params_dirty_request = true;
                 }
                 if let Some(fx) = group_acts.select_fx.take()
                     && let Some(g) = mixer.groups.iter().find(|g| g.chain.iter().any(|s| s.uuid == fx))
@@ -1753,6 +1754,7 @@ mod egui_impl {
                     let members: Vec<String> = picked.iter().cloned().collect();
                     // Gathers them together; a scattered pick is grouped rather
                     // than refused, which is what every editor does.
+                    state.params_dirty_request = true;
                     if mixer.group_channels(uuid, name, &members).is_none() {
                         engine.notify(
                             "Pick at least two layers to group".to_string(),
@@ -1767,6 +1769,7 @@ mod egui_impl {
                         crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
                     });
                     mixer.set_channel_group(&layer, None);
+                    state.params_dirty_request = true;
                 }
                 if let Some(uuid) = ungroup_at
                     && let Some(idx) = mixer.channels.iter().position(|c| c.uuid == uuid)
@@ -1777,6 +1780,7 @@ mod egui_impl {
                         crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
                     });
                     mixer.ungroup(&gid);
+                    state.params_dirty_request = true;
                 }
 
                 if let Some((layer, group)) = regroup.take() {

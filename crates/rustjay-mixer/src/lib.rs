@@ -909,6 +909,38 @@ impl EffectInstance for Mixer {
             }
         }
 
+        // Groups declare their own mix and the parameters of everything in
+        // their chain. Without this a group effect had no descriptors at all,
+        // so selecting one showed an empty inspector.
+        for g in self.groups.iter() {
+            let prefix = format!("grp_{}_", g.uuid);
+            out.push(ParameterDescriptor::float(
+                format!("{prefix}opacity"),
+                format!("{} Opacity", g.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                0.0,
+                1.0,
+                g.opacity,
+                0.01,
+            ));
+            out.push(ParameterDescriptor::enum_param(
+                format!("{prefix}blend"),
+                format!("{} Blend", g.name),
+                ParamCategory::Custom("Mixer".to_string()),
+                BlendMode::all()
+                    .iter()
+                    .map(|m| m.short_name().to_string())
+                    .collect(),
+                g.blend_mode.to_index() as usize,
+            ));
+            for slot in g.chain.iter() {
+                let chain_prefix = format!("{prefix}fx{}_", slot.uuid);
+                for p in slot.effect.parameters() {
+                    out.push(prefix_descriptor(&chain_prefix, &p));
+                }
+            }
+        }
+
         for slot in self.master.iter() {
             let prefix = format!("master_fx{}_", slot.uuid);
             for p in slot.effect.parameters() {
@@ -1671,5 +1703,25 @@ mod group_move_tests {
         let before = ids(&m);
         m.move_group("g1", "ch0");
         assert_eq!(ids(&m), before);
+    }
+}
+
+#[cfg(test)]
+mod group_param_tests {
+    use super::*;
+
+    /// A group effect with no descriptors shows an empty inspector, which is
+    /// how selecting one looked before groups were walked here.
+    #[test]
+    fn a_group_declares_its_mix_parameters() {
+        let mut m = Mixer::new();
+        m.use_crossfader = false;
+        for id in ["a", "b"] {
+            m.add_channel(Channel::new(id, id, Box::new(tests::Stub))).unwrap();
+        }
+        m.group_channels("g1", "Backdrop", &["a".into(), "b".into()]).unwrap();
+        let ids: Vec<String> = m.parameters().into_iter().map(|p| p.id).collect();
+        assert!(ids.iter().any(|i| i == "grp_g1_opacity"), "{ids:?}");
+        assert!(ids.iter().any(|i| i == "grp_g1_blend"), "{ids:?}");
     }
 }
