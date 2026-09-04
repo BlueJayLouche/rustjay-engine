@@ -202,6 +202,25 @@ impl OutputsTab {
     }
 }
 
+/// Scroll speed (points per frame) while a drag hovers near a list's
+/// top/bottom edge: zero outside the margin, faster the deeper in. Pure so
+/// it is unit-testable; the caller owns actually applying the offset.
+#[cfg(all(feature = "mixer", feature = "egui"))]
+pub fn drag_edge_scroll_delta(pointer_y: f32, rect: egui::Rect) -> f32 {
+    const EDGE: f32 = 36.0;
+    const MIN_SPEED: f32 = 4.0;
+    const MAX_SPEED: f32 = 14.0;
+    let from_top = pointer_y - rect.top();
+    let from_bottom = rect.bottom() - pointer_y;
+    if (0.0..EDGE).contains(&from_top) {
+        -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_top / EDGE))
+    } else if (0.0..EDGE).contains(&from_bottom) {
+        MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_bottom / EDGE)
+    } else {
+        0.0
+    }
+}
+
 #[cfg(all(feature = "mixer", feature = "egui"))]
 pub(crate) use egui_impl::draw_inspector;
 
@@ -476,7 +495,7 @@ mod egui_impl {
             return None;
         }
         let (inner, payload) = ui.dnd_drop_zone::<ChainDrag, _>(egui::Frame::NONE, |ui| {
-            ui.allocate_exact_size(egui::vec2(16.0, 22.0), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(24.0, 26.0), egui::Sense::hover());
         });
         // Every gap advertises itself as soon as something is lifted — waiting
         // for hover means you have to guess where the targets are. The hovered
@@ -1598,8 +1617,35 @@ mod egui_impl {
                                 }
 
                                 let name = mixer.channels[idx].name.clone();
+                                // The control group on the right (✖, blend,
+                                // slider at minimum, M, S + gaps) needs about
+                                // this much room; the name gets what's left and
+                                // ellipsizes rather than shoving the controls
+                                // off the panel on narrow widths.
+                                let controls_w =
+                                    14.0 + 84.0 + 24.0 + 40.0 + 5.0 * ui.spacing().item_spacing.x;
+                                let name_w = (ui.available_width() - controls_w).max(20.0);
+                                let name_rect = egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::vec2(name_w, ui.available_height()),
+                                );
                                 let multi = picked.contains(uuid);
-                                let resp = ui.selectable_label(layer_selected || multi, &name);
+                                let resp = ui
+                                    .scope_builder(
+                                        egui::UiBuilder::new().max_rect(name_rect).layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                        ),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Button::selectable(
+                                                    layer_selected || multi,
+                                                    &name,
+                                                )
+                                                .truncate(),
+                                            )
+                                        },
+                                    )
+                                    .inner;
                                 if resp.clicked() {
                                     // Cmd/ctrl or shift extends the pick; a plain
                                     // click starts a new one.
@@ -1657,7 +1703,16 @@ mod egui_impl {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.small_button("✖").clicked() {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("✖").size(9.0),
+                                                )
+                                                .min_size(egui::vec2(14.0, 14.0)),
+                                            )
+                                            .on_hover_text("Remove layer")
+                                            .clicked()
+                                        {
                                             removals.push(crate::PendingRemoval {
                                                 layer_uuid: uuid.clone(),
                                             });
@@ -1670,9 +1725,21 @@ mod egui_impl {
                                         let opacity_key = format!("ch_{uuid}_opacity");
                                         let mut op =
                                             engine.get_param_base(&opacity_key).unwrap_or(1.0);
+                                        // M and S are placed after the slider (to
+                                        // its left in this right-to-left row), so
+                                        // reserve their width and let the slider
+                                        // take the rest: on a narrow panel the
+                                        // slider squashes before the buttons creep
+                                        // over the layer name. This has to go
+                                        // through `spacing.slider_width` — a
+                                        // `Slider` always allocates that width
+                                        // and ignores `add_sized`.
+                                        let slider_w = (ui.available_width()
+                                            - 2.0 * (20.0 + ui.spacing().item_spacing.x))
+                                            .clamp(24.0, 96.0);
+                                        ui.spacing_mut().slider_width = slider_w;
                                         if ui
-                                            .add_sized(
-                                                [96.0, 18.0],
+                                            .add(
                                                 egui::Slider::new(&mut op, 0.0..=1.0)
                                                     .show_value(false),
                                             )

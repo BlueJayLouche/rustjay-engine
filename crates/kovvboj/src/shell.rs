@@ -475,9 +475,23 @@ impl AnyEguiShell for KovvbojShell {
                                 .id_salt("master_scroll")
                                 .show(ui, |ui| tab(&mut self.master, ui, app_state, &engine));
                         });
-                    egui::ScrollArea::vertical()
+                    let mut decks = egui::ScrollArea::vertical()
                         .id_salt("decks_scroll")
                         .show(ui, |ui| tab(&mut self.decks, ui, app_state, &engine));
+                    // While a chip or layer drag is in flight, hovering the
+                    // top/bottom edge scrolls the list, so off-screen layers
+                    // stay reachable as drop targets.
+                    if egui::DragAndDrop::has_any_payload(ui.ctx())
+                        && let Some(pos) = ui.ctx().pointer_interact_pos()
+                        && decks.inner_rect.contains(pos)
+                    {
+                        let delta = crate::ui::drag_edge_scroll_delta(pos.y, decks.inner_rect);
+                        if delta != 0.0 {
+                            decks.state.offset.y += delta;
+                            decks.state.store(ui.ctx(), decks.id);
+                            ui.ctx().request_repaint();
+                        }
+                    }
                 }
                 Mode::Stage => {
                     egui::ScrollArea::vertical()
@@ -996,5 +1010,25 @@ mod beat_flash_tests {
     #[test]
     fn a_stopped_clock_leaves_it_where_it_is() {
         assert_eq!(advance_beat_phase(0.31, 0.016, 0.0, false), 0.31);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn drag_edge_scroll_only_fires_in_the_margins() {
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 100.0), egui::pos2(300.0, 500.0));
+        // Middle of the list: no scroll.
+        assert_eq!(crate::ui::drag_edge_scroll_delta(300.0, rect), 0.0);
+        // Outside the list entirely: no scroll.
+        assert_eq!(crate::ui::drag_edge_scroll_delta(50.0, rect), 0.0);
+        assert_eq!(crate::ui::drag_edge_scroll_delta(550.0, rect), 0.0);
+        // Top margin scrolls up, bottom margin down, faster at the very edge.
+        let top_edge = crate::ui::drag_edge_scroll_delta(101.0, rect);
+        let top_margin = crate::ui::drag_edge_scroll_delta(120.0, rect);
+        assert!(top_edge < top_margin && top_margin < 0.0);
+        let bottom_edge = crate::ui::drag_edge_scroll_delta(499.0, rect);
+        let bottom_margin = crate::ui::drag_edge_scroll_delta(480.0, rect);
+        assert!(bottom_edge > bottom_margin && bottom_margin > 0.0);
     }
 }
