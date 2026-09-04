@@ -1378,6 +1378,54 @@ impl KovvbojRootPlugin {
             sources.insert(uuid, desc.source.clone());
         }
 
+        // Groups after the layers: membership names them, so they all have to
+        // exist first. Their uuids are reproduced so `grp_<uuid>_…` params —
+        // opacity, blend, and every effect in the chain — land back on them.
+        for desc in &topo.groups {
+            let present: Vec<String> = desc
+                .members
+                .iter()
+                .filter(|u| mixer.channels.iter().any(|c| &c.uuid == *u))
+                .cloned()
+                .collect();
+            if present.len() < 2 {
+                // A group whose layers are gone is not a group; dropping it
+                // beats leaving one that renders nothing.
+                log::warn!(
+                    "[Topology] group '{}' has {} of {} members left, skipping",
+                    desc.name,
+                    present.len(),
+                    desc.members.len()
+                );
+                continue;
+            }
+            if mixer
+                .group_channels(desc.uuid.clone(), desc.name.clone(), &present)
+                .is_none()
+            {
+                continue;
+            }
+            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
+                g.opacity = desc.opacity;
+                g.blend_mode = desc.blend_mode;
+                g.solo = desc.solo;
+                g.mute = desc.mute;
+                g.collapsed = desc.collapsed;
+            }
+            let prefix = format!("grp_{}_", desc.uuid);
+            let mut chain = Vec::new();
+            for fx in &desc.fx {
+                if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
+                    slot.effect
+                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
+                    chain.push(slot);
+                }
+            }
+            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
+                g.chain = chain;
+            }
+        }
+
         for fx in &topo.master_fx {
             if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
                 slot.effect

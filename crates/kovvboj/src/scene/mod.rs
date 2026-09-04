@@ -167,6 +167,32 @@ pub struct LayerDesc {
     pub fx: Vec<FxDesc>,
 }
 
+/// One bus group: which layers it holds, and how the composite is treated.
+///
+/// Members are named rather than positioned: a span would have to be recomputed
+/// against a stack that may have been restacked since, and the uuids survive
+/// that.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupDesc {
+    /// Stable identity, reproduced on replay so `grp_<uuid>_…` params match.
+    pub uuid: String,
+    pub name: String,
+    /// Member layer uuids, bottom of the group first.
+    pub members: Vec<String>,
+    pub opacity: f32,
+    pub blend_mode: rustjay_mixer::BlendMode,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub collapsed: bool,
+    /// The chain the composited members pass through.
+    #[serde(default)]
+    pub fx: Vec<FxDesc>,
+}
+
 /// The full routing graph, serializable and replayable.
 #[cfg(feature = "mixer")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -181,6 +207,10 @@ pub struct Topology {
     /// Master FX applied after compositing.
     #[serde(default)]
     pub master_fx: Vec<FxDesc>,
+    /// Bus groups over the layers. Absent in scenes saved before groups
+    /// existed, which then load as a flat stack.
+    #[serde(default)]
+    pub groups: Vec<GroupDesc>,
 }
 
 /// One layer saved to the library, to be dropped into any scene later.
@@ -443,6 +473,25 @@ impl Topology {
             version: TOPOLOGY_VERSION,
             layers,
             master_fx: capture_fx(&mixer.master),
+            groups: mixer
+                .groups
+                .iter()
+                .map(|g| GroupDesc {
+                    uuid: g.uuid.clone(),
+                    name: g.name.clone(),
+                    members: mixer
+                        .group_members(&g.uuid)
+                        .into_iter()
+                        .map(|i| mixer.channels[i].uuid.clone())
+                        .collect(),
+                    opacity: g.opacity,
+                    blend_mode: g.blend_mode,
+                    solo: g.solo,
+                    mute: g.mute,
+                    collapsed: g.collapsed,
+                    fx: capture_fx(&g.chain),
+                })
+                .collect(),
         }
     }
 }
@@ -594,6 +643,46 @@ mod tests {
 
         let (again, _) = saved.instantiate();
         assert_ne!(again[0].uuid, fx[0].uuid, "two recalls do not collide");
+    }
+
+    #[test]
+    fn a_group_survives_a_topology_round_trip() {
+        let topo = Topology {
+            version: TOPOLOGY_VERSION,
+            layers: vec![desc_with_fx("a", &[]), desc_with_fx("b", &[])],
+            master_fx: Vec::new(),
+            groups: vec![GroupDesc {
+                uuid: "g1".into(),
+                name: "Backdrop".into(),
+                members: vec!["a".into(), "b".into()],
+                opacity: 0.4,
+                blend_mode: rustjay_mixer::BlendMode::Add,
+                solo: false,
+                mute: true,
+                collapsed: true,
+                fx: chain(&["f1"]),
+            }],
+        };
+
+        let json = serde_json::to_string(&topo).expect("serialise");
+        let back: Topology = serde_json::from_str(&json).expect("deserialise");
+
+        assert_eq!(back.groups.len(), 1);
+        let g = &back.groups[0];
+        assert_eq!(g.uuid, "g1", "the uuid comes back, so grp_ params still match");
+        assert_eq!(g.members, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(g.opacity, 0.4);
+        assert!(g.mute && g.collapsed);
+        assert_eq!(g.fx.len(), 1, "the group's own chain came with it");
+    }
+
+    /// A scene from before groups existed loads as a flat stack rather than
+    /// failing.
+    #[test]
+    fn a_topology_without_groups_still_loads() {
+        let json = r#"{"version":1,"layers":[],"master_fx":[]}"#;
+        let topo: Topology = serde_json::from_str(json).expect("older scene loads");
+        assert!(topo.groups.is_empty());
     }
 
     /// A scene written before routes were persisted must not look like it
