@@ -3226,7 +3226,7 @@ impl EffectPlugin for KovvbojRootPlugin {
 
             #[cfg(feature = "projection")]
             {
-                use crate::stage::{SourceSync, SurfaceSource};
+                use crate::stage::SourceSync;
                 let stage = &mut app_state.stage;
                 // Grow/shrink source_syncs and rotation_syncs to match projector count.
                 while stage.source_syncs.len() < stage.projectors.len() {
