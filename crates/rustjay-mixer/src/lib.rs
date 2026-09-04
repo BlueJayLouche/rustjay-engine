@@ -598,6 +598,39 @@ impl Mixer {
         Some(uuid)
     }
 
+    /// Move a whole group so it sits where `target` is, keeping the members in
+    /// their own order.
+    ///
+    /// Moving members one at a time would reverse them, or interleave them with
+    /// whatever they pass on the way; the block comes out and goes back in one
+    /// piece.
+    pub fn move_group(&mut self, group: &str, target: &str) {
+        let members = self.group_members(group);
+        if members.is_empty() {
+            return;
+        }
+        if self.channels.get(members[0]).is_some_and(|c| c.uuid == target) {
+            return;
+        }
+        let Some(to) = self.channels.iter().position(|c| c.uuid == target) else {
+            return;
+        };
+        if members.contains(&to) {
+            return; // dropped on itself
+        }
+        let mut taken: Vec<Channel> = members
+            .iter()
+            .rev()
+            .map(|&i| self.channels.remove(i))
+            .collect();
+        taken.reverse();
+        let removed_below = members.iter().filter(|&&i| i < to).count();
+        let at = to - removed_below;
+        for (n, ch) in taken.into_iter().enumerate() {
+            self.channels.insert(at + n, ch);
+        }
+    }
+
     /// Put one layer into a group, or take it out with `None`.
     ///
     /// Moving it next to the group's other members is the point: dropping a
@@ -1597,5 +1630,46 @@ mod group_tests {
         assert!(members.iter().all(|&i| eff[i] > 0.0), "soloed members stay up");
         let outsider = (0..3).find(|i| !members.contains(i)).unwrap();
         assert_eq!(eff[outsider], 0.0, "everything else is silenced");
+    }
+}
+
+#[cfg(test)]
+mod group_move_tests {
+    use super::*;
+
+    fn stack(n: usize) -> Mixer {
+        let mut m = Mixer::new();
+        m.use_crossfader = false;
+        for i in 0..n {
+            let id = format!("ch{i}");
+            m.add_channel(Channel::new(&id, &id, Box::new(tests::Stub))).unwrap();
+        }
+        m
+    }
+    fn ids(m: &Mixer) -> Vec<String> {
+        m.channels.iter().map(|c| c.uuid.clone()).collect()
+    }
+
+    /// The block keeps its own order when it moves — one-at-a-time moves would
+    /// reverse it.
+    #[test]
+    fn a_group_moves_as_one_block() {
+        let mut m = stack(4);
+        m.group_channels("g1", "A", &["ch2".into(), "ch3".into()]).unwrap();
+        m.move_group("g1", "ch0");
+        let order = ids(&m);
+        let p2 = order.iter().position(|u| u == "ch2").unwrap();
+        let p3 = order.iter().position(|u| u == "ch3").unwrap();
+        assert_eq!(p3, p2 + 1, "members stayed adjacent and in order: {order:?}");
+        assert_eq!(m.channels.len(), 4);
+    }
+
+    #[test]
+    fn dropping_a_group_on_itself_changes_nothing() {
+        let mut m = stack(3);
+        m.group_channels("g1", "A", &["ch0".into(), "ch1".into()]).unwrap();
+        let before = ids(&m);
+        m.move_group("g1", "ch0");
+        assert_eq!(ids(&m), before);
     }
 }

@@ -1258,6 +1258,17 @@ mod egui_impl {
     ) {
         let uuid = mixer.groups[gi].uuid.clone();
         ui.horizontal(|ui| {
+            // The group moves as a block: dragging the grip carries the group's
+            // id, and the drop restacks every member together.
+            ui.dnd_drag_source(
+                ui.id().with(("groupdrag", &uuid)),
+                LayerDrag(format!("group:{uuid}")),
+                |ui| {
+                    ui.label("≡");
+                },
+            )
+            .response
+            .on_hover_text("Drag to move the whole group");
             let collapsed = mixer.groups[gi].collapsed;
             if ui
                 .small_button(if collapsed { "▶" } else { "▼" })
@@ -1678,12 +1689,22 @@ mod egui_impl {
                             // outside every group and you leave yours. Restack
                             // alone would move the layer and leave it orphaned
                             // inside a group's block, or stranded outside one.
-                            regroup = Some((payload.0.clone(), in_group_uuid.clone()));
+                            // A dragged group is not a layer joining a group.
+                            if !payload.0.starts_with("group:") {
+                                regroup = Some((payload.0.clone(), in_group_uuid.clone()));
+                            }
                             restack = Some((payload.0.clone(), uuid.clone()));
                         }
                     });
                 }
 
+                for (gid, index, payload) in std::mem::take(&mut group_acts.drops) {
+                    drops.push(ChainDrop {
+                        target: crate::ChainRef::Group { group: gid },
+                        index,
+                        payload,
+                    });
+                }
                 if !drops.is_empty() {
                     apply_chain_drops(
                         &mut state.pending_effects,
@@ -1719,13 +1740,6 @@ mod egui_impl {
                     fx_removals.push(crate::PendingFxRemoval {
                         chain: crate::ChainRef::Group { group: gid },
                         slot,
-                    });
-                }
-                for (gid, index, payload) in std::mem::take(&mut group_acts.drops) {
-                    drops.push(ChainDrop {
-                        target: crate::ChainRef::Group { group: gid },
-                        index,
-                        payload,
                     });
                 }
 
@@ -1777,6 +1791,17 @@ mod egui_impl {
                         });
                         mixer.set_channel_group(&layer, group);
                     }
+                }
+
+                // A group dropped on a row moves as one block.
+                if let Some((from_uuid, to_uuid)) = restack.clone()
+                    && let Some(gid) = from_uuid.strip_prefix("group:")
+                {
+                    restack = None;
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    mixer.move_group(gid, &to_uuid);
                 }
 
                 // Restack last: it invalidates the indices used above.
