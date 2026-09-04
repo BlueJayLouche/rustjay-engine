@@ -466,8 +466,11 @@ impl AnyEguiShell for KovvbojShell {
                     // MASTER is pinned to the bottom so the crossfader stays
                     // reachable however far the deck list scrolls.
                     #[allow(deprecated)]
+                    // Tall enough to clear the master row, the chain-name row
+                    // and the FX strip under it — the strip is the last thing
+                    // in the tab, so anything shorter cuts the chips in half.
                     egui::Panel::bottom("kovvboj_master")
-                        .default_size(180.0)
+                        .default_size(220.0)
                         .min_size(80.0)
                         .resizable(true)
                         .show(ui, |ui| {
