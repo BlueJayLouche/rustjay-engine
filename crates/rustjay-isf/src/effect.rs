@@ -67,6 +67,9 @@ pub struct IsfEffect {
     /// which is the whole point: `TIME * speed` jumps when the speed changes,
     /// an accumulator carries on smoothly from where it was.
     phase: [f32; 4],
+    /// Current value of each MadMapper generator, in manifest order. Advanced
+    /// once per frame by [`IsfEffect::advance_generators`].
+    generators: Vec<f32>,
 
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
@@ -110,6 +113,9 @@ struct PackField {
     /// Set for `PHASE_TIME_0..3`, which come from the instance's accumulators
     /// rather than from a parameter of that name — there is none.
     phase: Option<usize>,
+    /// Set for a MadMapper generator field, which the host drives for the same
+    /// reason: it is not a parameter the user sets.
+    generator: Option<usize>,
 }
 
 /// One `PHASE_INPUTS` entry: a parameter that drives an accumulator.
@@ -204,6 +210,7 @@ impl IsfEffect {
             placeholder_view: None,
             sampler: None,
             manifest: None,
+            generators: Vec::new(),
             pack_fields: Vec::new(),
             primary_texture: None,
         })
@@ -219,6 +226,10 @@ impl IsfEffect {
         for f in &self.pack_fields {
             if let Some(n) = f.phase {
                 put_f32(&mut buf, f.offset, self.phase[n]);
+                continue;
+            }
+            if let Some(n) = f.generator {
+                put_f32(&mut buf, f.offset, self.generators[n]);
                 continue;
             }
             let get = |i: usize| {
@@ -251,8 +262,52 @@ impl IsfEffect {
         buf
     }
 
+    /// Advance every generator one frame.
+    ///
+    /// A generator is a float the shader reads but the user never sets:
+    /// `time_base` integrates a speed, the filters follow another input. Each
+    /// parameter is either a literal or the name of an input to read it from.
+    ///
+    /// Integrated per frame rather than derived from TIME for the same reason
+    /// `PHASE_TIME_*` is: `TIME * speed` jumps when the speed changes, an
+    /// accumulator carries on smoothly from where it was.
+    ///
+    /// ponytail: the filters (`damper`, `adsr`, `linear_filter`, `ease_filter`)
+    /// pass their source straight through — the value they settle on, without
+    /// the smoothing on the way. Upgrade path is a per-kind step function here;
+    /// they are 13 of the 850 generators in MadMapper's own corpus.
+    fn advance_generators(&mut self, delta: f32, engine: &EngineState, state: &IsfState) {
+        let Some(manifest) = self.manifest.as_ref() else {
+            return;
+        };
+        let mut acc = std::mem::take(&mut self.generators);
+        for (i, g) in manifest.generators.iter().enumerate() {
+            let value = |key: &str, default: f32| match g.params.get(key) {
+                Some(serde_json::Value::String(name)) => engine
+                    .get_param(name)
+                    .or_else(|| state.values.get(name).copied())
+                    .unwrap_or(default),
+                Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(default as f64) as f32,
+                Some(serde_json::Value::Bool(b)) => f32::from(u8::from(*b)),
+                _ => default,
+            };
+            let rate = delta * value("speed", 1.0) * if value("reverse", 0.0) != 0.0 { -1.0 } else { 1.0 };
+            acc[i] = match g.ty.as_str() {
+                "time_base" => acc[i] + rate,
+                // An animator is a time base wrapped into the 0..1 its shapes
+                // are defined over. The shape itself is left linear.
+                "animator" => (acc[i] + rate).rem_euclid(1.0),
+                "multiplier" => (1..=4).map(|n| value(&format!("value{n}"), 1.0)).product(),
+                "damper" | "adsr" | "linear_filter" | "ease_filter" | "shaper" | "curve"
+                | "pass_thru" => value("input_value", 0.0),
+                _ => 0.0,
+            };
+        }
+        self.generators = acc;
+    }
+
     /// std140-pack the IsfData block (64 bytes).
-    fn pack_data(&mut self, engine: &EngineState) -> [u8; 64] {
+    fn pack_data(&mut self, engine: &EngineState, state: &IsfState) -> [u8; 64] {
         let now = Instant::now();
         let delta = self
             .last_frame
@@ -269,6 +324,7 @@ impl IsfEffect {
             let rate = engine.get_param(&pi.param).unwrap_or(1.0);
             self.phase[pi.index] += delta * rate * pi.scale;
         }
+        self.advance_generators(delta, engine, state);
 
         let mut buf = [0u8; 64];
         put_i32(&mut buf, 0, 0); // PASSINDEX (multipass = follow-up)
@@ -734,6 +790,8 @@ impl EffectPlugin for IsfEffect {
         });
 
         // Precompute per-field lookup keys (no per-frame allocation).
+        let generators = manifest.generators.clone();
+        self.generators = vec![0.0; generators.len()];
         self.pack_fields = manifest
             .input_fields
             .iter()
@@ -762,6 +820,7 @@ impl EffectPlugin for IsfEffect {
                         .strip_prefix("PHASE_TIME_")
                         .and_then(|n| n.parse::<usize>().ok())
                         .filter(|n| *n < 4),
+                    generator: generators.iter().position(|g| g.name == f.name),
                 }
             })
             .collect();
@@ -820,7 +879,7 @@ impl EffectPlugin for IsfEffect {
         }
 
         // Upload uniforms (std140-packed)
-        let data = self.pack_data(ctx.engine_state);
+        let data = self.pack_data(ctx.engine_state, app_state);
         let inputs = self.pack_inputs(app_state, ctx.engine_state);
         let pipeline = self.pipeline.as_ref().unwrap();
         let vb = self.vertex_buffer.as_ref().unwrap();

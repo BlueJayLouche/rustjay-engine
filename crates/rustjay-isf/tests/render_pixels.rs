@@ -111,15 +111,23 @@ fn render_shader(
     width: u32,
     height: u32,
 ) -> Frame {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/shaders")
-        .join(shader);
-    let mut effect = IsfEffect::from_path(&path).unwrap_or_else(|e| panic!("{shader}: {e}"));
-    EffectPlugin::init(&mut effect, &gpu.device, &gpu.queue);
-    if let Some(err) = &effect.transpile_error {
-        panic!("{shader}: pipeline init failed: {err}");
-    }
+    let (mut effect, _) = load_effect(gpu, shader);
+    render_loaded(gpu, &mut effect, shader, engine, state, input, width, height)
+}
 
+/// The same render against an effect that is already loaded, so successive
+/// frames see the state the last one left — which is the only way to watch
+/// anything the runtime integrates over time.
+fn render_loaded(
+    gpu: &Gpu,
+    effect: &mut IsfEffect,
+    shader: &str,
+    engine: &EngineState,
+    state: &mut IsfState,
+    input: Option<rustjay_core::EffectInput<'_>>,
+    width: u32,
+    height: u32,
+) -> Frame {
     let format = rustjay_core::working_format();
     assert!(
         matches!(
@@ -461,4 +469,57 @@ fn f_test_color_reference() {
     eprintln!("Test-Color red-texel pixel: {red_px:?}, white-texel pixel: {white_px:?}");
     assert_eq!(red_px, (255, 255, 255, 255), "red texel → highColor (white)");
     assert_eq!(white_px, (0, 0, 255, 255), "white texel → lowColor (blue)");
+}
+
+/// (h) MadMapper material entry point. MadMapper's own porting note says a
+/// material is an ISF `main()` with `texCoord` in place of `isf_FragNormCoord`,
+/// so the bridge is right exactly when the two render the same picture.
+/// Asserted as an equivalence rather than against fixed corners, so it says
+/// what it means whatever the pipeline's Y convention turns out to be.
+#[test]
+fn h_material_entry_point_matches_isf_norm_coord() {
+    let Some(gpu) = init_gpu() else { return };
+    let engine = engine_at(64, 64);
+    let (_e, mut state) = load_effect(&gpu, "material.fs");
+    let (_e2, mut ref_state) = load_effect(&gpu, "normcoords.fs");
+
+    let material = render_shader(&gpu, "material.fs", &engine, &mut state, None, 64, 64);
+    let reference = render_shader(&gpu, "normcoords.fs", &engine, &mut ref_state, None, 64, 64);
+
+    for (x, y) in [(0, 0), (63, 0), (0, 63), (63, 63), (17, 42)] {
+        let (r, g, _, a) = material.rgba(x, y);
+        let (rr, rg, _, ra) = reference.rgba(x, y);
+        assert_channel(r, rr, &format!("R at ({x},{y})"));
+        assert_channel(g, rg, &format!("G at ({x},{y})"));
+        assert_channel(a, ra, &format!("alpha at ({x},{y})"));
+    }
+}
+
+/// (i) A `time_base` generator is integrated per frame by the host: it reads
+/// zero on the first frame and has advanced by the second. Nothing in the
+/// shader or the parameters supplies it, so a non-zero blue channel can only
+/// come from the accumulator.
+#[test]
+fn i_time_base_generator_advances() {
+    let Some(gpu) = init_gpu() else { return };
+    let mut engine = engine_at(64, 64);
+    let (mut effect, mut state) = load_effect(&gpu, "material.fs");
+    let descs = effect.parameters();
+    engine.custom_param_bases = descs.iter().map(|d| d.default).collect();
+    engine.custom_params = engine.custom_param_bases.clone();
+    engine.param_descriptors = Arc::new(descs);
+    engine.set_param_base("mat_speed", 1.0);
+
+    let first = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, 8, 8);
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    let second = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, 8, 8);
+
+    let (_, _, b_first, _) = first.rgba(4, 4);
+    let (_, _, b_second, _) = second.rgba(4, 4);
+    eprintln!("generator blue: first={b_first} second={b_second}");
+    assert_channel(b_first, 0, "first frame has no elapsed time");
+    assert!(
+        b_second > 8,
+        "generator did not advance over 120ms: {b_second}"
+    );
 }

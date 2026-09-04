@@ -15,6 +15,8 @@ fn mm_corpus() {
 
     let mut ok = 0;
     let mut buckets: BTreeMap<String, Vec<String>> = Default::default();
+    // One full error per bucket: the summary says how many, this says what.
+    let mut first: BTreeMap<String, String> = Default::default();
     for p in &files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         let Ok(src) = std::fs::read_to_string(p) else { continue };
@@ -22,7 +24,13 @@ fn mm_corpus() {
             .and_then(|isf| rustjay_isf::generate_wgsl(&isf, &src).map(|_| ()));
         match r {
             Ok(()) => ok += 1,
-            Err(e) => buckets.entry(bucket(&e)).or_default().push(name),
+            Err(e) => {
+                let b = buckets.entry(bucket(&e)).or_default();
+                if b.is_empty() {
+                    first.insert(bucket(&e), e.clone());
+                }
+                b.push(name);
+            }
         }
     }
     let n = files.len();
@@ -32,6 +40,9 @@ fn mm_corpus() {
     for (k, v) in rows {
         println!("{:5}  {k}", v.len());
         println!("       e.g. {}", v.iter().take(3).cloned().collect::<Vec<_>>().join(", "));
+        if let Some(full) = first.get(k) {
+            println!("       {}", full.lines().take(4).collect::<Vec<_>>().join("\n       "));
+        }
     }
 }
 

@@ -38,6 +38,9 @@ pub struct IsfManifest {
     pub has_sampler: bool,
     /// Fragment entry point name in the emitted WGSL (from the naga module).
     pub frag_entry: String,
+    /// MadMapper `GENERATORS`, in the order their fields appear in the block.
+    /// Each has a `float` field of the same name that the host drives.
+    pub generators: Vec<crate::header::Generator>,
     /// Whether the vertex stage should deliver `isf_FragNormCoord` Y-flipped
     /// into ISF's bottom-left convention.
     ///
@@ -101,7 +104,7 @@ fn resolve_include(requested: &str, requesting: &str) -> shaderc::IncludeCallbac
     let name = requested.rsplit(['/', '\\']).next().unwrap_or(requested);
     LIBRARIES
         .iter()
-        .find(|(known, _)| *known == name)
+        .find(|(known, _)| known.eq_ignore_ascii_case(name))
         .map(|(known, content)| shaderc::ResolvedInclude {
             resolved_name: (*known).to_string(),
             content: (*content).to_string(),
@@ -133,6 +136,13 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
     opts.set_include_callback(|requested, _ty, requesting, _depth| {
         resolve_include(requested, requesting)
     });
+    // shaderc reports errors against the merged GLSL, which exists nowhere on
+    // disk. `ISF_DUMP_GLSL=1` prints it numbered so those lines mean something.
+    if std::env::var_os("ISF_DUMP_GLSL").is_some() {
+        for (i, line) in merged.glsl.lines().enumerate() {
+            eprintln!("{:5} {line}", i + 1);
+        }
+    }
     let artifact = compiler
         .compile_into_spirv(&merged.glsl, shaderc::ShaderKind::Fragment, "isf.fs", "main", Some(&opts))
         .map_err(|e| trim_err(&e.to_string()))?;
@@ -174,6 +184,7 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         has_sampler: !merged.textures.is_empty(),
         textures: merged.textures,
         frag_entry,
+        generators: merged.generators,
         flip_frag_norm_coord: merged.uses_img_macros,
     };
     Ok(CompileOutput { wgsl, manifest })
@@ -230,6 +241,8 @@ struct MemberDecl {
 struct Merged {
     glsl: String,
     members: Vec<MemberDecl>,
+    /// Generators that got a field in the block, in field order.
+    generators: Vec<crate::header::Generator>,
     textures: Vec<TextureBinding>,
     /// See [`IsfManifest::flip_frag_norm_coord`].
     uses_img_macros: bool,
@@ -237,9 +250,16 @@ struct Merged {
 
 fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> Merged {
     // 1. drop existing #version lines
+    //
+    // `NOISE_TEXTURE_BASED` goes with them: it switches MadNoise to a variant
+    // that reads a `noiseLUT` sampler only MadMapper binds. Without the define
+    // the same functions are computed analytically instead.
     let mut body: String = raw_body
         .lines()
-        .filter(|l| !l.trim_start().starts_with("#version"))
+        .filter(|l| {
+            let l = l.trim_start();
+            !l.starts_with("#version") && !l.starts_with("#define NOISE_TEXTURE_BASED")
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -303,6 +323,20 @@ fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> M
     // 3. legacy varying name used by older ISF hosts
     body = body.replace("vv_FragNormCoord", "isf_FragNormCoord");
 
+    // 3.5 MadMapper takes `long` as a spelling of `int`, where desktop GLSL
+    //     keeps it reserved. Its precision qualifiers go too: they mean nothing
+    //     at 450, and a prototype qualified differently from its definition is
+    //     an error rather than the no-op it is meant to be.
+    body = replace_word(&body, "long", "int");
+    body = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("precision "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for qualifier in ["highp", "mediump", "lowp"] {
+        body = replace_word(&body, qualifier, "");
+    }
+
     // 4. gl_FragColor → declared out
     //    Shadertoy-style shaders with only `mainImage` (no `main`) get a bridge that
     //    also writes to the declared out.
@@ -310,6 +344,8 @@ fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> M
     // MadMapper dialect: a material has no `main`, it returns a colour from
     // `materialColorForPixel(vec2)` given the surface's 0..1 texture coordinate.
     let has_material_fn = body.contains("materialColorForPixel") && find_main_def(&body).is_none();
+    // A material that also carries a `mainImage` helper is still a material.
+    let has_main_image = has_main_image && !has_material_fn;
     let needs_fragcolor_out = (body.contains("gl_FragColor")
         && !body.contains("out vec4 FragColor")
         && !body.contains("out vec4 gl_FragColor"))
@@ -331,16 +367,16 @@ fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> M
     //    isf_FragNormCoord takes in-location 0; FragColor takes out-location 0.
     body = assign_io_locations(&body, needs_fragcolor_out);
 
-    // 7. inline IMG_* sampling helpers (Y-flip aware).
+    // 7. inline IMG_* sampling helpers (Y-flip aware), then pair any texture
+    //    sampled directly (rather than through a macro) with the sampler.
     body = inline_img_calls(&body);
+    body = pair_textures_with_sampler(&body, &texture_names);
 
     // 8. gl_FragCoord → flipped global via wrapper main; bare mainImage → bridge.
     let uses_fragcoord = body.contains("gl_FragCoord") || has_main_image || has_material_fn;
     // The bridged dialects have no `main` to rename, so they are checked first:
     // their bridge sets the flipped coordinate itself.
     let flip = "isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);";
-    let (gen_decls, gen_init) = generator_glsl(gens, &isf.inputs);
-    let flip = format!("{flip}\n{gen_init}");
     let body = if has_main_image || has_material_fn {
         let b = body.replace("gl_FragCoord", "isf_FragCoord");
         let call = if has_main_image {
@@ -412,6 +448,21 @@ fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> M
             });
         }
     }
+    // A generator is a float the host drives, so it gets a field like any
+    // input — the shader just reads it by name. Only those the shader has not
+    // also declared as an input, which would collide.
+    let generators: Vec<crate::header::Generator> = gens
+        .iter()
+        .filter(|g| !isf.inputs.iter().any(|i| i.name == g.name))
+        .cloned()
+        .collect();
+    for g in &generators {
+        members.push(MemberDecl {
+            name: g.name.clone(),
+            glsl_decl: glsl_ty(FieldTy::F32).to_string(),
+            fty: FieldTy::F32,
+        });
+    }
     members.extend(extra_members);
 
     // texture bindings: image/audio inputs, pass targets, imported, baked extras
@@ -441,74 +492,76 @@ fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> M
         }
     }
 
-    p.push_str(&gen_decls);
     p.push_str(&body);
     Merged {
         glsl: p,
         members,
+        generators,
         textures,
         uses_img_macros,
     }
 }
 
-/// MadMapper generators, as GLSL: `(declarations, statements for main)`.
+/// Pair a directly-sampled texture with the sampler it needs.
 ///
-/// A generator is a float the host drives rather than the user: `time_base`
-/// integrates a speed over time and everything else derives from another
-/// input. Each parameter is either a literal or the name of an input to read
-/// it from.
-///
-/// ponytail: `time_base` is evaluated as `TIME * speed` rather than integrated
-/// per frame, so changing the speed jumps the phase instead of continuing
-/// smoothly from it — which is the discontinuity generators exist to avoid.
-/// Upgrade path is a host-side accumulator per generator, driven from
-/// TIMEDELTA. The filter generators (`damper`, `adsr`, `linear_filter`,
-/// `ease_filter`) likewise pass their source through unfiltered — their
-/// steady-state value, without the smoothing.
-fn generator_glsl(gens: &[crate::header::Generator], inputs: &[isf::Input]) -> (String, String) {
-    let known = |name: &str| inputs.iter().any(|i| i.name == name);
-    // A parameter reads from another input when it names one, else it is a
-    // literal, else the generator's documented default.
-    let param = |g: &crate::header::Generator, key: &str, default: f64| match g.params.get(key) {
-        Some(serde_json::Value::String(s)) if known(s) => s.clone(),
-        Some(serde_json::Value::Number(n)) => glsl_float(n.as_f64().unwrap_or(default)),
-        _ => glsl_float(default),
-    };
-    // `reverse` flips the sign; as a named input it is a bool uniform.
-    let sign = |g: &crate::header::Generator| match g.params.get("reverse") {
-        Some(serde_json::Value::String(s)) if known(s) => format!("({s} ? -1.0 : 1.0)"),
-        Some(serde_json::Value::Bool(true)) => "-1.0".to_string(),
-        _ => "1.0".to_string(),
-    };
-
-    let mut decls = String::new();
-    let mut init = String::new();
-    for g in gens {
-        decls.push_str(&format!("float {};\n", g.name));
-        let value = match g.ty.as_str() {
-            "time_base" => format!("TIME * {} * {}", param(g, "speed", 1.0), sign(g)),
-            "animator" => format!("fract(TIME * {} * {})", param(g, "speed", 1.0), sign(g)),
-            "multiplier" => (1..=4)
-                .map(|i| param(g, &format!("value{i}"), 1.0))
-                .collect::<Vec<_>>()
-                .join(" * "),
-            // The filters and pass-throughs read one source value.
-            "damper" | "adsr" | "linear_filter" | "ease_filter" | "shaper" | "curve"
-            | "pass_thru" => param(g, "input_value", 0.0),
-            _ => "0.0".to_string(),
-        };
-        init.push_str(&format!("    {} = {value};\n", g.name));
+/// ISF shaders sample through the `IMG_*` macros, which [`inline_img_calls`]
+/// expands complete with a sampler. A shader that writes the GL form instead —
+/// `texture(spectrum, uv)`, common in MadMapper materials — leaves a bare
+/// `texture2D`, which Vulkan GLSL will not sample. Wrap those.
+fn pair_textures_with_sampler(body: &str, names: &[String]) -> String {
+    let mut out = String::with_capacity(body.len());
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        let name = names.iter().find(|n| {
+            bytes[i..].starts_with(n.as_bytes())
+                && (i == 0 || !is_ident(bytes[i - 1] as char))
+                && !bytes
+                    .get(i + n.len())
+                    .is_some_and(|b| is_ident(*b as char))
+        });
+        match name.filter(|_| is_sampling_call_arg(&out)) {
+            Some(name) => {
+                out.push_str(&format!("sampler2D({name}, img_sampler)"));
+                i += name.len();
+            }
+            _ => {
+                let c = body[i..].chars().next().unwrap();
+                out.push(c);
+                i += c.len_utf8();
+            }
+        }
     }
-    (decls, init)
+    out
 }
 
-/// A float GLSL will read as a float, not an int.
-fn glsl_float(v: f64) -> String {
-    if v.fract() == 0.0 {
-        format!("{v:.1}")
-    } else {
-        format!("{v}")
-    }
+/// True when what has been emitted so far ends in a sampling call's `(`, i.e.
+/// the next identifier is its first argument.
+///
+/// `texture2D` and `textureCube` are deliberately absent: [`DEFINES`] already
+/// rewrites those whole calls, and wrapping their argument too would construct
+/// a sampler from a sampler.
+const SAMPLING_CALLS: [&str; 8] = [
+    "texture",
+    "textureLod",
+    "textureGrad",
+    "textureProj",
+    "textureProjLod",
+    "textureOffset",
+    "textureSize",
+    "texelFetch",
+];
+
+fn is_sampling_call_arg(emitted: &str) -> bool {
+    let head = emitted.trim_end();
+    let Some(head) = head.strip_suffix('(') else {
+        return false;
+    };
+    let callee = head.trim_end();
+    let start = callee
+        .rfind(|c: char| !is_ident(c))
+        .map_or(0, |i| i + callee[i..].chars().next().unwrap().len_utf8());
+    SAMPLING_CALLS.contains(&&callee[start..])
 }
 
 fn glsl_ty(fty: FieldTy) -> &'static str {

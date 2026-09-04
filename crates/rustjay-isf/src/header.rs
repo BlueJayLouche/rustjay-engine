@@ -186,20 +186,20 @@ fn repair(root: &mut Value) {
             let mut body = entry.clone();
             if let Some(body) = body.as_object_mut() {
                 body.remove("NAME");
-                // A cubemap import lists its six faces under one `PATH`, but an
-                // import holds a single path. Keep the first face: the cube is
-                // not representable here either way, and the alternative is
-                // losing the whole shader over its skybox.
-                if let Some(path) = body.get_mut("PATH")
-                    && let Some(faces) = path.as_array()
-                    && let Some(first) = faces.first().cloned()
-                {
-                    *path = first;
-                }
+                keep_first_cube_face(body);
             }
             map.insert(name, body);
         }
         *imported = Value::Object(map);
+    }
+
+    // The same faces, in an `IMPORTED` already written as the map ISF asks for.
+    if let Some(imported) = root.get_mut("IMPORTED")
+        && let Some(entries) = imported.as_object_mut()
+    {
+        for entry in entries.values_mut().filter_map(Value::as_object_mut) {
+            keep_first_cube_face(entry);
+        }
     }
 
     // Inputs get their values written in whatever the authoring tool felt
@@ -208,6 +208,7 @@ fn repair(root: &mut Value) {
         && let Some(inputs) = inputs.as_array_mut()
     {
         for input in inputs.iter_mut().filter_map(Value::as_object_mut) {
+            widen_float_range(input);
             let coerce: fn(&mut Value) = match input.get("TYPE").and_then(Value::as_str) {
                 Some("long" | "int") => {
                     name_the_values(input);
@@ -224,6 +225,33 @@ fn repair(root: &mut Value) {
                 }
             }
         }
+    }
+}
+
+/// MadMapper's `floatRange` is a low/high pair in one `vec2` uniform, which is
+/// what ISF calls a `point2D`. Its bounds are written once for both ends.
+fn widen_float_range(input: &mut Map<String, Value>) {
+    if input.get("TYPE").and_then(Value::as_str) != Some("floatRange") {
+        return;
+    }
+    input.insert("TYPE".into(), Value::from("point2D"));
+    for key in ["MIN", "MAX", "IDENTITY", "DEFAULT"] {
+        if let Some(value) = input.get_mut(key)
+            && value.is_number()
+        {
+            *value = Value::from(vec![value.clone(), value.clone()]);
+        }
+    }
+}
+
+/// A cubemap import lists its six faces under one `PATH`, but an import holds
+/// a single path. Keep the first face: the cube is not representable here
+/// either way, and the alternative is losing the whole shader over its skybox.
+fn keep_first_cube_face(entry: &mut Map<String, Value>) {
+    if let Some(path) = entry.get_mut("PATH")
+        && let Some(first) = path.as_array().and_then(|faces| faces.first()).cloned()
+    {
+        *path = first;
     }
 }
 
@@ -369,6 +397,21 @@ mod tests {
         };
         assert_eq!(long.input_values.min, Some(0));
         assert_eq!(long.input_values.max, Some(255));
+    }
+
+    #[test]
+    fn a_float_range_becomes_the_pair_it_is() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "band", "TYPE": "floatRange",
+                 "DEFAULT": [0.2, 0.8], "MIN": 0.0, "MAX": 1.0 } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Point2d(p) = &isf.inputs[0].ty else {
+            panic!("expected a point2D input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(p.default, Some([0.2, 0.8]));
+        assert_eq!(p.max, Some([1.0, 1.0]));
     }
 
     #[test]
