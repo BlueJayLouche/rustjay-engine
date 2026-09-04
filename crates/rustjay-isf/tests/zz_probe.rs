@@ -28,7 +28,7 @@ fn probe() {
         if p.extension().and_then(|x| x.to_str()) != Some("fs") { continue; }
         let Ok(src) = std::fs::read_to_string(&p) else { continue };
         n += 1;
-        if let Err(err) = isf::parse(&strip_json_comments(&src)) {
+        if let Err(err) = rustjay_isf::header::parse(&src) {
             let msg = format!("{err}");
             // Normalise away line/column and quoted specifics.
             let key = msg

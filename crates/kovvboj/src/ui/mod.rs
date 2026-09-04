@@ -331,7 +331,7 @@ mod egui_impl {
         let Ok(src) = std::fs::read_to_string(path) else {
             return false;
         };
-        let Ok(parsed) = isf::parse(&src) else {
+        let Ok(parsed) = rustjay_isf::header::parse(&src) else {
             return false;
         };
         parsed
@@ -1253,7 +1253,7 @@ mod egui_impl {
             {
                 mixer.groups[gi].collapsed = !collapsed;
             }
-            let n = mixer.groups[gi].len;
+            let n = mixer.group_members(&uuid).len();
             let name = mixer.groups[gi].name.clone();
             ui.label(
                 egui::RichText::new(format!("⛶ {name}"))
@@ -1355,6 +1355,7 @@ mod egui_impl {
             let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
             let mut undo_snapshot: Option<crate::scene::Topology> = None;
             let mut restack: Option<(String, String)> = None;
+            let mut regroup: Option<(String, Option<String>)> = None;
             let mut drops: Vec<ChainDrop> = Vec::new();
             let mut group_acts = GroupActions::default();
 
@@ -1376,9 +1377,10 @@ mod egui_impl {
                     // which case the header stands for all of them.
                     let mut hide_member = false;
                     if let Some(g) = mixer.group_of(idx) {
-                        let topmost = g.start + g.len - 1;
-                        let gi = mixer.groups.iter().position(|x| x.uuid == g.uuid).unwrap();
-                        if idx == topmost {
+                        let gid = g.uuid.clone();
+                        let members = mixer.group_members(&gid);
+                        let gi = mixer.groups.iter().position(|x| x.uuid == gid).unwrap();
+                        if members.last() == Some(&idx) {
                             group_header(ui, &mut mixer, gi, engine, &mut group_acts);
                         }
                         hide_member = mixer.groups[gi].collapsed;
@@ -1386,6 +1388,13 @@ mod egui_impl {
                     if hide_member {
                         continue;
                     }
+                    // Members sit inside a rail drawn down the left, so a group
+                    // reads as one block rather than rows that happen to be
+                    // adjacent.
+                    let in_group_uuid = mixer
+                        .channels
+                        .get(idx)
+                        .and_then(|c| c.group.clone());
                     let _ = idx;
                     let Some(idx) = mixer.channels.iter().position(|c| c.uuid == *uuid) else {
                         continue;
@@ -1409,8 +1418,11 @@ mod egui_impl {
                     );
 
                     ui.push_id(uuid, |ui| {
+                        let indent = if in_group_uuid.is_some() { 14.0 } else { 0.0 };
+                        let row_top = ui.cursor().top();
                         let (_, dropped) =
                             ui.dnd_drop_zone::<LayerDrag, _>(egui::Frame::NONE, |ui| {
+                                ui.add_space(indent);
                         ui.group(|ui| {
                             // ── Row 1: restack, identity, mix ────────────────
                             ui.horizontal(|ui| {
@@ -1472,7 +1484,13 @@ mod egui_impl {
                                     if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
                                         toggle_pick = Some(uuid.clone());
                                     } else {
+                                        // Clearing and *then* picking this one:
+                                        // a plain click starts a pick of one,
+                                        // it does not leave the pick empty. The
+                                        // layer you start from belongs in the
+                                        // group you are about to make.
                                         clear_picks = true;
+                                        toggle_pick = Some(uuid.clone());
                                         new_selection = Some(crate::Selection::Layer {
                                             layer: uuid.clone(),
                                         });
@@ -1600,7 +1618,29 @@ mod egui_impl {
                             });
                         });
                             });
+                        if let Some(gid) = &in_group_uuid {
+                            let _ = gid;
+                            let rect = ui.min_rect();
+                            let x = rect.left() + 5.0;
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(x, row_top),
+                                    egui::pos2(x, rect.bottom()),
+                                ],
+                                egui::Stroke::new(
+                                    2.0,
+                                    rustjay_gui::egui_theme::colors::amber()
+                                        .gamma_multiply(0.5),
+                                ),
+                            );
+                        }
                         if let Some(payload) = dropped {
+                            // Dropping onto a row also settles group membership:
+                            // land on a member and you join its group, land
+                            // outside every group and you leave yours. Restack
+                            // alone would move the layer and leave it orphaned
+                            // inside a group's block, or stranded outside one.
+                            regroup = Some((payload.0.clone(), in_group_uuid.clone()));
                             restack = Some((payload.0.clone(), uuid.clone()));
                         }
                     });
@@ -1650,35 +1690,20 @@ mod egui_impl {
 
                 // Grouping, before the restack invalidates indices.
                 if want_group && picked.len() > 1 {
-                    let mut idxs: Vec<usize> = picked
-                        .iter()
-                        .filter_map(|u| mixer.channels.iter().position(|c| &c.uuid == u))
-                        .collect();
-                    idxs.sort_unstable();
-                    let contiguous = idxs
-                        .windows(2)
-                        .all(|w| w[1] == w[0] + 1);
-                    if !contiguous {
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    let uuid = crate::scene::new_uuid();
+                    let name = format!("Group {}", mixer.groups.len() + 1);
+                    let members: Vec<String> = picked.iter().cloned().collect();
+                    // Gathers them together; a scattered pick is grouped rather
+                    // than refused, which is what every editor does.
+                    if mixer.group_channels(uuid, name, &members).is_none() {
                         engine.notify(
-                            "Group needs layers next to each other in the stack".to_string(),
+                            "Pick at least two layers to group".to_string(),
                             rustjay_core::NotificationLevel::Error,
                             std::time::Duration::from_secs(4),
                         );
-                    } else {
-                        undo_snapshot.get_or_insert_with(|| {
-                            crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
-                        });
-                        let uuid = crate::scene::new_uuid();
-                        let name = format!("Group {}", mixer.groups.len() + 1);
-                        let start = idxs[0];
-                        let len = idxs.len();
-                        if mixer.group_channels(uuid, name, start, len).is_none() {
-                            engine.notify(
-                                "Those layers are already in a group".to_string(),
-                                rustjay_core::NotificationLevel::Error,
-                                std::time::Duration::from_secs(4),
-                            );
-                        }
                     }
                     clear_picks = true;
                 }
@@ -1691,6 +1716,20 @@ mod egui_impl {
                         crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
                     });
                     mixer.ungroup(&gid);
+                }
+
+                if let Some((layer, group)) = regroup.take() {
+                    let current = mixer
+                        .channels
+                        .iter()
+                        .find(|c| c.uuid == layer)
+                        .and_then(|c| c.group.clone());
+                    if current != group {
+                        undo_snapshot.get_or_insert_with(|| {
+                            crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                        });
+                        mixer.set_channel_group(&layer, group);
+                    }
                 }
 
                 // Restack last: it invalidates the indices used above.
@@ -2223,8 +2262,20 @@ mod egui_impl {
             // Arbitrary file — the registry only lists what it scanned, so
             // picking a file from anywhere still needs a native dialog.
             if let Ok(mut guard) = self.pending_file.lock()
-                && let Some(path) = guard.take()
+                && let Some(mut path) = guard.take()
             {
+                // A shader picked from anywhere is copied into the library, so
+                // adding it once is enough: it is in the list next launch, and
+                // hot-reload watches the copy the layer is actually using.
+                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fs")) {
+                    match crate::sources::registry::install_shader(&path, &crate::shaders_dir()) {
+                        Ok(installed) => path = installed,
+                        Err(e) => log::warn!(
+                            "[Library] could not install {}: {e} — using it where it is",
+                            path.display()
+                        ),
+                    }
+                }
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())

@@ -172,7 +172,7 @@ impl IsfEffect {
     pub fn from_path(path: &Path) -> anyhow::Result<Self> {
         let glsl_src = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", path.display(), e))?;
-        let isf = isf::parse(&glsl_src)
+        let isf = crate::header::parse(&glsl_src)
             .map_err(|e| anyhow::anyhow!("ISF parse error in {}: {}", path.display(), e))?;
         let shader_name = path
             .file_stem()
@@ -536,7 +536,7 @@ impl EffectPlugin for IsfEffect {
                 return;
             }
         };
-        match isf::parse(&src) {
+        match crate::header::parse(&src) {
             Ok(isf) => {
                 self.isf = isf;
                 self.glsl_src = src;

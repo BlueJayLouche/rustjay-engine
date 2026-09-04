@@ -4,6 +4,18 @@
 //! into a single engine. Two ISF shader channels are composited via the mixer
 //! with crossfader, blend modes, and transitions.
 
+/// The shader library folder: the one directory the registry scans and the
+/// watcher watches, and where [`install_shader`](sources::registry::install_shader)
+/// puts anything picked from elsewhere.
+pub fn shaders_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders")
+}
+
+/// The images-and-videos folder the registry scans alongside [`shaders_dir`].
+pub fn assets_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
 #[cfg(feature = "mixer")]
 pub mod thumbs;
 #[cfg(feature = "api")]
@@ -1218,7 +1230,7 @@ impl KovvbojRootPlugin {
         mixer.use_crossfader = false;
         let dummy_engine = EngineState::new();
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let shaders_dir = manifest_dir.join("shaders");
+        let shaders_dir = crate::shaders_dir();
         let mut sources = std::collections::HashMap::new();
 
         // Two layers to open on: a generator underneath, a camera over it.
@@ -1579,8 +1591,8 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let shaders_dir = manifest_dir.join("shaders");
-            state.registry = Registry::scan(&shaders_dir, &manifest_dir.join("assets"));
+            let shaders_dir = crate::shaders_dir();
+            state.registry = Registry::scan(&shaders_dir, &crate::assets_dir());
             log::info!(
                 "[Registry] scanned {} shaders, {} images, {} videos",
                 state.registry.shaders.len(),
@@ -1753,7 +1765,25 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
             if let Some(ref watcher) = state.shader_watcher {
-                for event in watcher.poll() {
+                let events = watcher.poll();
+                // A modify is a hot-reload, handled below and no change to the
+                // list. A create or remove is: rescan so the Library follows
+                // the folder, whether the file arrived through Add file… or was
+                // dropped in from the Finder.
+                if events.iter().any(|e| {
+                    matches!(
+                        e.kind,
+                        notify::EventKind::Create(_) | notify::EventKind::Remove(_)
+                    )
+                }) {
+                    state.registry =
+                        Registry::scan(&crate::shaders_dir(), &crate::assets_dir());
+                    log::info!(
+                        "[Registry] rescanned: {} shaders",
+                        state.registry.shaders.len()
+                    );
+                }
+                for event in events {
                     for path in &event.paths {
                         log::info!("[ShaderWatcher] changed: {}", path.display());
                         let name = path

@@ -19,42 +19,11 @@ fn shaders_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders")
 }
 
-/// 00-vangogh.fs has `//` comments inside its header JSON (serde_json is strict).
-/// Strip them before `isf::parse` — the leniency belongs at the parse boundary.
-fn strip_json_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_str = false;
-    let mut prev = '\0';
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(c);
-            if c == '"' && prev != '\\' {
-                in_str = false;
-            }
-        } else if c == '"' {
-            in_str = true;
-            out.push(c);
-        } else if c == '/' && chars.peek() == Some(&'/') {
-            for c2 in chars.by_ref() {
-                if c2 == '\n' {
-                    out.push('\n');
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-        prev = c;
-    }
-    out
-}
 
 /// Parse + compile one shader file. Err strings are categorized loosely for reporting.
 fn compile_one(path: &PathBuf) -> Result<rustjay_isf::Transpiled, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
-    let src = strip_json_comments(&src);
-    let isf = isf::parse(&src).map_err(|e| format!("header-parse: {e}"))?;
+    let isf = rustjay_isf::header::parse(&src).map_err(|e| format!("header-parse: {e}"))?;
     rustjay_isf::generate_wgsl(&isf, &src)
 }
 
@@ -166,17 +135,16 @@ fn baked_dialect_shaders_do_not_get_the_y_flip() {
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let cleaned = strip_json_comments(&src);
-        let Ok(isf) = isf::parse(&cleaned) else {
+        let Ok(isf) = rustjay_isf::header::parse(&src) else {
             continue;
         };
-        let Ok(out) = rustjay_isf::compile::compile(&isf, &cleaned) else {
+        let Ok(out) = rustjay_isf::compile::compile(&isf, &src) else {
             continue;
         };
 
-        let uses_macros = cleaned.contains("IMG_THIS_PIXEL")
-            || cleaned.contains("IMG_NORM_PIXEL")
-            || cleaned.contains("IMG_PIXEL");
+        let uses_macros = src.contains("IMG_THIS_PIXEL")
+            || src.contains("IMG_NORM_PIXEL")
+            || src.contains("IMG_PIXEL");
         checked += 1;
         if out.manifest.flip_frag_norm_coord != uses_macros {
             wrongly_flipped.push(name);

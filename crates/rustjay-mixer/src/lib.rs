@@ -90,6 +90,11 @@ pub struct Channel {
     pub input_select: InputSelect,
     pub solo: bool,
     pub mute: bool,
+    /// The bus group this layer belongs to, if any. Membership lives here
+    /// rather than as a span on the group: a span has to be recomputed on every
+    /// restack, and dropping a layer onto a group it already sits next to is
+    /// then indistinguishable from not moving it at all.
+    pub group: Option<String>,
     /// When `false` the channel is skipped entirely: no effect render pass and
     /// no composite step. Used by hosts (e.g. VP-404) to elide idle pads.
     pub active: bool,
@@ -157,6 +162,7 @@ impl Channel {
             input_select: InputSelect::default(),
             solo: false,
             mute: false,
+            group: None,
             active: true,
             key_mode: 0,
             key_r: 0.0,
@@ -323,10 +329,6 @@ pub struct ChannelGroup {
     /// Stable identity; the parameter prefix is `grp_<uuid>_`.
     pub uuid: String,
     pub name: String,
-    /// Index of the first member in `Mixer.channels`.
-    pub start: usize,
-    /// How many channels belong to the group.
-    pub len: usize,
     /// Effects applied to the composited members.
     pub chain: Vec<EffectSlot>,
     pub opacity: f32,
@@ -354,15 +356,13 @@ pub struct ChannelGroup {
 }
 
 impl ChannelGroup {
-    pub fn new(uuid: impl Into<String>, name: impl Into<String>, start: usize, len: usize) -> Self {
+    pub fn new(uuid: impl Into<String>, name: impl Into<String>) -> Self {
         let uuid = uuid.into();
         Self {
             opacity_key: format!("grp_{uuid}_opacity"),
             blend_key: format!("grp_{uuid}_blend"),
             uuid,
             name: name.into(),
-            start,
-            len,
             chain: Vec::new(),
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
@@ -377,15 +377,6 @@ impl ChannelGroup {
             group_out: None,
             size: [0, 0],
         }
-    }
-
-    /// The channel indices this group covers.
-    pub fn range(&self) -> std::ops::Range<usize> {
-        self.start..self.start + self.len
-    }
-
-    pub fn contains(&self, index: usize) -> bool {
-        self.range().contains(&index)
     }
 
     fn ensure_resources(&mut self, device: &wgpu::Device, size: [u32; 2]) {
@@ -548,33 +539,94 @@ impl Mixer {
 
     /// The group owning a channel index, if any.
     pub fn group_of(&self, index: usize) -> Option<&ChannelGroup> {
-        self.groups.iter().find(|g| g.contains(index))
+        let id = self.channels.get(index)?.group.as_ref()?;
+        self.groups.iter().find(|g| &g.uuid == id)
     }
 
-    /// Group a contiguous run of channels, newest group last.
+    /// Channel indices belonging to a group, in stack order.
+    pub fn group_members(&self, uuid: &str) -> Vec<usize> {
+        self.channels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.group.as_deref() == Some(uuid))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Gather the named layers together and make them a group.
     ///
-    /// Returns `None` when the span is empty, out of range, or overlaps a group
-    /// that already exists — a channel belongs to at most one group, and
-    /// silently re-parenting one would lose whichever group lost it.
+    /// They are moved to sit above the topmost of them before the group is
+    /// formed. Grouping gathers, as it does in every editor — leaving members
+    /// scattered through the stack would put non-members in the middle of a
+    /// composite that is supposed to be one image.
     pub fn group_channels(
         &mut self,
         uuid: impl Into<String>,
         name: impl Into<String>,
-        start: usize,
-        len: usize,
-    ) -> Option<&mut ChannelGroup> {
-        if len == 0 || start + len > self.channels.len() {
+        members: &[String],
+    ) -> Option<String> {
+        let mut idxs: Vec<usize> = members
+            .iter()
+            .filter_map(|u| self.channels.iter().position(|c| &c.uuid == u))
+            .collect();
+        if idxs.len() < 2 {
             return None;
         }
-        if (start..start + len).any(|i| self.group_of(i).is_some()) {
-            return None;
+        idxs.sort_unstable();
+        // Gather to where the topmost picked layer sits. Take them all out
+        // first (highest index first, so the lower ones stay valid), then put
+        // the block back in one piece.
+        let anchor = *idxs.last().unwrap();
+        let mut taken: Vec<Channel> = idxs
+            .iter()
+            .rev()
+            .map(|&i| self.channels.remove(i))
+            .collect();
+        taken.reverse();
+        let removed_below = idxs.iter().filter(|&&i| i < anchor).count();
+        let at = anchor - removed_below;
+        for (n, ch) in taken.into_iter().enumerate() {
+            self.channels.insert(at + n, ch);
         }
-        self.groups.push(ChannelGroup::new(uuid, name, start, len));
-        self.groups.last_mut()
+        let uuid = uuid.into();
+        for u in members {
+            if let Some(c) = self.channels.iter_mut().find(|c| &c.uuid == u) {
+                c.group = Some(uuid.clone());
+            }
+        }
+        self.groups.push(ChannelGroup::new(uuid.clone(), name));
+        Some(uuid)
+    }
+
+    /// Put one layer into a group, or take it out with `None`.
+    ///
+    /// Moving it next to the group's other members is the point: dropping a
+    /// layer onto a group it already sits beside changes only its membership,
+    /// and a guard that skips "no position change" would throw that away.
+    pub fn set_channel_group(&mut self, layer: &str, group: Option<String>) {
+        let Some(i) = self.channels.iter().position(|c| c.uuid == layer) else {
+            return;
+        };
+        if let Some(gid) = &group {
+            let members = self.group_members(gid);
+            if let Some(&top) = members.last() {
+                let ch = self.channels.remove(i);
+                let to = if i <= top { top } else { top + 1 };
+                self.channels.insert(to.min(self.channels.len()), ch);
+            }
+        }
+        if let Some(c) = self.channels.iter_mut().find(|c| c.uuid == layer) {
+            c.group = group;
+        }
     }
 
     /// Dissolve a group, leaving its members in the stack.
     pub fn ungroup(&mut self, uuid: &str) {
+        for c in self.channels.iter_mut() {
+            if c.group.as_deref() == Some(uuid) {
+                c.group = None;
+            }
+        }
         self.groups.retain(|g| g.uuid != uuid);
     }
 
@@ -945,12 +997,14 @@ impl EffectInstance for Mixer {
                 if !(!g.mute && (!any_solo || g.solo)) {
                     continue;
                 }
-                let range = g.range();
-                if range.end > channels.len() {
-                    continue;
-                }
-                let members: Vec<usize> = range
-                    .filter(|i| eff.get(*i).copied().unwrap_or(0.0) >= 0.001)
+                let members: Vec<usize> = channels
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, c)| {
+                        c.group.as_deref() == Some(g.uuid.as_str())
+                            && eff.get(*i).copied().unwrap_or(0.0) >= 0.001
+                    })
+                    .map(|(i, _)| i)
                     .collect();
                 if members.is_empty() {
                     continue;
@@ -962,7 +1016,7 @@ impl EffectInstance for Mixer {
                 let gc = g.composite.as_ref().unwrap();
                 clear_texture(ctx.encoder, &ga.view);
                 let mut written: Option<&Texture> = None;
-                for &i in &members {
+                for (slot, &i) in members.iter().enumerate() {
                     let ch = &channels[i];
                     let Some(src) = ch.output_texture() else {
                         continue;
@@ -982,7 +1036,7 @@ impl EffectInstance for Mixer {
                         ctx.queue,
                         ctx.encoder,
                         *generation,
-                        i - g.start,
+                        slot,
                         dest_is_a,
                         &src.view,
                         &read.view,
@@ -1032,7 +1086,10 @@ impl EffectInstance for Mixer {
             // composited it, and the group is blended once, at the position of
             // its first member.
             if let Some(g) = self.group_of(i) {
-                if i != g.start || !g.rendered {
+                // Blended once, at the position of its topmost member, so the
+                // group sits in the stack where its members do.
+                let members = self.group_members(&g.uuid);
+                if members.last() != Some(&i) || !g.rendered {
                     continue;
                 }
                 let Some(src) = g.group_out.as_ref() else {
@@ -1447,61 +1504,98 @@ mod group_tests {
         mixer
     }
 
+    fn ids(m: &Mixer) -> Vec<String> {
+        m.channels.iter().map(|c| c.uuid.clone()).collect()
+    }
+
     #[test]
-    fn a_group_claims_its_span() {
+    fn grouping_marks_every_member() {
         let mut mixer = stack(4);
-        assert!(mixer.group_channels("g1", "Backdrop", 1, 2).is_some());
-        assert!(mixer.group_of(0).is_none(), "outside the span");
-        assert_eq!(mixer.group_of(1).map(|g| g.uuid.as_str()), Some("g1"));
-        assert_eq!(mixer.group_of(2).map(|g| g.uuid.as_str()), Some("g1"));
+        let g = mixer
+            .group_channels("g1", "Backdrop", &["ch1".into(), "ch2".into()])
+            .expect("grouped");
+        assert_eq!(mixer.group_members(&g), vec![1, 2]);
+        assert!(mixer.group_of(0).is_none());
         assert!(mixer.group_of(3).is_none());
     }
 
-    /// A channel belongs to one group: re-parenting it silently would leave the
-    /// first group rendering members it no longer owns.
+    /// Grouping gathers: members that were apart end up next to each other, or
+    /// a non-member would sit in the middle of a composite meant to be one
+    /// image.
     #[test]
-    fn spans_cannot_overlap() {
+    fn grouping_gathers_scattered_layers() {
         let mut mixer = stack(4);
-        mixer.group_channels("g1", "A", 0, 2).unwrap();
-        assert!(mixer.group_channels("g2", "B", 1, 2).is_none(), "overlaps g1");
-        assert!(mixer.group_channels("g2", "B", 2, 2).is_some(), "clear of g1");
+        mixer
+            .group_channels("g1", "A", &["ch0".into(), "ch3".into()])
+            .expect("grouped");
+        let members = mixer.group_members("g1");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[1], members[0] + 1, "members ended up adjacent: {members:?}");
     }
 
     #[test]
-    fn an_empty_or_overlong_span_is_refused() {
+    fn a_single_layer_is_not_a_group() {
         let mut mixer = stack(2);
-        assert!(mixer.group_channels("g", "A", 0, 0).is_none());
-        assert!(mixer.group_channels("g", "A", 1, 5).is_none());
+        assert!(mixer.group_channels("g", "A", &["ch0".into()]).is_none());
+    }
+
+    /// The case CuePool learned the hard way: dropping a layer onto a group it
+    /// already sits beside changes only its membership, and a guard that skips
+    /// "no position change" throws that away.
+    #[test]
+    fn joining_a_group_it_already_sits_beside_still_joins() {
+        let mut mixer = stack(3);
+        mixer
+            .group_channels("g1", "A", &["ch1".into(), "ch2".into()])
+            .unwrap();
+        assert!(mixer.group_of(0).is_none(), "ch0 starts outside");
+        mixer.set_channel_group("ch0", Some("g1".into()));
+        let members = mixer.group_members("g1");
+        assert_eq!(members.len(), 3, "it joined: {members:?}");
     }
 
     #[test]
-    fn ungrouping_leaves_the_members() {
+    fn leaving_a_group_keeps_the_layer() {
         let mut mixer = stack(3);
-        mixer.group_channels("g1", "A", 0, 2).unwrap();
+        mixer
+            .group_channels("g1", "A", &["ch0".into(), "ch1".into()])
+            .unwrap();
+        mixer.set_channel_group("ch0", None);
+        assert_eq!(mixer.group_members("g1"), vec![1]);
+        assert_eq!(ids(&mixer).len(), 3);
+    }
+
+    #[test]
+    fn ungrouping_frees_the_members() {
+        let mut mixer = stack(3);
+        mixer
+            .group_channels("g1", "A", &["ch0".into(), "ch1".into()])
+            .unwrap();
         mixer.ungroup("g1");
         assert!(mixer.groups.is_empty());
+        assert!(mixer.channels.iter().all(|c| c.group.is_none()));
         assert_eq!(mixer.channels.len(), 3, "members survive the group");
     }
 
-    /// Muting a group silences the whole span, and soloing one silences
-    /// everything outside it — the same rules a layer follows.
+    /// Muting a group silences its members; soloing one silences everything
+    /// else while keeping its own members audible.
     #[test]
     fn a_group_gates_its_members() {
         let mut mixer = stack(3);
-        mixer.group_channels("g1", "A", 0, 2).unwrap();
+        mixer
+            .group_channels("g1", "A", &["ch0".into(), "ch1".into()])
+            .unwrap();
+        let members = mixer.group_members("g1");
 
         mixer.groups[0].mute = true;
-        assert!(!mixer.any_solo());
-        // Members keep their own opacity; the group's gate is applied when the
-        // group is blended, so the members still report theirs here.
-        assert_eq!(mixer.effective_opacities().len(), 3);
+        let eff = mixer.effective_opacities();
+        assert!(members.iter().all(|&i| eff[i] == 0.0), "muted: {eff:?}");
 
         mixer.groups[0].mute = false;
         mixer.groups[0].solo = true;
-        assert!(mixer.any_solo(), "a soloed group counts as a solo");
         let eff = mixer.effective_opacities();
-        assert_eq!(eff[2], 0.0, "the ungrouped layer is silenced by the solo");
-        assert!(eff[0] > 0.0, "a soloed group keeps its own members audible");
-        assert!(eff[1] > 0.0, "a soloed group keeps its own members audible");
+        assert!(members.iter().all(|&i| eff[i] > 0.0), "soloed members stay up");
+        let outsider = (0..3).find(|i| !members.contains(i)).unwrap();
+        assert_eq!(eff[outsider], 0.0, "everything else is silenced");
     }
 }
