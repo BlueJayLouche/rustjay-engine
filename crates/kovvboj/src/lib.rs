@@ -234,6 +234,18 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub saved_chains: Vec<crate::scene::SavedChain>,
+    /// Groups saved to the library.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub saved_groups: Vec<crate::scene::SavedGroup>,
+    /// A group the user asked to save: its uuid and the name to save it under.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_group_save: Option<(String, String)>,
+    /// A saved group to build into the stack.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_group_recall: Option<crate::scene::SavedGroup>,
     /// A master chain the user asked to save, by name.
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -646,6 +658,12 @@ impl Default for KovvbojAppState {
             pending_layer_save: None,
             #[cfg(feature = "mixer")]
             saved_chains: Vec::new(),
+            #[cfg(feature = "mixer")]
+            saved_groups: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_group_save: None,
+            #[cfg(feature = "mixer")]
+            pending_group_recall: None,
             #[cfg(feature = "mixer")]
             pending_chain_save: None,
             #[cfg(feature = "mixer")]
@@ -1606,6 +1624,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.favourites = state.workspace.load_favourites();
                 state.saved_layers = state.workspace.load_layers();
                 state.saved_chains = state.workspace.load_chains();
+                state.saved_groups = state.workspace.load_groups();
 
                 // Restore the modulation snapshot loaded from the workspace scene
                 // in `init()` (topology already rebuilt there, so the param keys
@@ -2179,6 +2198,131 @@ impl EffectPlugin for KovvbojRootPlugin {
                 }
             }
 
+
+            if let Some((gid, name)) = state.pending_group_save.take() {
+                let captured = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    let topo = crate::scene::Topology::from_mixer(&mixer, &state.layer_sources);
+                    topo.groups.iter().find(|g| g.uuid == gid).map(|g| {
+                        let layers: Vec<crate::scene::LayerDesc> = g
+                            .members
+                            .iter()
+                            .filter_map(|u| {
+                                topo.layers.iter().find(|l| &l.uuid == u).cloned()
+                            })
+                            .collect();
+                        crate::scene::SavedGroup::capture(
+                            name.clone(),
+                            g,
+                            layers,
+                            &state.param_snapshot,
+                        )
+                    })
+                };
+                match captured {
+                    Some(saved) => match state.workspace.save_group(&saved) {
+                        Ok(_) => {
+                            state.saved_groups = state.workspace.load_groups();
+                            engine.notify(
+                                format!("Saved group '{name}'"),
+                                rustjay_core::NotificationLevel::Success,
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                        Err(e) => engine.notify(
+                            format!("Could not save '{name}': {e}"),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(5),
+                        ),
+                    },
+                    None => engine.notify(
+                        format!("Group '{name}' is no longer there to save"),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(4),
+                    ),
+                }
+            }
+
+            if let Some(saved) = state.pending_group_recall.take() {
+                // Built here rather than queued as pending layers: that path
+                // mints its own uuid per layer, which would rekey a second time
+                // and strand the parameters this recall just rewrote.
+                let (layers, gid, fx, params) = saved.instantiate();
+                let base = crate::scene::topology_base();
+                let mut members = Vec::new();
+                {
+                    let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    for desc in &layers {
+                        let mut entry = desc.source.clone();
+                        if let Some(path) = entry.path.take() {
+                            entry.path = Some(crate::scene::resolve(&path, &base));
+                        }
+                        let source = match instantiate_source(&entry, device, queue, engine) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log::warn!("[Group] '{}' failed to build: {e}", desc.name);
+                                continue;
+                            }
+                        };
+                        let prefix = format!("ch_{}_", desc.uuid);
+                        let mut source = source;
+                        source.set_param_prefix(&prefix);
+                        let mut channel = Channel::new(desc.uuid.clone(), &desc.name, source);
+                        channel.opacity = desc.opacity;
+                        channel.blend_mode = desc.blend_mode;
+                        channel.solo = desc.solo;
+                        channel.mute = desc.mute;
+                        for slot in &desc.fx {
+                            if let Some(mut built) =
+                                build_fx_slot(slot, &base, device, queue, engine)
+                            {
+                                built
+                                    .effect
+                                    .set_param_prefix(&format!("{prefix}fx{}_", built.uuid));
+                                channel.chain.push(built);
+                            }
+                        }
+                        if mixer.add_channel(channel).is_err() {
+                            continue;
+                        }
+                        state.layer_sources.insert(desc.uuid.clone(), desc.source.clone());
+                        members.push(desc.uuid.clone());
+                    }
+
+                    if members.len() >= 2
+                        && mixer
+                            .group_channels(gid.clone(), saved.name.clone(), &members)
+                            .is_some()
+                    {
+                        let prefix = format!("grp_{gid}_");
+                        let mut chain = Vec::new();
+                        for slot in &fx {
+                            if let Some(mut built) =
+                                build_fx_slot(slot, &base, device, queue, engine)
+                            {
+                                built
+                                    .effect
+                                    .set_param_prefix(&format!("{prefix}fx{}_", built.uuid));
+                                chain.push(built);
+                            }
+                        }
+                        if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == gid) {
+                            g.opacity = saved.opacity;
+                            g.blend_mode = saved.blend_mode;
+                            g.chain = chain;
+                        }
+                    }
+                }
+                if let Ok(mut restore) = engine.param_restore.lock() {
+                    restore.extend(params);
+                }
+                self.params_dirty = true;
+                engine.notify(
+                    format!("Loaded group '{}' — {} layers", saved.name, members.len()),
+                    rustjay_core::NotificationLevel::Success,
+                    std::time::Duration::from_secs(3),
+                );
+            }
 
             if let Some(name) = state.pending_chain_save.take() {
                 let fx = {

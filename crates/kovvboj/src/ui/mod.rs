@@ -1063,6 +1063,77 @@ mod egui_impl {
             return;
         }
 
+        // The name is editable in place for anything that owns one. A layer
+        // called "abstract_field" because that is the shader it started from
+        // tells you nothing once it is three effects deep.
+        #[cfg(feature = "mixer")]
+        let renamed: Option<(crate::Selection, String)> = match &selection {
+            crate::Selection::Layer { .. } | crate::Selection::Group { .. } => {
+                let current = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    match &selection {
+                        crate::Selection::Layer { layer } => mixer
+                            .channels
+                            .iter()
+                            .find(|c| c.uuid == *layer)
+                            .map(|c| c.name.clone()),
+                        crate::Selection::Group { group } => mixer
+                            .groups
+                            .iter()
+                            .find(|g| g.uuid == *group)
+                            .map(|g| g.name.clone()),
+                        _ => None,
+                    }
+                };
+                current.and_then(|name| {
+                    let id = ui.make_persistent_id(("rename", &heading));
+                    let mut draft: String =
+                        ui.data(|d| d.get_temp(id)).unwrap_or_else(|| name.clone());
+                    // Reset the draft when the selection moves on, or typing in
+                    // one row would follow you to the next.
+                    if !ui.memory(|m| m.has_focus(id)) && draft != name {
+                        draft = name.clone();
+                    }
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut draft)
+                            .id(id)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+                    let done = resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let trimmed = draft.trim().to_string();
+                    (done && !trimmed.is_empty() && trimmed != name)
+                        .then_some((selection.clone(), trimmed))
+                })
+            }
+            _ => {
+                ui.label(egui::RichText::new(&heading).strong().monospace());
+                None
+            }
+        };
+        #[cfg(feature = "mixer")]
+        if let Some((what, name)) = renamed {
+            let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+            match what {
+                crate::Selection::Layer { layer } => {
+                    if let Some(c) = mixer.channels.iter_mut().find(|c| c.uuid == layer) {
+                        c.name = name;
+                    }
+                }
+                crate::Selection::Group { group } => {
+                    if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == group) {
+                        g.name = name;
+                    }
+                }
+                _ => {}
+            }
+            drop(mixer);
+            // The name is part of every `… Opacity` / `… Blend` label.
+            state.params_dirty_request = true;
+        }
+        #[cfg(not(feature = "mixer"))]
         ui.label(egui::RichText::new(&heading).strong().monospace());
         ui.separator();
 
@@ -1240,6 +1311,7 @@ mod egui_impl {
     #[derive(Default)]
     struct GroupActions {
         select: Option<String>,
+        save: Option<String>,
         ungroup: Option<String>,
         select_fx: Option<String>,
         remove_fx: Option<(String, String)>,
@@ -1299,6 +1371,13 @@ mod egui_impl {
                     .clicked()
                 {
                     acts.ungroup = Some(uuid.clone());
+                }
+                if ui
+                    .small_button("💾")
+                    .on_hover_text("Save this group to the library, layers and all")
+                    .clicked()
+                {
+                    acts.save = Some(uuid.clone());
                 }
                 // Through the parameter, not the field: the render reads
                 // `grp_<uuid>_opacity` from the engine now that groups declare
@@ -1727,6 +1806,17 @@ mod egui_impl {
                 }
 
                 // What the group headers asked for.
+                if let Some(gid) = group_acts.save.take() {
+                    // Saved under the group's own name, which is editable in
+                    // the inspector — so naming it is renaming it.
+                    let name = mixer
+                        .groups
+                        .iter()
+                        .find(|g| g.uuid == gid)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Group".to_string());
+                    state.pending_group_save = Some((gid, name));
+                }
                 if let Some(gid) = group_acts.select.take() {
                     new_selection = Some(crate::Selection::Group { group: gid });
                 }
@@ -1931,6 +2021,9 @@ mod egui_impl {
                     #[cfg(feature = "mixer")]
                     let mut queue_chain_recall: Option<crate::scene::SavedChain> = None;
                     let mut queue_chain_delete: Option<String> = None;
+                    #[cfg(feature = "mixer")]
+                    let mut queue_group_recall: Option<crate::scene::SavedGroup> = None;
+                    let mut queue_group_delete: Option<String> = None;
                     // One library row: label (optionally a drag source for FX
                     // strips) plus the "➕ new deck" button.
                     // Two verbs. A source's ➕ makes a layer; an effect's ➕
@@ -2181,6 +2274,66 @@ mod egui_impl {
                         ui.add_space(4.0);
                     }
 
+                    // Saved groups: whole arrangements of layers.
+                    #[cfg(feature = "mixer")]
+                    if !state.saved_groups.is_empty() {
+                        heading(ui, "GROUPS", "➕ adds its layers");
+                        let mut groups: Vec<&crate::scene::SavedGroup> =
+                            state.saved_groups.iter().collect();
+                        groups.sort_by_key(|g| !favourites.contains(&g.name));
+                        for g in groups {
+                            ui.horizontal(|ui| {
+                                let starred = favourites.contains(&g.name);
+                                if ui
+                                    .add(
+                                        egui::Button::new(if starred { "★" } else { "☆" })
+                                            .small()
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    toggle_fav_saved = Some(g.name.clone());
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .small_button("✖")
+                                            .on_hover_text("Delete this saved group")
+                                            .clicked()
+                                        {
+                                            queue_group_delete = Some(g.name.clone());
+                                        }
+                                        if ui
+                                            .small_button("➕")
+                                            .on_hover_text("Add this group and its layers")
+                                            .clicked()
+                                        {
+                                            queue_group_recall = Some((*g).clone());
+                                        }
+                                        let n = g.layers.len();
+                                        let size = egui::vec2(
+                                            ui.available_width(),
+                                            ui.spacing().interact_size.y,
+                                        );
+                                        ui.allocate_ui_with_layout(
+                                            size,
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(format!("⛶ {}", g.name))
+                                                        .truncate(),
+                                                )
+                                                .on_hover_text(format!("{n} layers"));
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                        ui.add_space(4.0);
+                    }
+
                     // Saved master chains, next to saved layers — both are the
                     // user's own work rather than something discovered on disk.
                     #[cfg(feature = "mixer")]
@@ -2323,6 +2476,17 @@ mod egui_impl {
                         }
                         if let Err(e) = state.workspace.save_favourites(&state.favourites) {
                             log::warn!("[Library] could not save favourites: {e}");
+                        }
+                    }
+                    #[cfg(feature = "mixer")]
+                    if let Some(g) = queue_group_recall {
+                        state.pending_group_recall = Some(g);
+                    }
+                    #[cfg(feature = "mixer")]
+                    if let Some(name) = queue_group_delete {
+                        match state.workspace.delete_group(&name) {
+                            Ok(()) => state.saved_groups = state.workspace.load_groups(),
+                            Err(e) => log::warn!("[Groups] delete failed: {e}"),
                         }
                     }
                     #[cfg(feature = "mixer")]

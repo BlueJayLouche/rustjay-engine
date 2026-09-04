@@ -134,6 +134,57 @@ impl Workspace {
         Ok(path)
     }
 
+    /// Write a saved group.
+    pub fn save_group(&self, group: &crate::scene::SavedGroup) -> anyhow::Result<PathBuf> {
+        let dir = self.dir.join("groups");
+        std::fs::create_dir_all(&dir)?;
+        let slug: String = group
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        let slug = slug.trim_matches('_').to_string();
+        let slug = if slug.is_empty() { "group".to_string() } else { slug };
+        let path = dir.join(format!("{slug}.json"));
+        std::fs::write(&path, serde_json::to_string_pretty(group)?)?;
+        Ok(path)
+    }
+
+    /// Every saved group on disk, name-sorted.
+    pub fn load_groups(&self) -> Vec<crate::scene::SavedGroup> {
+        let mut out: Vec<crate::scene::SavedGroup> = std::fs::read_dir(self.dir.join("groups"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+            .filter_map(|e| {
+                let text = std::fs::read_to_string(e.path()).ok()?;
+                match serde_json::from_str(&text) {
+                    Ok(g) => Some(g),
+                    Err(err) => {
+                        log::warn!("[Groups] skipping {}: {err}", e.path().display());
+                        None
+                    }
+                }
+            })
+            .collect();
+        out.sort_by_key(|g| g.name.to_lowercase());
+        out
+    }
+
+    /// Remove a saved group by name.
+    pub fn delete_group(&self, name: &str) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(self.dir.join("groups"))?.flatten() {
+            let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            if let Ok(g) = serde_json::from_str::<crate::scene::SavedGroup>(&text)
+                && g.name == name
+            {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every saved master chain on disk, name-sorted.
     pub fn load_chains(&self) -> Vec<crate::scene::SavedChain> {
         let mut out: Vec<crate::scene::SavedChain> = std::fs::read_dir(self.dir.join("chains"))
