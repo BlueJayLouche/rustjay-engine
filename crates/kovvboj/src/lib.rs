@@ -71,6 +71,11 @@ pub enum Selection {
         layer: String,
         fx: String,
     },
+    /// An FX slot in a group's chain.
+    GroupFx {
+        group: String,
+        fx: String,
+    },
     /// An FX slot in the master chain.
     MasterFx {
         fx: String,
@@ -89,6 +94,10 @@ pub struct KovvbojAppState {
     /// What the inspector panel is showing. Transient — not persisted.
     #[serde(skip)]
     pub selection: Selection,
+    /// Layers picked out for a bulk action — grouping, for now. Cmd- or
+    /// shift-click adds to it; a plain click replaces it. Transient.
+    #[serde(skip)]
+    pub selected_layers: std::collections::HashSet<String>,
     #[serde(skip)]
     pub registry: Registry,
     #[serde(skip)]
@@ -284,6 +293,8 @@ pub enum EffectTarget {
     Layer { layer_uuid: String },
     /// Add to the master FX chain.
     Master,
+    /// Add to a bus group's chain.
+    Group { group_uuid: String },
 }
 
 /// One ISF shader effect queued for creation by the UI and materialized in `prepare()`.
@@ -308,6 +319,8 @@ pub enum ChainRef {
     Layer { layer: String },
     /// The master chain.
     Master,
+    /// A bus group's chain, applied to its composited members.
+    Group { group: String },
 }
 
 #[cfg(feature = "mixer")]
@@ -319,6 +332,9 @@ impl ChainRef {
                 layer_uuid: layer.clone(),
             },
             ChainRef::Master => EffectTarget::Master,
+            ChainRef::Group { group } => EffectTarget::Group {
+                group_uuid: group.clone(),
+            },
         }
     }
 
@@ -330,6 +346,10 @@ impl ChainRef {
                 fx: fx.to_string(),
             },
             ChainRef::Master => Selection::MasterFx { fx: fx.to_string() },
+            ChainRef::Group { group } => Selection::GroupFx {
+                group: group.clone(),
+                fx: fx.to_string(),
+            },
         }
     }
 }
@@ -347,6 +367,11 @@ fn chain_parts<'m>(
             let ch = mixer.channels.iter_mut().find(|c| c.uuid == *layer)?;
             let base = format!("ch_{}_", ch.uuid);
             Some((&mut ch.chain, base))
+        }
+        ChainRef::Group { group } => {
+            let g = mixer.groups.iter_mut().find(|g| g.uuid == *group)?;
+            let base = format!("grp_{}_", g.uuid);
+            Some((&mut g.chain, base))
         }
     }
 }
@@ -574,6 +599,7 @@ impl Default for KovvbojAppState {
             thumbs: crate::thumbs::Thumbnails::default(),
             ready: false,
             selection: Selection::None,
+            selected_layers: std::collections::HashSet::new(),
             registry: Registry {
                 shaders: Vec::new(),
                 images: Vec::new(),
@@ -2174,6 +2200,36 @@ impl EffectPlugin for KovvbojRootPlugin {
                     continue;
                 };
                 match req.target {
+                    EffectTarget::Group { ref group_uuid } => {
+                        match rustjay_isf::IsfEffect::from_path(&req.path) {
+                            Ok(isf) => {
+                                let name = isf.shader_name.clone();
+                                let node = EffectNode::new(isf, &name, device, queue, engine);
+                                let Some(g) =
+                                    mixer.groups.iter_mut().find(|g| g.uuid == *group_uuid)
+                                else {
+                                    continue;
+                                };
+                                let slot = rustjay_mixer::EffectSlot::new(Box::new(node));
+                                g.chain.push(slot);
+                                let pos = position_new_slot(&mut g.chain, req.index);
+                                g.chain[pos].source_path = Some(req.path.clone());
+                                let prefix = format!("grp_{}_fx{}_", group_uuid, g.chain[pos].uuid);
+                                g.chain[pos].effect.set_param_prefix(&prefix);
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added group FX '{name}'"),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => engine.notify(
+                                format!("Could not load '{}': {e}", req.path.display()),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(5),
+                            ),
+                        }
+                    }
                     EffectTarget::Master => match rustjay_isf::IsfEffect::from_path(&req.path) {
                         Ok(isf) => {
                             let name = isf.shader_name.clone();

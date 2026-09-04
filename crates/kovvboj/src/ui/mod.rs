@@ -1033,6 +1033,16 @@ mod egui_impl {
                     heading = "Master · FX".to_string();
                     prefix = Some(format!("master_fx{}_", fx));
                 }
+                crate::Selection::GroupFx { group, fx } => {
+                    let name = mixer
+                        .groups
+                        .iter()
+                        .find(|g| g.uuid == *group)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Group".to_string());
+                    heading = format!("{name} · FX");
+                    prefix = Some(format!("grp_{group}_fx{fx}_"));
+                }
             }
             let _ = &mut mixer;
         }
@@ -1214,6 +1224,104 @@ mod egui_impl {
         );
     }
 
+    /// What a group header asked for this frame, applied once the mixer borrow
+    /// is free.
+    #[derive(Default)]
+    struct GroupActions {
+        ungroup: Option<String>,
+        select_fx: Option<String>,
+        remove_fx: Option<(String, String)>,
+        drops: Vec<(String, usize, ChainDrag)>,
+    }
+
+    /// One group's row: its name, gates, mix, and the chain the composited
+    /// members pass through.
+    fn group_header(
+        ui: &mut egui::Ui,
+        mixer: &mut rustjay_mixer::Mixer,
+        gi: usize,
+        engine: &mut EngineState,
+        acts: &mut GroupActions,
+    ) {
+        let uuid = mixer.groups[gi].uuid.clone();
+        ui.horizontal(|ui| {
+            let collapsed = mixer.groups[gi].collapsed;
+            if ui
+                .small_button(if collapsed { "▶" } else { "▼" })
+                .on_hover_text("Collapse the group")
+                .clicked()
+            {
+                mixer.groups[gi].collapsed = !collapsed;
+            }
+            let n = mixer.groups[gi].len;
+            let name = mixer.groups[gi].name.clone();
+            ui.label(
+                egui::RichText::new(format!("⛶ {name}"))
+                    .strong()
+                    .monospace(),
+            )
+            .on_hover_text(format!("{n} layers composited together"));
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("✖")
+                    .on_hover_text("Ungroup — the layers stay")
+                    .clicked()
+                {
+                    acts.ungroup = Some(uuid.clone());
+                }
+                let mut op = mixer.groups[gi].opacity;
+                if ui
+                    .add_sized([80.0, 18.0], egui::Slider::new(&mut op, 0.0..=1.0).show_value(false))
+                    .on_hover_text("Group opacity")
+                    .changed()
+                {
+                    mixer.groups[gi].opacity = op;
+                }
+                let mut mute = mixer.groups[gi].mute;
+                if ui.selectable_label(mute, "M").on_hover_text("Mute the group").clicked() {
+                    mute = !mute;
+                    mixer.groups[gi].mute = mute;
+                }
+                let mut solo = mixer.groups[gi].solo;
+                if ui.selectable_label(solo, "S").on_hover_text("Solo the group").clicked() {
+                    solo = !solo;
+                    mixer.groups[gi].solo = solo;
+                }
+            });
+        });
+
+        // The group's own chain: what every member passes through together.
+        egui::ScrollArea::horizontal()
+            .id_salt(("groupstrip", &uuid))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let out = fx_strip(
+                        ui,
+                        &mixer.groups[gi].chain,
+                        &crate::ChainRef::Group { group: uuid.clone() },
+                        None,
+                        &std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    );
+                    if let Some(i) = out.toggle {
+                        let on = mixer.groups[gi].chain[i].enabled;
+                        mixer.groups[gi].chain[i].enabled = !on;
+                    }
+                    if let Some(i) = out.remove {
+                        let slot = mixer.groups[gi].chain[i].uuid.clone();
+                        acts.remove_fx = Some((uuid.clone(), slot));
+                    }
+                    if let Some(fx) = out.select {
+                        acts.select_fx = Some(fx);
+                    }
+                    for (index, payload) in out.drops {
+                        acts.drops.push((uuid.clone(), index, payload));
+                    }
+                });
+            });
+        let _ = engine;
+    }
+
     /// The layer stack: top of the list composites over the bottom.
     impl AnyEguiTab for DeckTab {
         fn name(&self) -> &str {
@@ -1238,11 +1346,17 @@ mod egui_impl {
 
             let selection = state.selection.clone();
             let mut new_selection: Option<crate::Selection> = None;
+            let picked = state.selected_layers.clone();
+            let mut toggle_pick: Option<String> = None;
+            let mut clear_picks = false;
+            let mut want_group = false;
+            let mut ungroup_at: Option<String> = None;
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
             let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
             let mut undo_snapshot: Option<crate::scene::Topology> = None;
             let mut restack: Option<(String, String)> = None;
             let mut drops: Vec<ChainDrop> = Vec::new();
+            let mut group_acts = GroupActions::default();
 
             {
                 let thumb_ids = state.thumbs.ids.clone();
@@ -1253,6 +1367,26 @@ mod egui_impl {
                     mixer.channels.iter().rev().map(|c| c.uuid.clone()).collect();
 
                 for uuid in order.iter() {
+                    let Some(idx) = mixer.channels.iter().position(|c| c.uuid == *uuid) else {
+                        continue;
+                    };
+
+                    // A group announces itself above its topmost member, then
+                    // its members follow indented — unless it is collapsed, in
+                    // which case the header stands for all of them.
+                    let mut hide_member = false;
+                    if let Some(g) = mixer.group_of(idx) {
+                        let topmost = g.start + g.len - 1;
+                        let gi = mixer.groups.iter().position(|x| x.uuid == g.uuid).unwrap();
+                        if idx == topmost {
+                            group_header(ui, &mut mixer, gi, engine, &mut group_acts);
+                        }
+                        hide_member = mixer.groups[gi].collapsed;
+                    }
+                    if hide_member {
+                        continue;
+                    }
+                    let _ = idx;
                     let Some(idx) = mixer.channels.iter().position(|c| c.uuid == *uuid) else {
                         continue;
                     };
@@ -1330,11 +1464,41 @@ mod egui_impl {
                                 }
 
                                 let name = mixer.channels[idx].name.clone();
-                                if ui.selectable_label(layer_selected, &name).clicked() {
-                                    new_selection = Some(crate::Selection::Layer {
-                                        layer: uuid.clone(),
-                                    });
+                                let multi = picked.contains(uuid);
+                                let resp = ui.selectable_label(layer_selected || multi, &name);
+                                if resp.clicked() {
+                                    // Cmd/ctrl or shift extends the pick; a plain
+                                    // click starts a new one.
+                                    if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+                                        toggle_pick = Some(uuid.clone());
+                                    } else {
+                                        clear_picks = true;
+                                        new_selection = Some(crate::Selection::Layer {
+                                            layer: uuid.clone(),
+                                        });
+                                    }
                                 }
+                                let in_group = mixer.group_of(idx).is_some();
+                                resp.context_menu(|ui| {
+                                    let n = picked.len();
+                                    if ui
+                                        .add_enabled(
+                                            n > 1,
+                                            egui::Button::new(format!("Group {n} layers")),
+                                        )
+                                        .on_disabled_hover_text(
+                                            "Pick more than one layer first — cmd-click to add",
+                                        )
+                                        .clicked()
+                                    {
+                                        want_group = true;
+                                        ui.close();
+                                    }
+                                    if in_group && ui.button("Ungroup").clicked() {
+                                        ungroup_at = Some(uuid.clone());
+                                        ui.close();
+                                    }
+                                });
 
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1455,6 +1619,80 @@ mod egui_impl {
                     );
                 }
 
+                // What the group headers asked for.
+                if let Some(gid) = group_acts.ungroup.take() {
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    mixer.ungroup(&gid);
+                }
+                if let Some(fx) = group_acts.select_fx.take()
+                    && let Some(g) = mixer.groups.iter().find(|g| g.chain.iter().any(|s| s.uuid == fx))
+                {
+                    new_selection = Some(crate::Selection::GroupFx {
+                        group: g.uuid.clone(),
+                        fx,
+                    });
+                }
+                if let Some((gid, slot)) = group_acts.remove_fx.take() {
+                    fx_removals.push(crate::PendingFxRemoval {
+                        chain: crate::ChainRef::Group { group: gid },
+                        slot,
+                    });
+                }
+                for (gid, index, payload) in std::mem::take(&mut group_acts.drops) {
+                    drops.push(ChainDrop {
+                        target: crate::ChainRef::Group { group: gid },
+                        index,
+                        payload,
+                    });
+                }
+
+                // Grouping, before the restack invalidates indices.
+                if want_group && picked.len() > 1 {
+                    let mut idxs: Vec<usize> = picked
+                        .iter()
+                        .filter_map(|u| mixer.channels.iter().position(|c| &c.uuid == u))
+                        .collect();
+                    idxs.sort_unstable();
+                    let contiguous = idxs
+                        .windows(2)
+                        .all(|w| w[1] == w[0] + 1);
+                    if !contiguous {
+                        engine.notify(
+                            "Group needs layers next to each other in the stack".to_string(),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(4),
+                        );
+                    } else {
+                        undo_snapshot.get_or_insert_with(|| {
+                            crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                        });
+                        let uuid = crate::scene::new_uuid();
+                        let name = format!("Group {}", mixer.groups.len() + 1);
+                        let start = idxs[0];
+                        let len = idxs.len();
+                        if mixer.group_channels(uuid, name, start, len).is_none() {
+                            engine.notify(
+                                "Those layers are already in a group".to_string(),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(4),
+                            );
+                        }
+                    }
+                    clear_picks = true;
+                }
+                if let Some(uuid) = ungroup_at
+                    && let Some(idx) = mixer.channels.iter().position(|c| c.uuid == uuid)
+                    && let Some(g) = mixer.group_of(idx)
+                {
+                    let gid = g.uuid.clone();
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    mixer.ungroup(&gid);
+                }
+
                 // Restack last: it invalidates the indices used above.
                 if let Some((from_uuid, to_uuid)) = restack
                     && from_uuid != to_uuid
@@ -1473,6 +1711,14 @@ mod egui_impl {
             }
             state.pending_fx_removals.append(&mut fx_removals);
             state.pending_removals.append(&mut removals);
+            if clear_picks {
+                state.selected_layers.clear();
+            }
+            if let Some(uuid) = toggle_pick
+                && !state.selected_layers.remove(&uuid)
+            {
+                state.selected_layers.insert(uuid);
+            }
             if let Some(sel) = new_selection {
                 state.selection = sel;
             }
