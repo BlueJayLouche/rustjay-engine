@@ -484,6 +484,20 @@ mod egui_impl {
         payload: ChainDrag,
     }
 
+    /// The horizontal scroller a chain strip lives in.
+    ///
+    /// A floating scrollbar allocates no space of its own, so it draws across
+    /// the bottom of the chips: reaching for one from below grabs the bar
+    /// instead. Reserve the band it lives in so the two never share pixels.
+    ///
+    /// Sets the style on the calling `ui`, so any later scroller nested in the
+    /// same `ui` inherits it — every one of those is another chain strip.
+    fn strip_scroll(ui: &mut egui::Ui, salt: impl egui::AsIdSalt) -> egui::ScrollArea {
+        let sc = &mut ui.style_mut().spacing.scroll;
+        sc.floating_allocated_width = sc.bar_inner_margin + sc.bar_width;
+        egui::ScrollArea::horizontal().id_salt(salt)
+    }
+
     /// A drop gap between chips in a chain strip. While a drag is in flight
     /// this is a `dnd_drop_zone` whose hover highlight (plus an amber insertion
     /// line) marks the drop point; at rest it draws the plain link dash so the
@@ -931,8 +945,7 @@ mod egui_impl {
             };
             // Horizontal, and scrolling, exactly as a layer's strip is — the
             // master chain reads as one more signal path, not a list.
-            let out = egui::ScrollArea::horizontal()
-                .id_salt("master_strip")
+            let out = strip_scroll(ui, "master_strip")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         fx_strip(
@@ -1429,8 +1442,7 @@ mod egui_impl {
         });
 
         // The group's own chain: what every member passes through together.
-        egui::ScrollArea::horizontal()
-            .id_salt(("groupstrip", &uuid))
+        strip_scroll(ui, ("groupstrip", &uuid))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let out = fx_strip(
@@ -1762,7 +1774,7 @@ mod egui_impl {
                             });
 
                             // ── Row 2: the signal strip ──────────────────────
-                            egui::ScrollArea::horizontal().id_salt("strip").show(ui, |ui| {
+                            strip_scroll(ui, "strip").show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     let kind = state
                                         .layer_sources
