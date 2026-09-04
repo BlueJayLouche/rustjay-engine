@@ -1033,6 +1033,17 @@ mod egui_impl {
                     heading = "Master · FX".to_string();
                     prefix = Some(format!("master_fx{}_", fx));
                 }
+                crate::Selection::Group { group } => {
+                    let name = mixer
+                        .groups
+                        .iter()
+                        .find(|g| g.uuid == *group)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Group".to_string());
+                    let n = mixer.group_members(group).len();
+                    heading = format!("{name} · {n} layers");
+                    prefix = Some(format!("grp_{group}_"));
+                }
                 crate::Selection::GroupFx { group, fx } => {
                     let name = mixer
                         .groups
@@ -1228,6 +1239,7 @@ mod egui_impl {
     /// is free.
     #[derive(Default)]
     struct GroupActions {
+        select: Option<String>,
         ungroup: Option<String>,
         select_fx: Option<String>,
         remove_fx: Option<(String, String)>,
@@ -1241,6 +1253,7 @@ mod egui_impl {
         mixer: &mut rustjay_mixer::Mixer,
         gi: usize,
         engine: &mut EngineState,
+        selected: bool,
         acts: &mut GroupActions,
     ) {
         let uuid = mixer.groups[gi].uuid.clone();
@@ -1255,12 +1268,18 @@ mod egui_impl {
             }
             let n = mixer.group_members(&uuid).len();
             let name = mixer.groups[gi].name.clone();
-            ui.label(
-                egui::RichText::new(format!("⛶ {name}"))
-                    .strong()
-                    .monospace(),
-            )
-            .on_hover_text(format!("{n} layers composited together"));
+            if ui
+                .selectable_label(
+                    selected,
+                    egui::RichText::new(format!("⛶ {name}")).strong().monospace(),
+                )
+                .on_hover_text(format!(
+                    "{n} layers composited together — select it, then add an effect from the library"
+                ))
+                .clicked()
+            {
+                acts.select = Some(uuid.clone());
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -1351,6 +1370,7 @@ mod egui_impl {
             let mut clear_picks = false;
             let mut want_group = false;
             let mut ungroup_at: Option<String> = None;
+            let mut leave_group: Option<String> = None;
             let mut removals: Vec<crate::PendingRemoval> = Vec::new();
             let mut fx_removals: Vec<crate::PendingFxRemoval> = Vec::new();
             let mut undo_snapshot: Option<crate::scene::Topology> = None;
@@ -1381,7 +1401,11 @@ mod egui_impl {
                         let members = mixer.group_members(&gid);
                         let gi = mixer.groups.iter().position(|x| x.uuid == gid).unwrap();
                         if members.last() == Some(&idx) {
-                            group_header(ui, &mut mixer, gi, engine, &mut group_acts);
+                            let sel = matches!(
+                                &selection,
+                                crate::Selection::Group { group } if *group == gid
+                            );
+                            group_header(ui, &mut mixer, gi, engine, sel, &mut group_acts);
                         }
                         hide_member = mixer.groups[gi].collapsed;
                     }
@@ -1418,7 +1442,7 @@ mod egui_impl {
                     );
 
                     ui.push_id(uuid, |ui| {
-                        let indent = if in_group_uuid.is_some() { 14.0 } else { 0.0 };
+                        let indent = if in_group_uuid.is_some() { 22.0 } else { 0.0 };
                         let row_top = ui.cursor().top();
                         let (_, dropped) =
                             ui.dnd_drop_zone::<LayerDrag, _>(egui::Frame::NONE, |ui| {
@@ -1512,9 +1536,23 @@ mod egui_impl {
                                         want_group = true;
                                         ui.close();
                                     }
-                                    if in_group && ui.button("Ungroup").clicked() {
-                                        ungroup_at = Some(uuid.clone());
-                                        ui.close();
+                                    if in_group {
+                                        if ui
+                                            .button("Remove from group")
+                                            .on_hover_text("Take just this layer out")
+                                            .clicked()
+                                        {
+                                            leave_group = Some(uuid.clone());
+                                            ui.close();
+                                        }
+                                        if ui
+                                            .button("Ungroup")
+                                            .on_hover_text("Dissolve the group; every layer stays")
+                                            .clicked()
+                                        {
+                                            ungroup_at = Some(uuid.clone());
+                                            ui.close();
+                                        }
                                     }
                                 });
 
@@ -1621,16 +1659,16 @@ mod egui_impl {
                         if let Some(gid) = &in_group_uuid {
                             let _ = gid;
                             let rect = ui.min_rect();
-                            let x = rect.left() + 5.0;
+                            let x = rect.left() + 8.0;
                             ui.painter().line_segment(
                                 [
                                     egui::pos2(x, row_top),
                                     egui::pos2(x, rect.bottom()),
                                 ],
                                 egui::Stroke::new(
-                                    2.0,
+                                    3.0,
                                     rustjay_gui::egui_theme::colors::amber()
-                                        .gamma_multiply(0.5),
+                                        .gamma_multiply(0.7),
                                 ),
                             );
                         }
@@ -1660,6 +1698,9 @@ mod egui_impl {
                 }
 
                 // What the group headers asked for.
+                if let Some(gid) = group_acts.select.take() {
+                    new_selection = Some(crate::Selection::Group { group: gid });
+                }
                 if let Some(gid) = group_acts.ungroup.take() {
                     undo_snapshot.get_or_insert_with(|| {
                         crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
@@ -1706,6 +1747,12 @@ mod egui_impl {
                         );
                     }
                     clear_picks = true;
+                }
+                if let Some(layer) = leave_group.take() {
+                    undo_snapshot.get_or_insert_with(|| {
+                        crate::scene::Topology::from_mixer(&mixer, &state.layer_sources)
+                    });
+                    mixer.set_channel_group(&layer, None);
                 }
                 if let Some(uuid) = ungroup_at
                     && let Some(idx) = mixer.channels.iter().position(|c| c.uuid == uuid)
@@ -1823,6 +1870,14 @@ mod egui_impl {
                         | crate::Selection::LayerFx { layer, .. } => Some(layer.clone()),
                         _ => None,
                     };
+                    // A selected group takes the effect instead: adding to "the
+                    // selection" landed on the top member before, which looks
+                    // like the group swallowing it into the wrong chain.
+                    let selected_group = match &state.selection {
+                        crate::Selection::Group { group }
+                        | crate::Selection::GroupFx { group, .. } => Some(group.clone()),
+                        _ => None,
+                    };
                     let mut queue_layer: Option<crate::PendingLayer> = None;
                     let mut queue_fx: Option<crate::PendingEffect> = None;
                     // Cloned so the row closure can read them while `state` is
@@ -1876,25 +1931,42 @@ mod egui_impl {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if is_effect {
-                                        let enabled = selected_layer.is_some();
+                                        let enabled =
+                                            selected_layer.is_some() || selected_group.is_some();
                                         let btn = ui
                                             .add_enabled(enabled, egui::Button::new("➕").small());
                                         let btn = if enabled {
-                                            btn.on_hover_text("Add to the selected layer")
+                                            btn.on_hover_text(if selected_group.is_some() {
+                                                "Add to the selected group's chain"
+                                            } else {
+                                                "Add to the selected layer"
+                                            })
                                         } else {
-                                            btn.on_disabled_hover_text("Select a layer first")
+                                            btn.on_disabled_hover_text(
+                                                "Select a layer or group first",
+                                            )
                                         };
                                         if btn.clicked()
-                                            && let (Some(layer), Some(path)) =
-                                                (selected_layer.clone(), entry.path.clone())
+                                            && let Some(path) = entry.path.clone()
                                         {
-                                            queue_fx = Some(crate::PendingEffect {
-                                                path,
-                                                target: crate::EffectTarget::Layer {
-                                                    layer_uuid: layer,
-                                                },
-                                                index: None,
-                                            });
+                                            let target = match (&selected_group, &selected_layer) {
+                                                (Some(g), _) => Some(crate::EffectTarget::Group {
+                                                    group_uuid: g.clone(),
+                                                }),
+                                                (None, Some(l)) => {
+                                                    Some(crate::EffectTarget::Layer {
+                                                        layer_uuid: l.clone(),
+                                                    })
+                                                }
+                                                _ => None,
+                                            };
+                                            if let Some(target) = target {
+                                                queue_fx = Some(crate::PendingEffect {
+                                                    path,
+                                                    target,
+                                                    index: None,
+                                                });
+                                            }
                                         }
                                     } else if ui
                                         .small_button("➕")

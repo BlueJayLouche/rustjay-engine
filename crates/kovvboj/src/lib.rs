@@ -39,7 +39,6 @@ use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
-use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +81,10 @@ pub enum Selection {
     LayerFx {
         layer: String,
         fx: String,
+    },
+    /// A bus group: its mix and the chain its members pass through.
+    Group {
+        group: String,
     },
     /// An FX slot in a group's chain.
     GroupFx {
@@ -1229,7 +1232,6 @@ impl KovvbojRootPlugin {
         // never scaled by a two-channel crossfader.
         mixer.use_crossfader = false;
         let dummy_engine = EngineState::new();
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let shaders_dir = crate::shaders_dir();
         let mut sources = std::collections::HashMap::new();
 
@@ -1590,7 +1592,6 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.projection_handle = engine.projection_handle.clone();
             }
 
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let shaders_dir = crate::shaders_dir();
             state.registry = Registry::scan(&shaders_dir, &crate::assets_dir());
             log::info!(

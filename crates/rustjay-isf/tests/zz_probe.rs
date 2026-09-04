@@ -1,26 +1,14 @@
 use std::collections::BTreeMap;
 
-fn strip_json_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_str = false;
-    let mut prev = '\0';
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(c);
-            if c == '"' && prev != '\\' { in_str = false; }
-        } else if c == '"' { in_str = true; out.push(c); }
-        else if c == '/' && chars.peek() == Some(&'/') {
-            for c2 in chars.by_ref() { if c2 == '\n' { out.push('\n'); break; } }
-        } else { out.push(c); }
-        prev = c;
-    }
-    out
-}
 
 #[test]
 fn probe() {
-    let dir = std::env::var("ISF_CORPUS_DIR").unwrap();
+    // Same gate as `corpus_compile_rate`: without a corpus there is nothing
+    // to bucket, and `cargo test --workspace` must not fail for want of one.
+    let Ok(dir) = std::env::var("ISF_CORPUS_DIR") else {
+        eprintln!("ISF_CORPUS_DIR not set; skipping the header-failure breakdown");
+        return;
+    };
     let mut buckets: BTreeMap<String, Vec<String>> = Default::default();
     let mut n = 0;
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
@@ -29,7 +17,7 @@ fn probe() {
         let Ok(src) = std::fs::read_to_string(&p) else { continue };
         n += 1;
         if let Err(err) = rustjay_isf::header::parse(&src) {
-            let msg = format!("{err}");
+            let msg = err.to_string();
             // Normalise away line/column and quoted specifics.
             let key = msg
                 .split(" at line ").next().unwrap_or(&msg)
