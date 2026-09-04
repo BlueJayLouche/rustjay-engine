@@ -3045,7 +3045,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "isf"
 version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/isf.git#99424e5b5b1fc6bb4c72a4e8cc64867ac06160be"
+source = "git+https://github.com/BlueJayLouche/isf.git#2b9f8cd691b8e473cf10fb2c6b74be76602e914d"
 dependencies = [
  "serde",
  "serde_json",

@@ -145,6 +145,49 @@ fn repair(root: &mut Value) {
         }
         *imported = Value::Object(map);
     }
+
+    // Inputs get their values written in whatever the authoring tool felt
+    // like: float bounds on an integer, `"True"` for a boolean.
+    if let Some(inputs) = root.get_mut("INPUTS")
+        && let Some(inputs) = inputs.as_array_mut()
+    {
+        for input in inputs.iter_mut().filter_map(Value::as_object_mut) {
+            let coerce: fn(&mut Value) = match input.get("TYPE").and_then(Value::as_str) {
+                Some("long" | "int") => round_to_int,
+                Some("bool" | "event") => string_to_bool,
+                _ => continue,
+            };
+            for key in ["DEFAULT", "MIN", "MAX", "IDENTITY", "VALUES"] {
+                match input.get_mut(key) {
+                    Some(Value::Array(values)) => values.iter_mut().for_each(coerce),
+                    Some(value) => coerce(value),
+                    None => {}
+                }
+            }
+        }
+    }
+}
+
+/// Rewrite a JSON float as the nearest integer, leaving anything else alone.
+fn round_to_int(value: &mut Value) {
+    if let Some(f) = value.as_f64()
+        && !value.is_i64()
+        && !value.is_u64()
+    {
+        *value = Value::from(f.round() as i64);
+    }
+}
+
+/// Rewrite `"True"` / `"false"` as a boolean, leaving anything else alone.
+/// Numbers already deserialize, so only the quoted spellings need this.
+fn string_to_bool(value: &mut Value) {
+    if let Some(s) = value.as_str() {
+        match s.to_ascii_lowercase().as_str() {
+            "true" => *value = Value::Bool(true),
+            "false" => *value = Value::Bool(false),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +245,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(isf.imported["sky"].path, std::path::Path::new("px.png"));
+    }
+
+    #[test]
+    fn float_bounds_on_an_int_input_are_rounded() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "steps", "TYPE": "int",
+                 "MIN": 0.0, "MAX": 255.0, "DEFAULT": 5 } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Long(long) = &isf.inputs[0].ty else {
+            panic!("expected a long input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(long.input_values.min, Some(0));
+        assert_eq!(long.input_values.max, Some(255));
+    }
+
+    #[test]
+    fn a_quoted_boolean_default_is_read_as_a_boolean() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "on", "TYPE": "bool", "DEFAULT": "True" } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Bool(b) = &isf.inputs[0].ty else {
+            panic!("expected a bool input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(b.default, Some(true));
     }
 
     #[test]
