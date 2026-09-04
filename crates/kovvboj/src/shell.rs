@@ -485,7 +485,11 @@ impl AnyEguiShell for KovvbojShell {
                         && let Some(pos) = ui.ctx().pointer_interact_pos()
                         && decks.inner_rect.contains(pos)
                     {
-                        let delta = crate::ui::drag_edge_scroll_delta(pos.y, decks.inner_rect);
+                        let delta = crate::ui::drag_edge_scroll_delta(
+                            pos.y,
+                            decks.inner_rect.top(),
+                            decks.inner_rect.bottom(),
+                        );
                         if delta != 0.0 {
                             decks.state.offset.y += delta;
                             decks.state.store(ui.ctx(), decks.id);
@@ -1017,18 +1021,18 @@ mod beat_flash_tests {
 mod tests {
     #[test]
     fn drag_edge_scroll_only_fires_in_the_margins() {
-        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 100.0), egui::pos2(300.0, 500.0));
-        // Middle of the list: no scroll.
-        assert_eq!(crate::ui::drag_edge_scroll_delta(300.0, rect), 0.0);
-        // Outside the list entirely: no scroll.
-        assert_eq!(crate::ui::drag_edge_scroll_delta(50.0, rect), 0.0);
-        assert_eq!(crate::ui::drag_edge_scroll_delta(550.0, rect), 0.0);
-        // Top margin scrolls up, bottom margin down, faster at the very edge.
-        let top_edge = crate::ui::drag_edge_scroll_delta(101.0, rect);
-        let top_margin = crate::ui::drag_edge_scroll_delta(120.0, rect);
+        // Middle of the span: no scroll.
+        assert_eq!(crate::ui::drag_edge_scroll_delta(300.0, 100.0, 500.0), 0.0);
+        // Outside the span entirely: no scroll.
+        assert_eq!(crate::ui::drag_edge_scroll_delta(50.0, 100.0, 500.0), 0.0);
+        assert_eq!(crate::ui::drag_edge_scroll_delta(550.0, 100.0, 500.0), 0.0);
+        // Near the minimum scrolls one way, near the maximum the other,
+        // faster at the very edge.
+        let top_edge = crate::ui::drag_edge_scroll_delta(101.0, 100.0, 500.0);
+        let top_margin = crate::ui::drag_edge_scroll_delta(120.0, 100.0, 500.0);
         assert!(top_edge < top_margin && top_margin < 0.0);
-        let bottom_edge = crate::ui::drag_edge_scroll_delta(499.0, rect);
-        let bottom_margin = crate::ui::drag_edge_scroll_delta(480.0, rect);
+        let bottom_edge = crate::ui::drag_edge_scroll_delta(499.0, 100.0, 500.0);
+        let bottom_margin = crate::ui::drag_edge_scroll_delta(480.0, 100.0, 500.0);
         assert!(bottom_edge > bottom_margin && bottom_margin > 0.0);
     }
 }

@@ -202,20 +202,21 @@ impl OutputsTab {
     }
 }
 
-/// Scroll speed (points per frame) while a drag hovers near a list's
-/// top/bottom edge: zero outside the margin, faster the deeper in. Pure so
-/// it is unit-testable; the caller owns actually applying the offset.
+/// Scroll speed (points per frame) while a drag hovers near either end of a
+/// scrollable span: zero outside the edge margins, faster the deeper in.
+/// Axis-agnostic — works for the vertical layer list and the horizontal FX
+/// strips. Pure so it is unit-testable; the caller owns applying the offset.
 #[cfg(all(feature = "mixer", feature = "egui"))]
-pub fn drag_edge_scroll_delta(pointer_y: f32, rect: egui::Rect) -> f32 {
+pub fn drag_edge_scroll_delta(pos: f32, min: f32, max: f32) -> f32 {
     const EDGE: f32 = 36.0;
     const MIN_SPEED: f32 = 4.0;
     const MAX_SPEED: f32 = 14.0;
-    let from_top = pointer_y - rect.top();
-    let from_bottom = rect.bottom() - pointer_y;
-    if (0.0..EDGE).contains(&from_top) {
-        -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_top / EDGE))
-    } else if (0.0..EDGE).contains(&from_bottom) {
-        MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_bottom / EDGE)
+    let from_min = pos - min;
+    let from_max = max - pos;
+    if (0.0..EDGE).contains(&from_min) {
+        -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_min / EDGE))
+    } else if (0.0..EDGE).contains(&from_max) {
+        MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_max / EDGE)
     } else {
         0.0
     }
@@ -1774,7 +1775,7 @@ mod egui_impl {
                             });
 
                             // ── Row 2: the signal strip ──────────────────────
-                            strip_scroll(ui, "strip").show(ui, |ui| {
+                            let mut strip = strip_scroll(ui, "strip").show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     let kind = state
                                         .layer_sources
@@ -1831,6 +1832,24 @@ mod egui_impl {
                                     }
                                 });
                             });
+                            // While a chip/library drag is in flight, hovering
+                            // the left/right edge scrolls the strip, so
+                            // off-screen gaps stay reachable as drop targets.
+                            if egui::DragAndDrop::has_payload_of_type::<ChainDrag>(ui.ctx())
+                                && let Some(pos) = ui.ctx().pointer_interact_pos()
+                                && strip.inner_rect.contains(pos)
+                            {
+                                let delta = crate::ui::drag_edge_scroll_delta(
+                                    pos.x,
+                                    strip.inner_rect.left(),
+                                    strip.inner_rect.right(),
+                                );
+                                if delta != 0.0 {
+                                    strip.state.offset.x += delta;
+                                    strip.state.store(ui.ctx(), strip.id);
+                                    ui.ctx().request_repaint();
+                                }
+                            }
                         });
                             });
                         if let Some(gid) = &in_group_uuid {

@@ -226,6 +226,56 @@ fn chip_drag_at_the_edge_scrolls_the_layer_list() {
     harness.run_steps(2);
 }
 
+/// Dragging an FX chip to the right edge of a layer's strip scrolls the strip
+/// horizontally, so drop gaps past the panel's edge stay reachable.
+#[test]
+fn chip_drag_at_the_strip_edge_scrolls_horizontally() {
+    let app = KovvbojAppState::default();
+    {
+        let mut mixer = app.mixer.lock().unwrap();
+        let mut ch = rustjay_mixer::Channel::new("l0", "Layer 0", Box::new(StubSource));
+        for _ in 0..8 {
+            ch.chain
+                .push(rustjay_mixer::EffectSlot::new(Box::new(StubSource)));
+        }
+        mixer.add_channel(ch).unwrap();
+    }
+    let mut harness = tab_harness_with_app(DeckTab::default(), [400.0, 500.0], app);
+
+    let chips = |h: &Harness| {
+        h.get_all(egui_kittest::kittest::By::new().label("effect"))
+            .map(|n| n.rect())
+            .collect::<Vec<_>>()
+    };
+    let before = chips(&harness);
+    let last = before.last().expect("eight chips");
+    assert!(
+        last.min.x > 400.0,
+        "the last chip should start off the right edge: {last:?}"
+    );
+
+    let c = before[0].center();
+    harness.drag_at(c);
+    // Auto-scroll requests a repaint every frame, so `run()`'s
+    // must-stop-repainting guard doesn't apply while dragging.
+    harness.run_steps(2);
+    harness.hover_at(egui::pos2(370.0, c.y));
+    harness.step();
+    // The drop zones widen the content once the drag starts, so compare chip
+    // positions across the scroll window only.
+    let x0 = chips(&harness)[0].min.x;
+    harness.run_steps(7);
+    let x1 = chips(&harness)[0].min.x;
+
+    assert!(
+        x1 < x0 - 20.0,
+        "dragging to the right edge should scroll the strip (before={x0}, after={x1})"
+    );
+
+    harness.drop_at(egui::pos2(200.0, c.y));
+    harness.run_steps(2);
+}
+
 /// Selecting a node must survive a chain reorder, which is why `Selection`
 /// addresses nodes by UUID rather than by index.
 #[test]
