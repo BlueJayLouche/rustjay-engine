@@ -309,8 +309,103 @@ impl Mixer {
 }
 
 /// Multi-channel compositor.
+/// A bus group: several layers composited together, then treated as one.
+///
+/// The members are composited into the group's own accumulator, the group's
+/// chain runs over that result, and the result is blended into the master like
+/// a single layer. That is what makes one blur cover three layers rather than
+/// blurring each of them.
+///
+/// Members are the channels occupying `start .. start + len` of `Mixer.channels`
+/// — a group is a contiguous span of the stack, as it is in every compositor —
+/// so restacking a member out of the span takes it out of the group.
+pub struct ChannelGroup {
+    /// Stable identity; the parameter prefix is `grp_<uuid>_`.
+    pub uuid: String,
+    pub name: String,
+    /// Index of the first member in `Mixer.channels`.
+    pub start: usize,
+    /// How many channels belong to the group.
+    pub len: usize,
+    /// Effects applied to the composited members.
+    pub chain: Vec<EffectSlot>,
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+    pub solo: bool,
+    pub mute: bool,
+    /// Collapsed in the UI. Runtime only.
+    pub collapsed: bool,
+    /// Whether `group_out` holds this frame's image. Runtime only.
+    rendered: bool,
+    /// Own compositor: the shared one caches bind groups by `(slot, dest_is_a)`,
+    /// which says nothing about *which* accumulator a group writes to, so
+    /// reusing it would hand the group a bind group pointing at the master's
+    /// textures.
+    composite: Option<CompositePipeline>,
+    acc_a: Option<Texture>,
+    acc_b: Option<Texture>,
+    chain_ping: Option<Texture>,
+    /// The group's finished image: members composited, chain applied. Held so
+    /// the master pass can read it with a shared borrow.
+    group_out: Option<Texture>,
+    size: [u32; 2],
+    opacity_key: String,
+    blend_key: String,
+}
+
+impl ChannelGroup {
+    pub fn new(uuid: impl Into<String>, name: impl Into<String>, start: usize, len: usize) -> Self {
+        let uuid = uuid.into();
+        Self {
+            opacity_key: format!("grp_{uuid}_opacity"),
+            blend_key: format!("grp_{uuid}_blend"),
+            uuid,
+            name: name.into(),
+            start,
+            len,
+            chain: Vec::new(),
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+            solo: false,
+            mute: false,
+            collapsed: false,
+            rendered: false,
+            composite: None,
+            acc_a: None,
+            acc_b: None,
+            chain_ping: None,
+            group_out: None,
+            size: [0, 0],
+        }
+    }
+
+    /// The channel indices this group covers.
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.start + self.len
+    }
+
+    pub fn contains(&self, index: usize) -> bool {
+        self.range().contains(&index)
+    }
+
+    fn ensure_resources(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+        if self.size == size && self.composite.is_some() {
+            return;
+        }
+        let format = rustjay_core::working_format();
+        self.composite = Some(CompositePipeline::new(device, format));
+        self.acc_a = Some(Texture::create_render_target(device, size[0], size[1], "group acc_a"));
+        self.acc_b = Some(Texture::create_render_target(device, size[0], size[1], "group acc_b"));
+        self.chain_ping = Some(Texture::create_render_target(device, size[0], size[1], "group chain ping"));
+        self.group_out = Some(Texture::create_render_target(device, size[0], size[1], "group out"));
+        self.size = size;
+    }
+}
+
 pub struct Mixer {
     pub channels: Vec<Channel>,
+    /// Bus groups over contiguous spans of `channels`.
+    pub groups: Vec<ChannelGroup>,
     /// Ignored when `channels.len() != 2`.
     pub crossfader: f32,
     /// Whether the crossfader scales the two channel opacities when there are
@@ -351,6 +446,7 @@ impl Mixer {
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
+            groups: Vec::new(),
             crossfader: 0.5,
             use_crossfader: true,
             master_dim: 1.0,
@@ -447,7 +543,39 @@ impl Mixer {
 
     /// Whether anything is soloed, which changes what every other channel does.
     pub fn any_solo(&self) -> bool {
-        self.channels.iter().any(|c| c.solo)
+        self.channels.iter().any(|c| c.solo) || self.groups.iter().any(|g| g.solo)
+    }
+
+    /// The group owning a channel index, if any.
+    pub fn group_of(&self, index: usize) -> Option<&ChannelGroup> {
+        self.groups.iter().find(|g| g.contains(index))
+    }
+
+    /// Group a contiguous run of channels, newest group last.
+    ///
+    /// Returns `None` when the span is empty, out of range, or overlaps a group
+    /// that already exists — a channel belongs to at most one group, and
+    /// silently re-parenting one would lose whichever group lost it.
+    pub fn group_channels(
+        &mut self,
+        uuid: impl Into<String>,
+        name: impl Into<String>,
+        start: usize,
+        len: usize,
+    ) -> Option<&mut ChannelGroup> {
+        if len == 0 || start + len > self.channels.len() {
+            return None;
+        }
+        if (start..start + len).any(|i| self.group_of(i).is_some()) {
+            return None;
+        }
+        self.groups.push(ChannelGroup::new(uuid, name, start, len));
+        self.groups.last_mut()
+    }
+
+    /// Dissolve a group, leaving its members in the stack.
+    pub fn ungroup(&mut self, uuid: &str) {
+        self.groups.retain(|g| g.uuid != uuid);
     }
 
     /// Whether a channel contributes to the mix at all.
@@ -478,8 +606,16 @@ impl Mixer {
         } else {
             self.channels
                 .iter()
-                .map(|c| {
-                    if Self::audible(c, any_solo) {
+                .enumerate()
+                .map(|(i, c)| {
+                    // A member of a soloed group is audible: the solo is on the
+                    // group, and silencing what it contains would leave it
+                    // soloing nothing.
+                    let solo_ok = !any_solo
+                        || c.solo
+                        || self.group_of(i).is_some_and(|g| g.solo);
+                    let muted = c.mute || self.group_of(i).is_some_and(|g| g.mute);
+                    if c.active && !muted && solo_ok {
                         c.opacity
                     } else {
                         0.0
@@ -790,6 +926,92 @@ impl EffectInstance for Mixer {
             ch.render(ctx, ch_inputs, engine);
         }
 
+        // A grouped span composites into the group's own accumulator first, so
+        // the group's chain sees one image rather than each member separately —
+        // one blur over three layers instead of three blurs. Done in its own
+        // pass, and the result parked in `group_out`, so the master pass below
+        // needs only a shared borrow of the groups.
+        {
+            let Mixer {
+                channels,
+                groups,
+                size,
+                generation,
+                blit,
+                ..
+            } = &mut *self;
+            for g in groups.iter_mut() {
+                g.rendered = false;
+                if !(!g.mute && (!any_solo || g.solo)) {
+                    continue;
+                }
+                let range = g.range();
+                if range.end > channels.len() {
+                    continue;
+                }
+                let members: Vec<usize> = range
+                    .filter(|i| eff.get(*i).copied().unwrap_or(0.0) >= 0.001)
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                g.ensure_resources(ctx.device, *size);
+
+                let ga = g.acc_a.as_ref().unwrap();
+                let gb = g.acc_b.as_ref().unwrap();
+                let gc = g.composite.as_ref().unwrap();
+                clear_texture(ctx.encoder, &ga.view);
+                let mut written: Option<&Texture> = None;
+                for &i in &members {
+                    let ch = &channels[i];
+                    let Some(src) = ch.output_texture() else {
+                        continue;
+                    };
+                    let (read, write) = match written {
+                        None => (ga, gb),
+                        Some(w) if std::ptr::eq(w as *const _, ga as *const _) => (ga, gb),
+                        _ => (gb, ga),
+                    };
+                    let dest_is_a = std::ptr::eq(read as *const _, ga as *const _);
+                    let blend_mode = engine
+                        .get_param(&ch.blend_key)
+                        .and_then(|v| BlendMode::from_index(v as u32))
+                        .unwrap_or(ch.blend_mode);
+                    gc.blend(
+                        ctx.device,
+                        ctx.queue,
+                        ctx.encoder,
+                        *generation,
+                        i - g.start,
+                        dest_is_a,
+                        &src.view,
+                        &read.view,
+                        &write.view,
+                        eff[i],
+                        blend_mode,
+                        KeyParams::default(),
+                        ctx.vertex_buffer,
+                    );
+                    written = Some(write);
+                }
+                let composed = written.unwrap_or(ga);
+
+                // The group's own chain, then park the result.
+                let ping = g.chain_ping.as_ref().unwrap();
+                let finished = run_chain(&mut g.chain, ctx, composed, ping, *size, engine);
+                if let (Some(out), Some(blit)) = (g.group_out.as_ref(), blit.as_ref()) {
+                    blit.blit(
+                        ctx.device,
+                        ctx.encoder,
+                        &finished.view,
+                        &out.view,
+                        ctx.vertex_buffer,
+                    );
+                    g.rendered = true;
+                }
+            }
+        }
+
         let acc_a = self.acc_a.as_ref().unwrap();
         let acc_b = self.acc_b.as_ref().unwrap();
         let composite = self.composite.as_ref().unwrap();
@@ -806,6 +1028,53 @@ impl EffectInstance for Mixer {
         let mut written_acc: Option<&Texture> = None;
 
         for &i in &active {
+            // A grouped member is not blended on its own: its group already
+            // composited it, and the group is blended once, at the position of
+            // its first member.
+            if let Some(g) = self.group_of(i) {
+                if i != g.start || !g.rendered {
+                    continue;
+                }
+                let Some(src) = g.group_out.as_ref() else {
+                    continue;
+                };
+                let opacity = engine
+                    .get_param(&g.opacity_key)
+                    .unwrap_or(g.opacity)
+                    .clamp(0.0, 1.0)
+                    * self.master_dim.clamp(0.0, 1.0);
+                if opacity < 0.001 {
+                    continue;
+                }
+                let blend_mode = engine
+                    .get_param(&g.blend_key)
+                    .and_then(|v| BlendMode::from_index(v as u32))
+                    .unwrap_or(g.blend_mode);
+                let (read_acc, write_acc) = match written_acc {
+                    None => (acc_a, acc_b),
+                    Some(w) if std::ptr::eq(w as *const _, acc_a as *const _) => (acc_a, acc_b),
+                    _ => (acc_b, acc_a),
+                };
+                let dest_is_a = std::ptr::eq(read_acc as *const _, acc_a as *const _);
+                composite.blend(
+                    ctx.device,
+                    ctx.queue,
+                    ctx.encoder,
+                    self.generation,
+                    i,
+                    dest_is_a,
+                    &src.view,
+                    &read_acc.view,
+                    &write_acc.view,
+                    opacity,
+                    blend_mode,
+                    KeyParams::default(),
+                    ctx.vertex_buffer,
+                );
+                written_acc = Some(write_acc);
+                continue;
+            }
+
             let ch = &self.channels[i];
             let Some(src) = ch.output_texture() else {
                 continue;
@@ -1159,5 +1428,80 @@ mod gate_tests {
         };
         mixer.reorder_channel(0, 2);
         assert_eq!(keys(&mixer), ["ch_b_opacity", "ch_c_opacity", "ch_a_opacity"]);
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    fn stack(n: usize) -> Mixer {
+        let mut mixer = Mixer::new();
+        mixer.use_crossfader = false;
+        for i in 0..n {
+            let id = format!("ch{i}");
+            mixer
+                .add_channel(Channel::new(&id, &id, Box::new(tests::Stub)))
+                .unwrap();
+        }
+        mixer
+    }
+
+    #[test]
+    fn a_group_claims_its_span() {
+        let mut mixer = stack(4);
+        assert!(mixer.group_channels("g1", "Backdrop", 1, 2).is_some());
+        assert!(mixer.group_of(0).is_none(), "outside the span");
+        assert_eq!(mixer.group_of(1).map(|g| g.uuid.as_str()), Some("g1"));
+        assert_eq!(mixer.group_of(2).map(|g| g.uuid.as_str()), Some("g1"));
+        assert!(mixer.group_of(3).is_none());
+    }
+
+    /// A channel belongs to one group: re-parenting it silently would leave the
+    /// first group rendering members it no longer owns.
+    #[test]
+    fn spans_cannot_overlap() {
+        let mut mixer = stack(4);
+        mixer.group_channels("g1", "A", 0, 2).unwrap();
+        assert!(mixer.group_channels("g2", "B", 1, 2).is_none(), "overlaps g1");
+        assert!(mixer.group_channels("g2", "B", 2, 2).is_some(), "clear of g1");
+    }
+
+    #[test]
+    fn an_empty_or_overlong_span_is_refused() {
+        let mut mixer = stack(2);
+        assert!(mixer.group_channels("g", "A", 0, 0).is_none());
+        assert!(mixer.group_channels("g", "A", 1, 5).is_none());
+    }
+
+    #[test]
+    fn ungrouping_leaves_the_members() {
+        let mut mixer = stack(3);
+        mixer.group_channels("g1", "A", 0, 2).unwrap();
+        mixer.ungroup("g1");
+        assert!(mixer.groups.is_empty());
+        assert_eq!(mixer.channels.len(), 3, "members survive the group");
+    }
+
+    /// Muting a group silences the whole span, and soloing one silences
+    /// everything outside it — the same rules a layer follows.
+    #[test]
+    fn a_group_gates_its_members() {
+        let mut mixer = stack(3);
+        mixer.group_channels("g1", "A", 0, 2).unwrap();
+
+        mixer.groups[0].mute = true;
+        assert!(!mixer.any_solo());
+        // Members keep their own opacity; the group's gate is applied when the
+        // group is blended, so the members still report theirs here.
+        assert_eq!(mixer.effective_opacities().len(), 3);
+
+        mixer.groups[0].mute = false;
+        mixer.groups[0].solo = true;
+        assert!(mixer.any_solo(), "a soloed group counts as a solo");
+        let eff = mixer.effective_opacities();
+        assert_eq!(eff[2], 0.0, "the ungrouped layer is silenced by the solo");
+        assert!(eff[0] > 0.0, "a soloed group keeps its own members audible");
+        assert!(eff[1] > 0.0, "a soloed group keeps its own members audible");
     }
 }
