@@ -117,7 +117,7 @@ fn resolve_include(requested: &str, requesting: &str) -> shaderc::IncludeCallbac
 
 pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
     let body = strip_header(glsl_src)?;
-    let merged = build_glsl(isf, &body);
+    let merged = build_glsl(isf, &body, &crate::header::generators(glsl_src));
 
     // GLSL → SPIR-V (Vulkan 1.2, fragment, entry "main").
     let compiler =
@@ -235,7 +235,7 @@ struct Merged {
     uses_img_macros: bool,
 }
 
-fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
+fn build_glsl(isf: &Isf, raw_body: &str, gens: &[crate::header::Generator]) -> Merged {
     // 1. drop existing #version lines
     let mut body: String = raw_body
         .lines()
@@ -255,6 +255,10 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
                 format!("_{}_flip", i.name),
             ]
         }))
+        .collect();
+    let provided: Vec<String> = provided
+        .into_iter()
+        .chain(gens.iter().map(|g| g.name.clone()))
         .collect();
     let provided: Vec<&str> = provided.iter().map(|s| s.as_str()).collect();
     // Texture names we will declare (image/audio inputs, pass targets, imported).
@@ -303,10 +307,14 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
     //    Shadertoy-style shaders with only `mainImage` (no `main`) get a bridge that
     //    also writes to the declared out.
     let has_main_image = body.contains("void mainImage") && find_main_def(&body).is_none();
+    // MadMapper dialect: a material has no `main`, it returns a colour from
+    // `materialColorForPixel(vec2)` given the surface's 0..1 texture coordinate.
+    let has_material_fn = body.contains("materialColorForPixel") && find_main_def(&body).is_none();
     let needs_fragcolor_out = (body.contains("gl_FragColor")
         && !body.contains("out vec4 FragColor")
         && !body.contains("out vec4 gl_FragColor"))
         || has_main_image
+        || has_material_fn
         || baked_needs_out;
     if body.contains("gl_FragColor") {
         body = body.replace("gl_FragColor", "FragColor");
@@ -327,17 +335,24 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
     body = inline_img_calls(&body);
 
     // 8. gl_FragCoord → flipped global via wrapper main; bare mainImage → bridge.
-    let uses_fragcoord = body.contains("gl_FragCoord") || has_main_image;
-    let body = if body.contains("gl_FragCoord") {
+    let uses_fragcoord = body.contains("gl_FragCoord") || has_main_image || has_material_fn;
+    // The bridged dialects have no `main` to rename, so they are checked first:
+    // their bridge sets the flipped coordinate itself.
+    let flip = "isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);";
+    let (gen_decls, gen_init) = generator_glsl(gens, &isf.inputs);
+    let flip = format!("{flip}\n{gen_init}");
+    let body = if has_main_image || has_material_fn {
+        let b = body.replace("gl_FragCoord", "isf_FragCoord");
+        let call = if has_main_image {
+            "mainImage(FragColor, isf_FragCoord);".to_string()
+        } else {
+            "FragColor = materialColorForPixel(isf_FragNormCoord);".to_string()
+        };
+        format!("{b}\nvoid main() {{\n    {flip}\n    {call}\n}}\n")
+    } else if body.contains("gl_FragCoord") {
         let b = body.replace("gl_FragCoord", "isf_FragCoord");
         let b = rename_main(&b);
-        format!(
-            "{b}\nvoid main() {{\n    isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);\n    isf_user_main();\n}}\n"
-        )
-    } else if has_main_image {
-        format!(
-            "{body}\nvoid main() {{\n    isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);\n    mainImage(FragColor, isf_FragCoord);\n}}\n"
-        )
+        format!("{b}\nvoid main() {{\n    {flip}\n    isf_user_main();\n}}\n")
     } else {
         body
     };
@@ -426,12 +441,73 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
         }
     }
 
+    p.push_str(&gen_decls);
     p.push_str(&body);
     Merged {
         glsl: p,
         members,
         textures,
         uses_img_macros,
+    }
+}
+
+/// MadMapper generators, as GLSL: `(declarations, statements for main)`.
+///
+/// A generator is a float the host drives rather than the user: `time_base`
+/// integrates a speed over time and everything else derives from another
+/// input. Each parameter is either a literal or the name of an input to read
+/// it from.
+///
+/// ponytail: `time_base` is evaluated as `TIME * speed` rather than integrated
+/// per frame, so changing the speed jumps the phase instead of continuing
+/// smoothly from it — which is the discontinuity generators exist to avoid.
+/// Upgrade path is a host-side accumulator per generator, driven from
+/// TIMEDELTA. The filter generators (`damper`, `adsr`, `linear_filter`,
+/// `ease_filter`) likewise pass their source through unfiltered — their
+/// steady-state value, without the smoothing.
+fn generator_glsl(gens: &[crate::header::Generator], inputs: &[isf::Input]) -> (String, String) {
+    let known = |name: &str| inputs.iter().any(|i| i.name == name);
+    // A parameter reads from another input when it names one, else it is a
+    // literal, else the generator's documented default.
+    let param = |g: &crate::header::Generator, key: &str, default: f64| match g.params.get(key) {
+        Some(serde_json::Value::String(s)) if known(s) => s.clone(),
+        Some(serde_json::Value::Number(n)) => glsl_float(n.as_f64().unwrap_or(default)),
+        _ => glsl_float(default),
+    };
+    // `reverse` flips the sign; as a named input it is a bool uniform.
+    let sign = |g: &crate::header::Generator| match g.params.get("reverse") {
+        Some(serde_json::Value::String(s)) if known(s) => format!("({s} ? -1.0 : 1.0)"),
+        Some(serde_json::Value::Bool(true)) => "-1.0".to_string(),
+        _ => "1.0".to_string(),
+    };
+
+    let mut decls = String::new();
+    let mut init = String::new();
+    for g in gens {
+        decls.push_str(&format!("float {};\n", g.name));
+        let value = match g.ty.as_str() {
+            "time_base" => format!("TIME * {} * {}", param(g, "speed", 1.0), sign(g)),
+            "animator" => format!("fract(TIME * {} * {})", param(g, "speed", 1.0), sign(g)),
+            "multiplier" => (1..=4)
+                .map(|i| param(g, &format!("value{i}"), 1.0))
+                .collect::<Vec<_>>()
+                .join(" * "),
+            // The filters and pass-throughs read one source value.
+            "damper" | "adsr" | "linear_filter" | "ease_filter" | "shaper" | "curve"
+            | "pass_thru" => param(g, "input_value", 0.0),
+            _ => "0.0".to_string(),
+        };
+        init.push_str(&format!("    {} = {value};\n", g.name));
+    }
+    (decls, init)
+}
+
+/// A float GLSL will read as a float, not an int.
+fn glsl_float(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
     }
 }
 

@@ -36,6 +36,50 @@ pub fn parse(glsl_src: &str) -> Result<isf::Isf, String> {
     serde_json::from_value(value).map_err(|e| format!("header JSON: {e}"))
 }
 
+/// One entry of a MadMapper `GENERATORS` block: a named `float` uniform the
+/// host drives, rather than a control the user sets.
+///
+/// `params` values are either a literal or the name of another input to read
+/// the parameter from — see [`crate::compile`], which turns these into GLSL.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Generator {
+    pub name: String,
+    pub ty: String,
+    pub params: Map<String, Value>,
+}
+
+/// The `GENERATORS` a shader declares, empty for a shader with none.
+///
+/// Parsed separately from [`parse`] because `isf::Isf` has nowhere to put
+/// them; a header that will not parse at all simply has no generators.
+pub fn generators(glsl_src: &str) -> Vec<Generator> {
+    let Some(comment) = top_comment(glsl_src) else {
+        return Vec::new();
+    };
+    let Ok(root) = serde_json::from_str::<Value>(&clean_json(comment)) else {
+        return Vec::new();
+    };
+    root.get("GENERATORS")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| {
+                    Some(Generator {
+                        name: e.get("NAME")?.as_str()?.to_owned(),
+                        ty: e.get("TYPE")?.as_str()?.to_owned(),
+                        params: e
+                            .get("PARAMS")
+                            .and_then(Value::as_object)
+                            .cloned()
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The contents of the leading `/* */`, matching `isf::parse`'s own rule.
 fn top_comment(glsl_src: &str) -> Option<&str> {
     let start = glsl_src.find("/*")? + "/*".len();
@@ -43,8 +87,9 @@ fn top_comment(glsl_src: &str) -> Option<&str> {
     Some(glsl_src[start..end].trim())
 }
 
-/// Strip what `serde_json` will not read at all: `//` comments and trailing
-/// commas. String literals are left alone.
+/// Strip what `serde_json` will not read at all: `//` comments, trailing
+/// commas, and GLSL-style float literals (`360.`, `.5`). String literals are
+/// left alone.
 ///
 /// Block comments are not handled because they cannot occur: [`top_comment`]
 /// ends the header at the first `*/`, so that terminator is always the header's
@@ -80,6 +125,17 @@ fn clean_json(src: &str) -> String {
                         out.push('\n');
                         break;
                     }
+                }
+            }
+            // JSON wants a digit either side of the point; a shader author
+            // writing `"MAX": 360.` is spelling it the way GLSL does.
+            '.' => {
+                let prev_is_digit = out.chars().last().is_some_and(|c| c.is_ascii_digit());
+                let next_is_digit = chars.peek().is_some_and(char::is_ascii_digit);
+                match (prev_is_digit, next_is_digit) {
+                    (true, false) => out.push_str(".0"),
+                    (false, true) => out.push_str("0."),
+                    _ => out.push('.'),
                 }
             }
             ',' => {
@@ -153,7 +209,10 @@ fn repair(root: &mut Value) {
     {
         for input in inputs.iter_mut().filter_map(Value::as_object_mut) {
             let coerce: fn(&mut Value) = match input.get("TYPE").and_then(Value::as_str) {
-                Some("long" | "int") => round_to_int,
+                Some("long" | "int") => {
+                    name_the_values(input);
+                    round_to_int
+                }
                 Some("bool" | "event") => string_to_bool,
                 _ => continue,
             };
@@ -166,6 +225,37 @@ fn repair(root: &mut Value) {
             }
         }
     }
+}
+
+/// ISF spells a menu input as integer `VALUES` with parallel string `LABELS`;
+/// MadMapper just lists the labels in `VALUES` and names one in `DEFAULT`.
+/// Split that back apart, so the uniform is the index the shader compares to.
+fn name_the_values(input: &mut Map<String, Value>) {
+    let Some(values) = input.get("VALUES").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(labels): Option<Vec<String>> = values
+        .iter()
+        .map(|v| v.as_str().map(str::to_owned))
+        .collect()
+    else {
+        return; // already integer values, in the shape ISF asks for
+    };
+    let index_of = |v: &Value| {
+        v.as_str()
+            .and_then(|s| labels.iter().position(|l| l == s))
+            .map(|i| Value::from(i as i64))
+    };
+    for key in ["DEFAULT", "MIN", "MAX", "IDENTITY"] {
+        if let Some(value) = input.get_mut(key)
+            && let Some(index) = index_of(value)
+        {
+            *value = index;
+        }
+    }
+    let indices: Vec<i64> = (0..labels.len() as i64).collect();
+    input.entry("LABELS").or_insert_with(|| Value::from(labels));
+    input.insert("VALUES".into(), Value::from(indices));
 }
 
 /// Rewrite a JSON float as the nearest integer, leaving anything else alone.
@@ -196,6 +286,25 @@ mod tests {
 
     fn header(json: &str) -> String {
         format!("/*\n{json}\n*/\nvoid main() {{ gl_FragColor = vec4(1.0); }}")
+    }
+
+    #[test]
+    fn generators_are_read_with_their_params() {
+        let gens = generators(&header(
+            r#"{ "GENERATORS": [ { "NAME": "t", "TYPE": "time_base",
+                 "PARAMS": { "speed": "mat_speed", "reverse": true } } ] }"#,
+        ));
+
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0].name, "t");
+        assert_eq!(gens[0].ty, "time_base");
+        assert_eq!(gens[0].params["speed"], "mat_speed");
+    }
+
+    #[test]
+    fn a_shader_without_generators_has_none() {
+        assert!(generators(&header(r#"{ "INPUTS": [] }"#)).is_empty());
+        assert!(generators("void main() {}").is_empty());
     }
 
     #[test]
@@ -263,6 +372,37 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_input_listing_its_labels_becomes_an_index() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "shape", "TYPE": "long",
+                 "VALUES": ["Smooth", "In", "Cut"], "DEFAULT": "In" } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Long(long) = &isf.inputs[0].ty else {
+            panic!("expected a long input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(long.input_values.default, Some(1));
+        assert_eq!(long.values, vec![0, 1, 2]);
+        assert_eq!(long.labels, vec!["Smooth", "In", "Cut"]);
+    }
+
+    #[test]
+    fn a_menu_input_already_written_the_isf_way_is_left_alone() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "shape", "TYPE": "long",
+                 "VALUES": [0, 5], "LABELS": ["Off", "On"], "DEFAULT": 5 } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Long(long) = &isf.inputs[0].ty else {
+            panic!("expected a long input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(long.input_values.default, Some(5));
+        assert_eq!(long.values, vec![0, 5]);
+    }
+
+    #[test]
     fn a_quoted_boolean_default_is_read_as_a_boolean() {
         let isf = parse(&header(
             r#"{ "INPUTS": [ { "NAME": "on", "TYPE": "bool", "DEFAULT": "True" } ] }"#,
@@ -293,6 +433,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(isf.description.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn glsl_spelled_float_literals_are_read_as_numbers() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "x", "TYPE": "float",
+                 "MIN": -360., "MAX": 360., "DEFAULT": .5 } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Float(f) = &isf.inputs[0].ty else {
+            panic!("expected a float input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!((f.min, f.max, f.default), (Some(-360.0), Some(360.0), Some(0.5)));
+    }
+
+    #[test]
+    fn a_decimal_point_inside_a_string_is_left_alone() {
+        let isf = parse(&header(r#"{ "DESCRIPTION": "v1. and .5 too" }"#)).unwrap();
+
+        assert_eq!(isf.description.as_deref(), Some("v1. and .5 too"));
     }
 
     #[test]
