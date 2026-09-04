@@ -100,6 +100,132 @@ fn layer_row_is_drawn() {
     harness.get_by_label("Test");
 }
 
+/// On a narrow panel the row-1 controls (S, M, opacity slider, blend, ✖)
+/// must squash the opacity slider and ellipsize the layer name rather than
+/// slide over the name or out of frame. Regression test: the slider ignores
+/// `add_sized` (it always allocates `spacing.slider_width`), so the squash
+/// has to go through `spacing_mut()`.
+#[test]
+fn layer_controls_do_not_cover_the_name_on_narrow_panels() {
+    fn app_with_layer() -> KovvbojAppState {
+        let app = KovvbojAppState::default();
+        app.mixer
+            .lock()
+            .unwrap()
+            .add_channel(rustjay_mixer::Channel::new(
+                "test",
+                "A rather long layer name",
+                Box::new(StubSource),
+            ))
+            .unwrap();
+        app
+    }
+
+    for w in [700.0f32, 400.0, 300.0] {
+        let harness = tab_harness_with_app(DeckTab::default(), [w, 500.0], app_with_layer());
+        // The name appears on the row-1 button and the row-2 strip chip;
+        // the row-1 one is drawn first.
+        let name = harness
+            .get_all(egui_kittest::kittest::By::new().label_contains("A rather long"))
+            .next()
+            .expect("layer name");
+        let solo = harness.get_by_label("S");
+        let mute = harness.get_by_label("M");
+        assert!(
+            solo.rect().min.x >= name.rect().max.x - 1.0,
+            "panel {w}: S ({:?}) overlaps the layer name ({:?})",
+            solo.rect(),
+            name.rect()
+        );
+        assert!(
+            solo.rect().min.x >= 0.0 && mute.rect().min.x >= 0.0,
+            "panel {w}: S/M out of frame (S={:?}, M={:?})",
+            solo.rect(),
+            mute.rect()
+        );
+    }
+}
+
+/// Fifteen stub layers, the last one carrying one FX chip to drag.
+fn app_with_layers() -> KovvbojAppState {
+    let app = KovvbojAppState::default();
+    let mut mixer = app.mixer.lock().unwrap();
+    for i in 0..15 {
+        let mut ch = rustjay_mixer::Channel::new(
+            format!("l{i}"),
+            format!("Layer {i}"),
+            Box::new(StubSource),
+        );
+        if i == 14 {
+            ch.chain
+                .push(rustjay_mixer::EffectSlot::new(Box::new(StubSource)));
+        }
+        mixer.add_channel(ch).unwrap();
+    }
+    drop(mixer);
+    app
+}
+
+/// Dragging an FX chip to the bottom edge of the layer list scrolls it, so
+/// off-screen layers stay reachable as drop targets. The scroll offset lives
+/// in the shell's `decks_scroll` area, so this drives the real shell rather
+/// than the tab alone.
+#[test]
+fn chip_drag_at_the_edge_scrolls_the_layer_list() {
+    use rustjay_engine::prelude::AnyEguiShell;
+
+    let mut app = app_with_layers();
+    let mut engine = EngineState::default();
+    engine.audio.enabled = false;
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(engine));
+    let mut host = rustjay_engine::prelude::EguiControlGui::new(shared).unwrap();
+    let mut shell = kovvboj::shell::KovvbojShell::new();
+
+    let mut harness = Harness::builder()
+        .with_size([900.0, 600.0])
+        .with_pixels_per_point(1.0)
+        .with_theme(egui::Theme::Dark)
+        .build_ui(move |ui| shell.draw(ui, &mut app, &mut host));
+    harness.ctx.set_theme(egui::Theme::Dark);
+    harness.ctx.global_style_mut(|style| {
+        style.interaction.selectable_labels = false;
+        style.interaction.multi_widget_text_select = false;
+    });
+    // The splash animates (requests repaints until dismissed), so this harness
+    // steps a fixed frame count instead of running to quiescence.
+    harness.run_steps(2);
+
+    // Dismiss the launch splash (any press dismisses it).
+    harness.drag_at(egui::pos2(450.0, 300.0));
+    harness.drop_at(egui::pos2(450.0, 300.0));
+    harness.run_steps(4);
+
+    let before = harness.get_by_label("Layer 0").rect();
+
+    // The list's bottom edge sits just above the MASTER panel; hover a few
+    // points above it, inside the scroll margin. ("MASTER" labels more than
+    // one node; the bottom panel's is the lowest on screen.)
+    let master_top = harness
+        .get_all(egui_kittest::kittest::By::new().label("MASTER"))
+        .map(|n| n.rect().top())
+        .fold(f32::MIN, f32::max);
+    let chip = harness.get_by_label("effect");
+    let c = chip.rect().center();
+    harness.drag_at(c);
+    harness.run_steps(2);
+    harness.hover_at(egui::pos2(c.x, master_top - 8.0));
+    harness.run_steps(8);
+
+    let after = harness.get_by_label("Layer 0").rect();
+    assert!(
+        after.min.y < before.min.y,
+        "dragging to the bottom edge should scroll the list (before={before:?}, after={after:?})"
+    );
+
+    harness.drop_at(egui::pos2(c.x, 300.0));
+    harness.run_steps(2);
+}
+
 /// Selecting a node must survive a chain reorder, which is why `Selection`
 /// addresses nodes by UUID rather than by index.
 #[test]

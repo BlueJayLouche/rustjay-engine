@@ -361,3 +361,121 @@ mod tests {
         }
     }
 }
+
+/// Copy a picked shader into the library folder, so that adding it once is
+/// enough and it is there on the next launch.
+///
+/// A name that is already taken gets a numeric suffix, unless the file sitting
+/// there is byte-identical: re-adding the same shader should not litter the
+/// folder with copies, and adding a *different* shader that happens to share a
+/// filename must not quietly load the bundled one instead.
+pub fn install_shader(src: &Path, shaders_dir: &Path) -> std::io::Result<PathBuf> {
+    if src.parent() == Some(shaders_dir) {
+        return Ok(src.to_path_buf());
+    }
+    let contents = std::fs::read(src)?;
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("shader");
+    std::fs::create_dir_all(shaders_dir)?;
+
+    for attempt in 0..100 {
+        let name = match attempt {
+            0 => format!("{stem}.fs"),
+            n => format!("{stem}_{n}.fs"),
+        };
+        let dest = shaders_dir.join(name);
+        match std::fs::read(&dest) {
+            // Already installed under this name — nothing to do.
+            Ok(existing) if existing == contents => return Ok(dest),
+            Ok(_) => continue,
+            Err(_) => {
+                std::fs::write(&dest, &contents)?;
+                return Ok(dest);
+            }
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "100 different shaders are already installed as {stem}"
+    )))
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "kovvboj_install_{tag}_{}_{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn file(&self, name: &str, body: &str) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[test]
+    fn a_new_shader_lands_under_its_own_name() {
+        let outside = TempDir::new("src_new");
+        let library = TempDir::new("lib_new");
+        let picked = outside.file("Oil_stain.fs", "// oil");
+
+        let installed = install_shader(&picked, &library.0).unwrap();
+
+        assert_eq!(installed, library.0.join("Oil_stain.fs"));
+        assert_eq!(std::fs::read_to_string(&installed).unwrap(), "// oil");
+    }
+
+    #[test]
+    fn adding_the_same_shader_twice_does_not_make_a_second_copy() {
+        let outside = TempDir::new("src_same");
+        let library = TempDir::new("lib_same");
+        let picked = outside.file("Oil_stain.fs", "// oil");
+
+        let first = install_shader(&picked, &library.0).unwrap();
+        let second = install_shader(&picked, &library.0).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read_dir(&library.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_different_shader_with_a_taken_name_is_kept_separate() {
+        let outside = TempDir::new("src_clash");
+        let library = TempDir::new("lib_clash");
+        std::fs::write(library.0.join("Oil_stain.fs"), "// the bundled one").unwrap();
+        let picked = outside.file("Oil_stain.fs", "// mine");
+
+        let installed = install_shader(&picked, &library.0).unwrap();
+
+        assert_eq!(installed, library.0.join("Oil_stain_1.fs"));
+        assert_eq!(
+            std::fs::read_to_string(library.0.join("Oil_stain.fs")).unwrap(),
+            "// the bundled one"
+        );
+    }
+
+    #[test]
+    fn a_shader_already_in_the_library_is_left_where_it_is() {
+        let library = TempDir::new("lib_inplace");
+        let already = library.file("Oil_stain.fs", "// oil");
+
+        let installed = install_shader(&already, &library.0).unwrap();
+
+        assert_eq!(installed, already);
+        assert_eq!(std::fs::read_dir(&library.0).unwrap().count(), 1);
+    }
+}

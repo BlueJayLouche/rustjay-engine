@@ -4,6 +4,18 @@
 //! into a single engine. Two ISF shader channels are composited via the mixer
 //! with crossfader, blend modes, and transitions.
 
+/// The shader library folder: the one directory the registry scans and the
+/// watcher watches, and where [`install_shader`](sources::registry::install_shader)
+/// puts anything picked from elsewhere.
+pub fn shaders_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders")
+}
+
+/// The images-and-videos folder the registry scans alongside [`shaders_dir`].
+pub fn assets_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
 #[cfg(feature = "mixer")]
 pub mod thumbs;
 #[cfg(feature = "api")]
@@ -27,7 +39,6 @@ use rustjay_core::{EffectPlugin, EngineState, RenderHookCtx};
 use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
-use std::path::PathBuf;
 #[cfg(feature = "mixer")]
 use std::sync::{Arc, Mutex};
 
@@ -71,6 +82,15 @@ pub enum Selection {
         layer: String,
         fx: String,
     },
+    /// A bus group: its mix and the chain its members pass through.
+    Group {
+        group: String,
+    },
+    /// An FX slot in a group's chain.
+    GroupFx {
+        group: String,
+        fx: String,
+    },
     /// An FX slot in the master chain.
     MasterFx {
         fx: String,
@@ -89,6 +109,10 @@ pub struct KovvbojAppState {
     /// What the inspector panel is showing. Transient — not persisted.
     #[serde(skip)]
     pub selection: Selection,
+    /// Layers picked out for a bulk action — grouping, for now. Cmd- or
+    /// shift-click adds to it; a plain click replaces it. Transient.
+    #[serde(skip)]
+    pub selected_layers: std::collections::HashSet<String>,
     #[serde(skip)]
     pub registry: Registry,
     #[serde(skip)]
@@ -206,6 +230,30 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_layer_save: Option<(String, String)>,
+    /// Master chains saved to the library.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub saved_chains: Vec<crate::scene::SavedChain>,
+    /// Groups saved to the library.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub saved_groups: Vec<crate::scene::SavedGroup>,
+    /// A group the user asked to save: its uuid and the name to save it under.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_group_save: Option<(String, String)>,
+    /// A saved group to build into the stack.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_group_recall: Option<crate::scene::SavedGroup>,
+    /// A master chain the user asked to save, by name.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_chain_save: Option<String>,
+    /// A saved chain to load into the master, replacing what is there.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_chain_recall: Option<crate::scene::SavedChain>,
     /// Sysinfo state for CPU/memory readout (sysmon feature only).
     #[serde(skip)]
     #[cfg(feature = "sysmon")]
@@ -272,6 +320,8 @@ pub enum EffectTarget {
     Layer { layer_uuid: String },
     /// Add to the master FX chain.
     Master,
+    /// Add to a bus group's chain.
+    Group { group_uuid: String },
 }
 
 /// One ISF shader effect queued for creation by the UI and materialized in `prepare()`.
@@ -296,6 +346,8 @@ pub enum ChainRef {
     Layer { layer: String },
     /// The master chain.
     Master,
+    /// A bus group's chain, applied to its composited members.
+    Group { group: String },
 }
 
 #[cfg(feature = "mixer")]
@@ -307,6 +359,9 @@ impl ChainRef {
                 layer_uuid: layer.clone(),
             },
             ChainRef::Master => EffectTarget::Master,
+            ChainRef::Group { group } => EffectTarget::Group {
+                group_uuid: group.clone(),
+            },
         }
     }
 
@@ -318,6 +373,10 @@ impl ChainRef {
                 fx: fx.to_string(),
             },
             ChainRef::Master => Selection::MasterFx { fx: fx.to_string() },
+            ChainRef::Group { group } => Selection::GroupFx {
+                group: group.clone(),
+                fx: fx.to_string(),
+            },
         }
     }
 }
@@ -335,6 +394,11 @@ fn chain_parts<'m>(
             let ch = mixer.channels.iter_mut().find(|c| c.uuid == *layer)?;
             let base = format!("ch_{}_", ch.uuid);
             Some((&mut ch.chain, base))
+        }
+        ChainRef::Group { group } => {
+            let g = mixer.groups.iter_mut().find(|g| g.uuid == *group)?;
+            let base = format!("grp_{}_", g.uuid);
+            Some((&mut g.chain, base))
         }
     }
 }
@@ -562,6 +626,7 @@ impl Default for KovvbojAppState {
             thumbs: crate::thumbs::Thumbnails::default(),
             ready: false,
             selection: Selection::None,
+            selected_layers: std::collections::HashSet::new(),
             registry: Registry {
                 shaders: Vec::new(),
                 images: Vec::new(),
@@ -591,6 +656,18 @@ impl Default for KovvbojAppState {
             saved_layers: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_layer_save: None,
+            #[cfg(feature = "mixer")]
+            saved_chains: Vec::new(),
+            #[cfg(feature = "mixer")]
+            saved_groups: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_group_save: None,
+            #[cfg(feature = "mixer")]
+            pending_group_recall: None,
+            #[cfg(feature = "mixer")]
+            pending_chain_save: None,
+            #[cfg(feature = "mixer")]
+            pending_chain_recall: None,
             #[cfg(feature = "mixer")]
             param_bases_cache: Vec::new(),
             workspace: crate::persistence::default_workspace(),
@@ -1173,8 +1250,7 @@ impl KovvbojRootPlugin {
         // never scaled by a two-channel crossfader.
         mixer.use_crossfader = false;
         let dummy_engine = EngineState::new();
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let shaders_dir = manifest_dir.join("shaders");
+        let shaders_dir = crate::shaders_dir();
         let mut sources = std::collections::HashMap::new();
 
         // Two layers to open on: a generator underneath, a camera over it.
@@ -1320,6 +1396,54 @@ impl KovvbojRootPlugin {
             sources.insert(uuid, desc.source.clone());
         }
 
+        // Groups after the layers: membership names them, so they all have to
+        // exist first. Their uuids are reproduced so `grp_<uuid>_…` params —
+        // opacity, blend, and every effect in the chain — land back on them.
+        for desc in &topo.groups {
+            let present: Vec<String> = desc
+                .members
+                .iter()
+                .filter(|u| mixer.channels.iter().any(|c| &c.uuid == *u))
+                .cloned()
+                .collect();
+            if present.len() < 2 {
+                // A group whose layers are gone is not a group; dropping it
+                // beats leaving one that renders nothing.
+                log::warn!(
+                    "[Topology] group '{}' has {} of {} members left, skipping",
+                    desc.name,
+                    present.len(),
+                    desc.members.len()
+                );
+                continue;
+            }
+            if mixer
+                .group_channels(desc.uuid.clone(), desc.name.clone(), &present)
+                .is_none()
+            {
+                continue;
+            }
+            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
+                g.opacity = desc.opacity;
+                g.blend_mode = desc.blend_mode;
+                g.solo = desc.solo;
+                g.mute = desc.mute;
+                g.collapsed = desc.collapsed;
+            }
+            let prefix = format!("grp_{}_", desc.uuid);
+            let mut chain = Vec::new();
+            for fx in &desc.fx {
+                if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
+                    slot.effect
+                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
+                    chain.push(slot);
+                }
+            }
+            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
+                g.chain = chain;
+            }
+        }
+
         for fx in &topo.master_fx {
             if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
                 slot.effect
@@ -1336,6 +1460,87 @@ impl KovvbojRootPlugin {
         drop(mixer);
         self.layer_sources_init = sources;
         self.params_dirty = true;
+    }
+}
+
+
+/// Point one output's source stage at the surface assigned to it.
+///
+/// Shared by projector windows and headless outputs: both carry a
+/// `surface_index`, and until this was factored out only projectors consumed
+/// theirs, so a surface assigned to a headless output was stored, saved, and
+/// then ignored while the output emitted the raw master.
+#[cfg(all(feature = "projection", feature = "mixer"))]
+fn sync_surface_source(
+    sync: &std::sync::Arc<std::sync::Mutex<crate::stage::SourceSync>>,
+    surface: Option<&crate::stage::KovvbojSurface>,
+    mixer: &Mixer,
+) {
+    use crate::stage::SurfaceSource;
+
+    let source_key = surface.map(|s| s.source.label());
+    // Cropping is driven solely by the surface's `uv_crop_rect`
+    // (its position/size box over the master, kept in sync with
+    // the surface rectangle in the Stage tab). The cropped region
+    // fills the output quad, matching the Stage-tab canvas.
+    let uv_scale = [1.0, 1.0];
+    let uv_offset = [0.0, 0.0];
+    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    // Current generation of the routed source texture. A channel's
+    // output ping-pongs between two physical buffers as its FX-chain
+    // parity changes, so the cached view must be rebuilt when this
+    // moves — otherwise the surface samples a stale buffer and the
+    // FX appear to toggle at random.
+    let current_gen = surface.and_then(|surf| match &surf.source {
+        SurfaceSource::Channel(uuid) => {
+            mixer.channel_texture(uuid).map(|t| t.generation)
+        }
+        _ => None,
+    });
+    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
+        let source_changed = g.source_key.as_ref() != source_key.as_ref();
+        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
+        let gen_changed = g.output_generation != current_gen;
+        if !source_changed && !uv_changed && !gen_changed {
+            // Nothing changed — keep current state.
+            (false, g.override_view.clone())
+        } else {
+            // Source or UV changed — compute new view.
+            let view = match surface {
+                Some(surf) => match &surf.source {
+                    SurfaceSource::Master => None,
+                    SurfaceSource::Channel(uuid) => {
+                        mixer.channel_texture(uuid).map(|tex| {
+                            std::sync::Arc::new(tex.texture.create_view(
+                                &wgpu::TextureViewDescriptor::default(),
+                            ))
+                        })
+                    }
+                    SurfaceSource::Deck { .. } => {
+                        log::warn!(
+                            "Deck source routing not yet implemented, falling back to Master"
+                        );
+                        None
+                    }
+                    SurfaceSource::Domemaster => None,
+                },
+                None => None,
+            };
+            (true, view)
+        }
+    } else {
+        (false, None)
+    };
+    if needs_update {
+        if let Ok(mut g) = sync.lock() {
+            g.source_key = source_key;
+            g.override_view = override_view;
+            g.output_generation = current_gen;
+            g.uv_scale = uv_scale;
+            g.uv_offset = uv_offset;
+            g.uv_crop = uv_crop;
+            g.version = g.version.wrapping_add(1);
+        }
     }
 }
 
@@ -1418,6 +1623,8 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.engine_modulation = Some(engine.modulation.clone());
                 state.favourites = state.workspace.load_favourites();
                 state.saved_layers = state.workspace.load_layers();
+                state.saved_chains = state.workspace.load_chains();
+                state.saved_groups = state.workspace.load_groups();
 
                 // Restore the modulation snapshot loaded from the workspace scene
                 // in `init()` (topology already rebuilt there, so the param keys
@@ -1452,9 +1659,8 @@ impl EffectPlugin for KovvbojRootPlugin {
                 state.projection_handle = engine.projection_handle.clone();
             }
 
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let shaders_dir = manifest_dir.join("shaders");
-            state.registry = Registry::scan(&shaders_dir, &manifest_dir.join("assets"));
+            let shaders_dir = crate::shaders_dir();
+            state.registry = Registry::scan(&shaders_dir, &crate::assets_dir());
             log::info!(
                 "[Registry] scanned {} shaders, {} images, {} videos",
                 state.registry.shaders.len(),
@@ -1627,7 +1833,25 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
             if let Some(ref watcher) = state.shader_watcher {
-                for event in watcher.poll() {
+                let events = watcher.poll();
+                // A modify is a hot-reload, handled below and no change to the
+                // list. A create or remove is: rescan so the Library follows
+                // the folder, whether the file arrived through Add file… or was
+                // dropped in from the Finder.
+                if events.iter().any(|e| {
+                    matches!(
+                        e.kind,
+                        notify::EventKind::Create(_) | notify::EventKind::Remove(_)
+                    )
+                }) {
+                    state.registry =
+                        Registry::scan(&crate::shaders_dir(), &crate::assets_dir());
+                    log::info!(
+                        "[Registry] rescanned: {} shaders",
+                        state.registry.shaders.len()
+                    );
+                }
+                for event in events {
                     for path in &event.paths {
                         log::info!("[ShaderWatcher] changed: {}", path.display());
                         let name = path
@@ -1975,6 +2199,183 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
 
+            if let Some((gid, name)) = state.pending_group_save.take() {
+                let captured = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    let topo = crate::scene::Topology::from_mixer(&mixer, &state.layer_sources);
+                    topo.groups.iter().find(|g| g.uuid == gid).map(|g| {
+                        let layers: Vec<crate::scene::LayerDesc> = g
+                            .members
+                            .iter()
+                            .filter_map(|u| {
+                                topo.layers.iter().find(|l| &l.uuid == u).cloned()
+                            })
+                            .collect();
+                        crate::scene::SavedGroup::capture(
+                            name.clone(),
+                            g,
+                            layers,
+                            &state.param_snapshot,
+                        )
+                    })
+                };
+                match captured {
+                    Some(saved) => match state.workspace.save_group(&saved) {
+                        Ok(_) => {
+                            state.saved_groups = state.workspace.load_groups();
+                            engine.notify(
+                                format!("Saved group '{name}'"),
+                                rustjay_core::NotificationLevel::Success,
+                                std::time::Duration::from_secs(3),
+                            );
+                        }
+                        Err(e) => engine.notify(
+                            format!("Could not save '{name}': {e}"),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(5),
+                        ),
+                    },
+                    None => engine.notify(
+                        format!("Group '{name}' is no longer there to save"),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(4),
+                    ),
+                }
+            }
+
+            if let Some(saved) = state.pending_group_recall.take() {
+                // Built here rather than queued as pending layers: that path
+                // mints its own uuid per layer, which would rekey a second time
+                // and strand the parameters this recall just rewrote.
+                let (layers, gid, fx, params) = saved.instantiate();
+                let base = crate::scene::topology_base();
+                let mut members = Vec::new();
+                {
+                    let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    for desc in &layers {
+                        let mut entry = desc.source.clone();
+                        if let Some(path) = entry.path.take() {
+                            entry.path = Some(crate::scene::resolve(&path, &base));
+                        }
+                        let source = match instantiate_source(&entry, device, queue, engine) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                log::warn!("[Group] '{}' failed to build: {e}", desc.name);
+                                continue;
+                            }
+                        };
+                        let prefix = format!("ch_{}_", desc.uuid);
+                        let mut source = source;
+                        source.set_param_prefix(&prefix);
+                        let mut channel = Channel::new(desc.uuid.clone(), &desc.name, source);
+                        channel.opacity = desc.opacity;
+                        channel.blend_mode = desc.blend_mode;
+                        channel.solo = desc.solo;
+                        channel.mute = desc.mute;
+                        for slot in &desc.fx {
+                            if let Some(mut built) =
+                                build_fx_slot(slot, &base, device, queue, engine)
+                            {
+                                built
+                                    .effect
+                                    .set_param_prefix(&format!("{prefix}fx{}_", built.uuid));
+                                channel.chain.push(built);
+                            }
+                        }
+                        if mixer.add_channel(channel).is_err() {
+                            continue;
+                        }
+                        state.layer_sources.insert(desc.uuid.clone(), desc.source.clone());
+                        members.push(desc.uuid.clone());
+                    }
+
+                    if members.len() >= 2
+                        && mixer
+                            .group_channels(gid.clone(), saved.name.clone(), &members)
+                            .is_some()
+                    {
+                        let prefix = format!("grp_{gid}_");
+                        let mut chain = Vec::new();
+                        for slot in &fx {
+                            if let Some(mut built) =
+                                build_fx_slot(slot, &base, device, queue, engine)
+                            {
+                                built
+                                    .effect
+                                    .set_param_prefix(&format!("{prefix}fx{}_", built.uuid));
+                                chain.push(built);
+                            }
+                        }
+                        if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == gid) {
+                            g.opacity = saved.opacity;
+                            g.blend_mode = saved.blend_mode;
+                            g.chain = chain;
+                        }
+                    }
+                }
+                if let Ok(mut restore) = engine.param_restore.lock() {
+                    restore.extend(params);
+                }
+                self.params_dirty = true;
+                engine.notify(
+                    format!("Loaded group '{}' — {} layers", saved.name, members.len()),
+                    rustjay_core::NotificationLevel::Success,
+                    std::time::Duration::from_secs(3),
+                );
+            }
+
+            if let Some(name) = state.pending_chain_save.take() {
+                let fx = {
+                    let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::scene::Topology::from_mixer(&mixer, &state.layer_sources).master_fx
+                };
+                let saved =
+                    crate::scene::SavedChain::capture(name.clone(), fx, &state.param_snapshot);
+                match state.workspace.save_chain(&saved) {
+                    Ok(_) => {
+                        state.saved_chains = state.workspace.load_chains();
+                        engine.notify(
+                            format!("Saved master chain '{name}'"),
+                            rustjay_core::NotificationLevel::Success,
+                            std::time::Duration::from_secs(3),
+                        );
+                    }
+                    Err(e) => engine.notify(
+                        format!("Could not save '{name}': {e}"),
+                        rustjay_core::NotificationLevel::Error,
+                        std::time::Duration::from_secs(5),
+                    ),
+                }
+            }
+
+            if let Some(saved) = state.pending_chain_recall.take() {
+                let (fx, params) = saved.instantiate();
+                let base = crate::scene::topology_base();
+                {
+                    let mut mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                    // Recall replaces: a chain is a whole signal path, and
+                    // appending it to whatever is already there would just
+                    // stack two copies of the same idea.
+                    mixer.master.clear();
+                    for desc in &fx {
+                        if let Some(mut slot) = build_fx_slot(desc, &base, device, queue, engine) {
+                            slot.effect
+                                .set_param_prefix(&format!("master_fx{}_", slot.uuid));
+                            mixer.master.push(slot);
+                        }
+                    }
+                }
+                if let Ok(mut restore) = engine.param_restore.lock() {
+                    restore.extend(params);
+                }
+                self.params_dirty = true;
+                engine.notify(
+                    format!("Loaded master chain '{}'", saved.name),
+                    rustjay_core::NotificationLevel::Info,
+                    std::time::Duration::from_secs(3),
+                );
+            }
+
             if let Some((uuid, name)) = state.pending_layer_save.take() {
                 let desc = {
                     let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
@@ -2022,6 +2423,36 @@ impl EffectPlugin for KovvbojRootPlugin {
                     continue;
                 };
                 match req.target {
+                    EffectTarget::Group { ref group_uuid } => {
+                        match rustjay_isf::IsfEffect::from_path(&req.path) {
+                            Ok(isf) => {
+                                let name = isf.shader_name.clone();
+                                let node = EffectNode::new(isf, &name, device, queue, engine);
+                                let Some(g) =
+                                    mixer.groups.iter_mut().find(|g| g.uuid == *group_uuid)
+                                else {
+                                    continue;
+                                };
+                                let slot = rustjay_mixer::EffectSlot::new(Box::new(node));
+                                g.chain.push(slot);
+                                let pos = position_new_slot(&mut g.chain, req.index);
+                                g.chain[pos].source_path = Some(req.path.clone());
+                                let prefix = format!("grp_{}_fx{}_", group_uuid, g.chain[pos].uuid);
+                                g.chain[pos].effect.set_param_prefix(&prefix);
+                                self.params_dirty = true;
+                                engine.notify(
+                                    format!("Added group FX '{name}'"),
+                                    rustjay_core::NotificationLevel::Success,
+                                    std::time::Duration::from_secs(3),
+                                );
+                            }
+                            Err(e) => engine.notify(
+                                format!("Could not load '{}': {e}", req.path.display()),
+                                rustjay_core::NotificationLevel::Error,
+                                std::time::Duration::from_secs(5),
+                            ),
+                        }
+                    }
                     EffectTarget::Master => match rustjay_isf::IsfEffect::from_path(&req.path) {
                         Ok(isf) => {
                             let name = isf.shader_name.clone();
@@ -2095,14 +2526,36 @@ impl EffectPlugin for KovvbojRootPlugin {
                     {
                         for cfg in state.stage.headless_outputs.iter_mut() {
                             if cfg.enabled && !cfg.pushed {
+                                // Source (crop) then warp, the same pair a
+                                // projector window runs. Without these a headless
+                                // output was a passthrough and its assigned
+                                // surface did nothing.
+                                let slot = state.stage.headless_warp_syncs.len();
+                                let warp = std::sync::Arc::new(std::sync::Mutex::new(
+                                    crate::stage::WarpSync::default(),
+                                ));
+                                let source = std::sync::Arc::new(std::sync::Mutex::new(
+                                    crate::stage::SourceSync::default(),
+                                ));
+                                state.stage.headless_warp_syncs.push(warp.clone());
+                                state.stage.headless_source_syncs.push(source.clone());
+                                let _ = slot;
                                 sub.add_headless_output(
                                     cfg.width,
                                     cfg.height,
-                                    vec![Box::new(rustjay_projection::IdentityStage::new(
-                                        device,
-                                        // Must match HeadlessOutput's BGRA offscreen.
-                                        wgpu::TextureFormat::Bgra8Unorm,
-                                    ))],
+                                    vec![
+                                        Box::new(crate::stage::KovvbojSourceStage::new(
+                                            device,
+                                            // Must match HeadlessOutput's BGRA offscreen.
+                                            wgpu::TextureFormat::Bgra8Unorm,
+                                            source,
+                                        )),
+                                        Box::new(crate::stage::KovvbojWarpStage::new(
+                                            device,
+                                            wgpu::TextureFormat::Bgra8Unorm,
+                                            warp,
+                                        )),
+                                    ],
                                 );
                                 cfg.pushed = true;
                                 log::info!(
@@ -2773,7 +3226,7 @@ impl EffectPlugin for KovvbojRootPlugin {
 
             #[cfg(feature = "projection")]
             {
-                use crate::stage::{SourceSync, SurfaceSource};
+                use crate::stage::SourceSync;
                 let stage = &mut app_state.stage;
                 // Grow/shrink source_syncs and rotation_syncs to match projector count.
                 while stage.source_syncs.len() < stage.projectors.len() {
@@ -2807,82 +3260,27 @@ impl EffectPlugin for KovvbojRootPlugin {
                         .surface_index
                         .and_then(|idx| stage.surfaces.get(idx))
                         .or_else(|| stage.surfaces.first());
-
-                    let source_key = surface.map(|s| s.source.label());
-
-                    // Cropping is driven solely by the surface's `uv_crop_rect`
-                    // (its position/size box over the master, kept in sync with
-                    // the surface rectangle in the Stage tab). The cropped region
-                    // fills the output quad, matching the Stage-tab canvas.
-                    let uv_scale = [1.0, 1.0];
-                    let uv_offset = [0.0, 0.0];
-
-                    let uv_crop = surface.map(|s| s.uv_crop_rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
-
-                    // Current generation of the routed source texture. A channel's
-                    // output ping-pongs between two physical buffers as its FX-chain
-                    // parity changes, so the cached view must be rebuilt when this
-                    // moves — otherwise the surface samples a stale buffer and the
-                    // FX appear to toggle at random.
-                    let current_gen = surface.and_then(|surf| match &surf.source {
-                        SurfaceSource::Channel(uuid) => {
-                            mixer.channel_texture(uuid).map(|t| t.generation)
-                        }
-                        _ => None,
-                    });
-
-                    let (needs_update, override_view) = if let Ok(g) = sync.lock() {
-                        let source_changed = g.source_key.as_ref() != source_key.as_ref();
-                        let uv_changed = g.uv_scale != uv_scale || g.uv_offset != uv_offset || g.uv_crop != uv_crop;
-                        let gen_changed = g.output_generation != current_gen;
-                        if !source_changed && !uv_changed && !gen_changed {
-                            // Nothing changed — keep current state.
-                            (false, g.override_view.clone())
-                        } else {
-                            // Source or UV changed — compute new view.
-                            let view = match surface {
-                                Some(surf) => match &surf.source {
-                                    SurfaceSource::Master => None,
-                                    SurfaceSource::Channel(uuid) => {
-                                        mixer.channel_texture(uuid).map(|tex| {
-                                            std::sync::Arc::new(tex.texture.create_view(
-                                                &wgpu::TextureViewDescriptor::default(),
-                                            ))
-                                        })
-                                    }
-                                    SurfaceSource::Deck { .. } => {
-                                        log::warn!(
-                                            "Deck source routing not yet implemented, falling back to Master"
-                                        );
-                                        None
-                                    }
-                                    SurfaceSource::Domemaster => None,
-                                },
-                                None => None,
-                            };
-                            (true, view)
-                        }
-                    } else {
-                        (false, None)
-                    };
-
-                    if needs_update {
-                        if let Ok(mut g) = sync.lock() {
-                            g.source_key = source_key;
-                            g.override_view = override_view;
-                            g.output_generation = current_gen;
-                            g.uv_scale = uv_scale;
-                            g.uv_offset = uv_offset;
-                            g.uv_crop = uv_crop;
-                            g.version = g.version.wrapping_add(1);
-                        }
-                    }
+                    sync_surface_source(sync, surface, &mixer);
                 }
 
-                // TODO(S2): headless_outputs.surface_index is stored and UI-editable
-                // but not yet wired into the render hook. Headless outputs currently
-                // use a passthrough IdentityStage. Add per-headless source routing
-                // when the headless stage chain is made dynamic.
+                // Headless outputs route their assigned surface the same way,
+                // now that they run a real stage chain rather than a passthrough.
+                let mut enabled_hl = 0;
+                for hl in stage.headless_outputs.iter() {
+                    if !(hl.enabled && hl.pushed) {
+                        continue;
+                    }
+                    let idx = enabled_hl;
+                    enabled_hl += 1;
+                    let Some(sync) = stage.headless_source_syncs.get(idx) else {
+                        continue;
+                    };
+                    let surface = hl
+                        .surface_index
+                        .and_then(|i| stage.surfaces.get(i))
+                        .or_else(|| stage.surfaces.first());
+                    sync_surface_source(sync, surface, &mixer);
+                }
             }
 
             true

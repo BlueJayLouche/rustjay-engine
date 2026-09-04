@@ -167,6 +167,32 @@ pub struct LayerDesc {
     pub fx: Vec<FxDesc>,
 }
 
+/// One bus group: which layers it holds, and how the composite is treated.
+///
+/// Members are named rather than positioned: a span would have to be recomputed
+/// against a stack that may have been restacked since, and the uuids survive
+/// that.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupDesc {
+    /// Stable identity, reproduced on replay so `grp_<uuid>_…` params match.
+    pub uuid: String,
+    pub name: String,
+    /// Member layer uuids, bottom of the group first.
+    pub members: Vec<String>,
+    pub opacity: f32,
+    pub blend_mode: rustjay_mixer::BlendMode,
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
+    pub mute: bool,
+    #[serde(default)]
+    pub collapsed: bool,
+    /// The chain the composited members pass through.
+    #[serde(default)]
+    pub fx: Vec<FxDesc>,
+}
+
 /// The full routing graph, serializable and replayable.
 #[cfg(feature = "mixer")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -181,6 +207,10 @@ pub struct Topology {
     /// Master FX applied after compositing.
     #[serde(default)]
     pub master_fx: Vec<FxDesc>,
+    /// Bus groups over the layers. Absent in scenes saved before groups
+    /// existed, which then load as a flat stack.
+    #[serde(default)]
+    pub groups: Vec<GroupDesc>,
 }
 
 /// One layer saved to the library, to be dropped into any scene later.
@@ -262,6 +292,186 @@ impl SavedLayer {
             .collect();
 
         (layer, params)
+    }
+}
+
+/// The master FX chain saved to the library, to be recalled into any scene.
+///
+/// The master chain is the one every layer passes through on the way out, so
+/// it is worth keeping independently of the layers that feed it.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedChain {
+    #[serde(default)]
+    pub version: u32,
+    pub name: String,
+    /// Ordered FX, as saved.
+    pub fx: Vec<FxDesc>,
+    /// Base values for everything under `master_fx<uuid>_`.
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, f32>,
+}
+
+#[cfg(feature = "mixer")]
+impl SavedChain {
+    /// Capture the live master chain and the params belonging to it.
+    pub fn capture(
+        name: String,
+        fx: Vec<FxDesc>,
+        params: &std::collections::HashMap<String, f32>,
+    ) -> Self {
+        let keys: Vec<String> = fx.iter().map(|f| format!("master_fx{}_", f.uuid)).collect();
+        Self {
+            version: SAVED_LAYER_VERSION,
+            name,
+            params: params
+                .iter()
+                .filter(|(k, _)| keys.iter().any(|p| k.starts_with(p)))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            fx,
+        }
+    }
+
+    /// Fresh uuids for a new instance, with the params rekeyed to match, so the
+    /// same saved chain can be recalled twice without two slots claiming one
+    /// parameter prefix.
+    pub fn instantiate(&self) -> (Vec<FxDesc>, std::collections::HashMap<String, f32>) {
+        let mut fx = self.fx.clone();
+        let mut renames = Vec::new();
+        for slot in &mut fx {
+            let fresh = new_uuid();
+            renames.push((
+                format!("master_fx{}_", slot.uuid),
+                format!("master_fx{fresh}_"),
+            ));
+            slot.uuid = fresh;
+        }
+        let params = self
+            .params
+            .iter()
+            .filter_map(|(key, value)| {
+                renames.iter().find_map(|(from, to)| {
+                    key.strip_prefix(from.as_str())
+                        .map(|tail| (format!("{to}{tail}"), *value))
+                })
+            })
+            .collect();
+        (fx, params)
+    }
+}
+
+/// A whole bus group saved to the library: its layers, its chain, and the
+/// settings of both.
+///
+/// Recalling one rebuilds every member layer as well as the group, which is the
+/// point — a group is a arrangement of layers, not a wrapper you can restore
+/// around whatever happens to be in the stack.
+#[cfg(feature = "mixer")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedGroup {
+    #[serde(default)]
+    pub version: u32,
+    pub name: String,
+    /// The group's identity when it was saved. Kept so recall can rewrite
+    /// `grp_<uuid>_…` keys by a straight prefix swap rather than guessing where
+    /// one ends.
+    pub group_uuid: String,
+    /// Member layers, bottom first, exactly as saved.
+    pub layers: Vec<LayerDesc>,
+    /// The group's own chain.
+    #[serde(default)]
+    pub fx: Vec<FxDesc>,
+    pub opacity: f32,
+    pub blend_mode: rustjay_mixer::BlendMode,
+    /// Parameters for the members and for the group, under their saved keys.
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, f32>,
+}
+
+#[cfg(feature = "mixer")]
+impl SavedGroup {
+    /// Capture a group and everything under it.
+    pub fn capture(
+        name: String,
+        group: &GroupDesc,
+        layers: Vec<LayerDesc>,
+        params: &std::collections::HashMap<String, f32>,
+    ) -> Self {
+        let mut prefixes: Vec<String> =
+            layers.iter().map(|l| format!("ch_{}_", l.uuid)).collect();
+        prefixes.push(format!("grp_{}_", group.uuid));
+        Self {
+            version: SAVED_LAYER_VERSION,
+            name,
+            group_uuid: group.uuid.clone(),
+            params: params
+                .iter()
+                .filter(|(k, _)| prefixes.iter().any(|p| k.starts_with(p)))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            layers,
+            fx: group.fx.clone(),
+            opacity: group.opacity,
+            blend_mode: group.blend_mode,
+        }
+    }
+
+    /// Fresh identities throughout, with the parameters rekeyed to match.
+    ///
+    /// Every layer, every layer's effects, the group and the group's effects
+    /// are renamed, so recalling the same group twice gives two independent
+    /// copies rather than two things fighting over one parameter prefix.
+    #[allow(clippy::type_complexity)]
+    pub fn instantiate(
+        &self,
+    ) -> (
+        Vec<LayerDesc>,
+        String,
+        Vec<FxDesc>,
+        std::collections::HashMap<String, f32>,
+    ) {
+        let mut renames: Vec<(String, String)> = Vec::new();
+
+        let mut layers = self.layers.clone();
+        for layer in &mut layers {
+            let fresh = new_uuid();
+            renames.push((format!("ch_{}_", layer.uuid), format!("ch_{fresh}_")));
+            layer.uuid = fresh;
+            for slot in &mut layer.fx {
+                let f = new_uuid();
+                renames.push((format!("fx{}_", slot.uuid), format!("fx{f}_")));
+                slot.uuid = f;
+            }
+        }
+
+        let group_uuid = new_uuid();
+        let mut fx = self.fx.clone();
+        for slot in &mut fx {
+            let f = new_uuid();
+            renames.push((format!("fx{}_", slot.uuid), format!("fx{f}_")));
+            slot.uuid = f;
+        }
+
+        let old_group = format!("grp_{}_", self.group_uuid);
+        let new_group = format!("grp_{group_uuid}_");
+        let mut params = std::collections::HashMap::new();
+        for (key, value) in &self.params {
+            // Swap the owner's prefix, then the slot's — a layer key carries
+            // both, `ch_<layer>_fx<slot>_name`.
+            let mut k = match key.strip_prefix(old_group.as_str()) {
+                Some(rest) => format!("{new_group}{rest}"),
+                None => key.clone(),
+            };
+            for (from, to) in &renames {
+                if let Some(at) = k.find(from.as_str()) {
+                    k = format!("{}{}{}", &k[..at], to, &k[at + from.len()..]);
+                }
+            }
+            params.insert(k, *value);
+        }
+
+        (layers, group_uuid, fx, params)
     }
 }
 
@@ -377,6 +587,25 @@ impl Topology {
             version: TOPOLOGY_VERSION,
             layers,
             master_fx: capture_fx(&mixer.master),
+            groups: mixer
+                .groups
+                .iter()
+                .map(|g| GroupDesc {
+                    uuid: g.uuid.clone(),
+                    name: g.name.clone(),
+                    members: mixer
+                        .group_members(&g.uuid)
+                        .into_iter()
+                        .map(|i| mixer.channels[i].uuid.clone())
+                        .collect(),
+                    opacity: g.opacity,
+                    blend_mode: g.blend_mode,
+                    solo: g.solo,
+                    mute: g.mute,
+                    collapsed: g.collapsed,
+                    fx: capture_fx(&g.chain),
+                })
+                .collect(),
         }
     }
 }
@@ -484,6 +713,165 @@ mod tests {
         assert_eq!(back.name, "Cam");
         assert_eq!(back.layer.fx.len(), 1);
         assert_eq!(back.layer.blend_mode, rustjay_mixer::BlendMode::Add);
+    }
+
+    fn chain(fx: &[&str]) -> Vec<FxDesc> {
+        fx.iter()
+            .map(|u| FxDesc {
+                uuid: (*u).to_string(),
+                path: "glow.fs".into(),
+                enabled: true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_saved_chain_keeps_only_master_params() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("master_fx11_amount".to_string(), 0.4);
+        params.insert("ch_aaa_fx22_amount".to_string(), 0.9); // a layer's FX
+        let saved = SavedChain::capture("Master 1".into(), chain(&["11"]), &params);
+        assert_eq!(saved.params.len(), 1);
+        assert!(saved.params.contains_key("master_fx11_amount"));
+    }
+
+    /// Recalling the same chain twice must not give two slots one prefix.
+    #[test]
+    fn recalling_a_chain_rekeys_every_slot() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("master_fx11_amount".to_string(), 0.4);
+        params.insert("master_fx22_amount".to_string(), 0.7);
+        let saved = SavedChain::capture("Master 1".into(), chain(&["11", "22"]), &params);
+
+        let (fx, keyed) = saved.instantiate();
+        assert_eq!(fx.len(), 2);
+        assert!(fx.iter().all(|f| f.uuid != "11" && f.uuid != "22"));
+        assert_eq!(
+            keyed.get(&format!("master_fx{}_amount", fx[0].uuid)),
+            Some(&0.4)
+        );
+        assert_eq!(
+            keyed.get(&format!("master_fx{}_amount", fx[1].uuid)),
+            Some(&0.7)
+        );
+
+        let (again, _) = saved.instantiate();
+        assert_ne!(again[0].uuid, fx[0].uuid, "two recalls do not collide");
+    }
+
+    #[test]
+    fn a_group_survives_a_topology_round_trip() {
+        let topo = Topology {
+            version: TOPOLOGY_VERSION,
+            layers: vec![desc_with_fx("a", &[]), desc_with_fx("b", &[])],
+            master_fx: Vec::new(),
+            groups: vec![GroupDesc {
+                uuid: "g1".into(),
+                name: "Backdrop".into(),
+                members: vec!["a".into(), "b".into()],
+                opacity: 0.4,
+                blend_mode: rustjay_mixer::BlendMode::Add,
+                solo: false,
+                mute: true,
+                collapsed: true,
+                fx: chain(&["f1"]),
+            }],
+        };
+
+        let json = serde_json::to_string(&topo).expect("serialise");
+        let back: Topology = serde_json::from_str(&json).expect("deserialise");
+
+        assert_eq!(back.groups.len(), 1);
+        let g = &back.groups[0];
+        assert_eq!(g.uuid, "g1", "the uuid comes back, so grp_ params still match");
+        assert_eq!(g.members, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(g.opacity, 0.4);
+        assert!(g.mute && g.collapsed);
+        assert_eq!(g.fx.len(), 1, "the group's own chain came with it");
+    }
+
+    /// A scene from before groups existed loads as a flat stack rather than
+    /// failing.
+    #[test]
+    fn a_topology_without_groups_still_loads() {
+        let json = r#"{"version":1,"layers":[],"master_fx":[]}"#;
+        let topo: Topology = serde_json::from_str(json).expect("older scene loads");
+        assert!(topo.groups.is_empty());
+    }
+
+    fn saved_group() -> SavedGroup {
+        let mut params = std::collections::HashMap::new();
+        params.insert("ch_L1_opacity".to_string(), 0.3);
+        params.insert("ch_L1_fxA_amount".to_string(), 0.7);
+        params.insert("ch_L2_opacity".to_string(), 0.9);
+        params.insert("grp_G_opacity".to_string(), 0.6);
+        params.insert("grp_G_fxZ_amount".to_string(), 0.2);
+        params.insert("ch_OTHER_opacity".to_string(), 1.0); // not in the group
+        let group = GroupDesc {
+            uuid: "G".into(),
+            name: "Backdrop".into(),
+            members: vec!["L1".into(), "L2".into()],
+            opacity: 0.6,
+            blend_mode: rustjay_mixer::BlendMode::Add,
+            solo: false,
+            mute: false,
+            collapsed: false,
+            fx: chain(&["Z"]),
+        };
+        let layers = vec![desc_with_fx("L1", &["A"]), desc_with_fx("L2", &[])];
+        SavedGroup::capture("Backdrop".into(), &group, layers, &params)
+    }
+
+    #[test]
+    fn a_saved_group_keeps_its_members_and_its_own_params() {
+        let g = saved_group();
+        assert_eq!(g.layers.len(), 2);
+        assert_eq!(g.fx.len(), 1, "the group's own chain");
+        assert_eq!(g.params.len(), 5, "everything but the outsider: {:?}", g.params);
+        assert!(!g.params.contains_key("ch_OTHER_opacity"));
+    }
+
+    /// Recalling twice must give two independent copies: every layer, every
+    /// layer's effects, the group and the group's effects get fresh names, and
+    /// the parameters follow them.
+    #[test]
+    fn recalling_a_group_rekeys_everything_under_it() {
+        let saved = saved_group();
+        let (layers, gid, fx, params) = saved.instantiate();
+
+        assert_eq!(layers.len(), 2);
+        assert!(layers.iter().all(|l| l.uuid != "L1" && l.uuid != "L2"));
+        assert_ne!(gid, "G");
+        assert!(fx.iter().all(|f| f.uuid != "Z"));
+
+        // Values landed on the new names.
+        assert_eq!(params.get(&format!("ch_{}_opacity", layers[0].uuid)), Some(&0.3));
+        assert_eq!(
+            params.get(&format!("ch_{}_fx{}_amount", layers[0].uuid, layers[0].fx[0].uuid)),
+            Some(&0.7)
+        );
+        assert_eq!(params.get(&format!("ch_{}_opacity", layers[1].uuid)), Some(&0.9));
+        assert_eq!(params.get(&format!("grp_{gid}_opacity")), Some(&0.6));
+        assert_eq!(
+            params.get(&format!("grp_{gid}_fx{}_amount", fx[0].uuid)),
+            Some(&0.2)
+        );
+
+        // And nothing kept an old name.
+        assert!(params.keys().all(|k| !k.contains("_L1_") && !k.contains("grp_G_")));
+
+        let (again, gid2, _, _) = saved.instantiate();
+        assert_ne!(again[0].uuid, layers[0].uuid, "two recalls do not collide");
+        assert_ne!(gid2, gid);
+    }
+
+    #[test]
+    fn a_saved_group_round_trips_through_json() {
+        let json = serde_json::to_string(&saved_group()).expect("serialise");
+        let back: SavedGroup = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.layers.len(), 2);
+        assert_eq!(back.group_uuid, "G");
+        assert_eq!(back.blend_mode, rustjay_mixer::BlendMode::Add);
     }
 
     /// A scene written before routes were persisted must not look like it
