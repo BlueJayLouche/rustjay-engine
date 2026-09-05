@@ -23,17 +23,17 @@ use std::sync::{Arc, Mutex};
 enum Mode {
     /// Decks, chains and the master row.
     Mix,
-    /// Projection surfaces and warp.
+    /// Projection surfaces, lighting placement and warp.
     Stage,
-    /// LED pixel mapping.
-    Map,
+    /// The webcam calibration wizard: flash a strip, recover positions.
+    Calibrate,
 }
 
 impl Mode {
     const ALL: [(Self, &'static str); 3] = [
         (Self::Mix, "MIX"),
         (Self::Stage, "STAGE"),
-        (Self::Map, "MAP"),
+        (Self::Calibrate, "CALIBRATE"),
     ];
 }
 
@@ -75,6 +75,13 @@ pub struct KovvbojShell {
     show_sequencer: bool,
     show_library: bool,
     show_preview: bool,
+    /// Extra focus *within* MIX: drop the library and inspector there too.
+    ///
+    /// Outside MIX they are hidden regardless — the effects library and the
+    /// deck inspector have nothing to say about a projection surface, and the
+    /// width they cost is exactly what stage mapping needs. This flag only
+    /// covers the case where MIX itself wants the room. Not persisted.
+    focus: bool,
     /// Where the tempo flash is in its cycle, 0 on the beat.
     ///
     /// Accumulated per frame rather than derived from elapsed time × tempo:
@@ -182,6 +189,7 @@ impl KovvbojShell {
             show_sequencer: false,
             show_library: true,
             show_preview: true,
+            focus: false,
             beat_phase: 0.0,
             last_tap_seen: 0.0,
             splash_pending: true,
@@ -402,7 +410,12 @@ impl AnyEguiShell for KovvbojShell {
         self.remember_window_state();
         self.view_windows(ui, app_state, host, &engine);
 
-        if self.show_library {
+        // The library and inspector belong to MIX. STAGE and CALIBRATE want the
+        // width far more than they want a shader list, and a stage canvas is
+        // aspect-fit — every pixel taken off its width comes off its height too.
+        let chrome = self.mode == Mode::Mix && !self.focus;
+
+        if self.show_library && chrome {
             #[allow(deprecated)] // top-level Panel::show, as in the built-in host
             let mut new_width = None;
             egui::Panel::left("kovvboj_library")
@@ -434,7 +447,7 @@ impl AnyEguiShell for KovvbojShell {
                     self.save_prefs();
                 }
             }
-        } else {
+        } else if chrome {
             // A thin strip to bring it back, so hiding it is not a trip to the
             // View menu.
             #[allow(deprecated)]
@@ -453,7 +466,7 @@ impl AnyEguiShell for KovvbojShell {
         }
 
         let mut inspector_left = None;
-        if self.show_preview {
+        if self.show_preview && chrome {
             #[allow(deprecated)]
             let mut new_width = None;
             egui::Panel::right("kovvboj_inspector")
@@ -554,11 +567,14 @@ impl AnyEguiShell for KovvbojShell {
                     }
                 }
                 Mode::Stage => {
-                    egui::ScrollArea::vertical()
-                        .id_salt("stage_scroll")
-                        .show(ui, |ui| tab(&mut self.stage, ui, app_state, &engine));
+                    // No outer scroll area: the stage canvas sizes itself from
+                    // the space it is given, and inside a vertical scroll that
+                    // space is unbounded, so it came out a strip. The tab owns
+                    // its own layout — a bottom panel for the inspector, the
+                    // canvas filling the rest — and scrolls where it needs to.
+                    tab(&mut self.stage, ui, app_state, &engine);
                 }
-                Mode::Map => {
+                Mode::Calibrate => {
                     #[cfg(feature = "webcam")]
                     egui::ScrollArea::vertical()
                         .id_salt("map_scroll")
@@ -1020,7 +1036,10 @@ impl KovvbojShell {
             });
     }
 
-    /// MIX / STAGE / MAP.
+    /// MIX / STAGE / CALIBRATE, and MIX's focus toggle.
+    ///
+    /// The switcher always stays visible: it costs one row, and hiding it would
+    /// mean leaving focus just to change mode.
     fn mode_switcher(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for (mode, label) in Mode::ALL {
@@ -1031,7 +1050,36 @@ impl KovvbojShell {
                     self.mode = mode;
                 }
             }
+            // Only MIX has anything to hide — the other modes drop the library
+            // and inspector on their own, so the button would be inert there.
+            if self.mode == Mode::Mix {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let hint = if self.focus {
+                        "Show the library and inspector (Esc)"
+                    } else {
+                        "Hide the library and inspector"
+                    };
+                    if ui
+                        .selectable_label(self.focus, "\u{26F6}")
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        self.focus = !self.focus;
+                    }
+                });
+            }
         });
+
+        // Escape leaves focus, but only while the About box is down — that
+        // reads Escape too, and it is drawn after this.
+        if self.focus
+            && self.about_opened_at.is_none()
+            && ui
+                .ctx()
+                .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.focus = false;
+        }
     }
 
     /// Every window the View and Edit menus can open.

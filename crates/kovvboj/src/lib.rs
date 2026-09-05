@@ -120,6 +120,12 @@ pub struct KovvbojAppState {
     pub shader_watcher: Option<ShaderWatcher>,
     #[cfg(feature = "projection")]
     pub stage: KovvbojStage,
+    /// Laser decks. Lives here rather than on the shell because rendering one
+    /// needs a device and an encoder, which only the render hook has — the tab
+    /// that draws it is handed this same state.
+    #[serde(skip)]
+    #[cfg(feature = "laser")]
+    pub laser: crate::ui::LaserTab,
     /// Pending scene to apply on next `prepare()` (runtime preset/workspace load).
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -692,6 +698,8 @@ impl Default for KovvbojAppState {
             mixer: Arc::new(Mutex::new(Mixer::new())),
             #[cfg(feature = "mixer")]
             thumbs: crate::thumbs::Thumbnails::default(),
+            #[cfg(feature = "laser")]
+            laser: crate::ui::LaserTab::new(),
             ready: false,
             selection: Selection::None,
             selected_layers: std::collections::HashSet::new(),
@@ -3306,6 +3314,27 @@ impl EffectPlugin for KovvbojRootPlugin {
             app_state
                 .thumbs
                 .update(ctx.device, ctx.encoder, ctx.vertex_buffer, &mixer);
+
+            // The saved corner-pin goes down to the deck each frame. Cheap, and
+            // it means a workspace load, an edit and a calibration all reach the
+            // beam by the same path.
+            #[cfg(all(feature = "laser", feature = "projection"))]
+            app_state
+                .laser
+                .set_geometry(rustjay_laser::Geometry::with_corners(
+                    app_state.stage.laser_field,
+                ));
+
+            // Laser decks run on the scanner's clock, so most frames this only
+            // polls a readback — see `LaserTab::pump`.
+            #[cfg(feature = "laser")]
+            app_state.laser.pump(
+                ctx.device,
+                ctx.queue,
+                ctx.encoder,
+                ctx.engine_state,
+                ctx.vertex_buffer,
+            );
 
             #[cfg(not(feature = "projection"))]
             {

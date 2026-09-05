@@ -31,11 +31,12 @@ pub fn next_recording_path() -> String {
 /// is reachable from MIDI, OSC and modulation like every other control.
 pub const MASTER_DIM: &str = "master_dim";
 
-#[cfg(feature = "webcam")]
+// Not gated on `webcam`: a laser deck renders paths and streams them to a DAC,
+// which has nothing to do with a camera. Only the calibration wizard inside
+// wants one, and it carries its own `webcam` gate.
 #[cfg(feature = "laser")]
 pub mod laser_tab;
 pub mod ledmap_tab;
-#[cfg(feature = "webcam")]
 #[cfg(feature = "laser")]
 pub use laser_tab::LaserTab;
 pub use ledmap_tab::LedMapTab;
@@ -103,6 +104,46 @@ impl Default for EffectsTab {
 /// Sequencer tab — transition sequences.
 pub struct SequencerTab;
 
+/// Which class of thing the Stage canvas is currently editing.
+///
+/// Projection and lighting share the canvas because they share the venue: a
+/// strip is mounted on the wall you are projecting onto, and you cannot place
+/// either one sensibly without seeing the other. What they do *not* share is
+/// an edit session — a stray drag while reaching for a surface used to move a
+/// lighting region — so exactly one layer is live and the rest are inert.
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+pub enum StageLayer {
+    /// Projection surfaces, warp, per-surface geometry.
+    #[default]
+    Surfaces,
+    /// LED placement, lighting segment regions, fixture patch.
+    Lighting,
+    /// Laser decks: the scan region's placement, and the deck controls.
+    ///
+    /// A laser is a third output domain, not a third kind of surface — it
+    /// generates vector paths and streams them to a DAC, never entering the
+    /// raster pipeline. What it shares with the other two is only *where it
+    /// points*, which is what the canvas is for.
+    Lasers,
+}
+
+// Only the projection build draws the layer tabs.
+#[cfg(feature = "projection")]
+impl StageLayer {
+    // A slice rather than a fixed array: whether LASERS is offered depends on
+    // the `laser` feature, and the variant exists either way so the match arms
+    // below need no cfg of their own.
+    #[cfg(feature = "laser")]
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::Surfaces, "SURFACES"),
+        (Self::Lighting, "LIGHTING"),
+        (Self::Lasers, "LASERS"),
+    ];
+    #[cfg(not(feature = "laser"))]
+    const ALL: &'static [(Self, &'static str)] =
+        &[(Self::Surfaces, "SURFACES"), (Self::Lighting, "LIGHTING")];
+}
+
 /// Stage tab — 2D surface editor, warp handles, import.
 pub struct StageTab {
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
@@ -117,10 +158,24 @@ pub struct StageTab {
     /// clean live preview of the master output.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
     edit_mode: bool,
-    /// When true, the Stage preview overlays lighting segment regions and lets
-    /// the user drag them to set sampling rectangles.
+    /// Which layer the canvas is editing. Supersedes the old
+    /// `lighting_regions_active` checkbox, which was this switch with one
+    /// option and no way to see what it excluded.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
-    lighting_regions_active: bool,
+    layer: StageLayer,
+    /// Whether the LED placement quad is being dragged by its body.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    drag_led: bool,
+    /// Whether the laser scan region is being dragged by its body.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    drag_laser: bool,
+    /// Surface being dragged by its body, latched on drag start.
+    ///
+    /// Latched rather than re-hit-tested each frame: a quick drag outruns the
+    /// pointer's own surface, and re-testing would hand the drag to whatever
+    /// happened to be under the cursor mid-gesture.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    drag_surface: Option<usize>,
     /// Currently selected lighting segment for editing on the Stage preview.
     /// `(lighting_output_index, segment_index)`.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
@@ -147,7 +202,13 @@ impl StageTab {
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             edit_mode: false,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
-            lighting_regions_active: false,
+            layer: StageLayer::default(),
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            drag_led: false,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            drag_laser: false,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            drag_surface: None,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             selected_light_segment: None,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
@@ -2777,14 +2838,78 @@ mod egui_impl {
                 // pixel-based surface sizing is accurate.
                 state.stage.canvas_size = master_res;
 
+                // Split the tab's region by hand rather than with panels.
+                //
+                // A `Panel::bottom` nested in a child Ui sized itself to its own
+                // content here and left the canvas a height that did not match
+                // the space on screen, so the 16:9 frame was drawn taller than
+                // the scroll viewport and cut off along its bottom edge. Plain
+                // child Uis with an explicit `max_rect` keep no egui memory and
+                // land exactly where they are put — the same reasoning as the
+                // shell's central area.
+                let region = ui.available_rect_before_wrap();
+                let inspector_h = 240.0_f32.min((region.height() * 0.4).max(80.0));
+                let split_y = region.max.y - inspector_h;
+                let canvas_region =
+                    egui::Rect::from_min_max(region.min, egui::Pos2::new(region.max.x, split_y));
+                let inspector_region =
+                    egui::Rect::from_min_max(egui::Pos2::new(region.min.x, split_y), region.max);
+
                 // Surface list + 2D editor canvas (live master-output preview).
-                self.draw_stage_tab(
-                    ui,
-                    state,
-                    master_res,
-                    preview_tex,
-                    &mut _engine.show_stage_preview,
-                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(canvas_region), |ui| {
+                    self.draw_stage_tab(
+                        ui,
+                        state,
+                        master_res,
+                        preview_tex,
+                        &mut _engine.show_stage_preview,
+                        canvas_region,
+                    );
+                });
+
+                // The active layer's inspector, in the strip reserved for it.
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inspector_region), |ui| {
+                    ui.separator();
+                    // The heading sits outside the scroll area, or it scrolls
+                    // away and the pane loses its label the moment you look at
+                    // anything below the fold.
+                    match self.layer {
+                        StageLayer::Lighting => {
+                            ui.label(egui::RichText::new("Lighting").heading()).on_hover_text(
+                                "sACN / Art-Net outputs, segments and fixture profiles",
+                            );
+                        }
+                        StageLayer::Lasers => {
+                            ui.label(egui::RichText::new("Lasers").heading())
+                                .on_hover_text("Laser decks, scan region and DAC output");
+                        }
+                        StageLayer::Surfaces => {
+                            ui.label(egui::RichText::new("Geometry").heading())
+                                .on_hover_text("Properties of the selected surface");
+                        }
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("stage_inspector_scroll")
+                        // Fill the pane. Left to shrink to its contents, the
+                        // scroll area was only as wide as the 400px properties
+                        // column, so its bar landed mid-window instead of on the
+                        // pane's right edge.
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match self.layer {
+                            StageLayer::Lighting => draw_lighting_outputs(ui, state),
+                            StageLayer::Lasers => {
+                                #[cfg(feature = "laser")]
+                                {
+                                    draw_laser_placement(ui, state);
+                                    ui.separator();
+                                    state.laser.ui(ui);
+                                }
+                                #[cfg(not(feature = "laser"))]
+                                ui.label("Laser decks need the `laser` feature.");
+                            }
+                            StageLayer::Surfaces => draw_surface_properties(ui, state),
+                        });
+                });
 
                 // Drive the LED surface through the existing sACN LedOutput
                 // backend: StartLed/StopLed on the enable edge, SetLedPlacement
@@ -2809,18 +2934,6 @@ mod egui_impl {
                     (None, false) => {}
                 }
 
-                // Geometry of the selected surface lives below the canvas so the
-                // canvas can use the full panel width (merged in from the former
-                // standalone Geometry tab).
-                ui.separator();
-                ui.collapsing(
-                    egui::RichText::new("Geometry").heading(),
-                    |ui| {
-                        draw_surface_properties(ui, state);
-                    },
-                )
-                .header_response
-                .on_hover_text("Properties of the selected surface");
             }
 
             #[cfg(not(feature = "projection"))]
@@ -3007,6 +3120,10 @@ mod egui_impl {
             master_res: [u32; 2],
             preview_tex: Option<egui::TextureId>,
             show_stage_preview: &mut bool,
+            // The area this tab was given. Passed in because the nested
+            // horizontal/vertical Uis below report a much shorter height than
+            // they actually occupy, which is what clipped the canvas.
+            region: egui::Rect,
         ) {
             use crate::stage::{ContentMapping, SurfaceSource, KovvbojSurface};
             use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
@@ -3016,8 +3133,15 @@ mod egui_impl {
             let import_path = &mut self.import_path;
             let canvas_zoom = &mut self.canvas_zoom;
             let edit_mode = &mut self.edit_mode;
-            let lighting_regions_active = &mut self.lighting_regions_active;
+            let layer = &mut self.layer;
+            let self_drag_surface_slot = &mut self.drag_surface;
+            let self_drag_led_slot = &mut self.drag_led;
+            let self_drag_laser_slot = &mut self.drag_laser;
             let selected_light_segment = &mut self.selected_light_segment;
+
+            // Circle radii are normalized against the canvas width, so every
+            // bounding box needs the aspect to get its vertical extent right.
+            let stage_aspect = master_res[0] as f32 / master_res[1].max(1) as f32;
 
             // Set when a surface warp is edited this frame, so we publish to the
             // projector only on change (avoids per-frame mesh rebuilds).
@@ -3025,166 +3149,158 @@ mod egui_impl {
             // Set when a lighting segment region is edited this frame.
             let mut regions_dirty = false;
 
-            // ── LED surface (placeable ledmap → sACN) ──────────────────────
-            ui.collapsing("LED Surface", |ui| {
-                if state.stage.led_surface.is_none() {
-                    if ui.button("+ Add LED surface").clicked() {
-                        state.stage.led_surface = Some(crate::stage::LedSurface::default());
+            // ── Layer tabs ─────────────────────────────────────────────────
+            // One canvas, one live layer. The inactive layer stays drawn so you
+            // can place against it, but does not respond to clicks.
+            ui.horizontal(|ui| {
+                for &(l, label) in StageLayer::ALL {
+                    let text = egui::RichText::new(label).size(13.0);
+                    if ui.selectable_label(*layer == l, text).clicked() {
+                        *layer = l;
                     }
-                }
-                let mut remove = false;
-                if let Some(led) = state.stage.led_surface.as_mut() {
-                    ui.horizontal(|ui| {
-                        ui.label("Map file");
-                        ui.text_edit_singleline(&mut led.path);
-                        if ui.button("Load").clicked() {
-                            match rustjay_ledmap::LedMap::load(&led.path) {
-                                Ok(map) => {
-                                    led.points = map.leds.iter().map(|l| [l.u, l.v]).collect();
-                                    log::info!("[LED] loaded {} LEDs from {}", led.points.len(), led.path);
-                                }
-                                Err(e) => log::error!("[LED] load failed: {e}"),
-                            }
-                        }
-                    });
-                    ui.label(format!("{} LEDs loaded", led.points.len()));
-                    ui.add(egui::Slider::new(&mut led.priority, 0..=200).text("sACN priority"));
-                    ui.checkbox(&mut led.enabled, "Drive sACN output");
-                    ui.label(
-                        egui::RichText::new("Drag the green corner handles on the canvas to place / warp.")
-                            .size(11.0)
-                            .weak(),
-                    );
-                    if ui.button("Remove").clicked() {
-                        remove = true;
-                    }
-                }
-                if remove {
-                    state.stage.led_surface = None;
                 }
             });
+            ui.separator();
 
-            // Left panel: surface list
-            ui.horizontal(|ui| {
+            // The list and the canvas get explicit rects rather than a
+            // `horizontal` row.
+            //
+            // In a row, the canvas column's Ui was handed a height set by the
+            // *list's* content, and a scroll area clips to whatever its parent
+            // gives it — `Painter::with_clip_rect` intersects rather than
+            // replaces. That is what kept slicing the frame's bottom edge no
+            // matter how the sizing maths was corrected.
+            const LIST_W: f32 = 180.0;
+            let body = Rect::from_min_max(ui.cursor().min, region.max);
+            let list_rect =
+                Rect::from_min_max(body.min, Pos2::new(body.min.x + LIST_W, body.max.y));
+            let canvas_area =
+                Rect::from_min_max(Pos2::new(body.min.x + LIST_W + 8.0, body.min.y), body.max);
+
+            // Left panel: the active layer's list.
+            ui.scope_builder(egui::UiBuilder::new().max_rect(list_rect), |ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(180.0);
-                    ui.label(egui::RichText::new("Surfaces").strong());
-                    ui.separator();
+                    ui.set_width(LIST_W);
+                    if *layer == StageLayer::Lighting {
+                        draw_lighting_list(ui, state);
+                    } else {
+                        ui.label(egui::RichText::new("Surfaces").strong());
+                        ui.separator();
 
-                    let mut to_remove: Option<usize> = None;
-                    for (i, surf) in state.stage.surfaces.iter().enumerate() {
+                        let mut to_remove: Option<usize> = None;
+                        for (i, surf) in state.stage.surfaces.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let label = if i == state.stage.selected_surface_index {
+                                    egui::RichText::new(&surf.name).strong()
+                                } else {
+                                    egui::RichText::new(&surf.name)
+                                };
+                                if ui.selectable_label(i == state.stage.selected_surface_index, label).clicked() {
+                                    state.stage.selected_surface_index = i;
+                                }
+                                if ui.small_button("✖").clicked() {
+                                    to_remove = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = to_remove {
+                            // Repoints projectors and headless outputs; a bare
+                            // `Vec::remove` slides them onto the wrong surface.
+                            state.stage.remove_surface(i);
+                        }
+
+                        if ui.button("+ Add Rectangle").clicked() {
+                            let idx = state.stage.next_surface_number("Surface");
+                            state.stage.surfaces.push(KovvbojSurface::full_frame(
+                                format!("Surface {}", idx),
+                                format!("surf{}", idx),
+                            ));
+                        }
+                        if ui.button("+ Add Circle").clicked() {
+                            let idx = state.stage.next_surface_number("Circle");
+                            state.stage.surfaces.push(KovvbojSurface::circle(
+                                format!("Circle {}", idx),
+                                format!("circle{}", idx),
+                                [0.5, 0.5],
+                                0.25,
+                            ));
+                        }
+                        ui.separator();
+                        ui.label("Import:");
                         ui.horizontal(|ui| {
-                            let label = if i == state.stage.selected_surface_index {
-                                egui::RichText::new(&surf.name).strong()
-                            } else {
-                                egui::RichText::new(&surf.name)
-                            };
-                            if ui.selectable_label(i == state.stage.selected_surface_index, label).clicked() {
-                                state.stage.selected_surface_index = i;
-                            }
-                            if ui.small_button("✖").clicked() {
-                                to_remove = Some(i);
+                            ui.add(
+                                egui::TextEdit::singleline(import_path).hint_text("Path to SVG/DXF..."),
+                            );
+                            if ui.button("Import").clicked() && !import_path.is_empty() {
+                                let path = std::path::Path::new(&*import_path);
+                                let params =
+                                    rustjay_projection::surface_import::DetectionParams::default();
+                                match rustjay_projection::surface_import::detect_from_file(
+                                    path, &params,
+                                ) {
+                                    Ok(result) => {
+                                        if result.contours.is_empty() {
+                                            log::warn!("No contours found in {}", import_path);
+                                        } else if result.contours.len() == 1 {
+                                            let contour = &result.contours[0];
+                                            let s = contour.to_surface(0);
+                                            state.stage.surfaces.push(KovvbojSurface {
+                                                name: s.name,
+                                                uuid: "import0".to_string(),
+                                                vertices: s.vertices,
+                                                is_circular: s.is_circular,
+                                                radius: contour
+                                                    .circle_fit
+                                                    .map(|(_, r)| r)
+                                                    .unwrap_or(0.1),
+                                                source: SurfaceSource::Master,
+                                                content_mapping: ContentMapping::Mapped,
+                                                extra_contours: Vec::new(),
+                                                uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
+                                                warp: rustjay_projection::WarpMode::identity(),
+                                            });
+                                        } else {
+                                            // Multi-contour import: largest = primary, rest = extra_contours
+                                            let primary = &result.contours[0];
+                                            let s = primary.to_surface(0);
+                                            let extra_contours: Vec<Vec<[f32; 2]>> = result.contours[1..]
+                                                .iter()
+                                                .map(|c| c.vertices.clone())
+                                                .collect();
+                                            state.stage.surfaces.push(KovvbojSurface {
+                                                name: s.name,
+                                                uuid: "import0".to_string(),
+                                                vertices: s.vertices,
+                                                is_circular: s.is_circular,
+                                                radius: primary
+                                                    .circle_fit
+                                                    .map(|(_, r)| r)
+                                                    .unwrap_or(0.1),
+                                                source: SurfaceSource::Master,
+                                                content_mapping: ContentMapping::Mapped,
+                                                extra_contours,
+                                                uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
+                                                warp: rustjay_projection::WarpMode::identity(),
+                                            });
+                                        }
+                                        log::info!(
+                                            "Imported {} contour(s) from {}",
+                                            result.contours.len(),
+                                            import_path
+                                        );
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Import failed for {}: {}", import_path, e);
+                                    }
+                                }
                             }
                         });
                     }
-                    if let Some(i) = to_remove {
-                        state.stage.surfaces.remove(i);
-                        if state.stage.selected_surface_index >= state.stage.surfaces.len() && !state.stage.surfaces.is_empty() {
-                            state.stage.selected_surface_index = state.stage.surfaces.len() - 1;
-                        }
-                    }
-
-                    if ui.button("+ Add Rectangle").clicked() {
-                        let idx = state.stage.surfaces.len() + 1;
-                        state.stage.surfaces.push(KovvbojSurface::full_frame(
-                            format!("Surface {}", idx),
-                            format!("surf{}", idx),
-                        ));
-                    }
-                    if ui.button("+ Add Circle").clicked() {
-                        let idx = state.stage.surfaces.len() + 1;
-                        state.stage.surfaces.push(KovvbojSurface::circle(
-                            format!("Circle {}", idx),
-                            format!("circle{}", idx),
-                            [0.5, 0.5],
-                            0.25,
-                        ));
-                    }
-                    ui.separator();
-                    ui.label("Import:");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(import_path).hint_text("Path to SVG/DXF..."),
-                        );
-                        if ui.button("Import").clicked() && !import_path.is_empty() {
-                            let path = std::path::Path::new(&*import_path);
-                            let params =
-                                rustjay_projection::surface_import::DetectionParams::default();
-                            match rustjay_projection::surface_import::detect_from_file(
-                                path, &params,
-                            ) {
-                                Ok(result) => {
-                                    if result.contours.is_empty() {
-                                        log::warn!("No contours found in {}", import_path);
-                                    } else if result.contours.len() == 1 {
-                                        let contour = &result.contours[0];
-                                        let s = contour.to_surface(0);
-                                        state.stage.surfaces.push(KovvbojSurface {
-                                            name: s.name,
-                                            uuid: "import0".to_string(),
-                                            vertices: s.vertices,
-                                            is_circular: s.is_circular,
-                                            radius: contour
-                                                .circle_fit
-                                                .map(|(_, r)| r)
-                                                .unwrap_or(0.1),
-                                            source: SurfaceSource::Master,
-                                            content_mapping: ContentMapping::Mapped,
-                                            extra_contours: Vec::new(),
-                                            uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
-                                            warp: rustjay_projection::WarpMode::identity(),
-                                        });
-                                    } else {
-                                        // Multi-contour import: largest = primary, rest = extra_contours
-                                        let primary = &result.contours[0];
-                                        let s = primary.to_surface(0);
-                                        let extra_contours: Vec<Vec<[f32; 2]>> = result.contours[1..]
-                                            .iter()
-                                            .map(|c| c.vertices.clone())
-                                            .collect();
-                                        state.stage.surfaces.push(KovvbojSurface {
-                                            name: s.name,
-                                            uuid: "import0".to_string(),
-                                            vertices: s.vertices,
-                                            is_circular: s.is_circular,
-                                            radius: primary
-                                                .circle_fit
-                                                .map(|(_, r)| r)
-                                                .unwrap_or(0.1),
-                                            source: SurfaceSource::Master,
-                                            content_mapping: ContentMapping::Mapped,
-                                            extra_contours,
-                                            uv_crop_rect: [0.0, 0.0, 1.0, 1.0],
-                                            warp: rustjay_projection::WarpMode::identity(),
-                                        });
-                                    }
-                                    log::info!(
-                                        "Imported {} contour(s) from {}",
-                                        result.contours.len(),
-                                        import_path
-                                    );
-                                }
-                                Err(e) => {
-                                    log::warn!("Import failed for {}: {}", import_path, e);
-                                }
-                            }
-                        }
-                    });
                 });
+            });
 
-                ui.separator();
-
-                // Center: control row + 2D canvas (live master-output preview).
+            // Center: control row + 2D canvas (live master-output preview).
+            ui.scope_builder(egui::UiBuilder::new().max_rect(canvas_area), |ui| {
                 ui.vertical(|ui| {
                     // ── Canvas controls ────────────────────────────────────
                     ui.horizontal(|ui| {
@@ -3198,7 +3314,6 @@ mod egui_impl {
                         ui.separator();
                         ui.checkbox(show_stage_preview, "Live preview");
                         ui.checkbox(edit_mode, "Edit mode");
-                        ui.checkbox(lighting_regions_active, "Lighting regions");
                         if *edit_mode {
                             ui.label("Zoom:");
                             ui.add(
@@ -3222,15 +3337,19 @@ mod egui_impl {
                     ui.separator();
 
                     // ── Canvas size: fit master aspect, scaled by zoom ──────
-                    // Use the bounded visible rect (not `available_size`, which is
-                    // unbounded inside the outer vertical scroll area and would let
-                    // the canvas spill over the Geometry side panel).
+                    // `available_rect_before_wrap` alone is not bounded by the
+                    // shell's outer vertical scroll area — it reports the layout's
+                    // notional room, not the viewport, so the canvas came out a
+                    // short strip with dead space under it however tall the window
+                    // was. Intersecting with the clip rect gives the real thing:
+                    // from the cursor down to the bottom of what is on screen.
                     let aspect = master_res[0] as f32 / master_res[1].max(1) as f32;
-                    let avail = ui.available_rect_before_wrap();
+                    let avail = Rect::from_min_max(ui.cursor().min, region.max);
                     let aw = avail.width().max(64.0);
-                    // Reserve vertical room for the Geometry section below so it
-                    // stays reachable without the canvas filling the whole view.
-                    let ah = (avail.height() - 220.0).max(180.0);
+                    // The inspector is a bottom panel now, so it has already been
+                    // subtracted from `avail` — reserving for it again here just
+                    // shortened the canvas twice. Only a hair of breathing room.
+                    let ah = (avail.height() - 8.0).max(180.0);
                     let (base_w, base_h) = if aw / ah > aspect {
                         (ah * aspect, ah)
                     } else {
@@ -3244,9 +3363,20 @@ mod egui_impl {
                         .max_width(aw)
                         .max_height(ah)
                         .show(ui, |ui| {
-                    let (canvas_rect, response) =
-                        ui.allocate_exact_size(canvas_dims, egui::Sense::click());
-                    let painter = ui.painter_at(canvas_rect);
+                    // The 16:9 frame is aspect-fit, so on a narrow column it is
+                    // width-limited and leaves the height unused. Claim the full
+                    // area anyway and letterbox the frame inside it: the editor
+                    // fills its panel instead of sitting in a strip with dead
+                    // space under it, and the surround is somewhere to pan into
+                    // when zoomed.
+                    let outer_dims =
+                        Vec2::new(canvas_dims.x.max(aw), canvas_dims.y.max(ah));
+                    let (outer_rect, response) =
+                        ui.allocate_exact_size(outer_dims, egui::Sense::click_and_drag());
+                    let canvas_rect = Rect::from_center_size(outer_rect.center(), canvas_dims);
+                    let painter = ui.painter_at(outer_rect);
+                    // Surround, so the letterbox reads as canvas rather than gap.
+                    painter.rect_filled(outer_rect, CornerRadius::ZERO, Color32::from_gray(10));
 
                     // Background: the live master output, dimmed so the whole
                     // frame stays visible as context. Each surface then redraws
@@ -3483,8 +3613,14 @@ mod egui_impl {
                 // output warp. Warp modes draw their own distinct handles below.
                 let mut handle_dragged = false;
 
+                // Every surface handle — UV crop, corner-pin, mesh — hangs off
+                // these two bindings, so the layer gate goes here rather than on
+                // each drag site.
+                let surfaces_live = *layer == StageLayer::Surfaces;
+
                 let uv_handles: Option<[[f32; 2]; 4]> = state.stage.surfaces
                     .get(state.stage.selected_surface_index)
+                    .filter(|_| surfaces_live)
                     .map(|s| {
                         let [min_u, min_v, max_u, max_v] = s.uv_crop_rect;
                         [
@@ -3497,6 +3633,7 @@ mod egui_impl {
 
                 let selected_warp = state.stage.surfaces
                     .get(state.stage.selected_surface_index)
+                    .filter(|_| surfaces_live)
                     .map(|surface| surface.warp.clone());
 
                 // Draw UV crop handles and connecting rectangle
@@ -3749,7 +3886,17 @@ mod egui_impl {
                 }
 
                 // ── LED surface overlay: dots at placed positions + quad handles ──
+                // Visible from either layer so surfaces can be placed against
+                // the strip, but only draggable from LIGHTING — a stray drag
+                // while reaching for a surface used to move the whole map.
+                let lighting_live = *layer == StageLayer::Lighting;
+                let mut led_moved = false;
                 if let Some(led) = state.stage.led_surface.as_mut() {
+                    let dot = if lighting_live {
+                        Color32::from_rgb(0, 255, 120)
+                    } else {
+                        Color32::from_rgb(0, 255, 120).gamma_multiply(0.35)
+                    };
                     for uv in &led.points {
                         let (cu, cv) = led_bilerp(&led.quad, uv[0], uv[1]);
                         painter.circle_filled(
@@ -3758,7 +3905,7 @@ mod egui_impl {
                                 canvas_rect.min.y + cv * canvas_rect.height(),
                             ),
                             2.0,
-                            Color32::from_rgb(0, 255, 120),
+                            dot,
                         );
                     }
                     let mut corners = [Pos2::ZERO; 4];
@@ -3768,6 +3915,9 @@ mod egui_impl {
                             canvas_rect.min.y + led.quad[i][1] * canvas_rect.height(),
                         );
                         corners[i] = pos;
+                        if !lighting_live {
+                            continue;
+                        }
                         let hr = ui.interact(
                             Rect::from_center_size(pos, Vec2::splat(12.0)),
                             ui.id().with(("led_quad_handle", i)),
@@ -3796,27 +3946,265 @@ mod egui_impl {
                             egui::Stroke::new(1.0, Color32::from_rgb(0, 180, 90)),
                         );
                     }
-                }
 
-                // Surface selection via canvas click (skip if a handle is being dragged
-                // or if lighting region editing is active).
-                if !*lighting_regions_active && !handle_dragged && response.clicked_by(egui::PointerButton::Primary) {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
-                        let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
-                        // Find top-most surface containing the click point
-                        for (i, surf) in state.stage.surfaces.iter().enumerate().rev() {
-                            let [min_x, min_y, max_x, max_y] = surf.bounding_box();
-                            if norm_x >= min_x && norm_x <= max_x && norm_y >= min_y && norm_y <= max_y {
-                                state.stage.selected_surface_index = i;
-                                break;
-                            }
+                    // ── Drag the LED quad by its body ───────────────────────
+                    // Same bargain as a surface: corners warp it, the middle
+                    // moves it. Latched on drag start so a fast drag cannot
+                    // slip off the shape and stop mid-gesture.
+                    if lighting_live {
+                        let norm = |pos: Pos2| {
+                            [
+                                (pos.x - canvas_rect.min.x) / canvas_rect.width(),
+                                (pos.y - canvas_rect.min.y) / canvas_rect.height(),
+                            ]
+                        };
+                        if let Some(pos) = response.hover_pos()
+                            && !handle_dragged
+                            && led.contains(norm(pos))
+                        {
+                            ui.ctx().set_cursor_icon(if *self_drag_led_slot {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            });
+                        }
+                        if response.drag_started() && !handle_dragged {
+                            *self_drag_led_slot = response
+                                .interact_pointer_pos()
+                                .is_some_and(|pos| led.contains(norm(pos)));
+                        }
+                        if *self_drag_led_slot && response.dragged() {
+                            let d = response.drag_delta();
+                            led.translate(
+                                d.x / canvas_rect.width(),
+                                d.y / canvas_rect.height(),
+                            );
+                            handle_dragged = true;
+                        }
+                        if response.drag_stopped() && std::mem::take(self_drag_led_slot) {
+                            led_moved = true;
                         }
                     }
                 }
 
+                if led_moved {
+                    state.save_workspace();
+                }
+
+                let hits = |surf: &KovvbojSurface, pos: Pos2| -> bool {
+                    let nx = (pos.x - canvas_rect.min.x) / canvas_rect.width();
+                    let ny = (pos.y - canvas_rect.min.y) / canvas_rect.height();
+                    let [min_x, min_y, max_x, max_y] = surf.bounding_box(stage_aspect);
+                    nx >= min_x && nx <= max_x && ny >= min_y && ny <= max_y
+                };
+
+                // Top-most surface whose box contains a canvas point, if any.
+                let surface_at = |state: &KovvbojAppState, pos: Pos2| -> Option<usize> {
+                    state
+                        .stage
+                        .surfaces
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(i, surf)| hits(surf, pos).then_some(i))
+                };
+
+                // What a drag grabs. The selected surface wins wherever it is
+                // under the pointer, even with another stacked on top of it:
+                // you already said which one you meant by selecting it.
+                //
+                // Click-select deliberately does *not* do this — it takes the
+                // top-most, or a surface lying over the selected one could never
+                // be reached with the mouse.
+                let grab_at = |state: &KovvbojAppState, pos: Pos2| -> Option<usize> {
+                    let sel = state.stage.selected_surface_index;
+                    if state.stage.surfaces.get(sel).is_some_and(|s| hits(s, pos)) {
+                        return Some(sel);
+                    }
+                    surface_at(state, pos)
+                };
+
+                // Surface selection via canvas click (skip if a handle is being
+                // dragged, or if another layer owns the canvas).
+                if *layer == StageLayer::Surfaces
+                    && !handle_dragged
+                    && response.clicked_by(egui::PointerButton::Primary)
+                    && let Some(pos) = response.interact_pointer_pos()
+                    && let Some(i) = surface_at(state, pos)
+                {
+                    state.stage.selected_surface_index = i;
+                }
+
+                if *layer == StageLayer::Surfaces
+                    && !handle_dragged
+                    && let Some(pos) = response.hover_pos()
+                    && grab_at(state, pos).is_some()
+                {
+                    ui.ctx().set_cursor_icon(if response.dragged() {
+                        egui::CursorIcon::Grabbing
+                    } else {
+                        egui::CursorIcon::Grab
+                    });
+                }
+
+                // ── Drag a surface by its body ──────────────────────────────
+                // Corner handles resize and warp; grabbing the middle moves the
+                // whole thing. The surface is latched on drag start so a fast
+                // drag that outruns the pointer does not hop to a neighbour.
+                if *layer == StageLayer::Surfaces {
+                    if response.drag_started() && !handle_dragged {
+                        *self_drag_surface_slot = response
+                            .interact_pointer_pos()
+                            .and_then(|pos| grab_at(state, pos));
+                        if let Some(i) = *self_drag_surface_slot {
+                            state.stage.selected_surface_index = i;
+                        }
+                    }
+                    if let Some(i) = *self_drag_surface_slot
+                        && response.dragged()
+                        && let Some(surf) = state.stage.surfaces.get_mut(i)
+                    {
+                        let d = response.drag_delta();
+                        surf.translate(
+                            d.x / canvas_rect.width(),
+                            d.y / canvas_rect.height(),
+                            stage_aspect,
+                        );
+                        warp_dirty = true;
+                    }
+                    if response.drag_stopped() && self_drag_surface_slot.take().is_some() {
+                        state.save_workspace();
+                    }
+                }
+
+                // ── Laser scan region ───────────────────────────────────────
+                // Visible from every layer, because the point of drawing it on
+                // the video canvas at all is to see the beam against the
+                // surfaces it plays over. Draggable only from LASERS.
+                let lasers_live = *layer == StageLayer::Lasers;
+                let mut laser_moved = false;
+                if let Some(place) = state.stage.laser_placement.as_mut() {
+                    let to_screen = |p: [f32; 2]| {
+                        Pos2::new(
+                            canvas_rect.min.x + p[0] * canvas_rect.width(),
+                            canvas_rect.min.y + p[1] * canvas_rect.height(),
+                        )
+                    };
+                    let dim = |c: Color32| if lasers_live { c } else { c.gamma_multiply(0.35) };
+
+                    // The live path, drawn where it would land. Blanked points
+                    // are the beam travelling, not drawing, so they are skipped
+                    // — showing them here would draw a cage the laser does not.
+                    #[cfg(feature = "laser")]
+                    if place.show_path {
+                        let quad = place.quad;
+                        state.laser.with_preview(|frame| {
+                            for w in frame.points.windows(2) {
+                                if w[0].is_blank() || w[0].shape != w[1].shape {
+                                    continue;
+                                }
+                                painter.line_segment(
+                                    [
+                                        to_screen(crate::stage::quad_map(&quad, w[0].x, w[0].y)),
+                                        to_screen(crate::stage::quad_map(&quad, w[1].x, w[1].y)),
+                                    ],
+                                    Stroke::new(
+                                        1.0,
+                                        dim(Color32::from_rgb(
+                                            (w[0].r * 255.0) as u8,
+                                            (w[0].g * 255.0) as u8,
+                                            (w[0].b * 255.0) as u8,
+                                        )),
+                                    ),
+                                );
+                            }
+                        });
+                    }
+
+                    let outline = dim(Color32::from_rgb(255, 90, 160));
+                    let mut corners = [Pos2::ZERO; 4];
+                    for i in 0..4 {
+                        corners[i] = to_screen(place.quad[i]);
+                    }
+                    for i in 0..4 {
+                        painter.line_segment(
+                            [corners[i], corners[(i + 1) % 4]],
+                            Stroke::new(1.0, outline),
+                        );
+                    }
+                    painter.text(
+                        corners[0] + Vec2::new(4.0, 4.0),
+                        egui::Align2::LEFT_TOP,
+                        "LASER",
+                        egui::FontId::proportional(10.0),
+                        outline,
+                    );
+
+                    if lasers_live {
+                        for (i, pos) in corners.into_iter().enumerate() {
+                            let hr = ui.interact(
+                                Rect::from_center_size(pos, Vec2::splat(12.0)),
+                                ui.id().with(("laser_quad_handle", i)),
+                                egui::Sense::drag(),
+                            );
+                            let col = if hr.dragged() {
+                                Color32::from_rgb(255, 90, 160)
+                            } else if hr.hovered() {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(220, 130, 175)
+                            };
+                            painter.circle_filled(pos, 5.0, col);
+                            if hr.dragged() {
+                                handle_dragged = true;
+                                place.quad[i][0] = (place.quad[i][0]
+                                    + hr.drag_delta().x / canvas_rect.width())
+                                .clamp(0.0, 1.0);
+                                place.quad[i][1] = (place.quad[i][1]
+                                    + hr.drag_delta().y / canvas_rect.height())
+                                .clamp(0.0, 1.0);
+                            }
+                        }
+
+                        let norm = |pos: Pos2| {
+                            [
+                                (pos.x - canvas_rect.min.x) / canvas_rect.width(),
+                                (pos.y - canvas_rect.min.y) / canvas_rect.height(),
+                            ]
+                        };
+                        if let Some(pos) = response.hover_pos()
+                            && !handle_dragged
+                            && place.contains(norm(pos))
+                        {
+                            ui.ctx().set_cursor_icon(if *self_drag_laser_slot {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            });
+                        }
+                        if response.drag_started() && !handle_dragged {
+                            *self_drag_laser_slot = response
+                                .interact_pointer_pos()
+                                .is_some_and(|pos| place.contains(norm(pos)));
+                        }
+                        if *self_drag_laser_slot && response.dragged() {
+                            let d = response.drag_delta();
+                            place.translate(
+                                d.x / canvas_rect.width(),
+                                d.y / canvas_rect.height(),
+                            );
+                        }
+                        if response.drag_stopped() && std::mem::take(self_drag_laser_slot) {
+                            laser_moved = true;
+                        }
+                    }
+                }
+                if laser_moved {
+                    state.save_workspace();
+                }
+
                 // ── Lighting region overlay ──────────────────────────────────
-                if *lighting_regions_active {
+                if *layer == StageLayer::Lighting {
                     let mut light_region_dragged = false;
                     // Draw all segment regions first, then handles on top of the selected one.
                     for (oi, light) in state.stage.lighting_outputs.iter().enumerate() {
@@ -3967,7 +4355,7 @@ mod egui_impl {
                 // Bounding box overlay for Mapped mode
                 if let Some(surf) = state.stage.surfaces.get(state.stage.selected_surface_index) {
                     if surf.content_mapping == ContentMapping::Mapped {
-                        let [min_x, min_y, max_x, max_y] = surf.bounding_box();
+                        let [min_x, min_y, max_x, max_y] = surf.bounding_box(stage_aspect);
                         let min = Pos2::new(
                             canvas_rect.min.x + min_x * canvas_rect.width(),
                             canvas_rect.min.y + min_y * canvas_rect.height(),
@@ -4025,6 +4413,607 @@ mod egui_impl {
     // Surface geometry — rendered inside the Stage tab's right-hand panel.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Lighting patch — rendered on the Stage tab's LIGHTING layer.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Scan-region placement, on the LASERS layer.
+    ///
+    /// Placement is only a preview: it says where on the video canvas the beam
+    /// is, so it can be judged against the surfaces it plays over. What the
+    /// galvos actually receive is corrected by the deck's own geometry, below.
+    #[cfg(all(feature = "projection", feature = "laser"))]
+    fn draw_laser_placement(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
+        ui.label(egui::RichText::new("Scan region").strong());
+        let mut remove = false;
+        let mut dirty = false;
+
+        // Placement is only the canvas preview. The correction below is a
+        // separate thing and stays editable whether or not this is placed.
+        if state.stage.laser_placement.is_none() {
+            if ui.button("+ Place on canvas").clicked() {
+                state.stage.laser_placement = Some(crate::stage::LaserPlacement::default());
+                dirty = true;
+            }
+            ui.label(
+                egui::RichText::new("Unplaced — the beam has nowhere to be drawn against.")
+                    .size(11.0)
+                    .weak(),
+            );
+        }
+        if let Some(place) = state.stage.laser_placement.as_mut() {
+            if ui.checkbox(&mut place.show_path, "Draw the live path").changed() {
+                dirty = true;
+            }
+            ui.label(
+                egui::RichText::new("Drag the pink corners on the canvas to place / warp.")
+                    .size(11.0)
+                    .weak(),
+            );
+            if ui.button("Reset placement").clicked() {
+                place.quad = crate::stage::LaserPlacement::default().quad;
+                dirty = true;
+            }
+            if ui.button("Remove").clicked() {
+                remove = true;
+            }
+        }
+        if remove {
+            state.stage.laser_placement = None;
+            dirty = true;
+        }
+        // ── Corner-pin over the scan field ──────────────────────────────
+        // Owned here, not on the deck: a deck is rebuilt from its shader every
+        // session, and a calibration has to outlive that.
+        ui.separator();
+        ui.label(egui::RichText::new("Field correction").strong());
+        ui.label(
+            egui::RichText::new(
+                "Applied after the optimiser and before the safety gate, so what the \
+                 gate judges is what the galvos receive.",
+            )
+            .size(11.0)
+            .weak(),
+        );
+
+        // A finished calibration hands its answer up rather than writing the
+        // deck, so there is one owner of this value and it is the saved one.
+        #[cfg(all(feature = "laser-dac", feature = "webcam"))]
+        if let Some(solved) = state.laser.take_calibration() {
+            state.stage.laser_field = solved.corners;
+            dirty = true;
+        }
+
+        for (i, label) in ["TL", "TR", "BR", "BL"].iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(*label);
+                for axis in 0..2 {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut state.stage.laser_field[i][axis])
+                                .speed(0.005)
+                                .range(-1.0..=1.0)
+                                .fixed_decimals(3),
+                        )
+                        .changed()
+                    {
+                        dirty = true;
+                    }
+                }
+            });
+        }
+        if ui.button("Reset to full field").clicked() {
+            state.stage.laser_field = rustjay_laser::geometry::FULL_FIELD;
+            dirty = true;
+        }
+
+        if dirty {
+            state.save_workspace();
+        }
+    }
+
+    /// The LIGHTING layer's list: the placeable LED surface.
+    ///
+    /// Used to sit above the surface list, in the way whichever layer you were
+    /// on. It belongs to lighting, so it lives on the lighting layer.
+    #[cfg(feature = "projection")]
+    fn draw_lighting_list(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
+        ui.label(egui::RichText::new("LED Surface").strong());
+        ui.separator();
+        if state.stage.led_surface.is_none() && ui.button("+ Add LED surface").clicked() {
+            state.stage.led_surface = Some(crate::stage::LedSurface::default());
+        }
+        let mut remove = false;
+        if let Some(led) = state.stage.led_surface.as_mut() {
+            ui.label("Map file");
+            ui.text_edit_singleline(&mut led.path);
+            if ui.button("Load").clicked() {
+                match rustjay_ledmap::LedMap::load(&led.path) {
+                    Ok(map) => {
+                        led.points = map.leds.iter().map(|l| [l.u, l.v]).collect();
+                        log::info!("[LED] loaded {} LEDs from {}", led.points.len(), led.path);
+                    }
+                    Err(e) => log::error!("[LED] load failed: {e}"),
+                }
+            }
+            ui.label(format!("{} LEDs loaded", led.points.len()));
+            ui.add(egui::Slider::new(&mut led.priority, 0..=200).text("sACN priority"));
+            ui.checkbox(&mut led.enabled, "Drive sACN output");
+            ui.label(
+                egui::RichText::new("Drag the green corner handles on the canvas to place / warp.")
+                    .size(11.0)
+                    .weak(),
+            );
+            if ui.button("Remove").clicked() {
+                remove = true;
+            }
+        }
+        if remove {
+            state.stage.led_surface = None;
+        }
+    }
+
+    /// sACN / Art-Net outputs, their segments, and the fixture profile library.
+    ///
+    /// Lived in the Outputs window, which put the patch in one place and the
+    /// regions it patches onto — drawn on the stage canvas — in another. It is
+    /// the same work, so it is now the LIGHTING layer's inspector.
+    #[cfg(feature = "projection")]
+    fn draw_lighting_outputs(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
+        ui.label(egui::RichText::new("Lighting Outputs").strong());
+        state.stage.ensure_builtin_fixture_profiles();
+        let mut remove_light: Option<usize> = None;
+        let mut light_dirty = false;
+        let profile_names: Vec<(String, String)> = state
+            .stage
+            .fixture_profiles
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        for (i, light) in state.stage.lighting_outputs.iter_mut().enumerate() {
+            ui.push_id(format!("light_{}", i), |ui| {
+                // Output header
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut light.enabled, "").changed() {
+                        light_dirty = true;
+                    }
+                    if ui.text_edit_singleline(&mut light.name).changed() {
+                        light_dirty = true;
+                    }
+                    ui.label("type:");
+                    let prev_type = light.output_type.clone();
+                    egui::ComboBox::from_id_salt(format!("light_type_{}", i))
+                        .selected_text(light.output_type.label())
+                        .show_ui(ui, |ui| {
+                            use crate::stage::OutputType;
+                            ui.selectable_value(&mut light.output_type, OutputType::Sacn, "sACN");
+                            ui.selectable_value(&mut light.output_type, OutputType::ArtNet, "Art-Net");
+                        });
+                    if light.output_type != prev_type {
+                        light_dirty = true;
+                    }
+                    if ui.button("🗑").clicked() {
+                        remove_light = Some(i);
+                    }
+                });
+                // Output-level transport
+                ui.horizontal(|ui| {
+                    ui.label("gamma:");
+                    if ui
+                        .add(egui::DragValue::new(&mut light.gamma).speed(0.1).range(0.5..=4.0))
+                        .changed()
+                    {
+                        light_dirty = true;
+                    }
+                    ui.label("priority:");
+                    if ui
+                        .add(egui::DragValue::new(&mut light.transport.priority).speed(1).range(0..=200))
+                        .changed()
+                    {
+                        light_dirty = true;
+                    }
+                    ui.label("fps:");
+                    if ui
+                        .add(egui::DragValue::new(&mut light.transport.fps).speed(1).range(1.0..=100.0))
+                        .changed()
+                    {
+                        light_dirty = true;
+                    }
+                    ui.label("dest IP:");
+                    if ui.text_edit_singleline(&mut light.transport.dest_ip).changed() {
+                        light_dirty = true;
+                    }
+                });
+
+                // Segments list
+                let mut remove_segment: Option<usize> = None;
+                let mut add_segment = false;
+                ui.indent(format!("light_{}_segments", i), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Segments").weak());
+                        if ui.small_button("+ Add segment").clicked() {
+                            add_segment = true;
+                        }
+                    });
+                    for (si, seg) in light.segments.iter_mut().enumerate() {
+                        ui.push_id(format!("seg_{}_{}", i, si), |ui| {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut seg.enabled, "").changed() {
+                                        light_dirty = true;
+                                    }
+                                    if ui.text_edit_singleline(&mut seg.name).changed() {
+                                        light_dirty = true;
+                                    }
+                                    if ui.small_button("✖").clicked() {
+                                        remove_segment = Some(si);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("source:");
+                                    let sel_text = match &seg.source_surface {
+                                        None => "Manual region".to_string(),
+                                        Some(uuid) => state
+                                            .stage
+                                            .surfaces
+                                            .iter()
+                                            .find(|s| &s.uuid == uuid)
+                                            .map(|s| s.name.clone())
+                                            .unwrap_or_else(|| "<missing surface>".to_string()),
+                                    };
+                                    let prev_src = seg.source_surface.clone();
+                                    egui::ComboBox::from_id_salt(format!("seg_src_{}_{}", i, si))
+                                        .selected_text(sel_text)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut seg.source_surface, None, "Manual region");
+                                            for surf in &state.stage.surfaces {
+                                                ui.selectable_value(
+                                                    &mut seg.source_surface,
+                                                    Some(surf.uuid.clone()),
+                                                    &surf.name,
+                                                );
+                                            }
+                                        });
+                                    if seg.source_surface != prev_src { light_dirty = true; }
+                                });
+                                ui.add_enabled_ui(seg.source_surface.is_none(), |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label("region u0:");
+                                        if ui.add(egui::DragValue::new(&mut seg.region[0]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
+                                        ui.label("v0:");
+                                        if ui.add(egui::DragValue::new(&mut seg.region[1]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
+                                        ui.label("u1:");
+                                        if ui.add(egui::DragValue::new(&mut seg.region[2]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
+                                        ui.label("v1:");
+                                        if ui.add(egui::DragValue::new(&mut seg.region[3]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
+                                    });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("grid:");
+                                    if ui.add(egui::DragValue::new(&mut seg.grid[0]).speed(1).range(1..=4096)).changed() { light_dirty = true; }
+                                    ui.label("×");
+                                    if ui.add(egui::DragValue::new(&mut seg.grid[1]).speed(1).range(1..=4096)).changed() { light_dirty = true; }
+                                    ui.label("corner:");
+                                    let prev_corner = seg.scan.start_corner;
+                                    egui::ComboBox::from_id_salt(format!("seg_corner_{}_{}", i, si))
+                                        .selected_text(seg.scan.start_corner.label())
+                                        .width(50.0)
+                                        .show_ui(ui, |ui| {
+                                            use crate::stage::Corner;
+                                            ui.selectable_value(&mut seg.scan.start_corner, Corner::TopLeft, "TL");
+                                            ui.selectable_value(&mut seg.scan.start_corner, Corner::TopRight, "TR");
+                                            ui.selectable_value(&mut seg.scan.start_corner, Corner::BottomLeft, "BL");
+                                            ui.selectable_value(&mut seg.scan.start_corner, Corner::BottomRight, "BR");
+                                        });
+                                    if seg.scan.start_corner != prev_corner { light_dirty = true; }
+                                    if ui.checkbox(&mut seg.scan.serpentine, "serp").changed() { light_dirty = true; }
+                                    ui.label("axis:");
+                                    let prev_axis = seg.scan.primary;
+                                    egui::ComboBox::from_id_salt(format!("seg_axis_{}_{}", i, si))
+                                        .selected_text(seg.scan.primary.label())
+                                        .width(60.0)
+                                        .show_ui(ui, |ui| {
+                                            use crate::stage::Axis;
+                                            ui.selectable_value(&mut seg.scan.primary, Axis::Horizontal, "Horiz");
+                                            ui.selectable_value(&mut seg.scan.primary, Axis::Vertical, "Vert");
+                                        });
+                                    if seg.scan.primary != prev_axis { light_dirty = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("profile:");
+                                    let selected_name = state
+                                        .stage
+                                        .fixture_profiles
+                                        .iter()
+                                        .find(|p| p.id == seg.profile)
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_else(|| "RGB".to_string());
+                                    let prev_profile = seg.profile.clone();
+                                    egui::ComboBox::from_id_salt(format!("seg_profile_{}_{}", i, si))
+                                        .selected_text(selected_name)
+                                        .show_ui(ui, |ui| {
+                                            for (id, name) in &profile_names {
+                                                ui.selectable_value(&mut seg.profile, id.clone(), name);
+                                            }
+                                        });
+                                    if seg.profile != prev_profile { light_dirty = true; }
+                                    if ui.add(egui::DragValue::new(&mut seg.start_universe).speed(1).range(1..=63999)).changed() { light_dirty = true; }
+                                    ui.label("ch:");
+                                    if ui.add(egui::DragValue::new(&mut seg.start_channel).speed(1).range(1..=512)).changed() { light_dirty = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    let footprint = state
+                                        .stage
+                                        .fixture_profiles
+                                        .iter()
+                                        .find(|p| p.id == seg.profile)
+                                        .map(|p| p.channels.len())
+                                        .unwrap_or(3);
+                                    let count = (seg.grid[0] as usize) * (seg.grid[1] as usize);
+                                    let spans = rustjay_lighting::segment_spans(
+                                        &light.name,
+                                        &seg.name,
+                                        seg.start_universe,
+                                        seg.start_channel,
+                                        footprint,
+                                        count,
+                                    );
+                                    let span_text = if spans.is_empty() {
+                                        "—".to_string()
+                                    } else if spans.len() == 1 {
+                                        format!("U{} ch{}–{}", spans[0].universe, spans[0].start, spans[0].end)
+                                    } else {
+                                        let first = spans.first().unwrap();
+                                        let last = spans.last().unwrap();
+                                        format!(
+                                            "U{} ch{}–{} → U{} ch{}–{}",
+                                            first.universe, first.start, first.end,
+                                            last.universe, last.start, last.end
+                                        )
+                                    };
+                                    ui.label(egui::RichText::new(format!("patch: {}", span_text)).weak().monospace());
+                                    ui.label(format!("sample: {}", seg.sample_mode.label())).on_hover_text("Only Point sampling is available in M3");
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("bright:");
+                                    if ui.add(egui::DragValue::new(&mut seg.color.brightness).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
+                                    ui.label("gain R:");
+                                    if ui.add(egui::DragValue::new(&mut seg.color.gain[0]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
+                                    ui.label("G:");
+                                    if ui.add(egui::DragValue::new(&mut seg.color.gain[1]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
+                                    ui.label("B:");
+                                    if ui.add(egui::DragValue::new(&mut seg.color.gain[2]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
+                                    ui.label("dim:");
+                                    if ui.add(egui::DragValue::new(&mut seg.color.master_dimmer).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("white:");
+                                    let mut white_mode = match seg.color.white {
+                                        crate::stage::WhiteMode::Off => 0usize,
+                                        crate::stage::WhiteMode::Min { .. } => 1,
+                                        crate::stage::WhiteMode::MinSubtract { .. } => 2,
+                                    };
+                                    let prev_white = white_mode;
+                                    egui::ComboBox::from_id_salt(format!("seg_white_{}_{}", i, si))
+                                        .selected_text(match white_mode {
+                                            0 => "Off",
+                                            1 => "Min",
+                                            _ => "MinSubtract",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut white_mode, 0, "Off");
+                                            ui.selectable_value(&mut white_mode, 1, "Min");
+                                            ui.selectable_value(&mut white_mode, 2, "MinSubtract");
+                                        });
+                                    if white_mode != prev_white {
+                                        let amount = match seg.color.white {
+                                            crate::stage::WhiteMode::Off => 1.0,
+                                            crate::stage::WhiteMode::Min { amount }
+                                            | crate::stage::WhiteMode::MinSubtract { amount } => amount,
+                                        };
+                                        seg.color.white = match white_mode {
+                                            0 => crate::stage::WhiteMode::Off,
+                                            1 => crate::stage::WhiteMode::Min { amount },
+                                            _ => crate::stage::WhiteMode::MinSubtract { amount },
+                                        };
+                                        light_dirty = true;
+                                    }
+                                    let mut amount = match seg.color.white {
+                                        crate::stage::WhiteMode::Off => 1.0,
+                                        crate::stage::WhiteMode::Min { amount }
+                                        | crate::stage::WhiteMode::MinSubtract { amount } => amount,
+                                    };
+                                    if ui.add(egui::DragValue::new(&mut amount).speed(0.01).range(0.0..=2.0)).changed() {
+                                        seg.color.white = match white_mode {
+                                            0 => crate::stage::WhiteMode::Off,
+                                            1 => crate::stage::WhiteMode::Min { amount },
+                                            _ => crate::stage::WhiteMode::MinSubtract { amount },
+                                        };
+                                        light_dirty = true;
+                                    }
+                                });
+                            });
+                        });
+                    }
+                });
+                if add_segment {
+                    light.segments.push(crate::stage::LightingSegment::default());
+                    light_dirty = true;
+                }
+                if let Some(si) = remove_segment {
+                    if light.segments.len() > 1 {
+                        light.segments.remove(si);
+                        light_dirty = true;
+                    }
+                }
+
+                // Activity meters
+                if let Some(sampler_id) = light.sampler_id {
+                    if let Some(frame) = state.lighting_last_frames.get(&sampler_id) {
+                        ui.collapsing("Activity", |ui| {
+                            if frame.is_empty() {
+                                ui.label("No activity");
+                            } else {
+                                for (universe, data) in frame.iter() {
+                                    let max = data.iter().copied().max().unwrap_or(0) as f32 / 255.0;
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("U{}", universe));
+                                        ui.add(
+                                            egui::ProgressBar::new(max)
+                                                .text(format!("{:.0}", max * 255.0))
+                                                .desired_width(ui.available_width()),
+                                        );
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        }
+        if light_dirty {
+            state.save_workspace();
+        }
+        if let Some(i) = remove_light {
+            if let Some(id) = state.stage.lighting_outputs[i].sampler_id {
+                if let Some(sender) = state.lighting_senders.remove(&id) {
+                    sender.shutdown();
+                }
+            }
+            state.stage.lighting_outputs.remove(i);
+            state.save_workspace();
+        }
+        if ui.button("+ Add lighting").clicked() {
+            state
+                .stage
+                .lighting_outputs
+                .push(crate::stage::LightingOutput::default());
+            state.save_workspace();
+        }
+
+        // Overlap warnings
+        if !state.lighting_overlap_warnings.is_empty() {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("⚠ Patch overlaps").color(ui.visuals().error_fg_color).strong());
+                for o in &state.lighting_overlap_warnings {
+                    ui.label(format!(
+                        "U{} ch{}–{}: {} / {}",
+                        o.universe, o.start, o.end, o.a.owner, o.b.owner
+                    ));
+                }
+            });
+        }
+
+        // ── Fixture profile library ─────────────────────────────────
+        ui.label(egui::RichText::new("Fixture Profiles").strong());
+        let builtin_ids: std::collections::HashSet<String> =
+            crate::stage::builtin_fixture_profiles()
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+        let mut remove_profile: Option<usize> = None;
+        let mut profile_dirty = false;
+        for (i, profile) in state.stage.fixture_profiles.iter_mut().enumerate() {
+            ui.push_id(format!("profile_{}", i), |ui| {
+                let is_builtin = builtin_ids.contains(&profile.id);
+                if is_builtin {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&profile.name).strong());
+                        ui.label(format!("{}ch", profile.channels.len()));
+                        ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
+                    });
+                } else {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("name:");
+                            if ui.text_edit_singleline(&mut profile.name).changed() {
+                                profile_dirty = true;
+                            }
+                            ui.label(format!("{}ch", profile.channels.len()));
+                            if ui.small_button("✖").clicked() {
+                                remove_profile = Some(i);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("add:");
+                            use crate::stage::ChannelRole;
+                            let mut push = |role| {
+                                profile.channels.push(role);
+                                profile_dirty = true;
+                            };
+                            if ui.small_button("R").clicked() { push(ChannelRole::Red); }
+                            if ui.small_button("G").clicked() { push(ChannelRole::Green); }
+                            if ui.small_button("B").clicked() { push(ChannelRole::Blue); }
+                            if ui.small_button("W").clicked() { push(ChannelRole::White); }
+                            if ui.small_button("A").clicked() { push(ChannelRole::Amber); }
+                            if ui.small_button("UV").clicked() { push(ChannelRole::Uv); }
+                            if ui.small_button("D").clicked() { push(ChannelRole::Dimmer); }
+                            if ui.small_button("S").clicked() { push(ChannelRole::Static(255)); }
+                            if ui.small_button("✖ last").clicked() {
+                                profile.channels.pop();
+                                profile_dirty = true;
+                            }
+                            if ui.small_button("Clear").clicked() {
+                                profile.channels.clear();
+                                profile_dirty = true;
+                            }
+                        });
+                        // Editable value for the last channel if it is Static.
+                        if let Some(crate::stage::ChannelRole::Static(v)) = profile.channels.last_mut() {
+                            ui.horizontal(|ui| {
+                                ui.label("static value:");
+                                if ui.add(egui::DragValue::new(v).speed(1).range(0..=255)).changed() {
+                                    profile_dirty = true;
+                                }
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("order:");
+                            ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
+                        });
+                    });
+                }
+            });
+        }
+        if let Some(i) = remove_profile {
+            // If any segment uses the deleted profile, fall back to "rgb".
+            let removed_id = state.stage.fixture_profiles[i].id.clone();
+            state.stage.fixture_profiles.remove(i);
+            for light in &mut state.stage.lighting_outputs {
+                for seg in &mut light.segments {
+                    if seg.profile == removed_id {
+                        seg.profile = "rgb".to_string();
+                    }
+                }
+            }
+            profile_dirty = true;
+        }
+        ui.horizontal(|ui| {
+            ui.label("New from template:");
+            let mut new_template = 0usize;
+            let templates = crate::stage::builtin_fixture_profiles();
+            egui::ComboBox::from_id_salt("profile_template")
+                .selected_text("RGB")
+                .show_ui(ui, |ui| {
+                    for (idx, p) in templates.iter().enumerate() {
+                        ui.selectable_value(&mut new_template, idx, &p.name);
+                    }
+                });
+            if ui.button("+ Add").clicked() {
+                let template = &templates[new_template];
+                let new_id = format!("{}_{}", template.id, state.stage.fixture_profiles.len());
+                let mut new_profile = template.clone();
+                new_profile.id = new_id;
+                new_profile.name = format!("{} Copy", new_profile.name);
+                state.stage.fixture_profiles.push(new_profile);
+                profile_dirty = true;
+            }
+        });
+        if profile_dirty {
+            state.save_workspace();
+        }
+    }
+
     #[cfg(feature = "projection")]
     fn draw_surface_properties(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
         use crate::stage::{ContentMapping, SurfaceSource};
@@ -4058,6 +5047,31 @@ mod egui_impl {
 
         // Stage design resolution in pixels, used for pixel-based sizing.
         let canvas_size = state.stage.canvas_size;
+        let cw = canvas_size[0].max(1) as f32;
+        let ch = canvas_size[1].max(1) as f32;
+
+        // Outputs showing the selected surface, as (name, width, height).
+        //
+        // Corner-pin corners are normalized against the *output* framebuffer,
+        // not the stage canvas, so they can only be shown in pixels once an
+        // output is known. Collected up front because the editor below holds a
+        // mutable borrow of `surfaces`.
+        let sel = state.stage.selected_surface_index;
+        let assigned_outputs: Vec<(String, u32, u32)> = state
+            .stage
+            .projectors
+            .iter()
+            .filter(|p| p.surface_index == Some(sel))
+            .map(|p| (p.name.clone(), p.width, p.height))
+            .chain(
+                state
+                    .stage
+                    .headless_outputs
+                    .iter()
+                    .filter(|h| h.surface_index == Some(sel))
+                    .map(|h| (h.name.clone(), h.width, h.height)),
+            )
+            .collect();
 
         ui.vertical_centered(|ui| {
             ui.set_max_width(400.0);
@@ -4110,13 +5124,17 @@ mod egui_impl {
                 // scaled/translated to match so any polygon stays proportional.
                 ui.label(egui::RichText::new("Position & Size (px)").strong());
                 {
-                    let cw = canvas_size[0].max(1) as f32;
-                    let ch = canvas_size[1].max(1) as f32;
                     if surf.is_circular && !surf.vertices.is_empty() {
+                        // `radius` is normalized against the canvas *width*, so
+                        // it is a pixel radius on both axes but a normalized
+                        // radius only on x. Subtracting it from a y coordinate
+                        // without that round-trip is what put circles at the
+                        // wrong Y and cropped them off-centre at 16:9.
                         let center = surf.vertices[0];
-                        let mut x_px = (center[0] - surf.radius) * cw;
-                        let mut y_px = (center[1] - surf.radius) * ch;
-                        let mut diam_px = surf.radius * 2.0 * cw;
+                        let diam = surf.radius * 2.0 * cw;
+                        let mut x_px = center[0] * cw - diam / 2.0;
+                        let mut y_px = center[1] * ch - diam / 2.0;
+                        let mut diam_px = diam;
                         let mut changed = false;
                         ui.horizontal(|ui| {
                             ui.label("X:");
@@ -4129,9 +5147,11 @@ mod egui_impl {
                             if ui.add(egui::DragValue::new(&mut diam_px).speed(1.0).range(1.0..=f32::MAX).suffix(" px")).changed() { changed = true; }
                         });
                         if changed {
-                            let new_r = (diam_px / 2.0 / cw).max(0.0001);
-                            surf.radius = new_r;
-                            surf.vertices[0] = [x_px / cw + new_r, y_px / ch + new_r];
+                            surf.radius = (diam_px / 2.0 / cw).max(0.0001);
+                            surf.vertices[0] = [
+                                (x_px + diam_px / 2.0) / cw,
+                                (y_px + diam_px / 2.0) / ch,
+                            ];
                             // Crop region = the circle's bounding box on the master.
                             surf.uv_crop_rect = [
                                 x_px / cw,
@@ -4142,7 +5162,7 @@ mod egui_impl {
                             geo_dirty = true;
                         }
                     } else if !surf.vertices.is_empty() {
-                        let [min_x, min_y, max_x, max_y] = surf.bounding_box();
+                        let [min_x, min_y, max_x, max_y] = surf.bounding_box(cw / ch);
                         let mut x_px = min_x * cw;
                         let mut y_px = min_y * ch;
                         let mut w_px = (max_x - min_x) * cw;
@@ -4182,6 +5202,65 @@ mod egui_impl {
                                 [new_min_x, new_min_y, new_min_x + new_w, new_min_y + new_h];
                             geo_dirty = true;
                         }
+                    }
+                }
+
+                // ── What that becomes on each output ────────────────────────
+                // Surface pixels are *master* pixels; the crop is then warped
+                // onto the output's whole framebuffer. The scale factor is the
+                // number that tells you whether you are upscaling a postage
+                // stamp to fill a projector.
+                if !assigned_outputs.is_empty() {
+                    let [min_x, min_y, max_x, max_y] = surf.bounding_box(cw / ch);
+                    let src_w = ((max_x - min_x) * cw).max(1.0);
+                    let src_h = ((max_y - min_y) * ch).max(1.0);
+                    for (name, ow, oh) in &assigned_outputs {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "\u{2192} {name}: {ow}\u{d7}{oh} px  (source \u{d7}{:.2})",
+                                *ow as f32 / src_w
+                            ))
+                            .size(11.0)
+                            .weak(),
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("   source {src_w:.0}\u{d7}{src_h:.0} px of master"))
+                            .size(11.0)
+                            .weak(),
+                    );
+                }
+
+                // ── Vertices ────────────────────────────────────────────────
+                // Drag handles cannot hit a number, and an imported SVG contour
+                // is exactly the case where you want to nudge one by hand.
+                if !surf.is_circular && !surf.vertices.is_empty() {
+                    let mut verts_changed = false;
+                    egui::CollapsingHeader::new(format!("Vertices ({})", surf.vertices.len()))
+                        .id_salt("geo_vertices")
+                        .show(ui, |ui| {
+                            for (i, v) in surf.vertices.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{i}:"));
+                                    let mut x = v[0] * cw;
+                                    let mut y = v[1] * ch;
+                                    if ui.add(egui::DragValue::new(&mut x).speed(1.0).suffix(" px")).changed() {
+                                        v[0] = x / cw;
+                                        verts_changed = true;
+                                    }
+                                    if ui.add(egui::DragValue::new(&mut y).speed(1.0).suffix(" px")).changed() {
+                                        v[1] = y / ch;
+                                        verts_changed = true;
+                                    }
+                                });
+                            }
+                        });
+                    if verts_changed {
+                        // Keep the crop following the outline, as the W/H
+                        // editor above does.
+                        let [bx0, by0, bx1, by1] = surf.bounding_box(cw / ch);
+                        surf.uv_crop_rect = [bx0, by0, bx1, by1];
+                        geo_dirty = true;
                     }
                 }
                 ui.separator();
@@ -4240,29 +5319,40 @@ mod egui_impl {
                     });
 
                 if let rustjay_projection::WarpMode::CornerPin { corners } = &mut surf.warp {
-                    ui.label("Corners (normalized):");
+                    // In pixels of the output the corners actually land on,
+                    // when there is one — normalized units are unusable for
+                    // lining a quad up against a physical edge.
+                    let out = assigned_outputs.first();
+                    match out {
+                        Some((name, _, _)) => ui.label(format!("Corners (px on {name}):")),
+                        None => ui.label("Corners (normalized \u{2014} assign an output for px):"),
+                    };
                     for (i, corner) in corners.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(["TL", "TR", "BR", "BL"][i]);
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut corner[0])
-                                        .speed(0.01)
-                                        .range(0.0..=1.0),
-                                )
-                                .changed()
-                            {
-                                warp_dirty = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut corner[1])
-                                        .speed(0.01)
-                                        .range(0.0..=1.0),
-                                )
-                                .changed()
-                            {
-                                warp_dirty = true;
+                            match out {
+                                Some((_, ow, oh)) => {
+                                    let ow = (*ow).max(1) as f32;
+                                    let oh = (*oh).max(1) as f32;
+                                    let mut x = corner[0] * ow;
+                                    let mut y = corner[1] * oh;
+                                    if ui.add(egui::DragValue::new(&mut x).speed(1.0).suffix(" px")).changed() {
+                                        corner[0] = (x / ow).clamp(0.0, 1.0);
+                                        warp_dirty = true;
+                                    }
+                                    if ui.add(egui::DragValue::new(&mut y).speed(1.0).suffix(" px")).changed() {
+                                        corner[1] = (y / oh).clamp(0.0, 1.0);
+                                        warp_dirty = true;
+                                    }
+                                }
+                                None => {
+                                    if ui.add(egui::DragValue::new(&mut corner[0]).speed(0.01).range(0.0..=1.0)).changed() {
+                                        warp_dirty = true;
+                                    }
+                                    if ui.add(egui::DragValue::new(&mut corner[1]).speed(0.01).range(0.0..=1.0)).changed() {
+                                        warp_dirty = true;
+                                    }
+                                }
                             }
                         });
                     }
@@ -4402,7 +5492,9 @@ mod egui_impl {
                     }
                 }
             } else {
-                ui.label("No surfaces. Add one from the Stage tab.");
+                // This panel is *in* the Stage tab now, so pointing at it was
+                // sending people looking for a tab they were already on.
+                ui.label("No surfaces \u{2014} add one from the list on the left.");
             }
         });
 
@@ -4495,21 +5587,38 @@ mod egui_impl {
                                 };
                                 proj_dirty = true;
                             }
+                            // By name, not by index: surfaces are *named*
+                            // 1-based but stored 0-based, so a raw index picker
+                            // put "Surface 1" at 0 and read as an off-by-one.
                             ui.label("surface:");
-                            let surf_count = state.stage.surfaces.len();
-                            let mut surf_idx = proj.surface_index.map(|s| s as i32).unwrap_or(-1);
-                            let max_surf = surf_count.saturating_sub(1) as i32;
-                            if ui
-                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=max_surf))
-                                .changed()
-                            {
-                                proj.surface_index = if surf_idx < 0 {
-                                    None
-                                } else {
-                                    Some(surf_idx as usize)
-                                };
-                                proj_dirty = true;
-                            }
+                            egui::ComboBox::from_id_salt(format!("proj_surf_{}", i))
+                                .selected_text(
+                                    proj.surface_index
+                                        .and_then(|s| state.stage.surfaces.get(s))
+                                        .map(|s| s.name.as_str())
+                                        .unwrap_or("— none —"),
+                                )
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(proj.surface_index.is_none(), "— none —")
+                                        .clicked()
+                                    {
+                                        proj.surface_index = None;
+                                        proj_dirty = true;
+                                    }
+                                    for (si, surf) in state.stage.surfaces.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                proj.surface_index == Some(si),
+                                                &surf.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            proj.surface_index = Some(si);
+                                            proj_dirty = true;
+                                        }
+                                    }
+                                });
                             ui.label("type:");
                             let prev_type = proj.output_type.clone();
                             egui::ComboBox::from_id_salt(format!("proj_type_{}", i))
@@ -4695,19 +5804,34 @@ mod egui_impl {
                                     .range(1..=8192),
                             );
                             ui.label("surface:");
-                            let surf_count = state.stage.surfaces.len();
-                            let mut surf_idx = hl.surface_index.map(|s| s as i32).unwrap_or(-1);
-                            if ui
-                                .add(egui::DragValue::new(&mut surf_idx).speed(1).range(-1..=surf_count.max(1) as i32 - 1))
-                                .changed()
-                            {
-                                hl.surface_index = if surf_idx < 0 {
-                                    None
-                                } else {
-                                    Some(surf_idx as usize)
-                                };
-                                hl_dirty = true;
-                            }
+                            egui::ComboBox::from_id_salt(format!("hl_surf_{}", i))
+                                .selected_text(
+                                    hl.surface_index
+                                        .and_then(|s| state.stage.surfaces.get(s))
+                                        .map(|s| s.name.as_str())
+                                        .unwrap_or("— none —"),
+                                )
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(hl.surface_index.is_none(), "— none —")
+                                        .clicked()
+                                    {
+                                        hl.surface_index = None;
+                                        hl_dirty = true;
+                                    }
+                                    for (si, surf) in state.stage.surfaces.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                hl.surface_index == Some(si),
+                                                &surf.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            hl.surface_index = Some(si);
+                                            hl_dirty = true;
+                                        }
+                                    }
+                                });
                             ui.label("type:");
                             let prev_type = hl.output_type.clone();
                             egui::ComboBox::from_id_salt(format!("hl_type_{}", i))
@@ -4765,461 +5889,6 @@ mod egui_impl {
                         .stage
                         .headless_outputs
                         .push(crate::stage::KovvbojHeadlessConfig::default());
-                    state.save_workspace();
-                }
-                ui.separator();
-
-                // ── Lighting outputs ────────────────────────────────────────
-                ui.label(egui::RichText::new("Lighting Outputs").strong());
-                state.stage.ensure_builtin_fixture_profiles();
-                let mut remove_light: Option<usize> = None;
-                let mut light_dirty = false;
-                let profile_names: Vec<(String, String)> = state
-                    .stage
-                    .fixture_profiles
-                    .iter()
-                    .map(|p| (p.id.clone(), p.name.clone()))
-                    .collect();
-                for (i, light) in state.stage.lighting_outputs.iter_mut().enumerate() {
-                    ui.push_id(format!("light_{}", i), |ui| {
-                        // Output header
-                        ui.horizontal(|ui| {
-                            if ui.checkbox(&mut light.enabled, "").changed() {
-                                light_dirty = true;
-                            }
-                            if ui.text_edit_singleline(&mut light.name).changed() {
-                                light_dirty = true;
-                            }
-                            ui.label("type:");
-                            let prev_type = light.output_type.clone();
-                            egui::ComboBox::from_id_salt(format!("light_type_{}", i))
-                                .selected_text(light.output_type.label())
-                                .show_ui(ui, |ui| {
-                                    use crate::stage::OutputType;
-                                    ui.selectable_value(&mut light.output_type, OutputType::Sacn, "sACN");
-                                    ui.selectable_value(&mut light.output_type, OutputType::ArtNet, "Art-Net");
-                                });
-                            if light.output_type != prev_type {
-                                light_dirty = true;
-                            }
-                            if ui.button("🗑").clicked() {
-                                remove_light = Some(i);
-                            }
-                        });
-                        // Output-level transport
-                        ui.horizontal(|ui| {
-                            ui.label("gamma:");
-                            if ui
-                                .add(egui::DragValue::new(&mut light.gamma).speed(0.1).range(0.5..=4.0))
-                                .changed()
-                            {
-                                light_dirty = true;
-                            }
-                            ui.label("priority:");
-                            if ui
-                                .add(egui::DragValue::new(&mut light.transport.priority).speed(1).range(0..=200))
-                                .changed()
-                            {
-                                light_dirty = true;
-                            }
-                            ui.label("fps:");
-                            if ui
-                                .add(egui::DragValue::new(&mut light.transport.fps).speed(1).range(1.0..=100.0))
-                                .changed()
-                            {
-                                light_dirty = true;
-                            }
-                            ui.label("dest IP:");
-                            if ui.text_edit_singleline(&mut light.transport.dest_ip).changed() {
-                                light_dirty = true;
-                            }
-                        });
-
-                        // Segments list
-                        let mut remove_segment: Option<usize> = None;
-                        let mut add_segment = false;
-                        ui.indent(format!("light_{}_segments", i), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Segments").weak());
-                                if ui.small_button("+ Add segment").clicked() {
-                                    add_segment = true;
-                                }
-                            });
-                            for (si, seg) in light.segments.iter_mut().enumerate() {
-                                ui.push_id(format!("seg_{}_{}", i, si), |ui| {
-                                    ui.group(|ui| {
-                                        ui.horizontal(|ui| {
-                                            if ui.checkbox(&mut seg.enabled, "").changed() {
-                                                light_dirty = true;
-                                            }
-                                            if ui.text_edit_singleline(&mut seg.name).changed() {
-                                                light_dirty = true;
-                                            }
-                                            if ui.small_button("✖").clicked() {
-                                                remove_segment = Some(si);
-                                            }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("source:");
-                                            let sel_text = match &seg.source_surface {
-                                                None => "Manual region".to_string(),
-                                                Some(uuid) => state
-                                                    .stage
-                                                    .surfaces
-                                                    .iter()
-                                                    .find(|s| &s.uuid == uuid)
-                                                    .map(|s| s.name.clone())
-                                                    .unwrap_or_else(|| "<missing surface>".to_string()),
-                                            };
-                                            let prev_src = seg.source_surface.clone();
-                                            egui::ComboBox::from_id_salt(format!("seg_src_{}_{}", i, si))
-                                                .selected_text(sel_text)
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut seg.source_surface, None, "Manual region");
-                                                    for surf in &state.stage.surfaces {
-                                                        ui.selectable_value(
-                                                            &mut seg.source_surface,
-                                                            Some(surf.uuid.clone()),
-                                                            &surf.name,
-                                                        );
-                                                    }
-                                                });
-                                            if seg.source_surface != prev_src { light_dirty = true; }
-                                        });
-                                        ui.add_enabled_ui(seg.source_surface.is_none(), |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label("region u0:");
-                                                if ui.add(egui::DragValue::new(&mut seg.region[0]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
-                                                ui.label("v0:");
-                                                if ui.add(egui::DragValue::new(&mut seg.region[1]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
-                                                ui.label("u1:");
-                                                if ui.add(egui::DragValue::new(&mut seg.region[2]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
-                                                ui.label("v1:");
-                                                if ui.add(egui::DragValue::new(&mut seg.region[3]).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
-                                            });
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("grid:");
-                                            if ui.add(egui::DragValue::new(&mut seg.grid[0]).speed(1).range(1..=4096)).changed() { light_dirty = true; }
-                                            ui.label("×");
-                                            if ui.add(egui::DragValue::new(&mut seg.grid[1]).speed(1).range(1..=4096)).changed() { light_dirty = true; }
-                                            ui.label("corner:");
-                                            let prev_corner = seg.scan.start_corner;
-                                            egui::ComboBox::from_id_salt(format!("seg_corner_{}_{}", i, si))
-                                                .selected_text(seg.scan.start_corner.label())
-                                                .width(50.0)
-                                                .show_ui(ui, |ui| {
-                                                    use crate::stage::Corner;
-                                                    ui.selectable_value(&mut seg.scan.start_corner, Corner::TopLeft, "TL");
-                                                    ui.selectable_value(&mut seg.scan.start_corner, Corner::TopRight, "TR");
-                                                    ui.selectable_value(&mut seg.scan.start_corner, Corner::BottomLeft, "BL");
-                                                    ui.selectable_value(&mut seg.scan.start_corner, Corner::BottomRight, "BR");
-                                                });
-                                            if seg.scan.start_corner != prev_corner { light_dirty = true; }
-                                            if ui.checkbox(&mut seg.scan.serpentine, "serp").changed() { light_dirty = true; }
-                                            ui.label("axis:");
-                                            let prev_axis = seg.scan.primary;
-                                            egui::ComboBox::from_id_salt(format!("seg_axis_{}_{}", i, si))
-                                                .selected_text(seg.scan.primary.label())
-                                                .width(60.0)
-                                                .show_ui(ui, |ui| {
-                                                    use crate::stage::Axis;
-                                                    ui.selectable_value(&mut seg.scan.primary, Axis::Horizontal, "Horiz");
-                                                    ui.selectable_value(&mut seg.scan.primary, Axis::Vertical, "Vert");
-                                                });
-                                            if seg.scan.primary != prev_axis { light_dirty = true; }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("profile:");
-                                            let selected_name = state
-                                                .stage
-                                                .fixture_profiles
-                                                .iter()
-                                                .find(|p| p.id == seg.profile)
-                                                .map(|p| p.name.clone())
-                                                .unwrap_or_else(|| "RGB".to_string());
-                                            let prev_profile = seg.profile.clone();
-                                            egui::ComboBox::from_id_salt(format!("seg_profile_{}_{}", i, si))
-                                                .selected_text(selected_name)
-                                                .show_ui(ui, |ui| {
-                                                    for (id, name) in &profile_names {
-                                                        ui.selectable_value(&mut seg.profile, id.clone(), name);
-                                                    }
-                                                });
-                                            if seg.profile != prev_profile { light_dirty = true; }
-                                            if ui.add(egui::DragValue::new(&mut seg.start_universe).speed(1).range(1..=63999)).changed() { light_dirty = true; }
-                                            ui.label("ch:");
-                                            if ui.add(egui::DragValue::new(&mut seg.start_channel).speed(1).range(1..=512)).changed() { light_dirty = true; }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            let footprint = state
-                                                .stage
-                                                .fixture_profiles
-                                                .iter()
-                                                .find(|p| p.id == seg.profile)
-                                                .map(|p| p.channels.len())
-                                                .unwrap_or(3);
-                                            let count = (seg.grid[0] as usize) * (seg.grid[1] as usize);
-                                            let spans = rustjay_lighting::segment_spans(
-                                                &light.name,
-                                                &seg.name,
-                                                seg.start_universe,
-                                                seg.start_channel,
-                                                footprint,
-                                                count,
-                                            );
-                                            let span_text = if spans.is_empty() {
-                                                "—".to_string()
-                                            } else if spans.len() == 1 {
-                                                format!("U{} ch{}–{}", spans[0].universe, spans[0].start, spans[0].end)
-                                            } else {
-                                                let first = spans.first().unwrap();
-                                                let last = spans.last().unwrap();
-                                                format!(
-                                                    "U{} ch{}–{} → U{} ch{}–{}",
-                                                    first.universe, first.start, first.end,
-                                                    last.universe, last.start, last.end
-                                                )
-                                            };
-                                            ui.label(egui::RichText::new(format!("patch: {}", span_text)).weak().monospace());
-                                            ui.label(format!("sample: {}", seg.sample_mode.label())).on_hover_text("Only Point sampling is available in M3");
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("bright:");
-                                            if ui.add(egui::DragValue::new(&mut seg.color.brightness).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
-                                            ui.label("gain R:");
-                                            if ui.add(egui::DragValue::new(&mut seg.color.gain[0]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
-                                            ui.label("G:");
-                                            if ui.add(egui::DragValue::new(&mut seg.color.gain[1]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
-                                            ui.label("B:");
-                                            if ui.add(egui::DragValue::new(&mut seg.color.gain[2]).speed(0.01).range(0.0..=2.0)).changed() { light_dirty = true; }
-                                            ui.label("dim:");
-                                            if ui.add(egui::DragValue::new(&mut seg.color.master_dimmer).speed(0.01).range(0.0..=1.0)).changed() { light_dirty = true; }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("white:");
-                                            let mut white_mode = match seg.color.white {
-                                                crate::stage::WhiteMode::Off => 0usize,
-                                                crate::stage::WhiteMode::Min { .. } => 1,
-                                                crate::stage::WhiteMode::MinSubtract { .. } => 2,
-                                            };
-                                            let prev_white = white_mode;
-                                            egui::ComboBox::from_id_salt(format!("seg_white_{}_{}", i, si))
-                                                .selected_text(match white_mode {
-                                                    0 => "Off",
-                                                    1 => "Min",
-                                                    _ => "MinSubtract",
-                                                })
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut white_mode, 0, "Off");
-                                                    ui.selectable_value(&mut white_mode, 1, "Min");
-                                                    ui.selectable_value(&mut white_mode, 2, "MinSubtract");
-                                                });
-                                            if white_mode != prev_white {
-                                                let amount = match seg.color.white {
-                                                    crate::stage::WhiteMode::Off => 1.0,
-                                                    crate::stage::WhiteMode::Min { amount }
-                                                    | crate::stage::WhiteMode::MinSubtract { amount } => amount,
-                                                };
-                                                seg.color.white = match white_mode {
-                                                    0 => crate::stage::WhiteMode::Off,
-                                                    1 => crate::stage::WhiteMode::Min { amount },
-                                                    _ => crate::stage::WhiteMode::MinSubtract { amount },
-                                                };
-                                                light_dirty = true;
-                                            }
-                                            let mut amount = match seg.color.white {
-                                                crate::stage::WhiteMode::Off => 1.0,
-                                                crate::stage::WhiteMode::Min { amount }
-                                                | crate::stage::WhiteMode::MinSubtract { amount } => amount,
-                                            };
-                                            if ui.add(egui::DragValue::new(&mut amount).speed(0.01).range(0.0..=2.0)).changed() {
-                                                seg.color.white = match white_mode {
-                                                    0 => crate::stage::WhiteMode::Off,
-                                                    1 => crate::stage::WhiteMode::Min { amount },
-                                                    _ => crate::stage::WhiteMode::MinSubtract { amount },
-                                                };
-                                                light_dirty = true;
-                                            }
-                                        });
-                                    });
-                                });
-                            }
-                        });
-                        if add_segment {
-                            light.segments.push(crate::stage::LightingSegment::default());
-                            light_dirty = true;
-                        }
-                        if let Some(si) = remove_segment {
-                            if light.segments.len() > 1 {
-                                light.segments.remove(si);
-                                light_dirty = true;
-                            }
-                        }
-
-                        // Activity meters
-                        if let Some(sampler_id) = light.sampler_id {
-                            if let Some(frame) = state.lighting_last_frames.get(&sampler_id) {
-                                ui.collapsing("Activity", |ui| {
-                                    if frame.is_empty() {
-                                        ui.label("No activity");
-                                    } else {
-                                        for (universe, data) in frame.iter() {
-                                            let max = data.iter().copied().max().unwrap_or(0) as f32 / 255.0;
-                                            ui.horizontal(|ui| {
-                                                ui.label(format!("U{}", universe));
-                                                ui.add(
-                                                    egui::ProgressBar::new(max)
-                                                        .text(format!("{:.0}", max * 255.0))
-                                                        .desired_width(ui.available_width()),
-                                                );
-                                            });
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    });
-                }
-                if light_dirty {
-                    state.save_workspace();
-                }
-                if let Some(i) = remove_light {
-                    if let Some(id) = state.stage.lighting_outputs[i].sampler_id {
-                        if let Some(sender) = state.lighting_senders.remove(&id) {
-                            sender.shutdown();
-                        }
-                    }
-                    state.stage.lighting_outputs.remove(i);
-                    state.save_workspace();
-                }
-                if ui.button("+ Add lighting").clicked() {
-                    state
-                        .stage
-                        .lighting_outputs
-                        .push(crate::stage::LightingOutput::default());
-                    state.save_workspace();
-                }
-
-                // Overlap warnings
-                if !state.lighting_overlap_warnings.is_empty() {
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("⚠ Patch overlaps").color(ui.visuals().error_fg_color).strong());
-                        for o in &state.lighting_overlap_warnings {
-                            ui.label(format!(
-                                "U{} ch{}–{}: {} / {}",
-                                o.universe, o.start, o.end, o.a.owner, o.b.owner
-                            ));
-                        }
-                    });
-                }
-
-                // ── Fixture profile library ─────────────────────────────────
-                ui.label(egui::RichText::new("Fixture Profiles").strong());
-                let builtin_ids: std::collections::HashSet<String> =
-                    crate::stage::builtin_fixture_profiles()
-                        .into_iter()
-                        .map(|p| p.id)
-                        .collect();
-                let mut remove_profile: Option<usize> = None;
-                let mut profile_dirty = false;
-                for (i, profile) in state.stage.fixture_profiles.iter_mut().enumerate() {
-                    ui.push_id(format!("profile_{}", i), |ui| {
-                        let is_builtin = builtin_ids.contains(&profile.id);
-                        if is_builtin {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&profile.name).strong());
-                                ui.label(format!("{}ch", profile.channels.len()));
-                                ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
-                            });
-                        } else {
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label("name:");
-                                    if ui.text_edit_singleline(&mut profile.name).changed() {
-                                        profile_dirty = true;
-                                    }
-                                    ui.label(format!("{}ch", profile.channels.len()));
-                                    if ui.small_button("✖").clicked() {
-                                        remove_profile = Some(i);
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("add:");
-                                    use crate::stage::ChannelRole;
-                                    let mut push = |role| {
-                                        profile.channels.push(role);
-                                        profile_dirty = true;
-                                    };
-                                    if ui.small_button("R").clicked() { push(ChannelRole::Red); }
-                                    if ui.small_button("G").clicked() { push(ChannelRole::Green); }
-                                    if ui.small_button("B").clicked() { push(ChannelRole::Blue); }
-                                    if ui.small_button("W").clicked() { push(ChannelRole::White); }
-                                    if ui.small_button("A").clicked() { push(ChannelRole::Amber); }
-                                    if ui.small_button("UV").clicked() { push(ChannelRole::Uv); }
-                                    if ui.small_button("D").clicked() { push(ChannelRole::Dimmer); }
-                                    if ui.small_button("S").clicked() { push(ChannelRole::Static(255)); }
-                                    if ui.small_button("✖ last").clicked() {
-                                        profile.channels.pop();
-                                        profile_dirty = true;
-                                    }
-                                    if ui.small_button("Clear").clicked() {
-                                        profile.channels.clear();
-                                        profile_dirty = true;
-                                    }
-                                });
-                                // Editable value for the last channel if it is Static.
-                                if let Some(crate::stage::ChannelRole::Static(v)) = profile.channels.last_mut() {
-                                    ui.horizontal(|ui| {
-                                        ui.label("static value:");
-                                        if ui.add(egui::DragValue::new(v).speed(1).range(0..=255)).changed() {
-                                            profile_dirty = true;
-                                        }
-                                    });
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.label("order:");
-                                    ui.label(profile.channels.iter().map(|r| r.label()).collect::<Vec<_>>().join(","));
-                                });
-                            });
-                        }
-                    });
-                }
-                if let Some(i) = remove_profile {
-                    // If any segment uses the deleted profile, fall back to "rgb".
-                    let removed_id = state.stage.fixture_profiles[i].id.clone();
-                    state.stage.fixture_profiles.remove(i);
-                    for light in &mut state.stage.lighting_outputs {
-                        for seg in &mut light.segments {
-                            if seg.profile == removed_id {
-                                seg.profile = "rgb".to_string();
-                            }
-                        }
-                    }
-                    profile_dirty = true;
-                }
-                ui.horizontal(|ui| {
-                    ui.label("New from template:");
-                    let mut new_template = 0usize;
-                    let templates = crate::stage::builtin_fixture_profiles();
-                    egui::ComboBox::from_id_salt("profile_template")
-                        .selected_text("RGB")
-                        .show_ui(ui, |ui| {
-                            for (idx, p) in templates.iter().enumerate() {
-                                ui.selectable_value(&mut new_template, idx, &p.name);
-                            }
-                        });
-                    if ui.button("+ Add").clicked() {
-                        let template = &templates[new_template];
-                        let new_id = format!("{}_{}", template.id, state.stage.fixture_profiles.len());
-                        let mut new_profile = template.clone();
-                        new_profile.id = new_id;
-                        new_profile.name = format!("{} Copy", new_profile.name);
-                        state.stage.fixture_profiles.push(new_profile);
-                        profile_dirty = true;
-                    }
-                });
-                if profile_dirty {
                     state.save_workspace();
                 }
                 ui.separator();
