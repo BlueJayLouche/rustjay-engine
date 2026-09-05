@@ -99,6 +99,24 @@ pub struct KovvbojShell {
     prefs: crate::persistence::UiPrefs,
     /// One-shot: install the display font and apply the saved palette.
     initialised: bool,
+
+    /// Folder picked by the File menu's dialog thread, waiting to be applied.
+    /// The dialog is modal and blocking, so it cannot run on the render thread —
+    /// same pattern as the source and recording pickers.
+    pending_workspace: Arc<Mutex<Option<(WorkspaceAction, std::path::PathBuf)>>>,
+    /// What a background file job is doing, shown in the menu bar. Packing a
+    /// set copies its video, which takes long enough that silence reads as a
+    /// hang.
+    busy: Arc<Mutex<Option<String>>>,
+}
+
+/// What the file the user is picking is for.
+#[derive(Copy, Clone)]
+enum WorkspaceAction {
+    New,
+    Open,
+    SaveAs,
+    Export,
 }
 
 /// The KOVVBOJ display face, or monospace until it is available.
@@ -156,6 +174,8 @@ impl KovvbojShell {
             ledmap: LedMapTab::new(),
             outputs: OutputsTab::new(),
             sequencer: SequencerTab,
+            pending_workspace: Arc::new(Mutex::new(None)),
+            busy: Arc::new(Mutex::new(None)),
             builtin_open: [false; VIEW_TABS.len()],
             show_settings: false,
             show_outputs: false,
@@ -348,6 +368,32 @@ impl AnyEguiShell for KovvbojShell {
             } else {
                 state.undo();
             }
+        }
+
+        // A folder picked by the File menu last frame.
+        if let Some((action, dir)) = self.pending_workspace.lock().ok().and_then(|mut g| g.take())
+            && let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
+        {
+            match action {
+                WorkspaceAction::New => state.new_workspace(dir),
+                WorkspaceAction::Open => state.open_workspace(dir),
+                WorkspaceAction::SaveAs => state.save_workspace_as(dir),
+                #[cfg(feature = "mixer")]
+                WorkspaceAction::Export => {
+                    // Bundles what is on disk, so write the live set out first.
+                    state.save_workspace();
+                    export_set(state.workspace.dir.clone(), dir, &self.busy, ui.ctx());
+                }
+                #[cfg(not(feature = "mixer"))]
+                WorkspaceAction::Export => {}
+            }
+        }
+
+        // ⌘S from anywhere, not just the mixer tab.
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
+            && let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
+        {
+            state.save_workspace();
         }
 
         let engine = host.engine().clone();
@@ -648,6 +694,8 @@ impl KovvbojShell {
                     .stroke(egui::Stroke::new(1.0_f32, hair_2())),
             )
             .show(ui, |ui| {
+                let pending_workspace = self.pending_workspace.clone();
+                let busy = self.busy.clone();
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.add_space(10.0);
                     ui.label(
@@ -659,12 +707,112 @@ impl KovvbojShell {
                     ui.add_space(10.0);
 
                     ui.menu_button("File", |ui| {
-                        if ui.button("Save Workspace").clicked()
+                        // Which set is loaded — the only place it is visible,
+                        // since a workspace is just a directory.
+                        let dir = app_state
+                            .downcast_ref::<crate::KovvbojAppState>()
+                            .map(|s| s.workspace.dir.clone())
+                            .unwrap_or_default();
+                        ui.add_enabled(
+                            false,
+                            egui::Label::new(
+                                egui::RichText::new(workspace_label(&dir)).monospace().size(11.0),
+                            ),
+                        );
+                        ui.separator();
+
+                        if ui.button("New Workspace…").clicked() {
+                            pick_workspace_dir(
+                                WorkspaceAction::New,
+                                "New Workspace",
+                                &pending_workspace,
+                                ui.ctx(),
+                            );
+                            ui.close();
+                        }
+                        if ui.button("Open Workspace…").clicked() {
+                            pick_workspace_dir(
+                                WorkspaceAction::Open,
+                                "Open Workspace",
+                                &pending_workspace,
+                                ui.ctx(),
+                            );
+                            ui.close();
+                        }
+                        ui.menu_button("Open Recent", |ui| {
+                            let recent = crate::persistence::load_recent();
+                            if recent.is_empty() {
+                                ui.add_enabled(false, egui::Button::new("Nothing yet"));
+                            }
+                            for path in &recent {
+                                if ui
+                                    .button(workspace_label(path))
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                                {
+                                    if let Some(state) =
+                                        app_state.downcast_mut::<crate::KovvbojAppState>()
+                                    {
+                                        state.open_workspace(path.clone());
+                                    }
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Clear Menu").clicked() {
+                                crate::persistence::clear_recent();
+                                ui.close();
+                            }
+                        });
+
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new("Save Workspace").shortcut_text("⌘S"))
+                            .clicked()
                             && let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
                         {
                             state.save_workspace();
                         }
+                        if ui.button("Save Workspace As…").clicked() {
+                            pick_workspace_dir(
+                                WorkspaceAction::SaveAs,
+                                "Save Workspace As",
+                                &pending_workspace,
+                                ui.ctx(),
+                            );
+                            ui.close();
+                        }
+                        if ui
+                            .button("Revert to Saved")
+                            .on_hover_text("Discard everything since the last save")
+                            .clicked()
+                            && let Some(state) = app_state.downcast_mut::<crate::KovvbojAppState>()
+                        {
+                            state.revert_workspace();
+                        }
+
+                        #[cfg(feature = "mixer")]
+                        {
+                            ui.separator();
+                            if ui
+                                .button("Export Set…")
+                                .on_hover_text("Pack the set and every shader, clip and image it uses into one file")
+                                .clicked()
+                            {
+                                export_dialog(&dir, &pending_workspace, ui.ctx());
+                                ui.close();
+                            }
+                            if ui.button("Import Set…").clicked() {
+                                import_dialog(&pending_workspace, &busy, ui.ctx());
+                                ui.close();
+                            }
+                        }
+
                         ui.separator();
+                        if ui.button(reveal_label()).clicked() {
+                            reveal(&dir);
+                            ui.close();
+                        }
                         if ui.button("Quit").clicked() {
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -722,6 +870,13 @@ impl KovvbojShell {
                             ui.close();
                         }
                     });
+
+                    if let Some(job) = busy.lock().ok().and_then(|b| b.clone()) {
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new(job).size(11.0).monospace().color(amber()),
+                        );
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
@@ -1045,4 +1200,161 @@ mod tests {
         let bottom_margin = crate::ui::drag_edge_scroll_delta(480.0, 100.0, 500.0);
         assert!(bottom_edge > bottom_margin && bottom_margin > 0.0);
     }
+}
+
+/// A workspace is a directory, so name it by that directory. A dot-directory
+/// (`.kovvboj`) is named for the project folder holding it — the hidden name is
+/// the same for every set.
+fn workspace_label(dir: &std::path::Path) -> String {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
+    match dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+        Some(parent) if name.starts_with('.') => format!("{parent}/{name}"),
+        _ => name.to_string(),
+    }
+}
+
+/// Ask for a folder off the render thread; the result lands in `pending` for
+/// the next frame to apply. A modal dialog on the UI thread would freeze the
+/// output for as long as it is open.
+fn pick_workspace_dir(
+    action: WorkspaceAction,
+    title: &str,
+    pending: &Arc<Mutex<Option<(WorkspaceAction, std::path::PathBuf)>>>,
+    ctx: &egui::Context,
+) {
+    let pending = pending.clone();
+    let ctx = ctx.clone();
+    let title = title.to_string();
+    std::thread::spawn(move || {
+        if let Some(dir) = rfd::FileDialog::new().set_title(&title).pick_folder() {
+            if let Ok(mut guard) = pending.lock() {
+                *guard = Some((action, dir));
+            }
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show in Explorer"
+    } else {
+        "Open Folder"
+    }
+}
+
+fn reveal(dir: &std::path::Path) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
+        log::warn!("[Workspace] could not reveal {}: {}", dir.display(), e);
+    }
+}
+
+/// The set's name — the workspace folder, or the project folder holding it when
+/// the workspace is the hidden `.kovvboj` inside one.
+fn set_name(dir: &std::path::Path) -> String {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("set");
+    if name.starts_with('.') {
+        return dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("set")
+            .to_string();
+    }
+    name.to_string()
+}
+
+/// Ask where to write a bundle. The pack itself waits for the next frame, which
+/// has the app state needed to save the live set first.
+fn export_dialog(
+    dir: &std::path::Path,
+    pending: &Arc<Mutex<Option<(WorkspaceAction, std::path::PathBuf)>>>,
+    ctx: &egui::Context,
+) {
+    let pending = pending.clone();
+    let ctx = ctx.clone();
+    let name = format!("{}.kovvbojset", set_name(dir));
+    std::thread::spawn(move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Export Set")
+            .add_filter("KOVVBOJ set", &["kovvbojset"])
+            .set_file_name(&name)
+            .save_file()
+        {
+            if let Ok(mut guard) = pending.lock() {
+                *guard = Some((WorkspaceAction::Export, path));
+            }
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// Pack in the background — a set with video in it is gigabytes, and the render
+/// thread has frames to draw. The result is only a log line; failure leaves the
+/// live set untouched.
+#[cfg(feature = "mixer")]
+fn export_set(
+    workspace: std::path::PathBuf,
+    out: std::path::PathBuf,
+    busy: &Arc<Mutex<Option<String>>>,
+    ctx: &egui::Context,
+) {
+    let busy = busy.clone();
+    let ctx = ctx.clone();
+    *busy.lock().unwrap_or_else(|e| e.into_inner()) = Some("exporting set…".to_string());
+    std::thread::spawn(move || {
+        if let Err(e) = crate::persistence::bundle::export(&workspace, &out) {
+            log::warn!("[Bundle] export failed: {e}");
+        }
+        *busy.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        ctx.request_repaint();
+    });
+}
+
+/// Pick a bundle, unpack it beside itself, and queue the result to be opened —
+/// an imported set you then have to go and find would be half a feature.
+#[cfg(feature = "mixer")]
+fn import_dialog(
+    pending: &Arc<Mutex<Option<(WorkspaceAction, std::path::PathBuf)>>>,
+    busy: &Arc<Mutex<Option<String>>>,
+    ctx: &egui::Context,
+) {
+    let pending = pending.clone();
+    let busy = busy.clone();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let Some(archive) = rfd::FileDialog::new()
+            .set_title("Import Set")
+            .add_filter("KOVVBOJ set", &["kovvbojset"])
+            .pick_file()
+        else {
+            return;
+        };
+        *busy.lock().unwrap_or_else(|e| e.into_inner()) = Some("importing set…".to_string());
+        ctx.request_repaint();
+        match crate::persistence::bundle::import(&archive) {
+            Ok(dir) => {
+                if let Ok(mut guard) = pending.lock() {
+                    *guard = Some((WorkspaceAction::Open, dir));
+                }
+            }
+            Err(e) => log::warn!("[Bundle] import failed: {e}"),
+        }
+        *busy.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        ctx.request_repaint();
+    });
 }

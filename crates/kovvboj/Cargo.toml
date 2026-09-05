@@ -50,6 +50,7 @@ env_logger     = "0.11"
 image          = { workspace = true }
 notify         = "8.0"
 rustjay-laser  = { path = "../rustjay-laser", optional = true }
+dirs           = { workspace = true }
 rfd            = "0.15"
 egui           = { workspace = true, optional = true }
 winit          = { workspace = true }

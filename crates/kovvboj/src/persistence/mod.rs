@@ -11,6 +11,10 @@
 use crate::scene::Scene;
 use std::path::{Path, PathBuf};
 
+/// Export/import a whole set as one file.
+#[cfg(feature = "mixer")]
+pub mod bundle;
+
 /// Workspace loader/saver.
 #[derive(Clone)]
 pub struct Workspace {
@@ -387,4 +391,68 @@ pub fn default_workspace() -> Workspace {
         return Workspace::new(".varda");
     }
     Workspace::new(".kovvboj")
+}
+
+/// Recently opened workspaces, newest first.
+///
+/// Global rather than per-workspace — a list that vanished when you switched
+/// sets would be useless. Lives beside the engine's own config, not in any
+/// `.kovvboj/`.
+fn recent_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("rustjay").join("kovvboj-recent.json"))
+}
+
+pub fn load_recent() -> Vec<PathBuf> {
+    recent_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|j| serde_json::from_str::<Vec<PathBuf>>(&j).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect()
+}
+
+/// Move `dir` to the front of the list, capped at eight.
+fn promote(list: &mut Vec<PathBuf>, dir: &Path) {
+    list.retain(|p| p != dir);
+    list.insert(0, dir.to_path_buf());
+    list.truncate(8);
+}
+
+pub fn push_recent(dir: &Path) {
+    let Some(path) = recent_path() else { return };
+    let mut list = load_recent();
+    promote(&mut list, dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&list) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+pub fn clear_recent() {
+    if let Some(path) = recent_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_promotes_and_caps() {
+        let mut list = Vec::new();
+        for i in 0..10 {
+            promote(&mut list, Path::new(&format!("/sets/{i}")));
+        }
+        assert_eq!(list.len(), 8);
+        assert_eq!(list[0], PathBuf::from("/sets/9"));
+
+        // Re-opening an old set moves it up rather than duplicating it.
+        promote(&mut list, Path::new("/sets/5"));
+        assert_eq!(list[0], PathBuf::from("/sets/5"));
+        assert_eq!(list.iter().filter(|p| p.ends_with("5")).count(), 1);
+    }
 }
