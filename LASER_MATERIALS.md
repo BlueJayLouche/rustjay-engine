@@ -1,19 +1,18 @@
 # MadMapper Laser Materials
 
-Notes for picking this up later. Nothing here is implemented — the MadMapper
-*Materials* dialect landed in `rustjay-isf` (commits `d98285c`, `5546b9f`,
-`6246c6e`, 599/638 of that corpus compiling); laser materials are a separate
-thing that happens to share the header format.
+Built, except for hardware verification and one wiring line. This replaces the
+earlier planning version of this file, which got several things wrong — see
+[What I had wrong](#what-i-had-wrong).
 
-Source of truth: [madmappersoftware/MadMapper-Materials][repo], Apache-2.0.
-`LaserMaterialsDoc.md` in that repo is the spec and is unusually complete —
-read it first, it answers most of what follows.
+Spec: [madmappersoftware/MadMapper-Materials][repo], Apache-2.0.
+`LaserMaterialsDoc.md` there is unusually complete and answers most questions
+this file does not.
 
 [repo]: https://github.com/madmappersoftware/MadMapper-Materials
 
-## The thing to understand first
+## What a laser material is
 
-A laser material is not a pixel shader. It is a **path generator**.
+Not a pixel shader — a path generator.
 
 ```glsl
 void laserMaterialFunc(int pointNumber, int pointCount,
@@ -21,124 +20,123 @@ void laserMaterialFunc(int pointNumber, int pointCount,
                        out int shapeNumber, out vec4 userData)
 ```
 
-It is invoked once per *sample point* — `POINT_COUNT` of them, 8192 by default —
-and each invocation emits one point on a 2D path: position in −1..1, a colour,
-and a `shapeNumber` that starts a new path whenever it changes from the previous
-sample. Alpha is ignored; you cannot composite a laser beam.
+Called once per *sample point*, emitting one point of a 2D path: position in
+−1..1, a colour, and a `shapeNumber` that starts a new stroke whenever it
+changes. Alpha is ignored — you cannot composite a beam. 12 of MadMapper's 109
+use `vectorMaterialFunc`, the same minus `userData`.
 
-12 of the 109 shaders use `vectorMaterialFunc` instead, identical minus the
-`userData` out-parameter.
-
-## Where it stands today
-
-Running MadMapper's own `LaserMaterials/` through the current pipeline:
+MadMapper documents the texture it writes into, and it falls out of an ordinary
+fragment pass:
 
 ```
+target: POINT_COUNT wide × 3 tall, Rgba32Float
+  row 0:  rg = pos (−1..1),  b = shapeNumber
+  row 1:  rgba = colour
+  row 2:  userData → next frame's mm_LastFrameData
+```
+
+`gl_FragCoord.x` is the point number, `.y` picks the row. `RENDERSIZE.x` is the
+point count, which is how the host tells the shader its budget.
+
+## Status
+
+| | where | state |
+|---|---|---|
+| Dialect (entry point, bounds, `RENDER_SETTINGS`, shape library) | `rustjay-isf` | done — **98/109 compile**, was 1 |
+| Render, ping-pong, readback, budget | `rustjay-laser` | done |
+| Optimiser (blanking, corner dwell, stroke repeats) | `rustjay-laser::optimise` | done, **values unverified** |
+| Safety (arm, blackout, scan-fail) | `rustjay-laser::safety` | done, **thresholds unverified** |
+| DAC transport | `rustjay-laser::dac` | done, **never run against hardware** |
+| Preview panel | `kovvboj::ui::laser_tab` | done, **not wired into the shell** |
+
+Commits: `fc9b25c` (dialect), `0b9000a` (crate), `f5ab27d` (transport + panel).
+
+## The one thing left to wire
+
+`LaserTab` is written and compiles but nothing constructs it, because
+`shell.rs` was mid-edit. Three lines when that lands:
+
+1. a field on `KovvbojShell` — `laser: LaserTab`, built with `LaserTab::new()`;
+2. a `VIEW_TABS` entry drawing it through `tab(&mut self.laser, …)`;
+3. `self.laser.pump(device, queue, encoder, &engine, quad, sampler)` once per
+   frame from the render hook in `lib.rs`.
+
+Build with `--features laser` (pipeline + preview) or `--features laser-dac`
+(adds hardware). Neither is on by default: `laser-dac` pulls libusb and CMake.
+
+## Decisions, and why
+
+| Decision | Why |
+|---|---|
+| `laser-dac` over `nannou_laser` | Helios, Ether Dream, IDN, LaserCube vs. Ether Dream only. Costs us the within-frame optimiser, which nannou has and laser-dac does not. |
+| Default features off | Its `default` adds an audio backend and ASIO, which wants the Steinberg SDK on Windows. Narrowed to the four DACs. |
+| Minimal optimiser, ours | The shader already controls point density along the path and `shapeNumber` says where the jumps are, so most of MadMapper's nine knobs have nothing to compute. Three are implemented. |
+| Parallel pipeline, not a mixer source | Laser materials generate geometry; they never enter a channel or FX chain. |
+| Dedicated preview panel | The only way to develop without hardware, and you cannot aim a laser to find out what a shader does. |
+| Budget = pps ÷ refresh, capped by `POINT_COUNT` | At 30 kpps, MadMapper's default 8192 points redraws at 3.7 Hz. All 109 materials divide by the count they're handed, so a smaller budget draws the same shape at lower density. |
+| Budget fixed at load | It is the target's width, and feedback materials index history by it. Retune reallocates and clears history — deliberate, never mid-set. |
+| Generators as accumulators, not `TIME × speed` | `effect.rs` already documents why: the multiply jumps when the speed changes, which is the discontinuity generators exist to prevent. |
+| `Vec<LaserDeck>`, one shown | The save format is the expensive thing to change later; the UI is not. |
+| Reuse `IsfEffect` | Generators, parameters, uniform packing and hot reload come free. It needed three hooks: offscreen size, offscreen format, and `mm_LastFrameData` as the primary texture. |
+
+**IDN is the interop hedge.** Helios and LaserCube need per-device USB drivers
+and Ether Dream is its own protocol, but IDN is the open standard — so
+[ILDAWaveX16](https://github.com/stanleyondrus/ILDAWaveX16) and the OpenIDN
+world work with no driver of their own. If only one backend ever gets verified
+by hand, make it IDN.
+
+## What is not done
+
+**Hardware.** Nothing here has met a projector. Specifically unverified: whether
+the settling values in `Optimiser` look right on real galvos, whether
+`MIN_LIT_EXTENT` blanks the right frames, and whether ILDAWaveX16's IDN dialect
+matches `laser-dac`'s. The code says so where it is true, rather than implying
+otherwise.
+
+What *was* verified without hardware: the frame decode, the budget arithmetic,
+the optimiser's insertions, the safety gate, and the unit conversion — 33 tests
+in `rustjay-laser`, plus 98/109 of the corpus compiling.
+
+**`auto_all.glsl`** — 9 of the 109. Not a library: MadMapper generates a copy
+per material, ships it inside the material's folder, and it carries **its own
+ISF header declaring inputs**. Supporting it needs includes resolved relative to
+the shader's directory (`compile()` currently takes `&str`, never a path) and a
+header-merge pass, and it reopens the property in `resolve_include` that a
+shader cannot reach the filesystem. Deferred deliberately; the 9 fail with a
+message naming what is missing.
+
+**2 shaders** are documentation templates with prose where the header goes.
+Correctly unsupported.
+
+**The other six `RENDER_SETTINGS`** — `MAX_SPEED`, `PRESERVE_ORDER`, the dwell
+thresholds, the repeats and fades. Parsed where the corpus sets them, honoured
+only for `ANGLE_OPTIMIZATION` and `SKIP_BLACK`. Add them when a real beam looks
+wrong, and `nannou_laser`'s Abderyim implementation is the reference if the
+minimal optimiser stops being enough.
+
+## What I had wrong
+
+The planning version of this file, written before any of it was built:
+
+- **"The output half is a project — ILDA, path optimisation, safety."** Most of
+  it exists: `laser-dac` handles five DAC families and the between-frame work.
+  What was left was unit conversion, a minimal optimiser and the gate.
+- **"`MadLaserMaterialShapeLibrary.glsl` is one line away."** True, and nearly
+  pointless — 2 of 109 include it. `MadNoise` (75) and `MadCommon` (66) were
+  the ones that mattered, and both were already vendored.
+- **"`auto_all.glsl` is not bundled."** It is not a library at all. It ships per
+  material and carries its own header.
+- **The scan-fail measure.** The plan said path length; a beam scribbling
+  tightly in one place has plenty of path length and concentrates just as much
+  energy on one spot. It measures the extent of the lit points instead.
+
+## Measuring
+
+```sh
+# Corpus pass rate and what the failures are
 MM_CORPUS_DIR=<checkout>/LaserMaterials \
   cargo test -p rustjay-isf --test zz_mm_corpus -- --nocapture
+
+# The merged GLSL, when shaderc cites a line that exists nowhere on disk
+ISF_DUMP_GLSL=1 cargo test -p rustjay-isf --test laser
 ```
-
-**1 of 109 compiles.** What the other 108 trip over:
-
-| n | failure | what it is |
-|---|---|---|
-| 46 | missing entry point | no `main`; needs the `laserMaterialFunc` bridge |
-| 42 | `expected an array of length 2` | a `point2D` input with scalar `MIN`/`MAX` |
-| 8 | `auto_all.glsl` not bundled | MadMapper live-coding aggregate, not in the published `Libraries/` |
-| 7 | undeclared identifier | unexamined |
-| 2 | `MadLaserMaterialShapeLibrary.glsl` | published, just not vendored yet |
-| 2 | header JSON | unexamined |
-| 1 | overload | unexamined |
-
-Note the 42: that is the same shape as the `floatRange` broadcast already in
-`header::repair` — a scalar written where a 2-vector is wanted. Widening
-`widen_float_range` into a general "broadcast a scalar bound to the arity the
-type wants" is a handful of lines and would be the cheapest win on the board.
-
-I said earlier that `MadLaserMaterialShapeLibrary.glsl` was "one line away".
-True, and nearly pointless: 2 of 109 shaders include it. The includes that
-actually matter are `MadNoise.glsl` (75) and `MadCommon.glsl` (66), both
-already vendored.
-
-## How it maps onto this pipeline
-
-Better than expected. `LaserMaterialsDoc.md` documents the output texture
-layout exactly, and it falls out of a normal fragment pass:
-
-```
-target: POINT_COUNT wide × 3 tall, float
-  row 0:  rg = pos (−1..1),  b = shapeNumber,  a = 0
-  row 1:  rgba = colour
-  row 2:  rgba = userData
-```
-
-So `gl_FragCoord.x` is `pointNumber` and `gl_FragCoord.y` selects which of the
-three rows this fragment is writing. One shader, one draw, no MRT — the bridge
-calls `laserMaterialFunc` once and then selects the output by row:
-
-```glsl
-void main() {
-    int pointNumber = int(gl_FragCoord.x);
-    vec2 pos; vec4 color; int shapeNumber; vec4 userData;
-    laserMaterialFunc(pointNumber, POINT_COUNT, pos, color, shapeNumber, userData);
-    int row = int(gl_FragCoord.y);
-    FragColor = row == 0 ? vec4(pos, float(shapeNumber), 0.0)
-              : row == 1 ? color
-              : userData;
-}
-```
-
-`mm_LastFrameData` — used by 97 of the 109 — is simply the previous frame's
-version of that texture, read with `texelFetch(mm_LastFrameData, ivec2(pointNumber, row), 0)`.
-That is a ping-pong of the render target, which this codebase already does
-elsewhere; mind the generation-change invalidation gotcha that bit the channel
-output path.
-
-## Work items, in order
-
-1. **Scalar-bound broadcast in `header::repair`.** Unblocks 42. Cheapest thing here.
-2. **`laserMaterialFunc` / `vectorMaterialFunc` bridge** in `compile.rs`, alongside
-   `has_material_fn`. Needs `POINT_COUNT` from `RENDER_SETTINGS` (read it the way
-   `header::generators` reads `GENERATORS` — `isf::Isf` has nowhere to put it either).
-   Unblocks 46.
-3. **Vendor `MadLaserMaterialShapeLibrary.glsl`** — one line in `LIBRARIES`. Unblocks 2.
-4. **Render target + ping-pong** for the 3-row float texture and `mm_LastFrameData`.
-   This is where it stops being a shader change: the ISF effect path assumes an
-   image-shaped target sized to the output resolution.
-5. **Readback and the actual output.** See below.
-
-Generators already work and 95 of the 109 use them, so that carries over free.
-
-## The part that is not shader work
-
-Steps 1–4 get you a texture full of path data. Nothing in this repo can do
-anything with it yet.
-
-- **Getting it off the GPU.** A per-frame readback of POINT_COUNT×3 floats at
-  laser frame rate. `rustjay-lighting` has no equivalent; the DMX path builds
-  its frames on the CPU.
-- **Protocol.** ILDA is the wire format; the usual consumer DACs are Ether Dream
-  (Ethernet) and Helios (USB). None of them are sACN/Art-Net, so `rustjay-lighting`
-  is a neighbour, not a home — likely a `rustjay-laser` crate.
-- **Path optimisation.** `RENDER_SETTINGS` carries `MAX_SPEED`, `ANGLE_OPTIMIZATION`,
-  `ANGLE_THRESHOLD`, `FIRST_POINT_REPEAT`, `LAST_POINT_REPEAT`, `POLY_FADE_IN`,
-  `SKIP_BLACK`, `PRESERVE_ORDER`, `MIN_ILDA_POINTS_PER_POLYLINE`. These are not
-  shader concerns at all — they describe how the host reorders and paces the
-  path so real galvanometers can track it without overshooting. A laser output
-  that ignores them will look wrong and can be hard on the hardware.
-- **Safety.** Worth saying out loud before any of this drives a real projector.
-
-**So the honest sizing:** the dialect work is a day and mostly mirrors what is
-already in `compile.rs`. The output path is a project, and it only pays off if
-there is a laser on the other end of it. If the goal is just to *see* these
-shaders, step 4 can render the paths as lines into an ordinary texture and skip
-the entire second half.
-
-## Preview without a laser
-
-A cheap intermediate worth considering: after step 2, draw the point list as a
-line strip into a normal texture — break the strip wherever `shapeNumber`
-changes — and it becomes an ordinary visual source in kovvboj. That turns 100+
-MadMapper laser materials into vector-looking generators with none of the DAC,
-protocol, or safety work, and it is a reasonable place to stop unless real laser
-output is the point.
