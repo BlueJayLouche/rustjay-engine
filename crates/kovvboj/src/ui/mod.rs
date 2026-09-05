@@ -31,11 +31,12 @@ pub fn next_recording_path() -> String {
 /// is reachable from MIDI, OSC and modulation like every other control.
 pub const MASTER_DIM: &str = "master_dim";
 
-#[cfg(feature = "webcam")]
+// Not gated on `webcam`: a laser deck renders paths and streams them to a DAC,
+// which has nothing to do with a camera. Only the calibration wizard inside
+// wants one, and it carries its own `webcam` gate.
 #[cfg(feature = "laser")]
 pub mod laser_tab;
 pub mod ledmap_tab;
-#[cfg(feature = "webcam")]
 #[cfg(feature = "laser")]
 pub use laser_tab::LaserTab;
 pub use ledmap_tab::LedMapTab;
@@ -117,13 +118,30 @@ pub enum StageLayer {
     Surfaces,
     /// LED placement, lighting segment regions, fixture patch.
     Lighting,
+    /// Laser decks: the scan region's placement, and the deck controls.
+    ///
+    /// A laser is a third output domain, not a third kind of surface — it
+    /// generates vector paths and streams them to a DAC, never entering the
+    /// raster pipeline. What it shares with the other two is only *where it
+    /// points*, which is what the canvas is for.
+    Lasers,
 }
 
 // Only the projection build draws the layer tabs.
 #[cfg(feature = "projection")]
 impl StageLayer {
-    const ALL: [(Self, &'static str); 2] =
-        [(Self::Surfaces, "SURFACES"), (Self::Lighting, "LIGHTING")];
+    // A slice rather than a fixed array: whether LASERS is offered depends on
+    // the `laser` feature, and the variant exists either way so the match arms
+    // below need no cfg of their own.
+    #[cfg(feature = "laser")]
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::Surfaces, "SURFACES"),
+        (Self::Lighting, "LIGHTING"),
+        (Self::Lasers, "LASERS"),
+    ];
+    #[cfg(not(feature = "laser"))]
+    const ALL: &'static [(Self, &'static str)] =
+        &[(Self::Surfaces, "SURFACES"), (Self::Lighting, "LIGHTING")];
 }
 
 /// Stage tab — 2D surface editor, warp handles, import.
@@ -148,6 +166,9 @@ pub struct StageTab {
     /// Whether the LED placement quad is being dragged by its body.
     #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
     drag_led: bool,
+    /// Whether the laser scan region is being dragged by its body.
+    #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+    drag_laser: bool,
     /// Surface being dragged by its body, latched on drag start.
     ///
     /// Latched rather than re-hit-tested each frame: a quick drag outruns the
@@ -184,6 +205,8 @@ impl StageTab {
             layer: StageLayer::default(),
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             drag_led: false,
+            #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
+            drag_laser: false,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
             drag_surface: None,
             #[cfg(all(feature = "mixer", feature = "egui", feature = "projection"))]
@@ -2850,12 +2873,20 @@ mod egui_impl {
                     // The heading sits outside the scroll area, or it scrolls
                     // away and the pane loses its label the moment you look at
                     // anything below the fold.
-                    if self.layer == StageLayer::Lighting {
-                        ui.label(egui::RichText::new("Lighting").heading())
-                            .on_hover_text("sACN / Art-Net outputs, segments and fixture profiles");
-                    } else {
-                        ui.label(egui::RichText::new("Geometry").heading())
-                            .on_hover_text("Properties of the selected surface");
+                    match self.layer {
+                        StageLayer::Lighting => {
+                            ui.label(egui::RichText::new("Lighting").heading()).on_hover_text(
+                                "sACN / Art-Net outputs, segments and fixture profiles",
+                            );
+                        }
+                        StageLayer::Lasers => {
+                            ui.label(egui::RichText::new("Lasers").heading())
+                                .on_hover_text("Laser decks, scan region and DAC output");
+                        }
+                        StageLayer::Surfaces => {
+                            ui.label(egui::RichText::new("Geometry").heading())
+                                .on_hover_text("Properties of the selected surface");
+                        }
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("stage_inspector_scroll")
@@ -2864,12 +2895,19 @@ mod egui_impl {
                         // column, so its bar landed mid-window instead of on the
                         // pane's right edge.
                         .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if self.layer == StageLayer::Lighting {
-                                draw_lighting_outputs(ui, state);
-                            } else {
-                                draw_surface_properties(ui, state);
+                        .show(ui, |ui| match self.layer {
+                            StageLayer::Lighting => draw_lighting_outputs(ui, state),
+                            StageLayer::Lasers => {
+                                #[cfg(feature = "laser")]
+                                {
+                                    draw_laser_placement(ui, state);
+                                    ui.separator();
+                                    state.laser.ui(ui);
+                                }
+                                #[cfg(not(feature = "laser"))]
+                                ui.label("Laser decks need the `laser` feature.");
                             }
+                            StageLayer::Surfaces => draw_surface_properties(ui, state),
                         });
                 });
 
@@ -3098,6 +3136,7 @@ mod egui_impl {
             let layer = &mut self.layer;
             let self_drag_surface_slot = &mut self.drag_surface;
             let self_drag_led_slot = &mut self.drag_led;
+            let self_drag_laser_slot = &mut self.drag_laser;
             let selected_light_segment = &mut self.selected_light_segment;
 
             // Circle radii are normalized against the canvas width, so every
@@ -3114,7 +3153,7 @@ mod egui_impl {
             // One canvas, one live layer. The inactive layer stays drawn so you
             // can place against it, but does not respond to clicks.
             ui.horizontal(|ui| {
-                for (l, label) in StageLayer::ALL {
+                for &(l, label) in StageLayer::ALL {
                     let text = egui::RichText::new(label).size(13.0);
                     if ui.selectable_label(*layer == l, text).clicked() {
                         *layer = l;
@@ -4038,6 +4077,132 @@ mod egui_impl {
                     }
                 }
 
+                // ── Laser scan region ───────────────────────────────────────
+                // Visible from every layer, because the point of drawing it on
+                // the video canvas at all is to see the beam against the
+                // surfaces it plays over. Draggable only from LASERS.
+                let lasers_live = *layer == StageLayer::Lasers;
+                let mut laser_moved = false;
+                if let Some(place) = state.stage.laser_placement.as_mut() {
+                    let to_screen = |p: [f32; 2]| {
+                        Pos2::new(
+                            canvas_rect.min.x + p[0] * canvas_rect.width(),
+                            canvas_rect.min.y + p[1] * canvas_rect.height(),
+                        )
+                    };
+                    let dim = |c: Color32| if lasers_live { c } else { c.gamma_multiply(0.35) };
+
+                    // The live path, drawn where it would land. Blanked points
+                    // are the beam travelling, not drawing, so they are skipped
+                    // — showing them here would draw a cage the laser does not.
+                    #[cfg(feature = "laser")]
+                    if place.show_path {
+                        let quad = place.quad;
+                        state.laser.with_preview(|frame| {
+                            for w in frame.points.windows(2) {
+                                if w[0].is_blank() || w[0].shape != w[1].shape {
+                                    continue;
+                                }
+                                painter.line_segment(
+                                    [
+                                        to_screen(crate::stage::quad_map(&quad, w[0].x, w[0].y)),
+                                        to_screen(crate::stage::quad_map(&quad, w[1].x, w[1].y)),
+                                    ],
+                                    Stroke::new(
+                                        1.0,
+                                        dim(Color32::from_rgb(
+                                            (w[0].r * 255.0) as u8,
+                                            (w[0].g * 255.0) as u8,
+                                            (w[0].b * 255.0) as u8,
+                                        )),
+                                    ),
+                                );
+                            }
+                        });
+                    }
+
+                    let outline = dim(Color32::from_rgb(255, 90, 160));
+                    let mut corners = [Pos2::ZERO; 4];
+                    for i in 0..4 {
+                        corners[i] = to_screen(place.quad[i]);
+                    }
+                    for i in 0..4 {
+                        painter.line_segment(
+                            [corners[i], corners[(i + 1) % 4]],
+                            Stroke::new(1.0, outline),
+                        );
+                    }
+                    painter.text(
+                        corners[0] + Vec2::new(4.0, 4.0),
+                        egui::Align2::LEFT_TOP,
+                        "LASER",
+                        egui::FontId::proportional(10.0),
+                        outline,
+                    );
+
+                    if lasers_live {
+                        for (i, pos) in corners.into_iter().enumerate() {
+                            let hr = ui.interact(
+                                Rect::from_center_size(pos, Vec2::splat(12.0)),
+                                ui.id().with(("laser_quad_handle", i)),
+                                egui::Sense::drag(),
+                            );
+                            let col = if hr.dragged() {
+                                Color32::from_rgb(255, 90, 160)
+                            } else if hr.hovered() {
+                                Color32::WHITE
+                            } else {
+                                Color32::from_rgb(220, 130, 175)
+                            };
+                            painter.circle_filled(pos, 5.0, col);
+                            if hr.dragged() {
+                                handle_dragged = true;
+                                place.quad[i][0] = (place.quad[i][0]
+                                    + hr.drag_delta().x / canvas_rect.width())
+                                .clamp(0.0, 1.0);
+                                place.quad[i][1] = (place.quad[i][1]
+                                    + hr.drag_delta().y / canvas_rect.height())
+                                .clamp(0.0, 1.0);
+                            }
+                        }
+
+                        let norm = |pos: Pos2| {
+                            [
+                                (pos.x - canvas_rect.min.x) / canvas_rect.width(),
+                                (pos.y - canvas_rect.min.y) / canvas_rect.height(),
+                            ]
+                        };
+                        if let Some(pos) = response.hover_pos()
+                            && !handle_dragged
+                            && place.contains(norm(pos))
+                        {
+                            ui.ctx().set_cursor_icon(if *self_drag_laser_slot {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            });
+                        }
+                        if response.drag_started() && !handle_dragged {
+                            *self_drag_laser_slot = response
+                                .interact_pointer_pos()
+                                .is_some_and(|pos| place.contains(norm(pos)));
+                        }
+                        if *self_drag_laser_slot && response.dragged() {
+                            let d = response.drag_delta();
+                            place.translate(
+                                d.x / canvas_rect.width(),
+                                d.y / canvas_rect.height(),
+                            );
+                        }
+                        if response.drag_stopped() && std::mem::take(self_drag_laser_slot) {
+                            laser_moved = true;
+                        }
+                    }
+                }
+                if laser_moved {
+                    state.save_workspace();
+                }
+
                 // ── Lighting region overlay ──────────────────────────────────
                 if *layer == StageLayer::Lighting {
                     let mut light_region_dragged = false;
@@ -4251,6 +4416,101 @@ mod egui_impl {
     // ─────────────────────────────────────────────────────────────────────────
     // Lighting patch — rendered on the Stage tab's LIGHTING layer.
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Scan-region placement, on the LASERS layer.
+    ///
+    /// Placement is only a preview: it says where on the video canvas the beam
+    /// is, so it can be judged against the surfaces it plays over. What the
+    /// galvos actually receive is corrected by the deck's own geometry, below.
+    #[cfg(all(feature = "projection", feature = "laser"))]
+    fn draw_laser_placement(ui: &mut egui::Ui, state: &mut KovvbojAppState) {
+        ui.label(egui::RichText::new("Scan region").strong());
+        let mut remove = false;
+        let mut dirty = false;
+
+        // Placement is only the canvas preview. The correction below is a
+        // separate thing and stays editable whether or not this is placed.
+        if state.stage.laser_placement.is_none() {
+            if ui.button("+ Place on canvas").clicked() {
+                state.stage.laser_placement = Some(crate::stage::LaserPlacement::default());
+                dirty = true;
+            }
+            ui.label(
+                egui::RichText::new("Unplaced — the beam has nowhere to be drawn against.")
+                    .size(11.0)
+                    .weak(),
+            );
+        }
+        if let Some(place) = state.stage.laser_placement.as_mut() {
+            if ui.checkbox(&mut place.show_path, "Draw the live path").changed() {
+                dirty = true;
+            }
+            ui.label(
+                egui::RichText::new("Drag the pink corners on the canvas to place / warp.")
+                    .size(11.0)
+                    .weak(),
+            );
+            if ui.button("Reset placement").clicked() {
+                place.quad = crate::stage::LaserPlacement::default().quad;
+                dirty = true;
+            }
+            if ui.button("Remove").clicked() {
+                remove = true;
+            }
+        }
+        if remove {
+            state.stage.laser_placement = None;
+            dirty = true;
+        }
+        // ── Corner-pin over the scan field ──────────────────────────────
+        // Owned here, not on the deck: a deck is rebuilt from its shader every
+        // session, and a calibration has to outlive that.
+        ui.separator();
+        ui.label(egui::RichText::new("Field correction").strong());
+        ui.label(
+            egui::RichText::new(
+                "Applied after the optimiser and before the safety gate, so what the \
+                 gate judges is what the galvos receive.",
+            )
+            .size(11.0)
+            .weak(),
+        );
+
+        // A finished calibration hands its answer up rather than writing the
+        // deck, so there is one owner of this value and it is the saved one.
+        #[cfg(all(feature = "laser-dac", feature = "webcam"))]
+        if let Some(solved) = state.laser.take_calibration() {
+            state.stage.laser_field = solved.corners;
+            dirty = true;
+        }
+
+        for (i, label) in ["TL", "TR", "BR", "BL"].iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(*label);
+                for axis in 0..2 {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut state.stage.laser_field[i][axis])
+                                .speed(0.005)
+                                .range(-1.0..=1.0)
+                                .fixed_decimals(3),
+                        )
+                        .changed()
+                    {
+                        dirty = true;
+                    }
+                }
+            });
+        }
+        if ui.button("Reset to full field").clicked() {
+            state.stage.laser_field = rustjay_laser::geometry::FULL_FIELD;
+            dirty = true;
+        }
+
+        if dirty {
+            state.save_workspace();
+        }
+    }
 
     /// The LIGHTING layer's list: the placeable LED surface.
     ///

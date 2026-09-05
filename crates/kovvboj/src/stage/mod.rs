@@ -260,41 +260,114 @@ pub struct LedSurface {
     pub points: Vec<[f32; 2]>,
 }
 
-impl LedSurface {
-    /// Whether a normalized canvas point falls inside the placement quad.
-    ///
-    /// A real point-in-polygon test rather than a bounding box: the quad is
-    /// explicitly warpable, and on a steeply keystoned one its box covers a lot
-    /// of canvas the strip is nowhere near.
-    pub fn contains(&self, p: [f32; 2]) -> bool {
-        let mut inside = false;
-        let mut j = self.quad.len() - 1;
-        for i in 0..self.quad.len() {
-            let (a, b) = (self.quad[i], self.quad[j]);
-            if (a[1] > p[1]) != (b[1] > p[1])
-                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
-            {
-                inside = !inside;
-            }
-            j = i;
+/// Whether a normalized canvas point falls inside a placement quad.
+///
+/// A real point-in-polygon test rather than a bounding box: placement quads are
+/// explicitly warpable, and on a steeply keystoned one the box covers a lot of
+/// canvas the thing itself is nowhere near.
+pub fn quad_contains(quad: &[[f32; 2]; 4], p: [f32; 2]) -> bool {
+    let mut inside = false;
+    let mut j = 3;
+    for i in 0..4 {
+        let (a, b) = (quad[i], quad[j]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
         }
-        inside
+        j = i;
+    }
+    inside
+}
+
+/// Move a placement quad, clamped to stay on the canvas.
+pub fn quad_translate(quad: &mut [[f32; 2]; 4], dx: f32, dy: f32) {
+    let min_x = quad.iter().fold(f32::MAX, |m, c| m.min(c[0]));
+    let min_y = quad.iter().fold(f32::MAX, |m, c| m.min(c[1]));
+    let max_x = quad.iter().fold(f32::MIN, |m, c| m.max(c[0]));
+    let max_y = quad.iter().fold(f32::MIN, |m, c| m.max(c[1]));
+    // A quad already spanning the canvas has no legal room; clamp to a no-op
+    // rather than letting the bounds invert.
+    let dx = dx.clamp((-min_x).min(0.0), (1.0 - max_x).max(0.0));
+    let dy = dy.clamp((-min_y).min(0.0), (1.0 - max_y).max(0.0));
+    for c in quad.iter_mut() {
+        c[0] += dx;
+        c[1] += dy;
+    }
+}
+
+impl LedSurface {
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        quad_contains(&self.quad, p)
     }
 
-    /// Move the whole placement quad, clamped to stay on the canvas.
     pub fn translate(&mut self, dx: f32, dy: f32) {
-        let min_x = self.quad.iter().fold(f32::MAX, |m, c| m.min(c[0]));
-        let min_y = self.quad.iter().fold(f32::MAX, |m, c| m.min(c[1]));
-        let max_x = self.quad.iter().fold(f32::MIN, |m, c| m.max(c[0]));
-        let max_y = self.quad.iter().fold(f32::MIN, |m, c| m.max(c[1]));
-        // A quad already spanning the canvas has no legal room; clamp to a
-        // no-op rather than letting the bounds invert.
-        let dx = dx.clamp((-min_x).min(0.0), (1.0 - max_x).max(0.0));
-        let dy = dy.clamp((-min_y).min(0.0), (1.0 - max_y).max(0.0));
-        for c in self.quad.iter_mut() {
-            c[0] += dx;
-            c[1] += dy;
+        quad_translate(&mut self.quad, dx, dy);
+    }
+}
+
+/// Where a laser's scan field sits on the stage canvas.
+///
+/// Purely a placement marker: a laser generates vector paths and streams them
+/// to a DAC, so nothing here enters the raster pipeline. It exists so the beam
+/// can be seen against the surfaces it plays over, which is the one thing the
+/// three output domains genuinely share — where they point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaserPlacement {
+    /// Placement quad on the stage canvas: `[TL, TR, BR, BL]`, normalized.
+    pub quad: [[f32; 2]; 4],
+    /// Draw the live path inside the quad, not just its outline.
+    #[serde(default = "yes")]
+    pub show_path: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The uncorrected scan field, matching `rustjay_laser::geometry::FULL_FIELD`.
+fn full_scan_field() -> [[f32; 2]; 4] {
+    [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+}
+
+impl Default for LaserPlacement {
+    fn default() -> Self {
+        Self {
+            // A middling rectangle rather than the whole canvas: a laser almost
+            // never covers the same area as the video, and a full-canvas default
+            // reads as "already placed" when it has not been.
+            quad: [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
+            show_path: true,
         }
+    }
+}
+
+/// Map a point in a laser's -1..1 scan field onto a canvas quad.
+///
+/// Bilinear is right here and projective is not: this is a preview of roughly
+/// where the beam lands, and the quad's corners are dragged by eye rather than
+/// solved from a measurement. The projective map lives in `rustjay-laser`,
+/// where it corrects the beam itself.
+pub fn quad_map(quad: &[[f32; 2]; 4], x: f32, y: f32) -> [f32; 2] {
+    let (u, v) = ((x + 1.0) * 0.5, (y + 1.0) * 0.5);
+    let top = [
+        quad[0][0] + (quad[1][0] - quad[0][0]) * u,
+        quad[0][1] + (quad[1][1] - quad[0][1]) * u,
+    ];
+    let bottom = [
+        quad[3][0] + (quad[2][0] - quad[3][0]) * u,
+        quad[3][1] + (quad[2][1] - quad[3][1]) * u,
+    ];
+    [top[0] + (bottom[0] - top[0]) * v, top[1] + (bottom[1] - top[1]) * v]
+}
+
+impl LaserPlacement {
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        quad_contains(&self.quad, p)
+    }
+
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        quad_translate(&mut self.quad, dx, dy);
     }
 }
 
@@ -332,6 +405,15 @@ pub struct KovvbojStage {
     /// Optional placeable freeform-LED surface (CV-mapped strip → sACN).
     #[serde(default)]
     pub led_surface: Option<LedSurface>,
+    /// Where the laser's scan field sits on the canvas, when it is placed.
+    #[serde(default)]
+    pub laser_placement: Option<LaserPlacement>,
+    /// Corner-pin over the laser's scan field, in scan-field units (-1..1),
+    /// TL/TR/BR/BL. Owned here rather than on the deck because this is what
+    /// gets saved: a deck is rebuilt from a shader file every session, and a
+    /// hard-won calibration must outlive it.
+    #[serde(default = "full_scan_field")]
+    pub laser_field: [[f32; 2]; 4],
     /// Fixture profile library. Built-in profiles are injected on load if missing.
     #[serde(default)]
     pub fixture_profiles: Vec<FixtureProfile>,
@@ -389,6 +471,8 @@ impl KovvbojStage {
             headless_outputs: Vec::new(),
             lighting_outputs: Vec::new(),
             led_surface: None,
+            laser_placement: None,
+            laser_field: full_scan_field(),
             fixture_profiles: builtin_fixture_profiles(),
             selected_surface_index: 0,
             cached_source_options: Vec::new(),

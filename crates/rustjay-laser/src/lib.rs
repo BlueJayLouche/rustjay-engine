@@ -14,11 +14,14 @@
 /// and CMake, and everything up to the point list works without it.
 #[cfg(feature = "dac")]
 pub mod dac;
+pub mod calibrate;
 pub mod frame;
+pub mod geometry;
 pub mod optimise;
 pub mod safety;
 
 pub use frame::{LaserFrame, LaserPoint};
+pub use geometry::Geometry;
 pub use optimise::Optimiser;
 pub use safety::{Blocked, Safety};
 
@@ -125,6 +128,11 @@ pub struct LaserDeck {
     /// Insertions made on the way out. Seeded from the material's
     /// `RENDER_SETTINGS`, then the operator's to adjust.
     pub optimiser: Optimiser,
+    /// Where the scan field lands in the room. Applied after the optimiser and
+    /// before the gate, so what [`Safety`] judges is what the galvos receive —
+    /// a correction that shrank the picture would otherwise pass a scan-fail
+    /// check it should have failed.
+    pub geometry: Geometry,
     /// The arm gate and scan-fail guard. Disarmed until someone says otherwise.
     pub safety: Safety,
 }
@@ -164,6 +172,7 @@ impl LaserDeck {
             optimised: LaserFrame::default(),
             next_due: None,
             optimiser: Optimiser::default(),
+            geometry: Geometry::identity(),
             safety: Safety::default(),
         })
     }
@@ -271,7 +280,9 @@ impl LaserDeck {
     /// Collect any completed readback. Call once per engine frame.
     pub fn poll(&mut self, device: &wgpu::Device) {
         if let Some(frame) = self.readback.take(device, self.point_count) {
-            self.optimised = self.optimiser.run(&frame);
+            let mut optimised = self.optimiser.run(&frame);
+            self.geometry.apply(&mut optimised);
+            self.optimised = optimised;
             self.latest = frame;
         }
     }
