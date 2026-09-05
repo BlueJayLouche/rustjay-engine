@@ -59,3 +59,10 @@ tasks/
 # snapshot run. The baseline `*.png` files are source; these are output.
 **/tests/snapshots/*.new.png
 **/tests/snapshots/*.diff.png
+
+# Shaders dropped into kovvboj's folder stay local unless deliberately added.
+# gitignore does not touch files already tracked, so the bundled set keeps
+# working normally — this only stops third-party shaders from being committed
+# (and so redistributed) just because they were copied in to try out.
+# To bundle one on purpose: git add -f <path>
+crates/kovvboj/shaders/*.fs
