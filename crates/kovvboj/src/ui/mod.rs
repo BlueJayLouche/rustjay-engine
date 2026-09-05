@@ -32,8 +32,12 @@ pub fn next_recording_path() -> String {
 pub const MASTER_DIM: &str = "master_dim";
 
 #[cfg(feature = "webcam")]
+#[cfg(feature = "laser")]
+pub mod laser_tab;
 pub mod ledmap_tab;
 #[cfg(feature = "webcam")]
+#[cfg(feature = "laser")]
+pub use laser_tab::LaserTab;
 pub use ledmap_tab::LedMapTab;
 
 /// Mixer tab — crossfader, per-channel opacity, master FX.
@@ -202,20 +206,21 @@ impl OutputsTab {
     }
 }
 
-/// Scroll speed (points per frame) while a drag hovers near a list's
-/// top/bottom edge: zero outside the margin, faster the deeper in. Pure so
-/// it is unit-testable; the caller owns actually applying the offset.
+/// Scroll speed (points per frame) while a drag hovers near either end of a
+/// scrollable span: zero outside the edge margins, faster the deeper in.
+/// Axis-agnostic — works for the vertical layer list and the horizontal FX
+/// strips. Pure so it is unit-testable; the caller owns applying the offset.
 #[cfg(all(feature = "mixer", feature = "egui"))]
-pub fn drag_edge_scroll_delta(pointer_y: f32, rect: egui::Rect) -> f32 {
+pub fn drag_edge_scroll_delta(pos: f32, min: f32, max: f32) -> f32 {
     const EDGE: f32 = 36.0;
     const MIN_SPEED: f32 = 4.0;
     const MAX_SPEED: f32 = 14.0;
-    let from_top = pointer_y - rect.top();
-    let from_bottom = rect.bottom() - pointer_y;
-    if (0.0..EDGE).contains(&from_top) {
-        -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_top / EDGE))
-    } else if (0.0..EDGE).contains(&from_bottom) {
-        MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_bottom / EDGE)
+    let from_min = pos - min;
+    let from_max = max - pos;
+    if (0.0..EDGE).contains(&from_min) {
+        -(MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_min / EDGE))
+    } else if (0.0..EDGE).contains(&from_max) {
+        MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (1.0 - from_max / EDGE)
     } else {
         0.0
     }
@@ -482,6 +487,20 @@ mod egui_impl {
         target: crate::ChainRef,
         index: usize,
         payload: ChainDrag,
+    }
+
+    /// The horizontal scroller a chain strip lives in.
+    ///
+    /// A floating scrollbar allocates no space of its own, so it draws across
+    /// the bottom of the chips: reaching for one from below grabs the bar
+    /// instead. Reserve the band it lives in so the two never share pixels.
+    ///
+    /// Sets the style on the calling `ui`, so any later scroller nested in the
+    /// same `ui` inherits it — every one of those is another chain strip.
+    fn strip_scroll(ui: &mut egui::Ui, salt: impl egui::AsIdSalt) -> egui::ScrollArea {
+        let sc = &mut ui.style_mut().spacing.scroll;
+        sc.floating_allocated_width = sc.bar_inner_margin + sc.bar_width;
+        egui::ScrollArea::horizontal().id_salt(salt)
     }
 
     /// A drop gap between chips in a chain strip. While a drag is in flight
@@ -931,8 +950,7 @@ mod egui_impl {
             };
             // Horizontal, and scrolling, exactly as a layer's strip is — the
             // master chain reads as one more signal path, not a list.
-            let out = egui::ScrollArea::horizontal()
-                .id_salt("master_strip")
+            let out = strip_scroll(ui, "master_strip")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         fx_strip(
@@ -1429,8 +1447,7 @@ mod egui_impl {
         });
 
         // The group's own chain: what every member passes through together.
-        egui::ScrollArea::horizontal()
-            .id_salt(("groupstrip", &uuid))
+        strip_scroll(ui, ("groupstrip", &uuid))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let out = fx_strip(
@@ -1762,7 +1779,7 @@ mod egui_impl {
                             });
 
                             // ── Row 2: the signal strip ──────────────────────
-                            egui::ScrollArea::horizontal().id_salt("strip").show(ui, |ui| {
+                            let mut strip = strip_scroll(ui, "strip").show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     let kind = state
                                         .layer_sources
@@ -1819,6 +1836,24 @@ mod egui_impl {
                                     }
                                 });
                             });
+                            // While a chip/library drag is in flight, hovering
+                            // the left/right edge scrolls the strip, so
+                            // off-screen gaps stay reachable as drop targets.
+                            if egui::DragAndDrop::has_payload_of_type::<ChainDrag>(ui.ctx())
+                                && let Some(pos) = ui.ctx().pointer_interact_pos()
+                                && strip.inner_rect.contains(pos)
+                            {
+                                let delta = crate::ui::drag_edge_scroll_delta(
+                                    pos.x,
+                                    strip.inner_rect.left(),
+                                    strip.inner_rect.right(),
+                                );
+                                if delta != 0.0 {
+                                    strip.state.offset.x += delta;
+                                    strip.state.store(ui.ctx(), strip.id);
+                                    ui.ctx().request_repaint();
+                                }
+                            }
                         });
                             });
                         if let Some(gid) = &in_group_uuid {

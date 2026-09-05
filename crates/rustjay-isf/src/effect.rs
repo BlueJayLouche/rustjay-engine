@@ -67,6 +67,9 @@ pub struct IsfEffect {
     /// which is the whole point: `TIME * speed` jumps when the speed changes,
     /// an accumulator carries on smoothly from where it was.
     phase: [f32; 4],
+    /// Current value of each MadMapper generator, in manifest order. Advanced
+    /// once per frame by [`IsfEffect::advance_generators`].
+    generators: Vec<f32>,
 
     /// Start time — used to compute elapsed seconds for the TIME built-in.
     start_time: Instant,
@@ -77,6 +80,16 @@ pub struct IsfEffect {
 
     /// Error message from transpilation / compilation (shown in GUI).
     pub transpile_error: Option<String>,
+
+    /// Render to a target of this size rather than the engine's output, and
+    /// report it as `RENDERSIZE`. Set by a host that owns its own target — a
+    /// laser deck sizes it `POINT_COUNT` by [`crate::compile::LASER_ROWS`],
+    /// which is how the shader learns its point budget.
+    pub offscreen_size: Option<[u32; 2]>,
+    /// Colour format of that target, when it is not the engine's working one.
+    /// A laser material writes positions in -1..1, so an 8-bit unorm target
+    /// would clamp them and quantise the beam to 256 steps.
+    pub offscreen_format: Option<wgpu::TextureFormat>,
 
     // GPU resources (created in init())
     pipeline: Option<wgpu::RenderPipeline>,
@@ -110,6 +123,9 @@ struct PackField {
     /// Set for `PHASE_TIME_0..3`, which come from the instance's accumulators
     /// rather than from a parameter of that name — there is none.
     phase: Option<usize>,
+    /// Set for a MadMapper generator field, which the host drives for the same
+    /// reason: it is not a parameter the user sets.
+    generator: Option<usize>,
 }
 
 /// One `PHASE_INPUTS` entry: a parameter that drives an accumulator.
@@ -169,6 +185,13 @@ fn parse_phase_inputs(glsl_src: &str) -> Vec<PhaseInput> {
 }
 
 impl IsfEffect {
+    /// What the shader compiled to, once [`EffectPlugin::init`] has run.
+    ///
+    /// `None` before init, or when compilation failed — see `transpile_error`.
+    pub fn manifest(&self) -> Option<&IsfManifest> {
+        self.manifest.as_ref()
+    }
+
     pub fn from_path(path: &Path) -> anyhow::Result<Self> {
         let glsl_src = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", path.display(), e))?;
@@ -196,6 +219,8 @@ impl IsfEffect {
             last_frame: None,
             frame_index: 0,
             transpile_error: None,
+            offscreen_size: None,
+            offscreen_format: None,
             pipeline: None,
             bind_group_layout: None,
             vertex_buffer: None,
@@ -204,6 +229,7 @@ impl IsfEffect {
             placeholder_view: None,
             sampler: None,
             manifest: None,
+            generators: Vec::new(),
             pack_fields: Vec::new(),
             primary_texture: None,
         })
@@ -219,6 +245,10 @@ impl IsfEffect {
         for f in &self.pack_fields {
             if let Some(n) = f.phase {
                 put_f32(&mut buf, f.offset, self.phase[n]);
+                continue;
+            }
+            if let Some(n) = f.generator {
+                put_f32(&mut buf, f.offset, self.generators[n]);
                 continue;
             }
             let get = |i: usize| {
@@ -251,8 +281,52 @@ impl IsfEffect {
         buf
     }
 
+    /// Advance every generator one frame.
+    ///
+    /// A generator is a float the shader reads but the user never sets:
+    /// `time_base` integrates a speed, the filters follow another input. Each
+    /// parameter is either a literal or the name of an input to read it from.
+    ///
+    /// Integrated per frame rather than derived from TIME for the same reason
+    /// `PHASE_TIME_*` is: `TIME * speed` jumps when the speed changes, an
+    /// accumulator carries on smoothly from where it was.
+    ///
+    /// ponytail: the filters (`damper`, `adsr`, `linear_filter`, `ease_filter`)
+    /// pass their source straight through — the value they settle on, without
+    /// the smoothing on the way. Upgrade path is a per-kind step function here;
+    /// they are 13 of the 850 generators in MadMapper's own corpus.
+    fn advance_generators(&mut self, delta: f32, engine: &EngineState, state: &IsfState) {
+        let Some(manifest) = self.manifest.as_ref() else {
+            return;
+        };
+        let mut acc = std::mem::take(&mut self.generators);
+        for (i, g) in manifest.generators.iter().enumerate() {
+            let value = |key: &str, default: f32| match g.params.get(key) {
+                Some(serde_json::Value::String(name)) => engine
+                    .get_param(name)
+                    .or_else(|| state.values.get(name).copied())
+                    .unwrap_or(default),
+                Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(default as f64) as f32,
+                Some(serde_json::Value::Bool(b)) => f32::from(u8::from(*b)),
+                _ => default,
+            };
+            let rate = delta * value("speed", 1.0) * if value("reverse", 0.0) != 0.0 { -1.0 } else { 1.0 };
+            acc[i] = match g.ty.as_str() {
+                "time_base" => acc[i] + rate,
+                // An animator is a time base wrapped into the 0..1 its shapes
+                // are defined over. The shape itself is left linear.
+                "animator" => (acc[i] + rate).rem_euclid(1.0),
+                "multiplier" => (1..=4).map(|n| value(&format!("value{n}"), 1.0)).product(),
+                "damper" | "adsr" | "linear_filter" | "ease_filter" | "shaper" | "curve"
+                | "pass_thru" => value("input_value", 0.0),
+                _ => 0.0,
+            };
+        }
+        self.generators = acc;
+    }
+
     /// std140-pack the IsfData block (64 bytes).
-    fn pack_data(&mut self, engine: &EngineState) -> [u8; 64] {
+    fn pack_data(&mut self, engine: &EngineState, state: &IsfState) -> [u8; 64] {
         let now = Instant::now();
         let delta = self
             .last_frame
@@ -269,11 +343,16 @@ impl IsfEffect {
             let rate = engine.get_param(&pi.param).unwrap_or(1.0);
             self.phase[pi.index] += delta * rate * pi.scale;
         }
+        self.advance_generators(delta, engine, state);
 
         let mut buf = [0u8; 64];
         put_i32(&mut buf, 0, 0); // PASSINDEX (multipass = follow-up)
-        put_f32(&mut buf, 8, engine.resolution.internal_width as f32);
-        put_f32(&mut buf, 12, engine.resolution.internal_height as f32);
+        let [width, height] = self.offscreen_size.unwrap_or([
+            engine.resolution.internal_width,
+            engine.resolution.internal_height,
+        ]);
+        put_f32(&mut buf, 8, width as f32);
+        put_f32(&mut buf, 12, height as f32);
         put_f32(&mut buf, 16, self.start_time.elapsed().as_secs_f32()); // TIME
         put_f32(&mut buf, 20, delta); // TIMEDELTA
         let (y, mo, d, s) = current_date();
@@ -667,7 +746,9 @@ impl EffectPlugin for IsfEffect {
                 entry_point: Some(&manifest.frag_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: rustjay_core::working_format(),
+                    format: self
+                        .offscreen_format
+                        .unwrap_or_else(rustjay_core::working_format),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -734,6 +815,8 @@ impl EffectPlugin for IsfEffect {
         });
 
         // Precompute per-field lookup keys (no per-frame allocation).
+        let generators = manifest.generators.clone();
+        self.generators = vec![0.0; generators.len()];
         self.pack_fields = manifest
             .input_fields
             .iter()
@@ -762,25 +845,37 @@ impl EffectPlugin for IsfEffect {
                         .strip_prefix("PHASE_TIME_")
                         .and_then(|n| n.parse::<usize>().ok())
                         .filter(|n| *n < 4),
+                    generator: generators.iter().position(|g| g.name == f.name),
                 }
             })
             .collect();
 
-        // Primary texture input: "inputImage" when present, else first image/audio input.
-        self.primary_texture = self
-            .isf
-            .inputs
-            .iter()
-            .find(|i| i.name == "inputImage")
-            .or_else(|| {
-                self.isf.inputs.iter().find(|i| {
-                    matches!(
-                        i.ty,
-                        isf::InputType::Image | isf::InputType::Audio(_) | isf::InputType::AudioFft(_)
-                    )
+        // Primary texture input: "inputImage" when present, else first image/audio
+        // input. A laser material has neither — what it reads is its own previous
+        // frame, which the host passes in the same way an effect gets its input.
+        self.primary_texture = if manifest.laser.is_some() {
+            manifest
+                .textures
+                .iter()
+                .find(|t| t.name == crate::compile::LAST_FRAME_DATA)
+                .map(|t| t.name.clone())
+        } else {
+            self.isf
+                .inputs
+                .iter()
+                .find(|i| i.name == "inputImage")
+                .or_else(|| {
+                    self.isf.inputs.iter().find(|i| {
+                        matches!(
+                            i.ty,
+                            isf::InputType::Image
+                                | isf::InputType::Audio(_)
+                                | isf::InputType::AudioFft(_)
+                        )
+                    })
                 })
-            })
-            .map(|i| i.name.clone());
+                .map(|i| i.name.clone())
+        };
 
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
@@ -820,7 +915,7 @@ impl EffectPlugin for IsfEffect {
         }
 
         // Upload uniforms (std140-packed)
-        let data = self.pack_data(ctx.engine_state);
+        let data = self.pack_data(ctx.engine_state, app_state);
         let inputs = self.pack_inputs(app_state, ctx.engine_state);
         let pipeline = self.pipeline.as_ref().unwrap();
         let vb = self.vertex_buffer.as_ref().unwrap();

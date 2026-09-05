@@ -40,6 +40,7 @@ use rustjay_mixer::{Channel, Mixer};
 #[cfg(feature = "mixer")]
 use rustjay_render::EffectNode;
 #[cfg(feature = "mixer")]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[cfg(all(feature = "mixer", feature = "api"))]
@@ -137,6 +138,11 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub redo_stack: Vec<crate::scene::Topology>,
+    /// Build a fresh default graph on the next `prepare()` — how File > New
+    /// starts an empty set.
+    #[serde(skip)]
+    #[cfg(feature = "mixer")]
+    pub pending_new_graph: bool,
     /// Workspace handle for save/load.
     #[serde(skip)]
     pub workspace: crate::persistence::Workspace,
@@ -615,6 +621,68 @@ impl KovvbojAppState {
             Err(e) => log::warn!("[Workspace] keymap save failed: {}", e),
         }
     }
+
+    /// Point at another workspace directory and reload everything from it.
+    ///
+    /// The live set is saved first — there is no unsaved-changes dialog, and
+    /// the 30-second auto-save means people already trust the app to keep what
+    /// they built.
+    pub fn open_workspace(&mut self, dir: impl Into<PathBuf>) {
+        self.save_workspace();
+        self.load_workspace(dir.into());
+    }
+
+    /// Start an empty set in `dir`. A directory that already holds a scene is
+    /// opened rather than overwritten — New must never eat a set picked by
+    /// mistake.
+    pub fn new_workspace(&mut self, dir: impl Into<PathBuf>) {
+        let dir = dir.into();
+        if crate::persistence::Workspace::new(&dir).exists() {
+            log::warn!(
+                "[Workspace] {} already holds a scene — opening it instead of starting a new set",
+                dir.display()
+            );
+            self.open_workspace(dir);
+            return;
+        }
+        self.save_workspace();
+        self.load_workspace(dir);
+    }
+
+    /// Save the live set into `dir` and keep working there.
+    pub fn save_workspace_as(&mut self, dir: impl Into<PathBuf>) {
+        self.workspace = crate::persistence::Workspace::new(dir.into());
+        crate::persistence::push_recent(&self.workspace.dir);
+        self.save_workspace();
+    }
+
+    /// Throw away everything since the last save.
+    pub fn revert_workspace(&mut self) {
+        let dir = self.workspace.dir.clone();
+        self.load_workspace(dir);
+    }
+
+    /// Switch to `dir` without saving what is live.
+    ///
+    /// ponytail: the stage and keymap are only replaced when the new workspace
+    /// carries its own — a new set inherits the rig you are already patched
+    /// into, which is what you want at a venue.
+    fn load_workspace(&mut self, dir: PathBuf) {
+        self.workspace = crate::persistence::Workspace::new(dir);
+        crate::persistence::push_recent(&self.workspace.dir);
+        #[cfg(feature = "mixer")]
+        {
+            self.pending_scene = self.workspace.load_scene().ok();
+            self.pending_new_graph = self.pending_scene.is_none();
+            self.layer_sources.clear();
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+        }
+        // Re-runs `prepare`'s first-frame block against the new directory:
+        // stage, keymap, favourites, saved layers/chains/groups.
+        self.ready = false;
+        log::info!("[Workspace] switched to {}", self.workspace.dir.display());
+    }
 }
 
 impl Default for KovvbojAppState {
@@ -670,6 +738,8 @@ impl Default for KovvbojAppState {
             pending_chain_recall: None,
             #[cfg(feature = "mixer")]
             param_bases_cache: Vec::new(),
+            #[cfg(feature = "mixer")]
+            pending_new_graph: false,
             workspace: crate::persistence::default_workspace(),
             auto_save_last: None,
             keymap: crate::keymap::Keymap::default_bindings(),
@@ -1621,6 +1691,9 @@ impl EffectPlugin for KovvbojRootPlugin {
             #[cfg(feature = "mixer")]
             {
                 state.engine_modulation = Some(engine.modulation.clone());
+                // The set you launched into belongs in File > Open Recent too,
+                // not just ones opened by hand.
+                crate::persistence::push_recent(&state.workspace.dir);
                 state.favourites = state.workspace.load_favourites();
                 state.saved_layers = state.workspace.load_layers();
                 state.saved_chains = state.workspace.load_chains();
@@ -1771,6 +1844,18 @@ impl EffectPlugin for KovvbojRootPlugin {
             // uuids.
             if let Some(topo) = state.pending_topology.take() {
                 self.apply_topology(&topo, device, queue);
+                state.params_dirty_request = true;
+            }
+
+            // File > New into a workspace with no scene: start from the same
+            // two-layer default the app opens with.
+            if state.pending_new_graph {
+                state.pending_new_graph = false;
+                if let Ok(mut mixer) = self.mixer.lock() {
+                    mixer.channels.clear();
+                    mixer.master.clear();
+                }
+                self.build_default_graph(device, queue);
                 state.params_dirty_request = true;
             }
 
@@ -2078,6 +2163,9 @@ impl EffectPlugin for KovvbojRootPlugin {
                         };
                         ch.effect = source;
                         ch.name = req.source.name.clone();
+                        // The composite samples this slot's texture through a
+                        // cached bind group; the new source is a new texture.
+                        mixer.invalidate_composite_cache();
                         drop(mixer);
                         state
                             .layer_sources

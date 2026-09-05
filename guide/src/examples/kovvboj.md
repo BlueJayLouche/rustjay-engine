@@ -49,6 +49,16 @@ and MAP modes; everything else opens as windows from the View menu.
 - **Undo/redo** — ⌘Z / ⇧⌘Z cover structural edits: adding, removing, moving
   and re-ordering layers and effects. Parameter changes are deliberately not
   undoable — they are continuous and driven by MIDI/LFO/OSC.
+- **Workspaces** — a workspace is a directory (`.kovvboj/` beside the app by
+  default): scene, stage, keymap and your saved layers/chains/groups. The File
+  menu makes and switches them — New, Open, Open Recent, Save (⌘S), Save As,
+  Revert to Saved — saving the live set before it switches. New into a folder
+  that already holds a scene opens it rather than overwriting it.
+- **Set bundles** — File → Export Set writes a `.kovvbojset`: the workspace plus
+  a copy of every shader, clip and image the scene points at, with the recorded
+  paths rewritten to match. Import unpacks it beside the archive and opens it,
+  so a set moves between machines whole. It is an uncompressed tar — video does
+  not compress — so `tar -xf` opens one anywhere.
 - **Scene persistence** — layers and FX survive save/reload. Scenes are
   versioned: one written before the layer model is not loaded — kovvboj tells
   you the scene predates layers and leaves the file untouched. Scenes store

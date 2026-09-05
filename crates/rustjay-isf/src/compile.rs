@@ -38,6 +38,13 @@ pub struct IsfManifest {
     pub has_sampler: bool,
     /// Fragment entry point name in the emitted WGSL (from the naga module).
     pub frag_entry: String,
+    /// MadMapper `GENERATORS`, in the order their fields appear in the block.
+    /// Each has a `float` field of the same name that the host drives.
+    pub generators: Vec<crate::header::Generator>,
+    /// Set when this is a MadMapper laser material: it draws paths, not
+    /// pixels, and wants a `POINT_COUNT`-wide by 3-tall target. See
+    /// [`LASER_ROWS`] for what each row holds.
+    pub laser: Option<crate::header::RenderSettings>,
     /// Whether the vertex stage should deliver `isf_FragNormCoord` Y-flipped
     /// into ISF's bottom-left convention.
     ///
@@ -85,9 +92,48 @@ pub struct CompileOutput {
 ///
 /// `isf` is the parsed header metadata; `glsl_src` is the full shader file
 /// (header comment included — it is stripped here).
+/// GLSL libraries a shader may `#include` by name.
+///
+/// MadMapper publishes its own under Apache-2.0, so the real files are
+/// vendored (see `libraries/README.md`) rather than shimmed. Includes resolve
+/// by basename only — a shader cannot reach the filesystem through one.
+const LIBRARIES: [(&str, &str); 4] = [
+    ("MadCommon.glsl", include_str!("libraries/MadCommon.glsl")),
+    ("MadNoise.glsl", include_str!("libraries/MadNoise.glsl")),
+    ("MadSDF.glsl", include_str!("libraries/MadSDF.glsl")),
+    (
+        "MadLaserMaterialShapeLibrary.glsl",
+        include_str!("libraries/MadLaserMaterialShapeLibrary.glsl"),
+    ),
+];
+
+/// Resolve one `#include`, or say which names are on offer.
+fn resolve_include(requested: &str, requesting: &str) -> shaderc::IncludeCallbackResult {
+    let name = requested.rsplit(['/', '\\']).next().unwrap_or(requested);
+    LIBRARIES
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(name))
+        .map(|(known, content)| shaderc::ResolvedInclude {
+            resolved_name: (*known).to_string(),
+            content: (*content).to_string(),
+        })
+        .ok_or_else(|| {
+            let known: Vec<_> = LIBRARIES.iter().map(|(n, _)| *n).collect();
+            format!(
+                "{requesting} includes `{requested}`, which is not bundled (have: {})",
+                known.join(", ")
+            )
+        })
+}
+
 pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
     let body = strip_header(glsl_src)?;
-    let merged = build_glsl(isf, &body);
+    let merged = build_glsl(
+        isf,
+        &body,
+        &crate::header::generators(glsl_src),
+        &crate::header::render_settings(glsl_src),
+    );
 
     // GLSL → SPIR-V (Vulkan 1.2, fragment, entry "main").
     let compiler =
@@ -100,6 +146,16 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         shaderc::EnvVersion::Vulkan1_2 as u32,
     );
     opts.set_optimization_level(shaderc::OptimizationLevel::Zero); // keep names for error msgs
+    opts.set_include_callback(|requested, _ty, requesting, _depth| {
+        resolve_include(requested, requesting)
+    });
+    // shaderc reports errors against the merged GLSL, which exists nowhere on
+    // disk. `ISF_DUMP_GLSL=1` prints it numbered so those lines mean something.
+    if std::env::var_os("ISF_DUMP_GLSL").is_some() {
+        for (i, line) in merged.glsl.lines().enumerate() {
+            eprintln!("{:5} {line}", i + 1);
+        }
+    }
     let artifact = compiler
         .compile_into_spirv(&merged.glsl, shaderc::ShaderKind::Fragment, "isf.fs", "main", Some(&opts))
         .map_err(|e| trim_err(&e.to_string()))?;
@@ -141,6 +197,8 @@ pub fn compile(isf: &Isf, glsl_src: &str) -> Result<CompileOutput, String> {
         has_sampler: !merged.textures.is_empty(),
         textures: merged.textures,
         frag_entry,
+        generators: merged.generators,
+        laser: merged.laser,
         flip_frag_norm_coord: merged.uses_img_macros,
     };
     Ok(CompileOutput { wgsl, manifest })
@@ -197,16 +255,31 @@ struct MemberDecl {
 struct Merged {
     glsl: String,
     members: Vec<MemberDecl>,
+    /// Generators that got a field in the block, in field order.
+    generators: Vec<crate::header::Generator>,
+    laser: Option<crate::header::RenderSettings>,
     textures: Vec<TextureBinding>,
     /// See [`IsfManifest::flip_frag_norm_coord`].
     uses_img_macros: bool,
 }
 
-fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
+fn build_glsl(
+    isf: &Isf,
+    raw_body: &str,
+    gens: &[crate::header::Generator],
+    settings: &crate::header::RenderSettings,
+) -> Merged {
     // 1. drop existing #version lines
+    //
+    // `NOISE_TEXTURE_BASED` goes with them: it switches MadNoise to a variant
+    // that reads a `noiseLUT` sampler only MadMapper binds. Without the define
+    // the same functions are computed analytically instead.
     let mut body: String = raw_body
         .lines()
-        .filter(|l| !l.trim_start().starts_with("#version"))
+        .filter(|l| {
+            let l = l.trim_start();
+            !l.starts_with("#version") && !l.starts_with("#define NOISE_TEXTURE_BASED")
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -222,6 +295,10 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
                 format!("_{}_flip", i.name),
             ]
         }))
+        .collect();
+    let provided: Vec<String> = provided
+        .into_iter()
+        .chain(gens.iter().map(|g| g.name.clone()))
         .collect();
     let provided: Vec<&str> = provided.iter().map(|s| s.as_str()).collect();
     // Texture names we will declare (image/audio inputs, pass targets, imported).
@@ -266,14 +343,48 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
     // 3. legacy varying name used by older ISF hosts
     body = body.replace("vv_FragNormCoord", "isf_FragNormCoord");
 
+    // 3.5 MadMapper takes `long` as a spelling of `int`, where desktop GLSL
+    //     keeps it reserved. Its precision qualifiers go too: they mean nothing
+    //     at 450, and a prototype qualified differently from its definition is
+    //     an error rather than the no-op it is meant to be.
+    body = replace_word(&body, "long", "int");
+    body = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("precision "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for qualifier in ["highp", "mediump", "lowp"] {
+        body = replace_word(&body, qualifier, "");
+    }
+
     // 4. gl_FragColor → declared out
     //    Shadertoy-style shaders with only `mainImage` (no `main`) get a bridge that
     //    also writes to the declared out.
     let has_main_image = body.contains("void mainImage") && find_main_def(&body).is_none();
+    // MadMapper dialect: a material has no `main`, it returns a colour from
+    // `materialColorForPixel(vec2)` given the surface's 0..1 texture coordinate.
+    let has_material_fn = body.contains("materialColorForPixel") && find_main_def(&body).is_none();
+    // A laser material has no `main` either, and does not draw pixels at all —
+    // it is called once per sample point of a 2D path. `vectorMaterialFunc` is
+    // the same thing without the `userData` feedback channel.
+    let laser_fn = ["laserMaterialFunc", "vectorMaterialFunc"]
+        .into_iter()
+        .find(|f| body.contains(f))
+        .filter(|_| find_main_def(&body).is_none());
+    // A material that also carries a `mainImage` helper is still a material.
+    let has_main_image = has_main_image && !has_material_fn;
+    // The previous frame's own output, which a laser material reads back for
+    // damping and trails. The host binds it; nothing in the header declares it.
+    if laser_fn.is_some() && body.contains(LAST_FRAME_DATA) {
+        texture_names.push(LAST_FRAME_DATA.to_string());
+    }
+
     let needs_fragcolor_out = (body.contains("gl_FragColor")
         && !body.contains("out vec4 FragColor")
         && !body.contains("out vec4 gl_FragColor"))
         || has_main_image
+        || has_material_fn
+        || laser_fn.is_some()
         || baked_needs_out;
     if body.contains("gl_FragColor") {
         body = body.replace("gl_FragColor", "FragColor");
@@ -290,21 +401,31 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
     //    isf_FragNormCoord takes in-location 0; FragColor takes out-location 0.
     body = assign_io_locations(&body, needs_fragcolor_out);
 
-    // 7. inline IMG_* sampling helpers (Y-flip aware).
+    // 7. inline IMG_* sampling helpers (Y-flip aware), then pair any texture
+    //    sampled directly (rather than through a macro) with the sampler.
     body = inline_img_calls(&body);
+    body = pair_textures_with_sampler(&body, &texture_names);
 
     // 8. gl_FragCoord → flipped global via wrapper main; bare mainImage → bridge.
-    let uses_fragcoord = body.contains("gl_FragCoord") || has_main_image;
-    let body = if body.contains("gl_FragCoord") {
+    let uses_fragcoord =
+        body.contains("gl_FragCoord") || has_main_image || has_material_fn || laser_fn.is_some();
+    // The bridged dialects have no `main` to rename, so they are checked first:
+    // their bridge sets the flipped coordinate itself.
+    let flip = "isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);";
+    let body = if let Some(entry) = laser_fn {
+        format!("{}\n{}", outs_become_inout(&body, entry), laser_main(entry))
+    } else if has_main_image || has_material_fn {
+        let b = body.replace("gl_FragCoord", "isf_FragCoord");
+        let call = if has_main_image {
+            "mainImage(FragColor, isf_FragCoord);".to_string()
+        } else {
+            "FragColor = materialColorForPixel(isf_FragNormCoord);".to_string()
+        };
+        format!("{b}\nvoid main() {{\n    {flip}\n    {call}\n}}\n")
+    } else if body.contains("gl_FragCoord") {
         let b = body.replace("gl_FragCoord", "isf_FragCoord");
         let b = rename_main(&b);
-        format!(
-            "{b}\nvoid main() {{\n    isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);\n    isf_user_main();\n}}\n"
-        )
-    } else if has_main_image {
-        format!(
-            "{body}\nvoid main() {{\n    isf_FragCoord = vec2(gl_FragCoord.x, RENDERSIZE.y - gl_FragCoord.y);\n    mainImage(FragColor, isf_FragCoord);\n}}\n"
-        )
+        format!("{b}\nvoid main() {{\n    {flip}\n    isf_user_main();\n}}\n")
     } else {
         body
     };
@@ -364,6 +485,22 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
             });
         }
     }
+    // A generator is a float the host drives, so it gets a field like any
+    // input — the shader just reads it by name. Only those the shader has not
+    // also declared as an input, which would collide.
+    let laser = laser_fn.map(|_| settings.clone());
+    let generators: Vec<crate::header::Generator> = gens
+        .iter()
+        .filter(|g| !isf.inputs.iter().any(|i| i.name == g.name))
+        .cloned()
+        .collect();
+    for g in &generators {
+        members.push(MemberDecl {
+            name: g.name.clone(),
+            glsl_decl: glsl_ty(FieldTy::F32).to_string(),
+            fty: FieldTy::F32,
+        });
+    }
     members.extend(extra_members);
 
     // texture bindings: image/audio inputs, pass targets, imported, baked extras
@@ -397,9 +534,135 @@ fn build_glsl(isf: &Isf, raw_body: &str) -> Merged {
     Merged {
         glsl: p,
         members,
+        generators,
+        laser,
         textures,
         uses_img_macros,
     }
+}
+
+/// Rows of a laser material's render target, as MadMapper documents them:
+/// row 0 is `rg` = position and `b` = shape number, row 1 the colour, row 2 the
+/// user data carried to the next frame. The target is `POINT_COUNT` wide.
+pub const LASER_ROWS: u32 = 3;
+
+/// The previous frame's laser output, bound by the host rather than declared.
+/// Named here because both the compiler and the host that fills it need it.
+pub const LAST_FRAME_DATA: &str = "mm_LastFrameData";
+
+/// The `main` that turns a laser material into a fragment pass.
+///
+/// One fragment per (sample point, row): `gl_FragCoord.x` picks the point and
+/// `.y` picks which of the three rows this fragment writes. The point count is
+/// the target's width, so the host sets the budget by sizing the target — see
+/// [`LASER_ROWS`].
+fn laser_main(entry: &str) -> String {
+    // `vectorMaterialFunc` is `laserMaterialFunc` without the feedback channel.
+    let user_data = if entry == "laserMaterialFunc" {
+        ", isf_userData"
+    } else {
+        ""
+    };
+    format!(
+        "void main() {{\n\
+        \x20   int isf_point = int(gl_FragCoord.x);\n\
+        \x20   int isf_count = int(RENDERSIZE.x);\n\
+        \x20   vec2 isf_pos = vec2(0.0);\n\
+        \x20   vec4 isf_color = vec4(0.0);\n\
+        \x20   int isf_shape = 0;\n\
+        \x20   vec4 isf_userData = vec4(0.0);\n\
+        \x20   {entry}(isf_point, isf_count, isf_pos, isf_color, isf_shape{user_data});\n\
+        \x20   int isf_row = int(gl_FragCoord.y);\n\
+        \x20   FragColor = isf_row == 0 ? vec4(isf_pos, float(isf_shape), 0.0)\n\
+        \x20              : isf_row == 1 ? isf_color\n\
+        \x20              : isf_userData;\n\
+        }}\n"
+    )
+}
+
+/// Rewrite a function's `out` parameters to `inout`.
+///
+/// MadMapper's own documented example never assigns `userData`, and an `out`
+/// parameter a function does not write is undefined in GLSL — it would put
+/// whatever the register held into the feedback channel. As `inout` the value
+/// the bridge initialised survives, so an unwritten output reads as zero.
+fn outs_become_inout(body: &str, func: &str) -> String {
+    let mut out = body.to_string();
+    let mut from = 0;
+    while let Some(at) = out[from..].find(func).map(|i| i + from) {
+        let Some(open) = out[at..].find('(').map(|i| i + at) else {
+            break;
+        };
+        let Some(close) = out[open..].find(')').map(|i| i + open) else {
+            break;
+        };
+        let params = replace_word(&out[open..close], "out", "inout");
+        out.replace_range(open..close, &params);
+        from = at + func.len();
+    }
+    out
+}
+
+/// Pair a directly-sampled texture with the sampler it needs.
+///
+/// ISF shaders sample through the `IMG_*` macros, which [`inline_img_calls`]
+/// expands complete with a sampler. A shader that writes the GL form instead —
+/// `texture(spectrum, uv)`, common in MadMapper materials — leaves a bare
+/// `texture2D`, which Vulkan GLSL will not sample. Wrap those.
+fn pair_textures_with_sampler(body: &str, names: &[String]) -> String {
+    let mut out = String::with_capacity(body.len());
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        let name = names.iter().find(|n| {
+            bytes[i..].starts_with(n.as_bytes())
+                && (i == 0 || !is_ident(bytes[i - 1] as char))
+                && !bytes
+                    .get(i + n.len())
+                    .is_some_and(|b| is_ident(*b as char))
+        });
+        match name.filter(|_| is_sampling_call_arg(&out)) {
+            Some(name) => {
+                out.push_str(&format!("sampler2D({name}, img_sampler)"));
+                i += name.len();
+            }
+            _ => {
+                let c = body[i..].chars().next().unwrap();
+                out.push(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// True when what has been emitted so far ends in a sampling call's `(`, i.e.
+/// the next identifier is its first argument.
+///
+/// `texture2D` and `textureCube` are deliberately absent: [`DEFINES`] already
+/// rewrites those whole calls, and wrapping their argument too would construct
+/// a sampler from a sampler.
+const SAMPLING_CALLS: [&str; 8] = [
+    "texture",
+    "textureLod",
+    "textureGrad",
+    "textureProj",
+    "textureProjLod",
+    "textureOffset",
+    "textureSize",
+    "texelFetch",
+];
+
+fn is_sampling_call_arg(emitted: &str) -> bool {
+    let head = emitted.trim_end();
+    let Some(head) = head.strip_suffix('(') else {
+        return false;
+    };
+    let callee = head.trim_end();
+    let start = callee
+        .rfind(|c: char| !is_ident(c))
+        .map_or(0, |i| i + callee[i..].chars().next().unwrap().len_utf8());
+    SAMPLING_CALLS.contains(&&callee[start..])
 }
 
 fn glsl_ty(fty: FieldTy) -> &'static str {
@@ -1017,4 +1280,42 @@ pub fn generate_wgsl(isf: &Isf, glsl_src: &str) -> Result<Transpiled, String> {
         has_image_input,
         manifest: out.manifest,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_entry_points_outs_become_inout() {
+        let body = "void laserMaterialFunc(int n, int c, out vec2 pos, out vec4 col) { pos = vec2(0); }";
+
+        let got = outs_become_inout(body, "laserMaterialFunc");
+
+        assert!(got.contains("inout vec2 pos"), "{got}");
+        assert!(got.contains("inout vec4 col"), "{got}");
+    }
+
+    // Only the entry point's signature — an `out` elsewhere is the shader's own.
+    #[test]
+    fn another_functions_outs_are_left_alone() {
+        let body = "void helper(out float x) { x = 1.0; }\n\
+                    void laserMaterialFunc(int n, int c, out vec2 pos) { helper(pos.x); }";
+
+        let got = outs_become_inout(body, "laserMaterialFunc");
+
+        assert!(got.contains("void helper(out float x)"), "{got}");
+        assert!(got.contains("inout vec2 pos"), "{got}");
+    }
+
+    // A prototype and its definition must agree, so both get rewritten.
+    #[test]
+    fn a_prototype_and_its_definition_both_change() {
+        let body = "void laserMaterialFunc(int n, int c, out vec2 pos);\n\
+                    void laserMaterialFunc(int n, int c, out vec2 pos) { pos = vec2(0); }";
+
+        let got = outs_become_inout(body, "laserMaterialFunc");
+
+        assert_eq!(got.matches("inout vec2 pos").count(), 2, "{got}");
+    }
 }
