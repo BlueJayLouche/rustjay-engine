@@ -149,7 +149,14 @@ impl KovvbojSurface {
 
     /// Axis-aligned bounding box of the surface in normalized stage space.
     /// Unions over the primary contour and all extra contours.
-    pub fn bounding_box(&self) -> [f32; 4] {
+    ///
+    /// `aspect` is the stage canvas `width / height`. A circle's [`radius`] is
+    /// normalized against the canvas *width*, so its vertical extent has to be
+    /// scaled by the aspect or the box is wrong in y on any non-square canvas —
+    /// which is what made circles hit-test and crop off-centre at 16:9.
+    ///
+    /// [`radius`]: Self::radius
+    pub fn bounding_box(&self, aspect: f32) -> [f32; 4] {
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
@@ -159,10 +166,11 @@ impl KovvbojSurface {
 
         if self.is_circular && !self.vertices.is_empty() {
             let c = self.vertices[0];
+            let ry = self.radius * aspect;
             min_x = min_x.min(c[0] - self.radius);
-            min_y = min_y.min(c[1] - self.radius);
+            min_y = min_y.min(c[1] - ry);
             max_x = max_x.max(c[0] + self.radius);
-            max_y = max_y.max(c[1] + self.radius);
+            max_y = max_y.max(c[1] + ry);
             has_geometry = true;
         } else {
             for v in &self.vertices {
@@ -191,6 +199,36 @@ impl KovvbojSurface {
         }
     }
 
+    /// Move the whole surface by `(dx, dy)` in normalized stage units.
+    ///
+    /// The shift is clamped so the surface's box stays on the canvas: that box
+    /// *is* the crop region over the master, so off-canvas is not a view any
+    /// output could show. Vertices, extra contours and the crop rect all move
+    /// together — leaving the crop behind would slide the content out from
+    /// under the geometry.
+    pub fn translate(&mut self, dx: f32, dy: f32, aspect: f32) {
+        let [min_x, min_y, max_x, max_y] = self.bounding_box(aspect);
+        // A surface wider than the canvas has no legal room; clamp to no-op
+        // rather than letting the bounds invert.
+        let dx = dx.clamp((-min_x).min(0.0), (1.0 - max_x).max(0.0));
+        let dy = dy.clamp((-min_y).min(0.0), (1.0 - max_y).max(0.0));
+
+        for v in self.vertices.iter_mut() {
+            v[0] += dx;
+            v[1] += dy;
+        }
+        for contour in self.extra_contours.iter_mut() {
+            for v in contour.iter_mut() {
+                v[0] += dx;
+                v[1] += dy;
+            }
+        }
+        self.uv_crop_rect[0] += dx;
+        self.uv_crop_rect[1] += dy;
+        self.uv_crop_rect[2] += dx;
+        self.uv_crop_rect[3] += dy;
+    }
+
     /// UV crop rect `[min_u, min_v, max_u, max_v]`.
     /// For Fill mode returns the full `[0,1]` rect unless an explicit
     /// `uv_crop_rect` has been edited.
@@ -198,26 +236,6 @@ impl KovvbojSurface {
         match self.content_mapping {
             ContentMapping::Fill => self.uv_crop_rect,
             ContentMapping::Mapped => self.uv_crop_rect,
-        }
-    }
-
-    /// Convert vertices to a `WarpMesh` (only when projection feature is on).
-    #[cfg(feature = "projection")]
-    pub fn to_warp_mesh(&self) -> rustjay_projection::WarpMesh {
-        if self.is_circular {
-            // Approximate circle with a 16-segment polygon.
-            let mut poly = Vec::with_capacity(16);
-            let center = self.vertices[0];
-            for i in 0..16 {
-                let angle = (i as f32) * std::f32::consts::TAU / 16.0;
-                poly.push([
-                    center[0] + self.radius * angle.cos(),
-                    center[1] + self.radius * angle.sin(),
-                ]);
-            }
-            rustjay_projection::surface_import::contour_to_warp_mesh(&poly)
-        } else {
-            rustjay_projection::surface_import::contour_to_warp_mesh(&self.vertices)
         }
     }
 }
@@ -240,6 +258,44 @@ pub struct LedSurface {
     /// Runtime cache of each LED's `(u,v)` loaded from `path`, for drawing.
     #[serde(skip)]
     pub points: Vec<[f32; 2]>,
+}
+
+impl LedSurface {
+    /// Whether a normalized canvas point falls inside the placement quad.
+    ///
+    /// A real point-in-polygon test rather than a bounding box: the quad is
+    /// explicitly warpable, and on a steeply keystoned one its box covers a lot
+    /// of canvas the strip is nowhere near.
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        let mut inside = false;
+        let mut j = self.quad.len() - 1;
+        for i in 0..self.quad.len() {
+            let (a, b) = (self.quad[i], self.quad[j]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    /// Move the whole placement quad, clamped to stay on the canvas.
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        let min_x = self.quad.iter().fold(f32::MAX, |m, c| m.min(c[0]));
+        let min_y = self.quad.iter().fold(f32::MAX, |m, c| m.min(c[1]));
+        let max_x = self.quad.iter().fold(f32::MIN, |m, c| m.max(c[0]));
+        let max_y = self.quad.iter().fold(f32::MIN, |m, c| m.max(c[1]));
+        // A quad already spanning the canvas has no legal room; clamp to a
+        // no-op rather than letting the bounds invert.
+        let dx = dx.clamp((-min_x).min(0.0), (1.0 - max_x).max(0.0));
+        let dy = dy.clamp((-min_y).min(0.0), (1.0 - max_y).max(0.0));
+        for c in self.quad.iter_mut() {
+            c[0] += dx;
+            c[1] += dy;
+        }
+    }
 }
 
 fn led_priority_default() -> u8 {
@@ -351,6 +407,46 @@ impl KovvbojStage {
             #[cfg(feature = "projection")]
             rotation_syncs: Vec::new(),
         }
+    }
+
+    /// Remove a surface and repoint every output that referenced one.
+    ///
+    /// `surface_index` is positional, so a bare `Vec::remove` silently slides
+    /// every output below the deleted surface onto its neighbour — a projector
+    /// changing content mid-show because someone tidied the list. Outputs that
+    /// pointed at the deleted surface are detached rather than guessed at.
+    pub fn remove_surface(&mut self, idx: usize) {
+        if idx >= self.surfaces.len() {
+            return;
+        }
+        self.surfaces.remove(idx);
+
+        let remap = |slot: &mut Option<usize>| match *slot {
+            Some(i) if i == idx => *slot = None,
+            Some(i) if i > idx => *slot = Some(i - 1),
+            _ => {}
+        };
+        for proj in &mut self.projectors {
+            remap(&mut proj.surface_index);
+        }
+        for hl in &mut self.headless_outputs {
+            remap(&mut hl.surface_index);
+        }
+
+        if self.selected_surface_index >= self.surfaces.len() {
+            self.selected_surface_index = self.surfaces.len().saturating_sub(1);
+        }
+    }
+
+    /// The lowest `n` for which `"<prefix> n"` is unused.
+    ///
+    /// Numbering off `surfaces.len()` collided: delete "Surface 2" from three
+    /// surfaces and the next add is named "Surface 3" alongside the existing one.
+    pub fn next_surface_number(&self, prefix: &str) -> usize {
+        (1..).find(|n| {
+            let candidate = format!("{prefix} {n}");
+            !self.surfaces.iter().any(|s| s.name == candidate)
+        }).expect("1.. is unbounded")
     }
 
     pub fn with_default_surface() -> Self {
@@ -1306,5 +1402,117 @@ impl rustjay_projection::ProjectionStage for KovvbojEdgeBlendStage {
 
     fn on_input_changed(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         self.inner.on_input_changed(device, size);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A circle is round in pixels, not in normalized space. On a 16:9 canvas
+    /// its bounding box must therefore be square in pixels — the version that
+    /// used `radius` directly on both axes made it 56% as tall as it was wide,
+    /// which put clicks and crop rects off-centre.
+    #[test]
+    fn circle_bounding_box_is_square_in_pixels() {
+        let (cw, ch) = (1920.0_f32, 1080.0_f32);
+        let surf = KovvbojSurface::circle("c", "c", [0.5, 0.5], 0.1);
+
+        let [min_x, min_y, max_x, max_y] = surf.bounding_box(cw / ch);
+        let w_px = (max_x - min_x) * cw;
+        let h_px = (max_y - min_y) * ch;
+
+        assert!((w_px - h_px).abs() < 0.01, "{w_px}px wide vs {h_px}px tall");
+        assert!((w_px - 384.0).abs() < 0.01, "expected 384px, got {w_px}");
+    }
+
+    fn stage_with(n: usize) -> KovvbojStage {
+        let mut stage = KovvbojStage::new();
+        for i in 1..=n {
+            stage.surfaces.push(KovvbojSurface::full_frame(
+                format!("Surface {i}"),
+                format!("s{i}"),
+            ));
+        }
+        stage
+    }
+
+    /// Deleting a surface must not slide the outputs below it onto a different
+    /// one, and must detach whoever pointed at the deleted surface.
+    #[test]
+    fn remove_surface_repoints_outputs() {
+        let mut stage = stage_with(3);
+        for idx in [Some(0), Some(1), Some(2), None] {
+            stage.projectors.push(KovvbojProjector { surface_index: idx, ..Default::default() });
+        }
+        stage.headless_outputs.push(KovvbojHeadlessConfig { surface_index: Some(2), ..Default::default() });
+
+        stage.remove_surface(1);
+
+        let got: Vec<_> = stage.projectors.iter().map(|p| p.surface_index).collect();
+        assert_eq!(got, vec![Some(0), None, Some(1), None]);
+        assert_eq!(stage.headless_outputs[0].surface_index, Some(1));
+        assert_eq!(stage.surfaces.len(), 2);
+    }
+
+    /// Numbering off `len()` hands out a name that is already taken.
+    #[test]
+    fn next_surface_number_skips_taken_names() {
+        let mut stage = stage_with(3);
+        assert_eq!(stage.next_surface_number("Surface"), 4);
+
+        stage.remove_surface(1); // leaves "Surface 1", "Surface 3"
+        assert_eq!(stage.next_surface_number("Surface"), 2);
+    }
+
+    /// Dragging a surface moves its geometry and its crop rect as one.
+    #[test]
+    fn translate_moves_geometry_and_crop_together() {
+        let mut surf = KovvbojSurface::full_frame("s", "s");
+        surf.vertices = vec![[0.1, 0.1], [0.3, 0.1], [0.3, 0.4], [0.1, 0.4]];
+        surf.uv_crop_rect = [0.1, 0.1, 0.3, 0.4];
+
+        surf.translate(0.2, 0.1, 16.0 / 9.0);
+
+        assert_eq!(surf.vertices[0], [0.3, 0.2]);
+        assert_eq!(surf.uv_crop_rect, [0.3, 0.2, 0.5, 0.5]);
+    }
+
+    /// A drag past the edge stops at it rather than pushing the crop region
+    /// off the master, where no output could show it.
+    #[test]
+    fn translate_stops_at_the_canvas_edge() {
+        let mut surf = KovvbojSurface::full_frame("s", "s");
+        surf.vertices = vec![[0.8, 0.0], [1.0, 0.0], [1.0, 0.2], [0.8, 0.2]];
+        surf.uv_crop_rect = [0.8, 0.0, 1.0, 0.2];
+
+        surf.translate(0.5, -0.5, 16.0 / 9.0);
+
+        let [min_x, min_y, max_x, max_y] = surf.bounding_box(16.0 / 9.0);
+        assert!(min_x >= 0.0 && max_x <= 1.0, "x escaped: {min_x}..{max_x}");
+        assert!(min_y >= 0.0 && max_y <= 1.0, "y escaped: {min_y}..{max_y}");
+        // Already flush against both edges, so neither axis moves at all.
+        assert_eq!(surf.vertices[1], [1.0, 0.0]);
+    }
+
+    /// The LED quad is warpable, so its hit test has to follow the shape and
+    /// not its bounding box — a keystoned quad leaves big corners of that box
+    /// nowhere near the strip.
+    #[test]
+    fn led_quad_hit_test_follows_the_warp() {
+        let mut led = LedSurface {
+            // Steeply keystoned: narrow at the top, wide at the bottom.
+            quad: [[0.4, 0.0], [0.6, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            ..Default::default()
+        };
+
+        assert!(led.contains([0.5, 0.5]), "centre should be inside");
+        assert!(!led.contains([0.05, 0.05]), "top-left of the box is outside");
+
+        led.translate(0.0, -0.5); // already flush at the top
+        assert_eq!(led.quad[0], [0.4, 0.0]);
+
+        led.translate(-0.5, 0.0); // already flush at the left
+        assert_eq!(led.quad[3], [0.0, 1.0]);
     }
 }
