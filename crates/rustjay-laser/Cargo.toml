@@ -1,0 +1,34 @@
+[package]
+name = "rustjay-laser"
+version = "0.1.0"
+edition = "2024"
+description = "Render MadMapper laser materials to 2D paths and stream them to a laser DAC"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
+keywords = ["laser", "ilda", "isf", "shader", "dac"]
+categories = ["multimedia"]
+
+[features]
+# Talking to real hardware pulls in libusb and CMake, so a normal build of the
+# workspace does not. Everything up to and including the point list works
+# without it; only the DAC transport is gated.
+default = []
+dac = ["dep:laser-dac"]
+
+[dependencies]
+anyhow       = { workspace = true }
+log          = { workspace = true }
+wgpu         = { workspace = true }
+rustjay-core = { path = "../rustjay-core" }
+rustjay-isf  = { path = "../rustjay-isf" }
+# Exactly the transports we want, and none of the rest: the crate's default
+# features add an audio-out backend (cpal) and ASIO, which needs the Steinberg
+# SDK on Windows. `idn` is the one that matters most for reach — it is the open
+# standard, so open DACs like ILDAWaveX16 need no driver of their own.
+laser-dac    = { version = "0.13", optional = true, default-features = false, features = [
+    "helios",
+    "ether-dream",
+    "idn",
+    "lasercube-usb",
+    "lasercube-network",
+] }

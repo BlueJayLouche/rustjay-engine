@@ -547,7 +547,8 @@ fn build_glsl(
 pub const LASER_ROWS: u32 = 3;
 
 /// The previous frame's laser output, bound by the host rather than declared.
-const LAST_FRAME_DATA: &str = "mm_LastFrameData";
+/// Named here because both the compiler and the host that fills it need it.
+pub const LAST_FRAME_DATA: &str = "mm_LastFrameData";
 
 /// The `main` that turns a laser material into a fragment pass.
 ///

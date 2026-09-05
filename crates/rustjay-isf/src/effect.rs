@@ -81,6 +81,16 @@ pub struct IsfEffect {
     /// Error message from transpilation / compilation (shown in GUI).
     pub transpile_error: Option<String>,
 
+    /// Render to a target of this size rather than the engine's output, and
+    /// report it as `RENDERSIZE`. Set by a host that owns its own target — a
+    /// laser deck sizes it `POINT_COUNT` by [`crate::compile::LASER_ROWS`],
+    /// which is how the shader learns its point budget.
+    pub offscreen_size: Option<[u32; 2]>,
+    /// Colour format of that target, when it is not the engine's working one.
+    /// A laser material writes positions in -1..1, so an 8-bit unorm target
+    /// would clamp them and quantise the beam to 256 steps.
+    pub offscreen_format: Option<wgpu::TextureFormat>,
+
     // GPU resources (created in init())
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -175,6 +185,13 @@ fn parse_phase_inputs(glsl_src: &str) -> Vec<PhaseInput> {
 }
 
 impl IsfEffect {
+    /// What the shader compiled to, once [`EffectPlugin::init`] has run.
+    ///
+    /// `None` before init, or when compilation failed — see `transpile_error`.
+    pub fn manifest(&self) -> Option<&IsfManifest> {
+        self.manifest.as_ref()
+    }
+
     pub fn from_path(path: &Path) -> anyhow::Result<Self> {
         let glsl_src = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", path.display(), e))?;
@@ -202,6 +219,8 @@ impl IsfEffect {
             last_frame: None,
             frame_index: 0,
             transpile_error: None,
+            offscreen_size: None,
+            offscreen_format: None,
             pipeline: None,
             bind_group_layout: None,
             vertex_buffer: None,
@@ -328,8 +347,12 @@ impl IsfEffect {
 
         let mut buf = [0u8; 64];
         put_i32(&mut buf, 0, 0); // PASSINDEX (multipass = follow-up)
-        put_f32(&mut buf, 8, engine.resolution.internal_width as f32);
-        put_f32(&mut buf, 12, engine.resolution.internal_height as f32);
+        let [width, height] = self.offscreen_size.unwrap_or([
+            engine.resolution.internal_width,
+            engine.resolution.internal_height,
+        ]);
+        put_f32(&mut buf, 8, width as f32);
+        put_f32(&mut buf, 12, height as f32);
         put_f32(&mut buf, 16, self.start_time.elapsed().as_secs_f32()); // TIME
         put_f32(&mut buf, 20, delta); // TIMEDELTA
         let (y, mo, d, s) = current_date();
@@ -723,7 +746,9 @@ impl EffectPlugin for IsfEffect {
                 entry_point: Some(&manifest.frag_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: rustjay_core::working_format(),
+                    format: self
+                        .offscreen_format
+                        .unwrap_or_else(rustjay_core::working_format),
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -825,21 +850,32 @@ impl EffectPlugin for IsfEffect {
             })
             .collect();
 
-        // Primary texture input: "inputImage" when present, else first image/audio input.
-        self.primary_texture = self
-            .isf
-            .inputs
-            .iter()
-            .find(|i| i.name == "inputImage")
-            .or_else(|| {
-                self.isf.inputs.iter().find(|i| {
-                    matches!(
-                        i.ty,
-                        isf::InputType::Image | isf::InputType::Audio(_) | isf::InputType::AudioFft(_)
-                    )
+        // Primary texture input: "inputImage" when present, else first image/audio
+        // input. A laser material has neither — what it reads is its own previous
+        // frame, which the host passes in the same way an effect gets its input.
+        self.primary_texture = if manifest.laser.is_some() {
+            manifest
+                .textures
+                .iter()
+                .find(|t| t.name == crate::compile::LAST_FRAME_DATA)
+                .map(|t| t.name.clone())
+        } else {
+            self.isf
+                .inputs
+                .iter()
+                .find(|i| i.name == "inputImage")
+                .or_else(|| {
+                    self.isf.inputs.iter().find(|i| {
+                        matches!(
+                            i.ty,
+                            isf::InputType::Image
+                                | isf::InputType::Audio(_)
+                                | isf::InputType::AudioFft(_)
+                        )
+                    })
                 })
-            })
-            .map(|i| i.name.clone());
+                .map(|i| i.name.clone())
+        };
 
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
