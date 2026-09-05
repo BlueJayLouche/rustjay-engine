@@ -180,13 +180,11 @@ mod tests {
 
         // Now emitting the field's corners through the correction should land
         // on the rectangle that was asked for.
-        for i in 0..4 {
-            let landed = project(g.corners[i]);
+        for (i, (corner, want)) in g.corners.iter().zip(&desired).enumerate() {
+            let landed = project(*corner);
             assert!(
-                (landed[0] - desired[i][0]).abs() < 1.0
-                    && (landed[1] - desired[i][1]).abs() < 1.0,
-                "corner {i} landed at {landed:?}, wanted {:?}",
-                desired[i]
+                (landed[0] - want[0]).abs() < 1.0 && (landed[1] - want[1]).abs() < 1.0,
+                "corner {i} landed at {landed:?}, wanted {want:?}"
             );
         }
     }
