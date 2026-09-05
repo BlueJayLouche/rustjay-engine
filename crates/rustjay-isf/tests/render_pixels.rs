@@ -112,7 +112,7 @@ fn render_shader(
     height: u32,
 ) -> Frame {
     let (mut effect, _) = load_effect(gpu, shader);
-    render_loaded(gpu, &mut effect, shader, engine, state, input, width, height)
+    render_loaded(gpu, &mut effect, shader, engine, state, input, (width, height))
 }
 
 /// The same render against an effect that is already loaded, so successive
@@ -125,8 +125,7 @@ fn render_loaded(
     engine: &EngineState,
     state: &mut IsfState,
     input: Option<rustjay_core::EffectInput<'_>>,
-    width: u32,
-    height: u32,
+    (width, height): (u32, u32),
 ) -> Frame {
     let format = rustjay_core::working_format();
     assert!(
@@ -510,9 +509,9 @@ fn i_time_base_generator_advances() {
     engine.param_descriptors = Arc::new(descs);
     engine.set_param_base("mat_speed", 1.0);
 
-    let first = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, 8, 8);
+    let first = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, (8, 8));
     std::thread::sleep(std::time::Duration::from_millis(120));
-    let second = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, 8, 8);
+    let second = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, (8, 8));
 
     let (_, _, b_first, _) = first.rgba(4, 4);
     let (_, _, b_second, _) = second.rgba(4, 4);

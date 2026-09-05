@@ -48,15 +48,60 @@ pub struct Generator {
     pub params: Map<String, Value>,
 }
 
+/// A laser material's `RENDER_SETTINGS`.
+///
+/// Only the keys MadMapper's own corpus actually sets are read: `POINT_COUNT`
+/// (84 of 109 shaders), `PRESERVE_ORDER` (22), `ANGLE_OPTIMIZATION` (7),
+/// `SKIP_BLACK` (5) and `MAX_SPEED` (4). The documented remainder — the dwell
+/// thresholds, point repeats and fades — is unused by every shader MadMapper
+/// publishes, so it is left unparsed until something asks for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderSettings {
+    /// Samples the material wants per frame. A request, not a promise: the host
+    /// caps it to what the scanner can draw at the chosen refresh.
+    pub point_count: Option<u32>,
+    /// Draw the shapes in the order generated, rather than reordering to
+    /// shorten the scan path.
+    pub preserve_order: Option<bool>,
+    /// Let the host add dwell at sharp corners.
+    pub angle_optimization: Option<bool>,
+    /// Drop black samples rather than scanning through them blanked.
+    pub skip_black: Option<bool>,
+    /// Cap on how far the beam may travel between samples.
+    pub max_speed: Option<f32>,
+}
+
+/// A laser material's `RENDER_SETTINGS`, default for a shader without any.
+pub fn render_settings(glsl_src: &str) -> RenderSettings {
+    let Some(root) = header_json(glsl_src) else {
+        return RenderSettings::default();
+    };
+    let Some(settings) = root.get("RENDER_SETTINGS") else {
+        return RenderSettings::default();
+    };
+    let get = |key: &str| settings.get(key);
+    RenderSettings {
+        point_count: get("POINT_COUNT")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32),
+        preserve_order: get("PRESERVE_ORDER").and_then(Value::as_bool),
+        angle_optimization: get("ANGLE_OPTIMIZATION").and_then(Value::as_bool),
+        skip_black: get("SKIP_BLACK").and_then(Value::as_bool),
+        max_speed: get("MAX_SPEED").and_then(Value::as_f64).map(|v| v as f32),
+    }
+}
+
+/// The header comment as JSON, repaired — `None` when there is no readable one.
+fn header_json(glsl_src: &str) -> Option<Value> {
+    serde_json::from_str(&clean_json(top_comment(glsl_src)?)).ok()
+}
+
 /// The `GENERATORS` a shader declares, empty for a shader with none.
 ///
 /// Parsed separately from [`parse`] because `isf::Isf` has nowhere to put
 /// them; a header that will not parse at all simply has no generators.
 pub fn generators(glsl_src: &str) -> Vec<Generator> {
-    let Some(comment) = top_comment(glsl_src) else {
-        return Vec::new();
-    };
-    let Ok(root) = serde_json::from_str::<Value>(&clean_json(comment)) else {
+    let Some(root) = header_json(glsl_src) else {
         return Vec::new();
     };
     root.get("GENERATORS")
@@ -208,7 +253,7 @@ fn repair(root: &mut Value) {
         && let Some(inputs) = inputs.as_array_mut()
     {
         for input in inputs.iter_mut().filter_map(Value::as_object_mut) {
-            widen_float_range(input);
+            widen_vector_bounds(input);
             let coerce: fn(&mut Value) = match input.get("TYPE").and_then(Value::as_str) {
                 Some("long" | "int") => {
                     name_the_values(input);
@@ -228,18 +273,26 @@ fn repair(root: &mut Value) {
     }
 }
 
+/// Give a vector-typed input vector-shaped bounds.
+///
 /// MadMapper's `floatRange` is a low/high pair in one `vec2` uniform, which is
-/// what ISF calls a `point2D`. Its bounds are written once for both ends.
-fn widen_float_range(input: &mut Map<String, Value>) {
-    if input.get("TYPE").and_then(Value::as_str) != Some("floatRange") {
-        return;
+/// what ISF calls a `point2D`. And a bound that is the same in every component
+/// gets written once — `"TYPE": "point2D", "DEFAULT": 0.` — where ISF wants it
+/// spelled out per component.
+fn widen_vector_bounds(input: &mut Map<String, Value>) {
+    if input.get("TYPE").and_then(Value::as_str) == Some("floatRange") {
+        input.insert("TYPE".into(), Value::from("point2D"));
     }
-    input.insert("TYPE".into(), Value::from("point2D"));
+    let arity = match input.get("TYPE").and_then(Value::as_str) {
+        Some("point2D") => 2,
+        Some("color") => 4,
+        _ => return,
+    };
     for key in ["MIN", "MAX", "IDENTITY", "DEFAULT"] {
         if let Some(value) = input.get_mut(key)
             && value.is_number()
         {
-            *value = Value::from(vec![value.clone(), value.clone()]);
+            *value = Value::from(vec![value.clone(); arity]);
         }
     }
 }
@@ -330,6 +383,18 @@ mod tests {
     }
 
     #[test]
+    fn render_settings_are_read_and_default_when_absent() {
+        let s = render_settings(&header(
+            r#"{ "RENDER_SETTINGS": { "POINT_COUNT": 500, "SKIP_BLACK": true } }"#,
+        ));
+
+        assert_eq!(s.point_count, Some(500));
+        assert_eq!(s.skip_black, Some(true));
+        assert_eq!(s.max_speed, None);
+        assert_eq!(render_settings(&header(r#"{ "INPUTS": [] }"#)), RenderSettings::default());
+    }
+
+    #[test]
     fn a_shader_without_generators_has_none() {
         assert!(generators(&header(r#"{ "INPUTS": [] }"#)).is_empty());
         assert!(generators("void main() {}").is_empty());
@@ -412,6 +477,20 @@ mod tests {
         };
         assert_eq!(p.default, Some([0.2, 0.8]));
         assert_eq!(p.max, Some([1.0, 1.0]));
+    }
+
+    #[test]
+    fn a_bound_written_once_is_given_to_every_component() {
+        let isf = parse(&header(
+            r#"{ "INPUTS": [ { "NAME": "xy", "TYPE": "point2D",
+                 "MIN": [-1., -1.], "MAX": [1., 1.], "DEFAULT": 0. } ] }"#,
+        ))
+        .unwrap();
+
+        let isf::InputType::Point2d(p) = &isf.inputs[0].ty else {
+            panic!("expected a point2D input, got {:?}", isf.inputs[0].ty);
+        };
+        assert_eq!(p.default, Some([0.0, 0.0]));
     }
 
     #[test]
