@@ -3331,6 +3331,7 @@ dependencies = [
  "rustjay-gui",
  "rustjay-io",
  "rustjay-isf",
+ "rustjay-laser",
  "rustjay-ledmap",
  "rustjay-lighting",
  "rustjay-mixer",

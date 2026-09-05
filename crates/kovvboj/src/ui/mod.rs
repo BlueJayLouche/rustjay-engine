@@ -32,8 +32,12 @@ pub fn next_recording_path() -> String {
 pub const MASTER_DIM: &str = "master_dim";
 
 #[cfg(feature = "webcam")]
+#[cfg(feature = "laser")]
+pub mod laser_tab;
 pub mod ledmap_tab;
 #[cfg(feature = "webcam")]
+#[cfg(feature = "laser")]
+pub use laser_tab::LaserTab;
 pub use ledmap_tab::LedMapTab;
 
 /// Mixer tab — crossfader, per-channel opacity, master FX.

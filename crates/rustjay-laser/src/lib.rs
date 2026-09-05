@@ -10,6 +10,10 @@
 //! runs on the scanner's clock rather than the engine's, so the host asks
 //! [`LaserDeck::due`] once per engine frame and renders only when it is.
 
+/// Streaming to real hardware. Behind the `dac` feature: it pulls in libusb
+/// and CMake, and everything up to the point list works without it.
+#[cfg(feature = "dac")]
+pub mod dac;
 pub mod frame;
 pub mod optimise;
 pub mod safety;

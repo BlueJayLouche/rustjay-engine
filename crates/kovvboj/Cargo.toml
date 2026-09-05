@@ -20,6 +20,11 @@ recording = []
 hap = ["dep:hap-wgpu"]
 ffmpeg = ["rustjay-io/ffmpeg"]
 sysmon = ["dep:sysinfo"]
+# Laser decks: MadMapper laser materials rendered to 2D paths. Off by default —
+# `laser` is the pipeline and preview, `laser-dac` adds hardware output, which
+# pulls in libusb and CMake.
+laser = ["dep:rustjay-laser"]
+laser-dac = ["laser", "rustjay-laser/dac"]
 
 [dependencies]
 rustjay-engine = { workspace = true }
@@ -44,6 +49,7 @@ log            = { workspace = true }
 env_logger     = "0.11"
 image          = { workspace = true }
 notify         = "8.0"
+rustjay-laser  = { path = "../rustjay-laser", optional = true }
 rfd            = "0.15"
 egui           = { workspace = true, optional = true }
 winit          = { workspace = true }
