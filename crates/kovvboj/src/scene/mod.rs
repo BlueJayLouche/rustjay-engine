@@ -565,6 +565,7 @@ impl Topology {
                         kind: crate::sources::SourceKind::SolidColor,
                         path: None,
                         device_index: 0,
+                        text: None,
                     }
                 });
                 if let Some(path) = source.path.take() {
@@ -643,6 +644,7 @@ mod tests {
                 kind: crate::sources::SourceKind::Camera,
                 path: None,
                 device_index: 0,
+                text: None,
             },
             opacity: 0.5,
             blend_mode: rustjay_mixer::BlendMode::Add,

@@ -102,6 +102,26 @@ impl Workspace {
         )?;
         Ok(())
     }
+
+    pub fn folders_path(&self) -> PathBuf {
+        self.dir.join("folders.json")
+    }
+
+    /// Extra folders the library scans, on top of the bundled shaders and
+    /// assets dirs. Per-workspace, like favourites: a set is a show, and a
+    /// show has its own clips.
+    pub fn load_folders(&self) -> Vec<PathBuf> {
+        std::fs::read_to_string(self.folders_path())
+            .ok()
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_folders(&self, folders: &[PathBuf]) -> anyhow::Result<()> {
+        self.ensure_dir()?;
+        std::fs::write(self.folders_path(), serde_json::to_string_pretty(folders)?)?;
+        Ok(())
+    }
 }
 
 #[cfg(feature = "mixer")]

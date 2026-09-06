@@ -17,7 +17,7 @@ prodj = ["rustjay-engine/prodj"]
 syphon = []
 streaming = []
 recording = []
-hap = ["dep:hap-wgpu"]
+hap = ["dep:hap-wgpu", "rustjay-io/hap-encode"]
 ffmpeg = ["rustjay-io/ffmpeg"]
 sysmon = ["dep:sysinfo"]
 # Laser decks: MadMapper laser materials rendered to 2D paths. Off by default —
@@ -48,6 +48,7 @@ serde_json     = { workspace = true }
 log            = { workspace = true }
 env_logger     = "0.11"
 image          = { workspace = true }
+ab_glyph       = "0.2"
 notify         = "8.0"
 rustjay-laser  = { path = "../rustjay-laser", optional = true }
 dirs           = { workspace = true }

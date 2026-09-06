@@ -574,13 +574,13 @@ impl KovvbojStage {
         config: rustjay_projection::DomemasterConfig,
         rotation: [f32; 3],
     ) {
-        if let Some(sync) = &self.dome_sync {
-            if let Ok(mut g) = sync.lock() {
-                g.enabled = enabled;
-                g.config = config;
-                g.content_rotation = rotation;
-                g.version = g.version.wrapping_add(1);
-            }
+        if let Some(sync) = &self.dome_sync
+            && let Ok(mut g) = sync.lock()
+        {
+            g.enabled = enabled;
+            g.config = config;
+            g.content_rotation = rotation;
+            g.version = g.version.wrapping_add(1);
         }
     }
 
@@ -588,11 +588,11 @@ impl KovvbojStage {
     /// [`KovvbojEdgeBlendStage`] picks it up on the next frame.
     #[cfg(feature = "projection")]
     pub fn publish_edge_blend(&self, config: rustjay_projection::EdgeBlendConfig) {
-        if let Some(sync) = &self.edge_blend_sync {
-            if let Ok(mut g) = sync.lock() {
-                g.config = config;
-                g.version = g.version.wrapping_add(1);
-            }
+        if let Some(sync) = &self.edge_blend_sync
+            && let Ok(mut g) = sync.lock()
+        {
+            g.config = config;
+            g.version = g.version.wrapping_add(1);
         }
     }
 
@@ -875,9 +875,10 @@ impl LightingOutput {
     /// Migrate the pre-M3 single `segment` field into `segments` if needed.
     pub fn migrate_legacy_segment(&mut self) {
         if self.segments.is_empty()
-            && let Some(seg) = self.legacy_segment.take() {
-                self.segments.push(seg);
-            }
+            && let Some(seg) = self.legacy_segment.take()
+        {
+            self.segments.push(seg);
+        }
         if self.segments.is_empty() {
             self.segments.push(LightingSegment::default());
         }
@@ -1405,20 +1406,10 @@ impl rustjay_projection::ProjectionStage for KovvbojDomeStage {
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "projection")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EdgeBlendSync {
     pub config: rustjay_projection::EdgeBlendConfig,
     pub version: u64,
-}
-
-#[cfg(feature = "projection")]
-impl Default for EdgeBlendSync {
-    fn default() -> Self {
-        Self {
-            config: rustjay_projection::EdgeBlendConfig::default(),
-            version: 0,
-        }
-    }
 }
 
 #[cfg(feature = "projection")]

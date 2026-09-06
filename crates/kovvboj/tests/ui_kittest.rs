@@ -318,7 +318,7 @@ fn deck_stream_paints_invalid_url_error() {
         .add_channel(rustjay_mixer::Channel::new(
             "test",
             "Test",
-            Box::new(kovvboj::graph::DeckCompositor::new()),
+            Box::new(kovvboj::sources::testing::StubSource),
         ))
         .unwrap();
     let mut harness = tab_harness_with_app(EffectsTab::default(), [700.0, 500.0], app);
@@ -327,13 +327,17 @@ fn deck_stream_paints_invalid_url_error() {
     harness.run();
     harness
         .get_all(By::new().role(Role::TextInput))
-        .next()
+        // The library's search box is the first text field in this tab; the
+        // stream URL is the next one.
+        .nth(1)
         .expect("stream URL field")
         .click();
     harness.run();
     harness
         .get_all(By::new().role(Role::TextInput))
-        .next()
+        // The library's search box is the first text field in this tab; the
+        // stream URL is the next one.
+        .nth(1)
         .expect("stream URL field")
         .type_text("ftp://stream.example/live");
     harness.run();

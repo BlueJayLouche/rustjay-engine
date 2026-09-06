@@ -192,6 +192,17 @@ pub struct KovvbojAppState {
     #[serde(skip)]
     #[cfg(feature = "mixer")]
     pub pending_source_swaps: Vec<PendingSourceSwap>,
+    /// Text-layer edits waiting for `prepare`, where the mixer is reachable.
+    #[serde(skip)]
+    pub pending_text: Vec<(String, TextEdit)>,
+    /// A clip picked for a layer, delivered from the file-dialog thread as
+    /// `(layer uuid, file)`.
+    #[serde(skip)]
+    pub pending_clip: std::sync::Arc<std::sync::Mutex<Option<(String, std::path::PathBuf)>>>,
+    /// Finished HAP conversions: `(layer uuid, converted file or error)`. The
+    /// layer swaps to the converted clip when one lands.
+    #[serde(skip)]
+    pub pending_convert: ConvertResults,
     /// Library entry each layer was built from, keyed by its channel uuid.
     ///
     /// `rustjay_mixer::Channel` has nowhere to record what a layer's source
@@ -234,6 +245,10 @@ pub struct KovvbojAppState {
     /// category. Persisted to `.kovvboj/favourites.json` as they are toggled.
     #[serde(skip)]
     pub favourites: std::collections::HashSet<String>,
+    /// Extra folders the library scans, on top of the bundled shaders and
+    /// assets dirs. Persisted to `.kovvboj/folders.json` as they are added.
+    #[serde(skip)]
+    pub library_folders: Vec<std::path::PathBuf>,
     /// Layers saved to the library, re-read when one is added or removed.
     #[serde(skip)]
     #[cfg(feature = "mixer")]
@@ -307,6 +322,26 @@ pub struct PendingFxRemoval {
 ///
 /// Swapping `Channel::effect` keeps the layer itself — its chain, opacity,
 /// blend, and every MIDI/modulation binding keyed to `ch_<uuid>_`. That is why
+/// Finished clip conversions, delivered from their worker threads:
+/// `(layer uuid, converted file or the error text)`.
+pub type ConvertResults =
+    std::sync::Arc<std::sync::Mutex<Vec<(String, Result<std::path::PathBuf, String>)>>>;
+
+/// Lowercase, spaces to underscores — how a layer name is addressed over OSC,
+/// where "Main Title" is `/rustjay/text/main_title`.
+fn slug(s: &str) -> String {
+    s.trim().to_lowercase().replace(' ', "_")
+}
+
+/// A change to a text layer, applied where the mixer can be reached.
+#[derive(Clone, Debug)]
+pub enum TextEdit {
+    /// The string to render.
+    Body(String),
+    /// The font file to render it with.
+    Font(std::path::PathBuf),
+}
+
 /// re-pointing needs no per-source rebind API: the layer outlives its source.
 #[cfg(feature = "mixer")]
 #[derive(Clone, Debug)]
@@ -498,6 +533,26 @@ pub fn move_effect(
 }
 
 impl KovvbojAppState {
+    /// Every folder the library scans: the bundled two, then the user's own.
+    pub fn library_roots(&self) -> Vec<std::path::PathBuf> {
+        let mut roots = vec![crate::shaders_dir(), crate::assets_dir()];
+        roots.extend(self.library_folders.iter().cloned());
+        roots
+    }
+
+    /// Re-walk every library root. Called on startup, when the shader watcher
+    /// sees a file appear or vanish, and when a folder is added or removed.
+    pub fn rescan_library(&mut self) {
+        self.registry = crate::sources::Registry::scan(&self.library_roots());
+        log::info!(
+            "[Registry] scanned {} shaders, {} images, {} videos across {} folders",
+            self.registry.shaders.len(),
+            self.registry.images.len(),
+            self.registry.videos.len(),
+            self.library_folders.len() + 2,
+        );
+    }
+
     /// A complete scene snapshot: mixer knobs + topology + the unified modulation
     /// engine (captured via the `engine_modulation` handle, if available).
     #[cfg(feature = "mixer")]
@@ -703,13 +758,7 @@ impl Default for KovvbojAppState {
             ready: false,
             selection: Selection::None,
             selected_layers: std::collections::HashSet::new(),
-            registry: Registry {
-                shaders: Vec::new(),
-                images: Vec::new(),
-                videos: Vec::new(),
-                streams: Vec::new(),
-                builtins: Vec::new(),
-            },
+            registry: Registry::default(),
             shader_watcher: None,
             #[cfg(feature = "projection")]
             stage: KovvbojStage::with_default_surface(),
@@ -728,6 +777,7 @@ impl Default for KovvbojAppState {
             #[cfg(feature = "mixer")]
             audio_routing_snapshot: rustjay_core::AudioRoutingState::default(),
             favourites: std::collections::HashSet::new(),
+            library_folders: Vec::new(),
             #[cfg(feature = "mixer")]
             saved_layers: Vec::new(),
             #[cfg(feature = "mixer")]
@@ -767,6 +817,9 @@ impl Default for KovvbojAppState {
             pending_fx_removals: Vec::new(),
             #[cfg(feature = "mixer")]
             pending_source_swaps: Vec::new(),
+            pending_text: Vec::new(),
+            pending_clip: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_convert: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             #[cfg(feature = "mixer")]
             layer_sources: std::collections::HashMap::new(),
             #[cfg(feature = "mixer")]
@@ -966,6 +1019,12 @@ fn instantiate_source(
         SourceKind::SolidColor => {
             Box::new(SolidColorSource::new(device, format, [1.0, 0.0, 1.0, 1.0]))
         }
+        SourceKind::Text => Box::new(crate::sources::TextSource::new(
+            device,
+            format,
+            entry.path.as_deref(),
+            entry.text.as_deref(),
+        )),
         SourceKind::Camera => Box::new(CameraSource::new(device, entry.device_index)),
         SourceKind::Video => {
             let path = entry
@@ -1341,6 +1400,7 @@ impl KovvbojRootPlugin {
                     kind: crate::sources::SourceKind::Isf,
                     path: Some(shaders_dir.join("ColorCycle.fs")),
                     device_index: 0,
+                    text: None,
                 },
             ),
             (
@@ -1351,6 +1411,7 @@ impl KovvbojRootPlugin {
                     kind: crate::sources::SourceKind::Camera,
                     path: None,
                     device_index: 0,
+                    text: None,
                 },
             ),
         ];
@@ -1609,16 +1670,16 @@ fn sync_surface_source(
     } else {
         (false, None)
     };
-    if needs_update {
-        if let Ok(mut g) = sync.lock() {
-            g.source_key = source_key;
-            g.override_view = override_view;
-            g.output_generation = current_gen;
-            g.uv_scale = uv_scale;
-            g.uv_offset = uv_offset;
-            g.uv_crop = uv_crop;
-            g.version = g.version.wrapping_add(1);
-        }
+    if needs_update
+        && let Ok(mut g) = sync.lock()
+    {
+        g.source_key = source_key;
+        g.override_view = override_view;
+        g.output_generation = current_gen;
+        g.uv_scale = uv_scale;
+        g.uv_offset = uv_offset;
+        g.uv_crop = uv_crop;
+        g.version = g.version.wrapping_add(1);
     }
 }
 
@@ -1703,6 +1764,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // not just ones opened by hand.
                 crate::persistence::push_recent(&state.workspace.dir);
                 state.favourites = state.workspace.load_favourites();
+                state.library_folders = state.workspace.load_folders();
                 state.saved_layers = state.workspace.load_layers();
                 state.saved_chains = state.workspace.load_chains();
                 state.saved_groups = state.workspace.load_groups();
@@ -1729,9 +1791,10 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // Queue the workspace's saved param base values; the renderer
                 // applies them after the rebuilt graph's params (re)register.
                 if let Some(params) = self.pending_params.take()
-                    && let Ok(mut restore) = engine.param_restore.lock() {
-                        restore.extend(params);
-                    }
+                    && let Ok(mut restore) = engine.param_restore.lock()
+                {
+                    restore.extend(params);
+                }
             }
 
             // Capture projection subsystem handle for runtime headless management.
@@ -1741,13 +1804,7 @@ impl EffectPlugin for KovvbojRootPlugin {
             }
 
             let shaders_dir = crate::shaders_dir();
-            state.registry = Registry::scan(&shaders_dir, &crate::assets_dir());
-            log::info!(
-                "[Registry] scanned {} shaders, {} images, {} videos",
-                state.registry.shaders.len(),
-                state.registry.images.len(),
-                state.registry.videos.len(),
-            );
+            state.rescan_library();
             state.shader_watcher = ShaderWatcher::new(&shaders_dir).ok();
             if state.shader_watcher.is_some() {
                 log::info!("[ShaderWatcher] started");
@@ -1920,9 +1977,10 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // after the rebuilt graph's params (re)register (set_param_base
                 // needs &mut engine, which we don't have here).
                 if !scene.params.is_empty()
-                    && let Ok(mut restore) = engine.param_restore.lock() {
-                        restore.extend(scene.params.clone());
-                    }
+                    && let Ok(mut restore) = engine.param_restore.lock()
+                {
+                    restore.extend(scene.params.clone());
+                }
             }
 
             if let Some(ref watcher) = state.shader_watcher {
@@ -1937,12 +1995,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                         notify::EventKind::Create(_) | notify::EventKind::Remove(_)
                     )
                 }) {
-                    state.registry =
-                        Registry::scan(&crate::shaders_dir(), &crate::assets_dir());
-                    log::info!(
-                        "[Registry] rescanned: {} shaders",
-                        state.registry.shaders.len()
-                    );
+                    state.rescan_library();
                 }
                 for event in events {
                     for path in &event.paths {
@@ -2154,6 +2207,101 @@ impl EffectPlugin for KovvbojRootPlugin {
 
             }
 
+            // Text layers: a new string or font, from the inspector or OSC.
+            // The entry is updated too, so the change is saved with the scene.
+            for (uuid, edit) in std::mem::take(&mut state.pending_text) {
+                if let Ok(mut mixer) = state.mixer.lock() {
+                    if let Some(ch) = mixer.channels.iter_mut().find(|c| c.uuid == uuid)
+                        && let Some(any) = ch.effect.as_any_mut()
+                        && let Some(text) = any.downcast_mut::<crate::sources::TextSource>()
+                    {
+                        match &edit {
+                            TextEdit::Body(s) => text.set_text(s.clone()),
+                            TextEdit::Font(p) => text.set_font(p),
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                if let Some(entry) = state.layer_sources.get_mut(&uuid) {
+                    match edit {
+                        TextEdit::Body(s) => entry.text = Some(s),
+                        TextEdit::Font(p) => entry.path = Some(p),
+                    }
+                }
+            }
+
+            // A clip picked in the inspector, or one that finished converting:
+            // both land as a source swap, which keeps the layer's uuid, chain
+            // and bindings.
+            let mut picked: Vec<(String, std::path::PathBuf)> = Vec::new();
+            if let Ok(mut guard) = state.pending_clip.lock()
+                && let Some(pick) = guard.take()
+            {
+                picked.push(pick);
+            }
+            if let Ok(mut guard) = state.pending_convert.lock() {
+                for (uuid, result) in std::mem::take(&mut *guard) {
+                    match result {
+                        Ok(path) => {
+                            engine.notify(
+                                format!("Converted to HAP: {}", path.display()),
+                                rustjay_core::NotificationLevel::Info,
+                                std::time::Duration::from_secs(4),
+                            );
+                            picked.push((uuid, path));
+                        }
+                        Err(e) => engine.notify(
+                            format!("HAP conversion failed: {e}"),
+                            rustjay_core::NotificationLevel::Error,
+                            std::time::Duration::from_secs(6),
+                        ),
+                    }
+                }
+            }
+            for (layer_uuid, path) in picked {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Clip")
+                    .to_string();
+                state.pending_source_swaps.push(PendingSourceSwap {
+                    layer_uuid,
+                    source: crate::sources::SourceEntry {
+                        id: name.to_lowercase().replace(' ', "_"),
+                        name,
+                        kind: crate::sources::SourceKind::Video,
+                        path: Some(path),
+                        device_index: 0,
+                        text: None,
+                    },
+                });
+            }
+
+            // `/rustjay/text/<layer>` sets a text layer's copy: song titles and
+            // the like, pushed from whatever is driving the show.
+            if !engine.osc_text.is_empty() {
+                let messages = engine.osc_text.clone();
+                let mixer = state.mixer.lock().unwrap_or_else(|e| e.into_inner());
+                let layers: Vec<(String, String)> = mixer
+                    .channels
+                    .iter()
+                    .map(|c| (c.uuid.clone(), slug(&c.name)))
+                    .collect();
+                drop(mixer);
+                for (addr, body) in messages {
+                    let Some(target) = addr.strip_prefix("/rustjay/text/") else {
+                        continue;
+                    };
+                    let target = slug(target);
+                    for (uuid, name) in &layers {
+                        if *name == target || *uuid == target {
+                            state.pending_text.push((uuid.clone(), TextEdit::Body(body.clone())));
+                        }
+                    }
+                }
+            }
+
             // Re-point a layer's source. The layer keeps its uuid, so its
             // chain and every binding under `ch_<uuid>_` survive untouched.
             let swaps: Vec<PendingSourceSwap> = std::mem::take(&mut state.pending_source_swaps);
@@ -2238,6 +2386,15 @@ impl EffectPlugin for KovvbojRootPlugin {
                 match instantiate_source(&entry, device, queue, engine) {
                     Ok(mut source) => {
                         source.set_param_prefix(&format!("ch_{uuid}_"));
+                        // A text layer that fell back to whatever font this
+                        // machine had records which one, so the scene reloads —
+                        // and the bundle packs — the face it was made with.
+                        if entry.path.is_none()
+                            && let Some(any) = source.as_any()
+                            && let Some(text) = any.downcast_ref::<crate::sources::TextSource>()
+                        {
+                            entry.path = text.font_path().map(std::path::Path::to_path_buf);
+                        }
                         let mut channel = Channel::new(uuid.clone(), &req.source.name, source);
                         channel.opacity = 1.0;
                         if let Some((desc, params)) = &rebuilt {
@@ -2278,7 +2435,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                             continue;
                         }
                         drop(mixer);
-                        state.layer_sources.insert(uuid, req.source.clone());
+                        state.layer_sources.insert(uuid, entry.clone());
                         self.params_dirty = true;
                         engine.notify(
                             format!("Added layer '{name}'"),
@@ -2614,57 +2771,57 @@ impl EffectPlugin for KovvbojRootPlugin {
                 .headless_outputs
                 .iter()
                 .any(|h| h.enabled && !h.pushed);
-            if needs_push {
-                if let Some(handle) = &state.projection_handle {
-                    let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(sub) =
-                        any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>()
-                    {
-                        for cfg in state.stage.headless_outputs.iter_mut() {
-                            if cfg.enabled && !cfg.pushed {
-                                // Source (crop) then warp, the same pair a
-                                // projector window runs. Without these a headless
-                                // output was a passthrough and its assigned
-                                // surface did nothing.
-                                let slot = state.stage.headless_warp_syncs.len();
-                                let warp = std::sync::Arc::new(std::sync::Mutex::new(
-                                    crate::stage::WarpSync::default(),
-                                ));
-                                let source = std::sync::Arc::new(std::sync::Mutex::new(
-                                    crate::stage::SourceSync::default(),
-                                ));
-                                state.stage.headless_warp_syncs.push(warp.clone());
-                                state.stage.headless_source_syncs.push(source.clone());
-                                let _ = slot;
-                                sub.add_headless_output(
-                                    cfg.width,
-                                    cfg.height,
-                                    vec![
-                                        Box::new(crate::stage::KovvbojSourceStage::new(
-                                            device,
-                                            // Must match HeadlessOutput's BGRA offscreen.
-                                            wgpu::TextureFormat::Bgra8Unorm,
-                                            source,
-                                        )),
-                                        Box::new(crate::stage::KovvbojWarpStage::new(
-                                            device,
-                                            wgpu::TextureFormat::Bgra8Unorm,
-                                            warp,
-                                        )),
-                                    ],
-                                );
-                                cfg.pushed = true;
-                                log::info!(
-                                    "[Headless] added {}x{} output '{}'",
-                                    cfg.width,
-                                    cfg.height,
-                                    cfg.name
-                                );
-                            }
+            if needs_push
+                && let Some(handle) = &state.projection_handle
+            {
+                let mut any_guard = handle.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(sub) =
+                    any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>()
+                {
+                    for cfg in state.stage.headless_outputs.iter_mut() {
+                        if cfg.enabled && !cfg.pushed {
+                            // Source (crop) then warp, the same pair a
+                            // projector window runs. Without these a headless
+                            // output was a passthrough and its assigned
+                            // surface did nothing.
+                            let slot = state.stage.headless_warp_syncs.len();
+                            let warp = std::sync::Arc::new(std::sync::Mutex::new(
+                                crate::stage::WarpSync::default(),
+                            ));
+                            let source = std::sync::Arc::new(std::sync::Mutex::new(
+                                crate::stage::SourceSync::default(),
+                            ));
+                            state.stage.headless_warp_syncs.push(warp.clone());
+                            state.stage.headless_source_syncs.push(source.clone());
+                            let _ = slot;
+                            sub.add_headless_output(
+                                cfg.width,
+                                cfg.height,
+                                vec![
+                                    Box::new(crate::stage::KovvbojSourceStage::new(
+                                        device,
+                                        // Must match HeadlessOutput's BGRA offscreen.
+                                        wgpu::TextureFormat::Bgra8Unorm,
+                                        source,
+                                    )),
+                                    Box::new(crate::stage::KovvbojWarpStage::new(
+                                        device,
+                                        wgpu::TextureFormat::Bgra8Unorm,
+                                        warp,
+                                    )),
+                                ],
+                            );
+                            cfg.pushed = true;
+                            log::info!(
+                                "[Headless] added {}x{} output '{}'",
+                                cfg.width,
+                                cfg.height,
+                                cfg.name
+                            );
                         }
-                    } else {
-                        log::warn!("[Headless] projection_handle downcast failed — headless outputs not created");
                     }
+                } else {
+                    log::warn!("[Headless] projection_handle downcast failed — headless outputs not created");
                 }
             }
 
@@ -3079,10 +3236,10 @@ impl EffectPlugin for KovvbojRootPlugin {
 
                     // Publish active output sinks (projectors + headless) for the
                     // top-bar status strip.
-                    if let Ok(mut sinks) = engine.output_sinks.lock() {
-                        if *sinks != sink_labels {
-                            *sinks = sink_labels;
-                        }
+                    if let Ok(mut sinks) = engine.output_sinks.lock()
+                        && *sinks != sink_labels
+                    {
+                        *sinks = sink_labels;
                     }
                 }
             }
@@ -3361,10 +3518,10 @@ impl EffectPlugin for KovvbojRootPlugin {
 
                 // Update rotation syncs from projector configs.
                 for (i, proj) in stage.projectors.iter().enumerate() {
-                    if let Some(sync) = stage.rotation_syncs.get(i) {
-                        if let Ok(mut g) = sync.lock() {
-                            g.set_rotation(proj.rotation.index());
-                        }
+                    if let Some(sync) = stage.rotation_syncs.get(i)
+                        && let Ok(mut g) = sync.lock()
+                    {
+                        g.set_rotation(proj.rotation.index());
                     }
                 }
 
@@ -3506,6 +3663,7 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> KovvbojSourceEntry {
             SourceKind::Image => "image",
             SourceKind::Video => "video",
             SourceKind::SolidColor => "solid_color",
+            SourceKind::Text => "text",
             SourceKind::Camera => "camera",
             SourceKind::Ndi => "ndi",
             SourceKind::Syphon => "syphon",
@@ -3520,6 +3678,7 @@ fn source_entry_to_api(e: &crate::sources::SourceEntry) -> KovvbojSourceEntry {
         .to_string(),
         path: e.path.as_ref().map(|p| p.to_string_lossy().to_string()),
         device_index: e.device_index,
+        text: e.text.clone(),
     }
 }
 

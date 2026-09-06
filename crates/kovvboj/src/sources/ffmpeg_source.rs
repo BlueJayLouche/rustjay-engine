@@ -32,12 +32,18 @@ pub struct FfmpegSource {
     speed_key: String,
     playing_key: String,
     loop_key: String,
+    sync_key: String,
+    mode_key: String,
+    div_key: String,
     position_key: String,
     in_point_key: String,
     out_point_key: String,
     last_speed: f32,
     last_playing: bool,
     last_loop: i32,
+    /// Whether the clip is on screen. Not playing means black, in every mode:
+    /// a stopped layer that keeps showing its last frame reads as still live.
+    visible: bool,
     last_position: f32,
     last_in_point: f32,
     last_out_point: f32,
@@ -156,12 +162,16 @@ impl FfmpegSource {
             speed_key: String::new(),
             playing_key: String::new(),
             loop_key: String::new(),
+            sync_key: String::new(),
+            mode_key: String::new(),
+            div_key: String::new(),
             position_key: String::new(),
             in_point_key: String::new(),
             out_point_key: String::new(),
             last_speed: 1.0,
             last_playing: true,
             last_loop: 1,
+            visible: true,
             last_position: 0.0,
             last_in_point: 0.0,
             last_out_point: 1.0,
@@ -174,6 +184,9 @@ impl FfmpegSource {
         self.speed_key = format!("{p}speed");
         self.playing_key = format!("{p}playing");
         self.loop_key = format!("{p}loop");
+        self.sync_key = format!("{p}sync");
+        self.mode_key = format!("{p}mode");
+        self.div_key = format!("{p}div");
         self.position_key = format!("{p}position");
         self.in_point_key = format!("{p}in_point");
         self.out_point_key = format!("{p}out_point");
@@ -229,7 +242,7 @@ impl EffectInstance for FfmpegSource {
         // Return bare names — the enclosing DeckCompositor and Mixer apply the
         // canonical prefix (ch_<uuid>_deck_<uuid>_).  This avoids double-prefixing
         // when set_full_prefix() has already been called on the deck.
-        vec![
+        let mut params = vec![
             ParameterDescriptor::float(
                 "speed".to_string(),
                 "Speed",
@@ -283,12 +296,28 @@ impl EffectInstance for FfmpegSource {
                 1.0,
                 0.001,
             ),
-        ]
+        ];
+        params.extend(super::sync_parameters());
+        params
     }
 
     fn prepare(&mut self, engine: &EngineState, device: &wgpu::Device, queue: &wgpu::Queue) {
         // Sync playback params.
-        let speed = engine.get_param(&self.speed_key).unwrap_or(1.0);
+        // Sync stretches the in/out span to the chosen beat division, so a
+        // clip loops on the bar whatever its length; Speed trims from there.
+        let in_point = engine.get_param(&self.in_point_key).unwrap_or(0.0);
+        let out_point = engine.get_param(&self.out_point_key).unwrap_or(1.0);
+        let span = ((out_point - in_point).max(0.0) as f64) * self.decoder.duration();
+        let mode = super::TriggerMode::from_index(
+            engine.get_param(&self.mode_key).unwrap_or(0.0).round() as i32,
+        );
+        let speed = super::clip_speed(
+            engine.get_param(&self.speed_key).unwrap_or(1.0),
+            engine.get_param(&self.sync_key).unwrap_or(0.0) >= 0.5,
+            engine.get_param(&self.div_key).unwrap_or(4.0) as usize,
+            engine.effective_bpm(),
+            span,
+        );
         if self.needs_sync || (speed - self.last_speed).abs() > f32::EPSILON {
             self.decoder.set_speed(speed);
             self.last_speed = speed;
@@ -297,14 +326,30 @@ impl EffectInstance for FfmpegSource {
         let playing = engine.get_param(&self.playing_key).unwrap_or(1.0) > 0.5;
         if self.needs_sync || playing != self.last_playing {
             if playing {
+                if mode.rewinds_on_press() {
+                    self.decoder.seek_to(in_point as f64);
+                }
                 self.decoder.play();
-            } else {
+            } else if mode.stops_on_release() {
                 self.decoder.pause();
+                if mode.rewinds_on_release() {
+                    self.decoder.seek_to(in_point as f64);
+                }
             }
             self.last_playing = playing;
         }
+        // A one-shot owns its own end: it plays on after the button is
+        // released and goes black when it runs out. Everything else is black
+        // the moment it is not playing.
+        self.visible = if mode == super::TriggerMode::OneShot {
+            self.decoder.is_playing()
+        } else {
+            playing
+        };
 
-        let loop_raw = engine.get_param(&self.loop_key).unwrap_or(1.0) as i32;
+        let loop_raw = mode
+            .loop_override()
+            .unwrap_or_else(|| engine.get_param(&self.loop_key).unwrap_or(1.0) as i32);
         if self.needs_sync || loop_raw != self.last_loop {
             let mode = match loop_raw {
                 0 => LoopMode::None,
@@ -321,14 +366,12 @@ impl EffectInstance for FfmpegSource {
             self.last_position = position;
         }
 
-        let in_point = engine.get_param(&self.in_point_key).unwrap_or(0.0);
         if self.needs_sync || (in_point - self.last_in_point).abs() > 0.001 {
             let t = in_point as f64 * self.decoder.duration();
             self.decoder.set_in_point(t);
             self.last_in_point = in_point;
         }
 
-        let out_point = engine.get_param(&self.out_point_key).unwrap_or(1.0);
         if self.needs_sync || (out_point - self.last_out_point).abs() > 0.001 {
             let t = out_point as f64 * self.decoder.duration();
             self.decoder.set_out_point(t);
@@ -388,10 +431,14 @@ impl EffectInstance for FfmpegSource {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
-            pass.set_bind_group(0, bind_group, &[]);
-            pass.draw(0..6, 0..1);
+            // Stopped means black: the pass has already cleared, so the
+            // draw is simply skipped.
+            if self.visible {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, ctx.vertex_buffer.slice(..));
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
         }
     }
 }
