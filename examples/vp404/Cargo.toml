@@ -10,7 +10,7 @@ egui    = ["rustjay-engine/egui"]
 mixer   = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
 # Live sampling pulls in rustjay-io capture (webcam / platform Syphon/Spout).
 # Keep it off the default build so headless/Pi builds stay lean.
-capture = ["dep:rustjay-io", "rustjay-io/webcam"]
+capture = ["rustjay-io/webcam"]
 # Push param values (pad<i>_loaded, rec_state, ...) to an OSC controller.
 osc-feedback = ["rustjay-engine/osc-feedback"]
 ndi     = ["rustjay-engine/ndi"]
@@ -24,12 +24,11 @@ api     = ["rustjay-engine/api"]
 rustjay-engine = { workspace = true }
 rustjay-mixer  = { workspace = true, optional = true }
 rustjay-core   = { workspace = true }
-rustjay-io     = { workspace = true, optional = true, default-features = false }
+# HAP encoding lives here now (the pad grid converts clips on import).
+rustjay-io     = { workspace = true, default-features = false, features = ["hap-encode"] }
 wgpu           = { workspace = true }
 egui           = { workspace = true }
 hap-wgpu       = "0.3.0"
-hap-qt         = "0.3.0"
-rayon          = "1"
 anyhow         = { workspace = true }
 log            = { workspace = true }
 serde          = { workspace = true }

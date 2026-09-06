@@ -111,7 +111,10 @@ pub struct InputManager {
     // Input backends
     #[cfg(feature = "webcam")]
     webcam: Option<WebcamCapture>,
+    /// Keeps the struct one shape whether or not the feature is on; nothing
+    /// reads it in that build.
     #[cfg(not(feature = "webcam"))]
+    #[allow(dead_code)]
     webcam: Option<()>,
     frame_receiver: Option<mpsc::Receiver<WebcamFrame>>,
     #[cfg(feature = "ndi")]
