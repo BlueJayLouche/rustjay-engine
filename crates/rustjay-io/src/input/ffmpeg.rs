@@ -117,7 +117,7 @@ impl DecodeContext {
     /// G, B, R rather than luma and chroma. swscale ignores that and applies a
     /// BT.601 matrix anyway, which silently wrecks the colour: RGB(100,200,50)
     /// comes back as (162,247,63). So for those, pack the planes directly.
-    fn to_rgba(&mut self, decoded: &Video, scratch: &mut Video) -> anyhow::Result<VideoFrame> {
+    fn convert_to_rgba(&mut self, decoded: &Video, scratch: &mut Video) -> anyhow::Result<VideoFrame> {
         if self.identity_gbr {
             return Ok(pack_gbr_planes(decoded));
         }
@@ -377,15 +377,15 @@ impl FfmpegDecoder {
     /// real time has elapsed for the video frame rate and speed. When
     /// behind, intermediate frames are skipped so the decoder catches up.
     pub fn decode_frame(&mut self) -> Option<VideoFrame> {
-        if self.context.is_none() {
-            if let Err(e) = self.init_context() {
-                log::warn!(
-                    "FfmpegDecoder failed to init context for {}: {}",
-                    self.path.display(),
-                    e
-                );
-                return self.last_frame.clone();
-            }
+        if self.context.is_none()
+            && let Err(e) = self.init_context()
+        {
+            log::warn!(
+                "FfmpegDecoder failed to init context for {}: {}",
+                self.path.display(),
+                e
+            );
+            return self.last_frame.clone();
         }
 
         if !self.playing {
@@ -556,7 +556,7 @@ impl FfmpegDecoder {
                     while ctx.decoder.receive_frame(&mut decoded).is_ok() {
                         let pts = decoded.timestamp().unwrap_or(-1);
                         if pts >= target_ts || self.last_pts < 0 {
-                            let frame = ctx.to_rgba(&decoded, &mut rgba_frame)?;
+                            let frame = ctx.convert_to_rgba(&decoded, &mut rgba_frame)?;
                             self.last_pts = pts;
                             return Ok(frame);
                         }
@@ -567,7 +567,7 @@ impl FfmpegDecoder {
                     // End of file: drain decoder.
                     ctx.decoder.send_eof()?;
                     if ctx.decoder.receive_frame(&mut decoded).is_ok() {
-                        return ctx.to_rgba(&decoded, &mut rgba_frame);
+                        return ctx.convert_to_rgba(&decoded, &mut rgba_frame);
                     }
                     return Err(anyhow::anyhow!("EOF reached without finding target frame"));
                 }
@@ -703,16 +703,16 @@ impl StreamDecoder {
                 }
                 Err(ffmpeg::Error::Eof) => {
                     ctx.decoder.send_eof().ok();
-                    if ctx.decoder.receive_frame(&mut decoded).is_ok() {
-                        if ctx.scaler.run(&decoded, &mut rgba_frame).is_ok() {
-                            let frame = VideoFrame {
-                                width: rgba_frame.width(),
-                                height: rgba_frame.height(),
-                                data: rgba_frame.data(0).to_vec(),
-                            };
-                            self.last_frame = Some(frame.clone());
-                            return Some(frame);
-                        }
+                    if ctx.decoder.receive_frame(&mut decoded).is_ok()
+                        && ctx.scaler.run(&decoded, &mut rgba_frame).is_ok()
+                    {
+                        let frame = VideoFrame {
+                            width: rgba_frame.width(),
+                            height: rgba_frame.height(),
+                            data: rgba_frame.data(0).to_vec(),
+                        };
+                        self.last_frame = Some(frame.clone());
+                        return Some(frame);
                     }
                     log::warn!("StreamDecoder EOF on {}", self.url);
                     self.connected = false;

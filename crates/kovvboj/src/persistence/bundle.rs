@@ -21,7 +21,13 @@ const ASSETS: &str = "assets";
 ///
 /// Save before calling: this reads what is on disk, not what is live.
 pub fn export(workspace: &Path, out: &Path) -> anyhow::Result<()> {
-    let staging = std::env::temp_dir().join(format!("kovvboj-export-{}", std::process::id()));
+    // Per-thread, not just per-process: two exports running at once would
+    // otherwise stage into the same directory and pack each other's assets.
+    let staging = std::env::temp_dir().join(format!(
+        "kovvboj-export-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&staging);
     copy_dir(workspace, &staging)?;
 
@@ -257,6 +263,41 @@ mod tests {
             scene.contains(&*packed.to_string_lossy()),
             "scene still points elsewhere: {scene}"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A text layer's font is an asset like any other: it rides in `path`, so
+    /// the same walk packs it. Without the font the copy renders in whatever
+    /// face the other machine happened to have.
+    #[test]
+    fn a_bundle_carries_the_font_a_text_layer_uses() {
+        let root = std::env::temp_dir().join(format!("kovvboj-fontpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ws = root.join("live");
+        std::fs::create_dir_all(&ws).unwrap();
+        let font = root.join("Gothic.ttf");
+        std::fs::write(&font, b"not really a font").unwrap();
+        std::fs::write(
+            ws.join("scene.json"),
+            format!(
+                r#"{{"topology":{{"layers":[{{"source":{{"kind":"Text","text":"HELLO","path":{:?}}}}}]}}}}"#,
+                font.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let archive = root.join("gig.kovvbojset");
+        export(&ws, &archive).unwrap();
+        std::fs::remove_file(&font).unwrap();
+        let imported = import(&archive).unwrap();
+
+        let scene = std::fs::read_to_string(imported.join("scene.json")).unwrap();
+        assert!(
+            imported.join(ASSETS).join("Gothic.ttf").is_file(),
+            "font not packed"
+        );
+        assert!(scene.contains("HELLO"), "the copy travels with it: {scene}");
 
         let _ = std::fs::remove_dir_all(&root);
     }

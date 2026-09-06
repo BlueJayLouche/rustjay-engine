@@ -14,7 +14,10 @@ use std::{
 };
 
 use isf::Isf;
-use rustjay_core::{EffectPlugin, EngineState, ParameterDescriptor, Vertex};
+use rustjay_core::{
+    BEAT_DIVISIONS, EffectPlugin, EngineState, ParamCategory, ParameterDescriptor, Vertex,
+    lfo::BEAT_DIVISION_NAMES,
+};
 use wgpu::util::DeviceExt;
 
 use crate::{
@@ -39,6 +42,78 @@ pub struct IsfState {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct IsfUniforms([f32; MAX_ISF_UNIFORMS]);
+
+// ---------------------------------------------------------------------------
+// Pacing: parameters the shader does not declare
+// ---------------------------------------------------------------------------
+
+/// Multiplier on the instance's clock. 1.0 is real time.
+pub const TIME_SPEED: &str = "time_speed";
+/// Run the clock off the tempo rather than the wall clock.
+pub const TIME_SYNC: &str = "time_sync";
+/// Beats per shader-second while synced — indexes [`BEAT_DIVISIONS`].
+pub const TIME_DIV: &str = "time_div";
+/// Restart the clock. A trigger, not a setting: any *change* is one restart,
+/// so the UI (or a mapped MIDI button) just toggles it.
+pub const TIME_RESET: &str = "time_reset";
+
+/// Whether the shader's output moves on its own. Only a shader that reads the
+/// clock — the TIME built-ins, a `PHASE_INPUTS` accumulator, or a MadMapper
+/// time generator — has any pacing to control; a filter that just tints its
+/// input does not, and a Speed slider on that is noise in the inspector.
+///
+/// `DATE` and `FRAMEINDEX` deliberately do not count: neither is scaled by the
+/// clock, so pacing controls would do nothing for a shader driven by them.
+fn uses_clock(glsl_src: &str) -> bool {
+    ["TIMEDELTA", "PHASE_TIME", "PHASE_INPUTS", "time_base", "animator"]
+        .iter()
+        .any(|k| glsl_src.contains(k))
+        || mentions_word(glsl_src, "TIME")
+}
+
+/// Whether `word` appears in `src` other than as part of a longer identifier.
+/// Without this, every shader with a `lifetime` or a `RUNTIME` in it would be
+/// taken for a clock-driven one.
+fn mentions_word(src: &str, word: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    src.match_indices(word).any(|(i, _)| {
+        !src[..i].chars().next_back().is_some_and(ident)
+            && !src[i + word.len()..].chars().next().is_some_and(ident)
+    })
+}
+
+/// How fast the instance's clock runs this frame, in shader-seconds per real
+/// second. Synced, one shader-second spans `BEAT_DIVISIONS[division]` beats, so
+/// a shader looping on `mod(TIME, 1.0)` comes round once per division.
+fn clock_rate(speed: f32, sync: bool, division: usize, bpm: f32) -> f32 {
+    // No tempo yet (no audio, Link not joined) means no grid to lock to, so the
+    // clock free-runs rather than crawling.
+    if !sync || bpm <= 0.0 {
+        return speed;
+    }
+    let beats = BEAT_DIVISIONS[division.min(BEAT_DIVISIONS.len() - 1)];
+    speed * bpm / 60.0 / beats
+}
+
+/// Pacing controls added to every ISF instance. Prefixed like any other
+/// parameter, so each layer keeps its own — and modulatable, mappable and
+/// saved with the scene for free.
+fn time_parameters() -> Vec<ParameterDescriptor> {
+    let category = ParamCategory::Custom("ISF".to_string());
+    vec![
+        ParameterDescriptor::float(TIME_SPEED, "Speed", category.clone(), 0.0, 4.0, 1.0, 0.01),
+        ParameterDescriptor::bool(TIME_SYNC, "Sync", category.clone(), false),
+        ParameterDescriptor::bool(TIME_RESET, "Restart", category.clone(), false),
+        ParameterDescriptor::enum_param(
+            TIME_DIV,
+            "Division",
+            category,
+            BEAT_DIVISION_NAMES.iter().map(|s| s.to_string()).collect(),
+            // One whole note — a bar in 4/4, the length most loops want.
+            4,
+        ),
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // IsfEffect
@@ -71,8 +146,15 @@ pub struct IsfEffect {
     /// once per frame by [`IsfEffect::advance_generators`].
     generators: Vec<f32>,
 
-    /// Start time — used to compute elapsed seconds for the TIME built-in.
-    start_time: Instant,
+    /// Whether this shader reads the clock at all — see [`uses_clock`]. False
+    /// means no pacing parameters are declared.
+    uses_clock: bool,
+    /// Last seen [`TIME_RESET`] value; a change restarts the clock.
+    last_reset: f32,
+    /// The instance's own clock, in shader-seconds — the TIME built-in.
+    /// Integrated rather than read off the wall clock so [`TIME_SPEED`] and
+    /// [`TIME_SYNC`] can stretch it without TIME jumping when they change.
+    time: f32,
     /// Previous frame's timestamp — for TIMEDELTA.
     last_frame: Option<Instant>,
     /// FRAMEINDEX built-in counter.
@@ -204,6 +286,7 @@ impl IsfEffect {
             .to_string();
 
         let phase_inputs = parse_phase_inputs(&glsl_src);
+        let uses_clock = uses_clock(&glsl_src);
         Ok(Self {
             isf,
             glsl_src,
@@ -215,7 +298,9 @@ impl IsfEffect {
             params_dirty: false,
             phase_inputs,
             phase: [0.0; 4],
-            start_time: Instant::now(),
+            uses_clock,
+            last_reset: 0.0,
+            time: 0.0,
             last_frame: None,
             frame_index: 0,
             transpile_error: None,
@@ -336,6 +421,35 @@ impl IsfEffect {
         let frame = self.frame_index;
         self.frame_index += 1;
 
+        // Restart is a trigger: the UI toggles it and the edge lands here,
+        // since a `&EngineState` cannot clear a flag it was handed.
+        let reset = engine.get_param(TIME_RESET).unwrap_or(0.0);
+        if reset != self.last_reset {
+            self.last_reset = reset;
+            self.time = 0.0;
+            self.phase = [0.0; 4];
+            self.generators.fill(0.0);
+        }
+
+        // The instance clock. Speed scales it; Sync pins one shader-second to
+        // the chosen beat division, so a shader that loops on `mod(TIME, 1.0)`
+        // comes round on the beat grid. A shader whose loop is some other
+        // length — `sin(TIME)` is 2π long — is dialled in with Speed.
+        //
+        // ponytail: rate-locked, not phase-locked — nothing snaps TIME to the
+        // downbeat, so the loop keeps whatever offset it started with. Add a
+        // wrap-snap like `Lfo::update` if it drifts off the beat audibly.
+        let rate = clock_rate(
+            engine.get_param(TIME_SPEED).unwrap_or(1.0),
+            engine.get_param(TIME_SYNC).unwrap_or(0.0) >= 0.5,
+            engine.get_param(TIME_DIV).unwrap_or(0.0) as usize,
+            engine.effective_bpm(),
+        );
+        // Everything the instance drives off time runs on this one clock: the
+        // TIME built-in, the phase accumulators, and the MadMapper generators.
+        let delta = delta * rate;
+        self.time += delta;
+
         // Integrate the phase accumulators for this frame. `get_param` resolves
         // against the effect's active prefix, so the driving parameter is found
         // per instance — two layers running the same shader keep their own phase.
@@ -353,7 +467,7 @@ impl IsfEffect {
         ]);
         put_f32(&mut buf, 8, width as f32);
         put_f32(&mut buf, 12, height as f32);
-        put_f32(&mut buf, 16, self.start_time.elapsed().as_secs_f32()); // TIME
+        put_f32(&mut buf, 16, self.time); // TIME
         put_f32(&mut buf, 20, delta); // TIMEDELTA
         let (y, mo, d, s) = current_date();
         put_f32(&mut buf, 32, y);
@@ -556,7 +670,13 @@ impl EffectPlugin for IsfEffect {
     }
 
     fn parameters(&self) -> Vec<ParameterDescriptor> {
-        isf_inputs_to_parameters(&self.isf.inputs)
+        let mut params = if self.uses_clock {
+            time_parameters()
+        } else {
+            Vec::new()
+        };
+        params.extend(isf_inputs_to_parameters(&self.isf.inputs));
+        params
     }
 
     fn default_state(&self) -> IsfState {
@@ -619,6 +739,10 @@ impl EffectPlugin for IsfEffect {
             Ok(isf) => {
                 self.isf = isf;
                 self.glsl_src = src;
+                // Everything derived from the source, or an edit that adds a
+                // PHASE_INPUTS or a TIME would not take until the next launch.
+                self.phase_inputs = parse_phase_inputs(&self.glsl_src);
+                self.uses_clock = uses_clock(&self.glsl_src);
             }
             Err(e) => {
                 self.transpile_error = Some(format!("ISF parse error: {e}"));
@@ -985,6 +1109,65 @@ impl EffectPlugin for IsfEffect {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::clock_rate;
+
+    /// Division 4 is a whole note — four beats, a bar in 4/4. At 120 BPM that
+    /// is 2 s, so TIME must advance at 0.5/s for a `mod(TIME, 1.0)` loop to
+    /// come round exactly on the bar.
+    #[test]
+    fn a_bar_long_loop_at_120_bpm_runs_at_half_speed() {
+        assert_eq!(clock_rate(1.0, true, 4, 120.0), 0.5);
+    }
+
+    #[test]
+    fn speed_scales_the_synced_clock_too() {
+        assert_eq!(clock_rate(2.0, true, 4, 120.0), 1.0);
+        assert_eq!(clock_rate(2.0, false, 4, 120.0), 2.0);
+    }
+
+    /// Without a tempo there is nothing to lock to, so the clock free-runs at
+    /// Speed instead of crawling towards zero.
+    #[test]
+    fn no_tempo_falls_back_to_free_running() {
+        assert_eq!(clock_rate(1.0, true, 4, 0.0), 1.0);
+    }
+
+    /// A filter that only reshapes its input has no pacing to control.
+    #[test]
+    fn a_shader_without_a_clock_declares_no_pacing() {
+        let src = "void main() { gl_FragColor = IMG_THIS_PIXEL(inputImage) * brightness; }";
+        assert!(!super::uses_clock(src));
+    }
+
+    #[test]
+    fn the_clock_is_found_however_a_shader_reaches_for_it() {
+        for src in [
+            "void main() { float t = mod(TIME, 1.0); }",
+            "void main() { acc += TIMEDELTA; }",
+            "/*{\"PHASE_INPUTS\": [{\"PARAM\": \"speed\"}]}*/",
+            "/*{\"GENERATORS\": [{\"NAME\": \"t\", \"TYPE\": \"time_base\"}]}*/",
+            "void main() { float x = PHASE_TIME_0; }",
+        ] {
+            assert!(super::uses_clock(src), "{src}");
+        }
+    }
+
+    /// TIME inside a longer identifier is somebody's variable, not the builtin.
+    #[test]
+    fn a_word_containing_time_is_not_the_builtin() {
+        assert!(!super::uses_clock("float RUNTIME_MAX = 1.0; float lifetime = 2.0;"));
+    }
+
+    /// An out-of-range division must not panic — the value arrives as an f32
+    /// parameter and anything can write to it.
+    #[test]
+    fn an_out_of_range_division_clamps() {
+        assert_eq!(clock_rate(1.0, true, 99, 120.0), clock_rate(1.0, true, 7, 120.0));
     }
 }
 

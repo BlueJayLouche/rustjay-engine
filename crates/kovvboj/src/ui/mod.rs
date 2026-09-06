@@ -87,6 +87,10 @@ pub struct EffectsTab {
     /// ISF path → is-a-filter cache (header declares an `inputImage` input).
     /// Lazily parsed once per file; the shader watcher re-scans on change.
     isf_filters: std::collections::HashMap<std::path::PathBuf, bool>,
+    /// Async result from the native folder picker (library folders).
+    pending_folder: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    /// Library filter box. Matches entry names, case-insensitively.
+    search: String,
 }
 
 impl Default for EffectsTab {
@@ -97,6 +101,8 @@ impl Default for EffectsTab {
             stream_name: String::new(),
             pending_effect: std::sync::Arc::new(std::sync::Mutex::new(None)),
             isf_filters: std::collections::HashMap::new(),
+            pending_folder: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            search: String::new(),
         }
     }
 }
@@ -369,10 +375,407 @@ mod egui_impl {
         }
     }
 
+    /// A clip layer: which file, how it is triggered, and where it plays from.
+    ///
+    /// In and out points only appear when the decoder behind the layer has
+    /// them — the HAP player does not, so a converted clip loses the trim.
+    fn clip_controls(
+        ui: &mut egui::Ui,
+        state: &mut KovvbojAppState,
+        engine: &mut EngineState,
+        layer: &str,
+        full: &str,
+    ) {
+        let current = state
+            .layer_sources
+            .get(layer)
+            .and_then(|e| e.path.clone());
+        ui.horizontal(|ui| {
+            if ui
+                .button("File…")
+                .on_hover_text("Play a different clip on this layer")
+                .clicked()
+            {
+                let pending = state.pending_clip.clone();
+                let ctx = ui.ctx().clone();
+                let layer = layer.to_string();
+                std::thread::spawn(move || {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Video", &["mp4", "mov", "avi", "mkv", "webm", "m4v"])
+                        .set_title("Pick a clip")
+                        .pick_file()
+                    {
+                        if let Ok(mut guard) = pending.lock() {
+                            *guard = Some((layer, path));
+                        }
+                        ctx.request_repaint();
+                    }
+                });
+            }
+            let is_hap = current
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                .is_some_and(|n| n.ends_with(".hap.mov"));
+            let can_convert = current.is_some() && !is_hap;
+            let button = ui.add_enabled(can_convert, egui::Button::new("→ HAP"));
+            let button = if is_hap {
+                button.on_disabled_hover_text("Already HAP")
+            } else {
+                button.on_hover_text(
+                    "Transcode this clip to HAP beside the original, then play that. \
+                     Needs ffmpeg and ffprobe on PATH.",
+                )
+            };
+            if button.clicked()
+                && let Some(src) = current.clone()
+            {
+                convert_to_hap(state, engine, layer, src, ui.ctx().clone());
+            }
+        });
+        if let Some(path) = &current {
+            ui.label(
+                egui::RichText::new(
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                )
+                .monospace()
+                .size(10.0)
+                .color(rustjay_gui::egui_theme::colors::ink_3()),
+            )
+            .on_hover_text(path.display().to_string());
+        }
+
+        let mode = crate::sources::TriggerMode::from_index(
+            engine
+                .get_param_base(&format!("{full}mode"))
+                .unwrap_or(0.0)
+                .round() as i32,
+        );
+        play_button(ui, engine, &format!("{full}playing"), mode);
+        trigger_combo(ui, engine, &format!("{full}mode"));
+        param_slider(ui, engine, &format!("{full}speed"), "Speed", -5.0, 5.0);
+        tempo_row(ui, engine, &format!("{full}sync"), &format!("{full}div"), None);
+        loop_combo(ui, engine, &format!("{full}loop"), "Loop");
+        param_slider(ui, engine, &format!("{full}position"), "Position", 0.0, 1.0);
+        if engine.param_index(&format!("{full}in_point")).is_some() {
+            param_slider(ui, engine, &format!("{full}in_point"), "In", 0.0, 1.0);
+            param_slider(ui, engine, &format!("{full}out_point"), "Out", 0.0, 1.0);
+        }
+    }
+
+    /// The transport, shaped by the trigger mode: a latch toggles on click, a
+    /// gate follows the button being held, a one-shot fires on the press and
+    /// runs to the end by itself.
+    ///
+    /// It drives the same `playing` parameter a MIDI note would, so a pad and
+    /// this button behave identically.
+    fn play_button(
+        ui: &mut egui::Ui,
+        engine: &mut EngineState,
+        playing_key: &str,
+        mode: crate::sources::TriggerMode,
+    ) {
+        use crate::sources::TriggerMode as M;
+        let playing = engine.get_param_base(playing_key).unwrap_or(1.0) > 0.5;
+        let label = match (mode, playing) {
+            (M::Latch, true) => "⏸ PAUSE",
+            (M::Latch, false) => "▶ PLAY",
+            (M::Gate, _) => "▶ HOLD",
+            (M::OneShot, _) => "▶ FIRE",
+        };
+        let resp = ui.add_sized(
+            [ui.available_width(), 26.0],
+            egui::Button::new(egui::RichText::new(label).monospace()),
+        );
+        match mode {
+            // Momentary: the press starts it, and the source decides what the
+            // release means — a gate stops, a one-shot plays on.
+            M::Gate | M::OneShot => {
+                let held = resp.is_pointer_button_down_on();
+                if held != playing {
+                    engine.set_param_base(playing_key, if held { 1.0 } else { 0.0 });
+                }
+            }
+            M::Latch => {
+                if resp.clicked() {
+                    engine.set_param_base(playing_key, if playing { 0.0 } else { 1.0 });
+                }
+            }
+        }
+    }
+
+    /// How the `playing` parameter is read: latch, gate or one-shot.
+    fn trigger_combo(ui: &mut egui::Ui, engine: &mut EngineState, key: &str) {
+        let names = ["Latch", "Gate", "One-shot"];
+        let mut idx = engine.get_param_base(key).unwrap_or(0.0).round() as usize;
+        let prev = idx;
+        ui.horizontal(|ui| {
+            ui.label("Trigger");
+            egui::ComboBox::from_id_salt(key)
+                .width(ui.available_width())
+                .selected_text(*names.get(idx).unwrap_or(&"???"))
+                .show_ui(ui, |ui| {
+                    for (i, name) in names.iter().enumerate() {
+                        if ui.selectable_label(idx == i, *name).clicked() {
+                            idx = i;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Latch: play/pause as told. Gate: plays while held. \
+                     One-shot: one press plays it through once.",
+                );
+        });
+        if idx != prev {
+            engine.set_param_base(key, idx as f32);
+        }
+    }
+
+    /// Kick off a HAP transcode beside the source file. The layer swaps to the
+    /// result when it lands; the conversion itself is a background thread.
+    fn convert_to_hap(
+        state: &mut KovvbojAppState,
+        engine: &mut EngineState,
+        layer: &str,
+        src: std::path::PathBuf,
+        ctx: egui::Context,
+    ) {
+        let stem = src
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("clip")
+            .trim_end_matches(".hap")
+            .to_string();
+        let dst = src
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join(format!("{stem}.hap.mov"));
+        // Converting the same clip twice is a waste of minutes: if the sidecar
+        // is already there, just play it.
+        if dst.exists() {
+            if let Ok(mut guard) = state.pending_clip.lock() {
+                *guard = Some((layer.to_string(), dst));
+            }
+            return;
+        }
+        engine.notify(
+            format!("Converting '{stem}' to HAP…"),
+            rustjay_core::NotificationLevel::Info,
+            std::time::Duration::from_secs(4),
+        );
+        #[cfg(feature = "hap")]
+        {
+            let results = state.pending_convert.clone();
+            let layer = layer.to_string();
+            std::thread::spawn(move || {
+                let outcome = rustjay_io::hap_encode::ffmpeg_to_hap(&src, &dst)
+                    .map(|()| dst)
+                    .map_err(|e| e.to_string());
+                if let Ok(mut guard) = results.lock() {
+                    guard.push((layer, outcome));
+                }
+                ctx.request_repaint();
+            });
+        }
+        #[cfg(not(feature = "hap"))]
+        {
+            let _ = (state, dst, ctx);
+            engine.notify(
+                "This build has no HAP support — rebuild with `--features hap`.".to_string(),
+                rustjay_core::NotificationLevel::Error,
+                std::time::Duration::from_secs(5),
+            );
+        }
+    }
+
+    /// A text layer's copy and font. Size, colour and position are ordinary
+    /// parameters, so they are drawn with the source's own list; these two are
+    /// not numbers and have nowhere else to live.
+    fn text_layer_controls(ui: &mut egui::Ui, state: &mut KovvbojAppState, layer: &str) {
+        let applied = state
+            .layer_sources
+            .get(layer)
+            .and_then(|e| e.text.clone())
+            .unwrap_or_default();
+        // The draft is held in egui memory: the applied string only catches up
+        // once `prepare` has run, and reading it back every frame would fight the
+        // cursor. Same shape as the layer rename field above.
+        let id = ui.make_persistent_id(("text_body", layer));
+        let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| applied.clone());
+        if !ui.memory(|m| m.has_focus(id)) && draft != applied {
+            draft = applied.clone();
+        }
+        let resp = ui.add(
+            egui::TextEdit::multiline(&mut draft)
+                .id(id)
+                .desired_width(f32::INFINITY)
+                .desired_rows(2)
+                .hint_text("Text"),
+        );
+        ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+        if resp.changed() {
+            state
+                .pending_text
+                .push((layer.to_string(), crate::TextEdit::Body(draft)));
+        }
+
+        let current = state.layer_sources.get(layer).and_then(|e| e.path.clone());
+        let selected = current
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Default".to_string());
+        let mut pick: Option<std::path::PathBuf> = None;
+        ui.horizontal(|ui| {
+            ui.label("Font:");
+            egui::ComboBox::from_id_salt(("font", layer))
+                .width(ui.available_width())
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for font in &state.registry.fonts {
+                        let name = font
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if ui
+                            .selectable_label(Some(font) == current.as_ref(), name)
+                            .clicked()
+                        {
+                            pick = Some(font.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(font) = pick {
+            state
+                .pending_text
+                .push((layer.to_string(), crate::TextEdit::Font(font)));
+        }
+        if state.registry.fonts.is_empty() {
+            ui.label(
+                egui::RichText::new("No fonts found — add a folder of .ttf/.otf below.")
+                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+            );
+        }
+    }
+
+    /// Parameters the pacing block owns, drawn there rather than in the
+    /// generic list below it.
+    fn is_pacing_param(id: &str) -> bool {
+        use rustjay_isf::effect::{TIME_DIV, TIME_RESET, TIME_SPEED, TIME_SYNC};
+        matches!(id, TIME_SPEED | TIME_SYNC | TIME_DIV | TIME_RESET)
+    }
+
+    /// Restart the clock this key belongs to. A trigger rather than a setting:
+    /// the effect restarts on the *change*, so the value only has to move.
+    fn restart_button(ui: &mut egui::Ui, engine: &mut EngineState, reset_key: &str) {
+        if ui
+            .small_button("⟲")
+            .on_hover_text("Restart this shader's clock from zero")
+            .clicked()
+        {
+            let was = engine.get_param_base(reset_key).unwrap_or(0.0);
+            engine.set_param_base(reset_key, 1.0 - was);
+        }
+    }
+
+    /// How fast this ISF node's clock runs — speed, tempo sync, beat division,
+    /// restart. Drawn at the top of the inspector, above the node's own
+    /// parameters: pacing is the first thing you reach for on a looping shader.
+    ///
+    /// Returns whether there was anything to draw; a node that is not an ISF
+    /// effect has no clock to pace.
+    fn pacing_block(
+        ui: &mut egui::Ui,
+        engine: &mut EngineState,
+        prefix: &str,
+        owner: &str,
+    ) -> bool {
+        let sync_key = format!("{prefix}{}", rustjay_isf::effect::TIME_SYNC);
+        let div_key = format!("{prefix}{}", rustjay_isf::effect::TIME_DIV);
+        let reset_key = format!("{prefix}{}", rustjay_isf::effect::TIME_RESET);
+        let speed_key = format!("{prefix}{}", rustjay_isf::effect::TIME_SPEED);
+        // Through `draw_param`, so Speed keeps the modulation ghost and the
+        // MIDI/LFO map overlay every other float parameter has.
+        let Some(speed) = engine
+            .param_descriptors
+            .iter()
+            .find(|d| d.id == speed_key)
+            .cloned()
+        else {
+            return false;
+        };
+        draw_param(ui, engine, &speed, owner);
+        tempo_row(ui, engine, &sync_key, &div_key, Some(&reset_key));
+        ui.separator();
+        true
+    }
+
+    /// Tempo sync on one line: the checkbox, the beat division it locks to, and
+    /// a restart button when the thing being synced has a clock to restart.
+    fn tempo_row(
+        ui: &mut egui::Ui,
+        engine: &mut EngineState,
+        sync_key: &str,
+        div_key: &str,
+        reset_key: Option<&str>,
+    ) {
+        use rustjay_core::lfo::BEAT_DIVISION_NAMES;
+        ui.horizontal(|ui| {
+            let mut on = engine.get_param_base(sync_key).unwrap_or(0.0) >= 0.5;
+            if ui
+                .checkbox(&mut on, "Sync")
+                .on_hover_text("Run this shader's clock off the tempo, not the wall clock")
+                .changed()
+            {
+                engine.set_param_base(sync_key, if on { 1.0 } else { 0.0 });
+            }
+            let mut idx = engine.get_param_base(div_key).unwrap_or(4.0).round() as usize;
+            let prev = idx;
+            if !on {
+                // No grid to divide, but the clock can still be restarted —
+                // an unsynced loop is the one most likely to need re-aligning.
+                if let Some(reset) = reset_key {
+                    restart_button(ui, engine, reset);
+                }
+                return;
+            }
+            egui::ComboBox::from_id_salt(div_key)
+                .width(64.0)
+                .selected_text(*BEAT_DIVISION_NAMES.get(idx).unwrap_or(&"?"))
+                .show_ui(ui, |ui| {
+                    for (i, name) in BEAT_DIVISION_NAMES.iter().enumerate() {
+                        if ui.selectable_label(idx == i, *name).clicked() {
+                            idx = i;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("One loop per this many beats — \"1\" is a bar in 4/4");
+            if idx != prev {
+                engine.set_param_base(div_key, idx as f32);
+            }
+            if let Some(reset) = reset_key {
+                restart_button(ui, engine, reset);
+            }
+            ui.label(
+                egui::RichText::new(format!("{:.0} BPM", engine.effective_bpm()))
+                    .monospace()
+                    .size(9.0)
+                    .color(rustjay_gui::egui_theme::colors::ink_3()),
+            );
+        });
+    }
+
     /// Deck control params already shown by dedicated widgets — excluded from the
     /// generic source-parameter list so they aren't drawn twice.
-    const DECK_CONTROL_KEYS: &[&str] =
-        &["opacity", "blend", "playing", "speed", "loop", "position"];
+    const DECK_CONTROL_KEYS: &[&str] = &[
+        "opacity", "blend", "playing", "speed", "loop", "position", "mode", "sync", "div",
+        "in_point", "out_point",
+    ];
 
     /// One parameter control. Reads/writes the **base** value (not base+mod) so
     /// the slider acts as a stable offset and modulation (LFO/audio/MIDI) is
@@ -396,6 +799,11 @@ mod egui_impl {
         entry.id.ends_with("_any")
     }
 
+    /// A library entry that names no file yet — adding it asks for one.
+    fn wants_a_file(entry: &crate::sources::SourceEntry) -> bool {
+        entry.kind == crate::sources::SourceKind::Video && entry.path.is_none()
+    }
+
     /// A one-glyph badge for a source kind, shared by the library and the strip.
     fn source_icon(kind: crate::sources::SourceKind) -> &'static str {
         use crate::sources::SourceKind as K;
@@ -403,6 +811,7 @@ mod egui_impl {
             K::Isf | K::SolidColor => "\u{1F3A8}",
             K::Image => "\u{1F5BC}",
             K::Video => "\u{1F3AC}",
+            K::Text => "\u{1F1F9}",
             K::Camera => "\u{1F4F7}",
             K::Syphon | K::Spout => "\u{1F5A5}",
             _ => "\u{1F4E1}",
@@ -760,14 +1169,32 @@ mod egui_impl {
     /// The parameter's own name, without the `[node]` suffix the mixer appends
     /// for flat listings. The inspector already names the node in its heading,
     /// and the suffix is long enough to blow out the panel.
-    fn short_param_name(desc: &ParameterDescriptor) -> &str {
-        match desc.name.rfind(" [") {
+    /// The label to put on a control, with two prefixes taken off.
+    ///
+    /// The mixer names a channel's own parameters "<layer> Opacity" so they
+    /// read in global lists — LFO targets, MIDI map, OSC. In the inspector the
+    /// layer is already the heading, and every row truncated to the same
+    /// "bigbro_font_atl…" stub, which is no label at all.
+    fn short_param_name<'a>(desc: &'a ParameterDescriptor, owner: &str) -> &'a str {
+        let name = match desc.name.rfind(" [") {
             Some(i) if desc.name.ends_with(']') => &desc.name[..i],
             _ => desc.name.as_str(),
+        };
+        if !owner.is_empty()
+            && let Some(rest) = name.strip_prefix(owner)
+            && !rest.trim_start().is_empty()
+        {
+            return rest.trim_start();
         }
+        name
     }
 
-    fn draw_param(ui: &mut egui::Ui, engine: &mut EngineState, desc: &ParameterDescriptor) {
+    fn draw_param(
+        ui: &mut egui::Ui,
+        engine: &mut EngineState,
+        desc: &ParameterDescriptor,
+        owner: &str,
+    ) {
         let current = engine.get_param_base(&desc.id).unwrap_or(desc.default);
         // In MIDI-learn / LFO-assign map mode the slider is shown disabled with a
         // clickable outline so it can be bound — see `apply_param_map_overlay`.
@@ -778,7 +1205,7 @@ mod egui_impl {
                 if map_mode {
                     let scope = ui.scope(|ui| {
                         ui.disable();
-                        ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).text(short_param_name(desc)));
+                        ui.add(egui::Slider::new(&mut v, desc.min..=desc.max).text(short_param_name(desc, owner)));
                     });
                     let midi_path =
                         format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
@@ -787,7 +1214,7 @@ mod egui_impl {
                         engine,
                         scope.response.rect,
                         &desc.id,
-                        short_param_name(desc),
+                        short_param_name(desc, owner),
                         &midi_path,
                         desc.min,
                         desc.max,
@@ -795,7 +1222,7 @@ mod egui_impl {
                 } else {
                     let resp = ui.add(
                         egui::Slider::new(&mut v, desc.min..=desc.max)
-                            .text(short_param_name(desc)),
+                            .text(short_param_name(desc, owner)),
                     );
                     if resp.changed() {
                         engine.set_param_base(&desc.id, v);
@@ -815,7 +1242,7 @@ mod egui_impl {
                         ui.disable();
                         ui.add(
                             egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
-                                .text(short_param_name(desc)),
+                                .text(short_param_name(desc, owner)),
                         );
                     });
                     let midi_path =
@@ -825,7 +1252,7 @@ mod egui_impl {
                         engine,
                         scope.response.rect,
                         &desc.id,
-                        short_param_name(desc),
+                        short_param_name(desc, owner),
                         &midi_path,
                         desc.min,
                         desc.max,
@@ -833,7 +1260,7 @@ mod egui_impl {
                 } else if ui
                     .add(
                         egui::Slider::new(&mut v, desc.min as i32..=desc.max as i32)
-                            .text(short_param_name(desc)),
+                            .text(short_param_name(desc, owner)),
                     )
                     .changed()
                 {
@@ -842,7 +1269,7 @@ mod egui_impl {
             }
             ParamType::Bool => {
                 let mut on = current >= 0.5;
-                if ui.checkbox(&mut on, short_param_name(desc)).changed() {
+                if ui.checkbox(&mut on, short_param_name(desc, owner)).changed() {
                     engine.set_param_base(&desc.id, if on { 1.0 } else { 0.0 });
                 }
             }
@@ -915,6 +1342,7 @@ mod egui_impl {
                 kind,
                 path: Some(std::path::PathBuf::from(url)),
                 device_index: 0,
+                text: None,
             },
             saved: None,
         });
@@ -946,9 +1374,10 @@ mod egui_impl {
 
             // Poll async file picker result.
             if let Ok(mut guard) = self.pending_effect.lock()
-                && let Some(req) = guard.take() {
-                    state.pending_effects.push(req);
-                }
+                && let Some(req) = guard.take()
+            {
+                state.pending_effects.push(req);
+            }
 
             // Cmd+S manual save
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
@@ -1335,16 +1764,17 @@ mod egui_impl {
                     .monospace()
                     .color(rustjay_gui::egui_theme::colors::ink_3()),
             );
-            if kind == crate::sources::SourceKind::Video {
+            if kind == crate::sources::SourceKind::Video
+                && let crate::Selection::Layer { layer } = &selection
+            {
                 ui.separator();
-                let playing_key = format!("{full}playing");
-                let mut playing = engine.get_param_base(&playing_key).unwrap_or(1.0) > 0.5;
-                if ui.checkbox(&mut playing, "Playing").changed() {
-                    engine.set_param_base(&playing_key, if playing { 1.0 } else { 0.0 });
-                }
-                param_slider(ui, engine, &format!("{full}speed"), "Speed", -5.0, 5.0);
-                loop_combo(ui, engine, &format!("{full}loop_mode"), "Loop");
-                param_slider(ui, engine, &format!("{full}position"), "Position", 0.0, 1.0);
+                clip_controls(ui, state, engine, &layer.clone(), &full);
+            }
+            if kind == crate::sources::SourceKind::Text
+                && let crate::Selection::Layer { layer } = &selection
+            {
+                ui.separator();
+                text_layer_controls(ui, state, &layer.clone());
             }
             return;
         }
@@ -1352,8 +1782,21 @@ mod egui_impl {
         // A source node shows every param under the deck prefix that is neither
         // a deck control nor owned by an FX slot.
         if let Some(full) = source_of {
-            let descriptors = engine.param_descriptors.clone();
+            // A text layer leads with its copy and font wherever it is selected
+            // — reaching them only from the layer above it is a hunt.
             let mut any = false;
+            if let crate::Selection::Source { layer } = &selection
+                && state
+                    .layer_sources
+                    .get(layer)
+                    .is_some_and(|e| e.kind == crate::sources::SourceKind::Text)
+            {
+                text_layer_controls(ui, state, &layer.clone());
+                ui.separator();
+                any = true;
+            }
+            any |= pacing_block(ui, engine, full.as_str(), &heading);
+            let descriptors = engine.param_descriptors.clone();
             for desc in descriptors.iter() {
                 let Some(rest) = desc.id.strip_prefix(full.as_str()) else {
                     continue;
@@ -1361,7 +1804,10 @@ mod egui_impl {
                 if rest.starts_with("fx") || DECK_CONTROL_KEYS.contains(&rest) {
                     continue;
                 }
-                draw_param(ui, engine, desc);
+                if is_pacing_param(rest) {
+                    continue; // drawn by the pacing block above
+                }
+                draw_param(ui, engine, desc, &heading);
                 any = true;
             }
             if !any {
@@ -1374,10 +1820,13 @@ mod egui_impl {
         }
 
         if let Some(prefix) = prefix {
+            let mut any = pacing_block(ui, engine, &prefix, &heading);
             let descriptors = engine.param_descriptors.clone();
-            let mut any = false;
             for desc in descriptors.iter().filter(|d| d.id.starts_with(&prefix)) {
-                draw_param(ui, engine, desc);
+                if desc.id.strip_prefix(prefix.as_str()).is_some_and(is_pacing_param) {
+                    continue; // drawn by the pacing block above
+                }
+                draw_param(ui, engine, desc, &heading);
                 any = true;
             }
             if !any {
@@ -2122,9 +2571,10 @@ mod egui_impl {
 
             // Poll async file picker result.
             if let Ok(mut guard) = self.pending_effect.lock()
-                && let Some(req) = guard.take() {
-                    state.pending_effects.push(req);
-                }
+                && let Some(req) = guard.take()
+            {
+                state.pending_effects.push(req);
+            }
 
 
             // No target selector: a source's ➕ makes a new layer, and an
@@ -2139,17 +2589,37 @@ mod egui_impl {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button("⟳")
-                        .on_hover_text("Rescan cameras, NDI, Syphon/Spout")
+                        .on_hover_text("Rescan folders and devices")
                         .clicked()
                     {
-                        state.registry.refresh_builtins();
+                        // Folders can change under us, so the rescan walks them
+                        // as well as re-polling cameras/NDI/Syphon.
+                        state.rescan_library();
                     }
                 });
             });
-            // Fill the panel, leaving room for the two buttons below. The old
-            // fixed 140px was sized for the pre-shell layout and now hides most
-            // of the library while the panel beneath it sits empty.
-            let list_height = (ui.available_height() - 90.0).max(120.0);
+            ui.horizontal(|ui| {
+                let clear = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search…")
+                            .desired_width((ui.available_width() - 22.0).max(40.0)),
+                    )
+                    .has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if ui.small_button("✖").on_hover_text("Clear search").clicked() || clear {
+                    self.search.clear();
+                }
+            });
+            // A search shows every section whether or not it is collapsed —
+            // hits hidden behind a folded heading read as "no results".
+            let query = self.search.trim().to_lowercase();
+            let searching = !query.is_empty();
+            let hit = |name: &str| query.is_empty() || name.to_lowercase().contains(&query);
+            // Fill the panel, leaving room for the buttons below. The old fixed
+            // 140px was sized for the pre-shell layout and now hides most of the
+            // library while the panel beneath it sits empty.
+            let list_height = (ui.available_height() - 110.0).max(120.0);
             egui::ScrollArea::vertical()
                 .max_height(list_height)
                 .show(ui, |ui| {
@@ -2193,6 +2663,7 @@ mod egui_impl {
                     // appends to the selected layer. Only effects drag, and only
                     // into a chain — a filter has no input as a layer source,
                     // which is what used to produce a black, source-less layer.
+                    let pending_file = self.pending_file.clone();
                     let mut row = |ui: &mut egui::Ui,
                                    entry: &crate::sources::SourceEntry,
                                    is_effect: bool| {
@@ -2263,13 +2734,43 @@ mod egui_impl {
                                         }
                                     } else if ui
                                         .small_button("➕")
-                                        .on_hover_text("New layer")
+                                        .on_hover_text(if wants_a_file(entry) {
+                                            "Pick a clip"
+                                        } else {
+                                            "New layer"
+                                        })
                                         .clicked()
                                     {
-                                        queue_layer = Some(crate::PendingLayer {
-                                            source: entry.clone(),
-                                            saved: None,
-                                        });
+                                        // The "Video…" entry has no file yet:
+                                        // ask for one, and the picked-file path
+                                        // below builds the layer.
+                                        if wants_a_file(entry) {
+                                            let pending = pending_file.clone();
+                                            let ctx = ui.ctx().clone();
+                                            std::thread::spawn(move || {
+                                                if let Some(path) = rfd::FileDialog::new()
+                                                    .add_filter(
+                                                        "Video",
+                                                        &[
+                                                            "mp4", "mov", "avi", "mkv", "webm",
+                                                            "m4v",
+                                                        ],
+                                                    )
+                                                    .set_title("Pick a clip")
+                                                    .pick_file()
+                                                {
+                                                    if let Ok(mut guard) = pending.lock() {
+                                                        *guard = Some(path);
+                                                    }
+                                                    ctx.request_repaint();
+                                                }
+                                            });
+                                        } else {
+                                            queue_layer = Some(crate::PendingLayer {
+                                                source: entry.clone(),
+                                                saved: None,
+                                            });
+                                        }
                                     }
 
                                     // Whatever width is left goes to the name,
@@ -2328,14 +2829,30 @@ mod egui_impl {
                             .unwrap_or(false)
                     };
 
-                    let heading = |ui: &mut egui::Ui, text: &str, hint: &str| {
+                    // Returns whether the section's rows should be drawn. The
+                    // open flag lives in egui memory keyed by the heading text,
+                    // so it survives a relayout without a field to thread down.
+                    let heading = |ui: &mut egui::Ui, text: &str, hint: &str| -> bool {
+                        let id = ui.make_persistent_id(("libsec", text));
+                        let mut open = ui.data_mut(|d| *d.get_temp_mut_or(id, true));
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(text)
-                                    .monospace()
-                                    .size(10.0)
-                                    .color(rustjay_gui::egui_theme::colors::ink_3()),
-                            );
+                            let arrow = if open { "▼" } else { "▶" };
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!("{arrow} {text}"))
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(rustjay_gui::egui_theme::colors::ink_3()),
+                                    )
+                                    .small()
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                open = !open;
+                                ui.data_mut(|d| d.insert_temp(id, open));
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -2348,6 +2865,7 @@ mod egui_impl {
                                 },
                             );
                         });
+                        open || searching
                     };
 
                     // Favourites rise to the top of their own category. A
@@ -2367,9 +2885,12 @@ mod egui_impl {
                     // the library.
                     #[cfg(feature = "mixer")]
                     if !state.saved_layers.is_empty() {
-                        heading(ui, "LAYERS", "➕ new layer");
-                        let mut saved: Vec<&crate::scene::SavedLayer> =
-                            state.saved_layers.iter().collect();
+                        let open = heading(ui, "LAYERS", "➕ new layer");
+                        let mut saved: Vec<&crate::scene::SavedLayer> = state
+                            .saved_layers
+                            .iter()
+                            .filter(|s| open && hit(&s.name))
+                            .collect();
                         saved.sort_by_key(|s| !favourites.contains(&s.name));
                         for saved in saved {
                             ui.horizontal(|ui| {
@@ -2440,9 +2961,12 @@ mod egui_impl {
                     // Saved groups: whole arrangements of layers.
                     #[cfg(feature = "mixer")]
                     if !state.saved_groups.is_empty() {
-                        heading(ui, "GROUPS", "➕ adds its layers");
-                        let mut groups: Vec<&crate::scene::SavedGroup> =
-                            state.saved_groups.iter().collect();
+                        let open = heading(ui, "GROUPS", "➕ adds its layers");
+                        let mut groups: Vec<&crate::scene::SavedGroup> = state
+                            .saved_groups
+                            .iter()
+                            .filter(|g| open && hit(&g.name))
+                            .collect();
                         groups.sort_by_key(|g| !favourites.contains(&g.name));
                         for g in groups {
                             ui.horizontal(|ui| {
@@ -2501,9 +3025,12 @@ mod egui_impl {
                     // user's own work rather than something discovered on disk.
                     #[cfg(feature = "mixer")]
                     if !state.saved_chains.is_empty() {
-                        heading(ui, "CHAINS", "➕ replaces master");
-                        let mut chains: Vec<&crate::scene::SavedChain> =
-                            state.saved_chains.iter().collect();
+                        let open = heading(ui, "CHAINS", "➕ replaces master");
+                        let mut chains: Vec<&crate::scene::SavedChain> = state
+                            .saved_chains
+                            .iter()
+                            .filter(|c| open && hit(&c.name))
+                            .collect();
                         chains.sort_by_key(|c| !favourites.contains(&c.name));
                         for chain in chains {
                             ui.horizontal(|ui| {
@@ -2564,7 +3091,7 @@ mod egui_impl {
                     // Live inputs: cameras, plus NDI/Syphon/Spout. The generic
                     // entries come last in each kind so the discovered ones read
                     // first.
-                    heading(ui, "DEVICES", "➕ new layer");
+                    let open = heading(ui, "DEVICES", "➕ new layer");
                     for entry in starred_first(
                         state
                             .registry
@@ -2578,6 +3105,7 @@ mod egui_impl {
                                     .iter()
                                     .filter(|e| is_device(e) && is_generic_device(e)),
                             )
+                            .filter(|e| open && hit(&e.name))
                             .collect(),
                         &favourites,
                     ) {
@@ -2588,31 +3116,36 @@ mod egui_impl {
                     let media: Vec<&crate::sources::SourceEntry> = starred_first(
                         state
                             .registry
-                            .images
+                            .builtins
                             .iter()
+                            .filter(|e| wants_a_file(e))
+                            .chain(state.registry.images.iter())
                             .chain(state.registry.videos.iter())
                             .chain(state.registry.streams.iter())
+                            .filter(|e| hit(&e.name))
                             .collect(),
                         &favourites,
                     );
                     if !media.is_empty() {
                         ui.add_space(4.0);
-                        heading(ui, "MEDIA", "➕ new layer");
-                        for entry in media {
-                            row(ui, entry, false);
+                        if heading(ui, "MEDIA", "➕ new layer") {
+                            for entry in media {
+                                row(ui, entry, false);
+                            }
                         }
                     }
 
                     // Shaders that generate rather than filter.
                     ui.add_space(4.0);
-                    heading(ui, "GENERATORS", "➕ new layer");
+                    let open = heading(ui, "GENERATORS", "➕ new layer");
                     for entry in starred_first(
                         state
                             .registry
                             .builtins
                             .iter()
-                            .filter(|e| !is_device(e))
+                            .filter(|e| !is_device(e) && !wants_a_file(e))
                             .chain(state.registry.shaders.iter().filter(|e| !is_effect(e)))
+                            .filter(|e| open && hit(&e.name))
                             .collect(),
                         &favourites,
                     ) {
@@ -2621,10 +3154,15 @@ mod egui_impl {
 
                     // EFFECTS — filters, which need something to filter.
                     ui.add_space(4.0);
-                    heading(ui, "EFFECTS", "➕ to selected layer");
+                    let open = heading(ui, "EFFECTS", "➕ to selected layer");
                     for entry in
                         starred_first(
-                            state.registry.shaders.iter().filter(|e| is_effect(e)).collect(),
+                            state
+                                .registry
+                                .shaders
+                                .iter()
+                                .filter(|e| is_effect(e) && open && hit(&e.name))
+                                .collect(),
                             &favourites,
                         )
                     {
@@ -2736,6 +3274,7 @@ mod egui_impl {
                             kind,
                             path: Some(path),
                             device_index: 0,
+                            text: None,
                         },
                         saved: None,
                     });
@@ -2761,6 +3300,64 @@ mod egui_impl {
                     }
                 });
             }
+
+            // Folders the library scans, on top of the two bundled ones. Down
+            // here with the other management UI rather than in the list itself.
+            if let Ok(mut guard) = self.pending_folder.lock()
+                && let Some(dir) = guard.take()
+                && !state.library_folders.contains(&dir)
+            {
+                state.library_folders.push(dir);
+                if let Err(e) = state.workspace.save_folders(&state.library_folders) {
+                    log::warn!("[Library] could not save folders: {e}");
+                }
+                state.rescan_library();
+            }
+            ui.collapsing("Folders", |ui| {
+                let mut remove: Option<usize> = None;
+                for (i, dir) in state.library_folders.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("✖")
+                            .on_hover_text("Stop scanning this folder")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                        // The leaf name, with the full path a hover away — a
+                        // path is far wider than this panel ever is.
+                        let label = dir
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| dir.display().to_string());
+                        ui.add(egui::Label::new(format!("🗀 {label}")).truncate())
+                            .on_hover_text(dir.display().to_string());
+                    });
+                }
+                if let Some(i) = remove {
+                    state.library_folders.remove(i);
+                    if let Err(e) = state.workspace.save_folders(&state.library_folders) {
+                        log::warn!("[Library] could not save folders: {e}");
+                    }
+                    state.rescan_library();
+                }
+                if ui
+                    .button("Add folder…")
+                    .on_hover_text("Scan a folder for shaders, images and videos")
+                    .clicked()
+                {
+                    let pending = self.pending_folder.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            if let Ok(mut guard) = pending.lock() {
+                                *guard = Some(dir);
+                            }
+                            ctx.request_repaint();
+                        }
+                    });
+                }
+            });
 
             // Manual stream input
             ui.collapsing("Add Stream URL", |ui| {
@@ -3576,7 +4173,7 @@ mod egui_impl {
                                     let steps = (len / (dash_len + gap_len)).ceil() as usize;
                                     for s in 0..steps {
                                         let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
-                                        let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
+                                        let t1 = (s as f32 * (dash_len + gap_len) + dash_len).min(len) / len;
                                         painter.line_segment(
                                             [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
                                             Stroke::new(1.5, dash_color),
@@ -3594,7 +4191,7 @@ mod egui_impl {
                                         let steps = (len / (dash_len + gap_len)).ceil() as usize;
                                         for s in 0..steps {
                                             let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
-                                            let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
+                                            let t1 = (s as f32 * (dash_len + gap_len) + dash_len).min(len) / len;
                                             painter.line_segment(
                                                 [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
                                                 Stroke::new(1.5, dash_color),
@@ -3909,12 +4506,12 @@ mod egui_impl {
                         );
                     }
                     let mut corners = [Pos2::ZERO; 4];
-                    for i in 0..4 {
+                    for (i, corner) in corners.iter_mut().enumerate() {
                         let pos = Pos2::new(
                             canvas_rect.min.x + led.quad[i][0] * canvas_rect.width(),
                             canvas_rect.min.y + led.quad[i][1] * canvas_rect.height(),
                         );
-                        corners[i] = pos;
+                        *corner = pos;
                         if !lighting_live {
                             continue;
                         }
@@ -4122,10 +4719,7 @@ mod egui_impl {
                     }
 
                     let outline = dim(Color32::from_rgb(255, 90, 160));
-                    let mut corners = [Pos2::ZERO; 4];
-                    for i in 0..4 {
-                        corners[i] = to_screen(place.quad[i]);
-                    }
+                    let corners: [Pos2; 4] = std::array::from_fn(|i| to_screen(place.quad[i]));
                     for i in 0..4 {
                         painter.line_segment(
                             [corners[i], corners[(i + 1) % 4]],
@@ -4257,16 +4851,16 @@ mod egui_impl {
                         let handle_labels = ["TL", "TR", "BR", "BL"];
                         let mut handle_positions = [egui::Pos2::ZERO; 4];
                         let mut corners_opt: Option<[[f32; 2]; 4]> = None;
-                        if let Some(light) = state.stage.lighting_outputs.get(sel_oi) {
-                            if let Some(seg) = light.segments.get(sel_si) {
-                                let [u0, v0, u1, v1] = seg.region;
-                                corners_opt = Some([
-                                    [u0, v0],
-                                    [u1, v0],
-                                    [u1, v1],
-                                    [u0, v1],
-                                ]);
-                            }
+                        if let Some(light) = state.stage.lighting_outputs.get(sel_oi)
+                            && let Some(seg) = light.segments.get(sel_si)
+                        {
+                            let [u0, v0, u1, v1] = seg.region;
+                            corners_opt = Some([
+                                [u0, v0],
+                                [u1, v0],
+                                [u1, v1],
+                                [u0, v1],
+                            ]);
                         }
                         if let Some(corners) = corners_opt {
                             for (hi, corner) in corners.iter().enumerate() {
@@ -4297,20 +4891,20 @@ mod egui_impl {
                                     light_region_dragged = true;
                                     let dx = handle_response.drag_delta().x / canvas_rect.width();
                                     let dy = handle_response.drag_delta().y / canvas_rect.height();
-                                    if let Some(light) = state.stage.lighting_outputs.get_mut(sel_oi) {
-                                        if let Some(seg) = light.segments.get_mut(sel_si) {
-                                            let [min_u, min_v, max_u, max_v] = &mut seg.region;
-                                            match hi {
-                                                0 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
-                                                1 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
-                                                2 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
-                                                3 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
-                                                _ => {}
-                                            }
-                                            if *min_u > *max_u { std::mem::swap(min_u, max_u); }
-                                            if *min_v > *max_v { std::mem::swap(min_v, max_v); }
-                                            regions_dirty = true;
+                                    if let Some(light) = state.stage.lighting_outputs.get_mut(sel_oi)
+                                        && let Some(seg) = light.segments.get_mut(sel_si)
+                                    {
+                                        let [min_u, min_v, max_u, max_v] = &mut seg.region;
+                                        match hi {
+                                            0 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
+                                            1 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *min_v = (*min_v + dy).clamp(0.0, 1.0); }
+                                            2 => { *max_u = (*max_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
+                                            3 => { *min_u = (*min_u + dx).clamp(0.0, 1.0); *max_v = (*max_v + dy).clamp(0.0, 1.0); }
+                                            _ => {}
                                         }
+                                        if *min_u > *max_u { std::mem::swap(min_u, max_u); }
+                                        if *min_v > *max_v { std::mem::swap(min_v, max_v); }
+                                        regions_dirty = true;
                                     }
                                 }
                             }
@@ -4322,72 +4916,72 @@ mod egui_impl {
                     }
 
                     // Select a segment by clicking inside its region.
-                    if !light_region_dragged && response.clicked_by(egui::PointerButton::Primary) {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
-                            let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
-                            let mut new_selection: Option<(usize, usize)> = None;
-                            for (oi, light) in state.stage.lighting_outputs.iter().enumerate().rev() {
-                                if !light.enabled {
+                    if !light_region_dragged && response.clicked_by(egui::PointerButton::Primary)
+                        && let Some(pos) = response.interact_pointer_pos()
+                    {
+                        let norm_x = (pos.x - canvas_rect.min.x) / canvas_rect.width();
+                        let norm_y = (pos.y - canvas_rect.min.y) / canvas_rect.height();
+                        let mut new_selection: Option<(usize, usize)> = None;
+                        for (oi, light) in state.stage.lighting_outputs.iter().enumerate().rev() {
+                            if !light.enabled {
+                                continue;
+                            }
+                            for (si, seg) in light.segments.iter().enumerate().rev() {
+                                if !seg.enabled {
                                     continue;
                                 }
-                                for (si, seg) in light.segments.iter().enumerate().rev() {
-                                    if !seg.enabled {
-                                        continue;
-                                    }
-                                    let [u0, v0, u1, v1] = seg.region;
-                                    if norm_x >= u0.min(u1) && norm_x <= u0.max(u1)
-                                        && norm_y >= v0.min(v1) && norm_y <= v0.max(v1)
-                                    {
-                                        new_selection = Some((oi, si));
-                                        break;
-                                    }
-                                }
-                                if new_selection.is_some() {
+                                let [u0, v0, u1, v1] = seg.region;
+                                if norm_x >= u0.min(u1) && norm_x <= u0.max(u1)
+                                    && norm_y >= v0.min(v1) && norm_y <= v0.max(v1)
+                                {
+                                    new_selection = Some((oi, si));
                                     break;
                                 }
                             }
-                            *selected_light_segment = new_selection;
+                            if new_selection.is_some() {
+                                break;
+                            }
                         }
+                        *selected_light_segment = new_selection;
                     }
                 }
 
                 // Bounding box overlay for Mapped mode
-                if let Some(surf) = state.stage.surfaces.get(state.stage.selected_surface_index) {
-                    if surf.content_mapping == ContentMapping::Mapped {
-                        let [min_x, min_y, max_x, max_y] = surf.bounding_box(stage_aspect);
-                        let min = Pos2::new(
-                            canvas_rect.min.x + min_x * canvas_rect.width(),
-                            canvas_rect.min.y + min_y * canvas_rect.height(),
-                        );
-                        let max = Pos2::new(
-                            canvas_rect.min.x + max_x * canvas_rect.width(),
-                            canvas_rect.min.y + max_y * canvas_rect.height(),
-                        );
-                        let _bbox_rect = Rect::from_min_max(min, max);
-                        // Dashed stroke effect using multiple short segments
-                        let dash_len = 8.0;
-                        let gap_len = 4.0;
-                        let dash_color = Color32::from_rgb(255, 255, 0);
-                        let sides = [
-                            (min, Pos2::new(max.x, min.y)), // top
-                            (Pos2::new(max.x, min.y), max), // right
-                            (max, Pos2::new(min.x, max.y)), // bottom
-                            (Pos2::new(min.x, max.y), min), // left
-                        ];
-                        for (a, b) in sides {
-                            let dx = b.x - a.x;
-                            let dy = b.y - a.y;
-                            let len = (dx * dx + dy * dy).sqrt();
-                            let steps = (len / (dash_len + gap_len)).ceil() as usize;
-                            for s in 0..steps {
-                                let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
-                                let t1 = ((s as f32 * (dash_len + gap_len) + dash_len)).min(len) / len;
-                                painter.line_segment(
-                                    [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
-                                    Stroke::new(1.5, dash_color),
-                                );
-                            }
+                if let Some(surf) = state.stage.surfaces.get(state.stage.selected_surface_index)
+                    && surf.content_mapping == ContentMapping::Mapped
+                {
+                    let [min_x, min_y, max_x, max_y] = surf.bounding_box(stage_aspect);
+                    let min = Pos2::new(
+                        canvas_rect.min.x + min_x * canvas_rect.width(),
+                        canvas_rect.min.y + min_y * canvas_rect.height(),
+                    );
+                    let max = Pos2::new(
+                        canvas_rect.min.x + max_x * canvas_rect.width(),
+                        canvas_rect.min.y + max_y * canvas_rect.height(),
+                    );
+                    let _bbox_rect = Rect::from_min_max(min, max);
+                    // Dashed stroke effect using multiple short segments
+                    let dash_len = 8.0;
+                    let gap_len = 4.0;
+                    let dash_color = Color32::from_rgb(255, 255, 0);
+                    let sides = [
+                        (min, Pos2::new(max.x, min.y)), // top
+                        (Pos2::new(max.x, min.y), max), // right
+                        (max, Pos2::new(min.x, max.y)), // bottom
+                        (Pos2::new(min.x, max.y), min), // left
+                    ];
+                    for (a, b) in sides {
+                        let dx = b.x - a.x;
+                        let dy = b.y - a.y;
+                        let len = (dx * dx + dy * dy).sqrt();
+                        let steps = (len / (dash_len + gap_len)).ceil() as usize;
+                        for s in 0..steps {
+                            let t0 = (s as f32 * (dash_len + gap_len)).min(len) / len;
+                            let t1 = (s as f32 * (dash_len + gap_len) + dash_len).min(len) / len;
+                            painter.line_segment(
+                                [Pos2::new(a.x + dx * t0, a.y + dy * t0), Pos2::new(a.x + dx * t1, a.y + dy * t1)],
+                                Stroke::new(1.5, dash_color),
+                            );
                         }
                     }
                 }
@@ -4840,34 +5434,34 @@ mod egui_impl {
                     light.segments.push(crate::stage::LightingSegment::default());
                     light_dirty = true;
                 }
-                if let Some(si) = remove_segment {
-                    if light.segments.len() > 1 {
-                        light.segments.remove(si);
-                        light_dirty = true;
-                    }
+                if let Some(si) = remove_segment
+                    && light.segments.len() > 1
+                {
+                    light.segments.remove(si);
+                    light_dirty = true;
                 }
 
                 // Activity meters
-                if let Some(sampler_id) = light.sampler_id {
-                    if let Some(frame) = state.lighting_last_frames.get(&sampler_id) {
-                        ui.collapsing("Activity", |ui| {
-                            if frame.is_empty() {
-                                ui.label("No activity");
-                            } else {
-                                for (universe, data) in frame.iter() {
-                                    let max = data.iter().copied().max().unwrap_or(0) as f32 / 255.0;
-                                    ui.horizontal(|ui| {
-                                        ui.label(format!("U{}", universe));
-                                        ui.add(
-                                            egui::ProgressBar::new(max)
-                                                .text(format!("{:.0}", max * 255.0))
-                                                .desired_width(ui.available_width()),
-                                        );
-                                    });
-                                }
+                if let Some(sampler_id) = light.sampler_id
+                    && let Some(frame) = state.lighting_last_frames.get(&sampler_id)
+                {
+                    ui.collapsing("Activity", |ui| {
+                        if frame.is_empty() {
+                            ui.label("No activity");
+                        } else {
+                            for (universe, data) in frame.iter() {
+                                let max = data.iter().copied().max().unwrap_or(0) as f32 / 255.0;
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("U{}", universe));
+                                    ui.add(
+                                        egui::ProgressBar::new(max)
+                                            .text(format!("{:.0}", max * 255.0))
+                                            .desired_width(ui.available_width()),
+                                    );
+                                });
                             }
-                        });
-                    }
+                        }
+                    });
                 }
             });
         }
@@ -4875,10 +5469,10 @@ mod egui_impl {
             state.save_workspace();
         }
         if let Some(i) = remove_light {
-            if let Some(id) = state.stage.lighting_outputs[i].sampler_id {
-                if let Some(sender) = state.lighting_senders.remove(&id) {
-                    sender.shutdown();
-                }
+            if let Some(id) = state.stage.lighting_outputs[i].sampler_id
+                && let Some(sender) = state.lighting_senders.remove(&id)
+            {
+                sender.shutdown();
             }
             state.stage.lighting_outputs.remove(i);
             state.save_workspace();
@@ -5399,12 +5993,12 @@ mod egui_impl {
                     let mut dome_enabled = false;
                     let mut dome_config = rustjay_projection::DomemasterConfig::default();
                     let mut dome_rotation = [0.0f32; 3];
-                    if let Some(sync) = &state.stage.dome_sync {
-                        if let Ok(g) = sync.lock() {
-                            dome_enabled = g.enabled;
-                            dome_config = g.config.clone();
-                            dome_rotation = g.content_rotation;
-                        }
+                    if let Some(sync) = &state.stage.dome_sync
+                        && let Ok(g) = sync.lock()
+                    {
+                        dome_enabled = g.enabled;
+                        dome_config = g.config.clone();
+                        dome_rotation = g.content_rotation;
                     }
                     let mut dirty = false;
                     if ui.checkbox(&mut dome_enabled, "Enabled").changed() {
@@ -5896,10 +6490,10 @@ mod egui_impl {
                 // Edge-blend controls
                 ui.label(egui::RichText::new("Edge Blend").strong());
                 let mut config = rustjay_projection::EdgeBlendConfig::default();
-                if let Some(sync) = &state.stage.edge_blend_sync {
-                    if let Ok(g) = sync.lock() {
-                        config = g.config;
-                    }
+                if let Some(sync) = &state.stage.edge_blend_sync
+                    && let Ok(g) = sync.lock()
+                {
+                    config = g.config;
                 }
                 let mut dirty = false;
                 let mut edge_ui = |ui: &mut egui::Ui,
@@ -6010,9 +6604,10 @@ mod egui_impl {
             ui.label(egui::RichText::new("Recording").strong());
 
             if let Ok(mut guard) = self.pending_save_path.lock()
-                && let Some(path) = guard.take() {
-                    self.recording_path = path.to_string_lossy().to_string();
-                }
+                && let Some(path) = guard.take()
+            {
+                self.recording_path = path.to_string_lossy().to_string();
+            }
 
             ui.horizontal(|ui| {
                 ui.label("Codec:");
@@ -6218,6 +6813,7 @@ mod egui_impl {
                 kind: crate::sources::SourceKind::Ndi,
                 path: None,
                 device_index: 0,
+                text: None,
             }
         }
 
@@ -6267,16 +6863,28 @@ mod egui_impl {
             };
 
             assert_eq!(
-                short_param_name(&desc("Position X [ch_cb77b4c2_fxc2aeb164]")),
+                short_param_name(&desc("Position X [ch_cb77b4c2_fxc2aeb164]"), ""),
                 "Position X"
             );
             // A name that legitimately ends in a bracketed phrase keeps it.
-            assert_eq!(short_param_name(&desc("Position X")), "Position X");
+            assert_eq!(short_param_name(&desc("Position X"), ""), "Position X");
             // Only the trailing suffix goes; interior brackets are part of the
             // name, as in "Shape (0=Circle …)".
             assert_eq!(
-                short_param_name(&desc("Shape (0=Circle 1=Rect) [ch_a_fxb]")),
+                short_param_name(&desc("Shape (0=Circle 1=Rect) [ch_a_fxb]"), ""),
                 "Shape (0=Circle 1=Rect)"
+            );
+            // The layer's own name leads the labels the mixer writes; the
+            // inspector already has it as a heading, so it comes off.
+            assert_eq!(
+                short_param_name(&desc("bigbro_font_atlas Key Threshold"), "bigbro_font_atlas"),
+                "Key Threshold"
+            );
+            // A parameter that *is* just the owner's name keeps it, rather
+            // than rendering as an empty label.
+            assert_eq!(
+                short_param_name(&desc("Blur"), "Blur"),
+                "Blur"
             );
         }
 

@@ -106,4 +106,6 @@ pub struct KovvbojSourceEntry {
     pub path: Option<String>,
     /// Device index for camera/NDI sources.
     pub device_index: usize,
+    /// The string a text layer renders.
+    pub text: Option<String>,
 }

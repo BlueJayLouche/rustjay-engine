@@ -3313,6 +3313,7 @@ dependencies = [
 name = "kovvboj"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "bytemuck",
  "dirs",
@@ -5558,9 +5559,11 @@ dependencies = [
  "crossbeam",
  "ffmpeg-next",
  "grafton-ndi",
+ "hap-qt",
  "log",
  "nokhwa",
  "objc",
+ "rayon",
  "rustjay-core",
  "rustjay-ledmap",
  "rustjay-lighting",
@@ -6998,10 +7001,8 @@ dependencies = [
  "bytemuck",
  "egui",
  "env_logger",
- "hap-qt",
  "hap-wgpu",
  "log",
- "rayon",
  "rfd",
  "rustjay-core",
  "rustjay-engine",

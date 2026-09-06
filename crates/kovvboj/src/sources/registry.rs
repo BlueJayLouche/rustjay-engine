@@ -18,6 +18,10 @@ pub struct SourceEntry {
     pub path: Option<PathBuf>,
     /// Device index for camera/NDI sources.
     pub device_index: usize,
+    /// The string a text layer renders. `None` for every other kind — it rides
+    /// on the entry so it is saved, recalled and copied with the layer.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Classification of a source entry.
@@ -31,6 +35,8 @@ pub enum SourceKind {
     Video,
     /// Solid color generator.
     SolidColor,
+    /// Rasterised text.
+    Text,
     /// Live camera.
     Camera,
     /// NDI stream.
@@ -104,139 +110,186 @@ pub struct Registry {
     pub streams: Vec<SourceEntry>,
     /// Built-in generators (solid color, camera, etc.).
     pub builtins: Vec<SourceEntry>,
+    /// Font files found in the library folders and the OS font directories.
+    /// Not a source you can add — this feeds a text layer's font picker.
+    pub fonts: Vec<PathBuf>,
 }
 
 impl Registry {
     /// Scan the given directories for sources.
-    pub fn scan(shaders_dir: &Path, assets_dir: &Path) -> Self {
-        let mut shaders = Vec::new();
-        let mut images = Vec::new();
-        let mut videos = Vec::new();
-
-        // Scan ISF shaders
-        if let Ok(entries) = std::fs::read_dir(shaders_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|e| e == "fs").unwrap_or(false) {
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let id = name.to_lowercase().replace(' ', "_");
-                    shaders.push(SourceEntry {
-                        id,
-                        name,
-                        kind: SourceKind::Isf,
-                        path: Some(path),
-                        device_index: 0,
-                    });
-                }
-            }
+    ///
+    /// Every root is walked the same way: the bundled shaders and assets dirs
+    /// are just the first two entries in the list, with the user's own folders
+    /// after them. A file already seen under an earlier root is skipped, so
+    /// adding a folder that overlaps one already in the list does not list
+    /// everything twice.
+    pub fn scan(roots: &[PathBuf]) -> Self {
+        let mut registry = Self::default();
+        let mut seen = std::collections::HashSet::new();
+        for root in roots {
+            registry.scan_dir(root, 0, &mut seen, false);
         }
+        // Fonts only, so nothing else in a system font directory joins the
+        // media lists.
+        for root in crate::sources::text_source::font_dirs() {
+            registry.scan_dir(&root, 0, &mut seen, true);
+        }
+        registry.fonts.sort();
 
         // Sort for deterministic ordering.
-        shaders.sort_by(|a, b| a.name.cmp(&b.name));
+        registry.shaders.sort_by(|a, b| a.name.cmp(&b.name));
+        registry.images.sort_by(|a, b| a.name.cmp(&b.name));
+        registry.videos.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // Scan images and videos in assets_dir
-        if let Ok(entries) = std::fs::read_dir(assets_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    let ext_lower = ext.to_lowercase();
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let id = name.to_lowercase().replace(' ', "_");
-                    match ext_lower.as_str() {
-                        "png" | "jpg" | "jpeg" => {
-                            images.push(SourceEntry {
-                                id,
-                                name,
-                                kind: SourceKind::Image,
-                                path: Some(path),
-                                device_index: 0,
-                            });
-                        }
-                        "mp4" | "mov" | "avi" | "mkv" | "webm" => {
-                            videos.push(SourceEntry {
-                                id,
-                                name,
-                                kind: SourceKind::Video,
-                                path: Some(path),
-                                device_index: 0,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        images.sort_by(|a, b| a.name.cmp(&b.name));
-        videos.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // Load stream URLs from assets/streams.txt if present.
-        let mut streams = Vec::new();
-        let streams_path = assets_dir.join("streams.txt");
-        if let Ok(content) = std::fs::read_to_string(&streams_path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                // Format: name|url (a legacy third kind field is ignored).
-                let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() >= 2 {
-                    let name = parts[0].trim().to_string();
-                    let url = parts[1].trim().to_string();
-                    let kind = match classify_stream_url(&url) {
-                        Ok(kind) => kind,
-                        Err(error) => {
-                            log::warn!(
-                                "Skipping stream '{}' from {}: {}",
-                                name,
-                                streams_path.display(),
-                                error
-                            );
-                            continue;
-                        }
-                    };
-                    let id = name.to_lowercase().replace(' ', "_");
-                    streams.push(SourceEntry {
-                        id,
-                        name,
-                        kind,
-                        path: Some(std::path::PathBuf::from(&url)),
-                        device_index: 0,
-                    });
-                }
-            }
-        }
-
-        let mut registry = Self {
-            shaders,
-            images,
-            videos,
-            streams,
-            builtins: Vec::new(),
-        };
         // One code path for device discovery, so the generic NDI/Syphon/Spout
         // entries exist from startup and not only after a rescan.
         registry.refresh_builtins();
         registry
     }
 
+    /// Walk one root, filing each file under its extension.
+    ///
+    /// ponytail: a depth cap instead of symlink-loop detection — the cap is the
+    /// loop guard. Raise it if anyone nests their clips deeper than this.
+    fn scan_dir(
+        &mut self,
+        dir: &Path,
+        depth: usize,
+        seen: &mut std::collections::HashSet<PathBuf>,
+        fonts_only: bool,
+    ) {
+        const MAX_DEPTH: usize = 4;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            // Dotfiles are noise — .git, .DS_Store, and a `.kovvboj/` workspace
+            // saved inside a media folder.
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                if depth < MAX_DEPTH {
+                    self.scan_dir(&path, depth + 1, seen, fonts_only);
+                }
+                continue;
+            }
+            if crate::sources::text_source::is_font(&path) {
+                if seen.insert(path.clone()) {
+                    self.fonts.push(path);
+                }
+                continue;
+            }
+            if fonts_only {
+                continue;
+            }
+            if file_name.eq_ignore_ascii_case("streams.txt") {
+                self.load_streams(&path);
+                continue;
+            }
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let id = name.to_lowercase().replace(' ', "_");
+            let (kind, bucket) = match ext.to_lowercase().as_str() {
+                "fs" => (SourceKind::Isf, &mut self.shaders),
+                "png" | "jpg" | "jpeg" => (SourceKind::Image, &mut self.images),
+                "mp4" | "mov" | "avi" | "mkv" | "webm" => (SourceKind::Video, &mut self.videos),
+                _ => continue,
+            };
+            bucket.push(SourceEntry {
+                id,
+                name,
+                kind,
+                path: Some(path),
+                device_index: 0,
+                text: None,
+            });
+        }
+    }
+
+    /// Read a `streams.txt` — one `name|url` per line — into the stream list.
+    fn load_streams(&mut self, streams_path: &Path) {
+        let Ok(content) = std::fs::read_to_string(streams_path) else {
+            return;
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            // Format: name|url (a legacy third kind field is ignored).
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0].trim().to_string();
+            let url = parts[1].trim().to_string();
+            let kind = match classify_stream_url(&url) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    log::warn!(
+                        "Skipping stream '{}' from {}: {}",
+                        name,
+                        streams_path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+            let id = name.to_lowercase().replace(' ', "_");
+            self.streams.push(SourceEntry {
+                id,
+                name,
+                kind,
+                path: Some(std::path::PathBuf::from(&url)),
+                device_index: 0,
+                text: None,
+            });
+        }
+    }
+
     /// Re-scan live devices (cameras, NDI, Syphon) without touching shaders/images/videos.
     pub fn refresh_builtins(&mut self) {
-        let mut builtins = vec![SourceEntry {
-            id: "solid_color".to_string(),
-            name: "Solid Color".to_string(),
-            kind: SourceKind::SolidColor,
-            path: None,
-            device_index: 0,
-        }];
+        let mut builtins = vec![
+            SourceEntry {
+                id: "solid_color".to_string(),
+                name: "Solid Color".to_string(),
+                kind: SourceKind::SolidColor,
+                path: None,
+                device_index: 0,
+                text: None,
+            },
+            // No path: picking the file is the point. The library panel opens
+            // a dialog for this one instead of adding a layer straight away.
+            SourceEntry {
+                id: "video_any".to_string(),
+                name: "Video…".to_string(),
+                kind: SourceKind::Video,
+                path: None,
+                device_index: 0,
+                text: None,
+            },
+            SourceEntry {
+                id: "text".to_string(),
+                name: "Text".to_string(),
+                kind: SourceKind::Text,
+                path: None,
+                device_index: 0,
+                text: None,
+            },
+        ];
         #[cfg(feature = "webcam")]
         for (idx, name) in rustjay_io::list_cameras().into_iter().enumerate() {
             builtins.push(SourceEntry {
@@ -245,6 +298,7 @@ impl Registry {
                 kind: SourceKind::Camera,
                 path: None,
                 device_index: idx,
+                text: None,
             });
         }
         #[cfg(feature = "ndi")]
@@ -255,6 +309,7 @@ impl Registry {
                 kind: SourceKind::Ndi,
                 path: None,
                 device_index: 0,
+                text: None,
             });
         }
         #[cfg(target_os = "macos")]
@@ -269,6 +324,7 @@ impl Registry {
                 kind: SourceKind::Syphon,
                 path: Some(std::path::PathBuf::from(&info.uuid)),
                 device_index: 0,
+                text: None,
             });
         }
         #[cfg(target_os = "windows")]
@@ -282,6 +338,7 @@ impl Registry {
                 kind: SourceKind::Spout,
                 path: None,
                 device_index: 0,
+                text: None,
             });
         }
         self.builtins = builtins;
@@ -295,6 +352,7 @@ impl Registry {
             kind: SourceKind::Ndi,
             path: None,
             device_index: 0,
+            text: None,
         });
         #[cfg(target_os = "macos")]
         self.builtins.push(SourceEntry {
@@ -303,6 +361,7 @@ impl Registry {
             kind: SourceKind::Syphon,
             path: None,
             device_index: 0,
+            text: None,
         });
         #[cfg(target_os = "windows")]
         self.builtins.push(SourceEntry {
@@ -311,6 +370,7 @@ impl Registry {
             kind: SourceKind::Spout,
             path: None,
             device_index: 0,
+            text: None,
         });
     }
 
@@ -399,7 +459,7 @@ pub fn install_shader(src: &Path, shaders_dir: &Path) -> std::io::Result<PathBuf
 }
 
 #[cfg(test)]
-mod install_tests {
+mod disk_tests {
     use super::*;
 
     struct TempDir(PathBuf);
@@ -425,6 +485,33 @@ mod install_tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).ok();
         }
+    }
+
+    #[test]
+    fn scanning_a_folder_walks_it_recursively_and_only_once() {
+        let root = TempDir::new("scan");
+        root.file("top.fs", "// shader");
+        let nested = root.0.join("clips/set1");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("run.mp4"), "").unwrap();
+        // Neither of these should show up: a dot-directory, and a file one
+        // level below the depth cap.
+        let hidden = root.0.join(".git");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("blob.png"), "").unwrap();
+        let deep = root.0.join("a/b/c/d/e");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deep.png"), "").unwrap();
+
+        let mut registry = Registry::default();
+        let mut seen = std::collections::HashSet::new();
+        // The same folder listed twice — an overlap must not double the list.
+        registry.scan_dir(&root.0, 0, &mut seen, false);
+        registry.scan_dir(&root.0, 0, &mut seen, false);
+
+        assert_eq!(registry.shaders.len(), 1);
+        assert_eq!(registry.videos.len(), 1);
+        assert!(registry.images.is_empty());
     }
 
     #[test]

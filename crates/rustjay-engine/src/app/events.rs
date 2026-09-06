@@ -357,6 +357,8 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                             .startup_webcam_device
                             .take();
                         if let Some(idx) = idx {
+                            // Only the webcam arm below uses it.
+                            let _ = idx;
                             #[cfg(feature = "webcam")]
                             match manager.start_webcam(idx, 1280, 720, 30) {
                                 Ok(()) => {
