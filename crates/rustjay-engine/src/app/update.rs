@@ -516,6 +516,8 @@ impl<P: EffectPlugin> App<P> {
                     }
 
                     shared.osc_message_log = osc_state.message_log.clone();
+                    // Taken, not cloned: each string message is delivered once.
+                    shared.osc_text = std::mem::take(&mut osc_state.text_inbox);
                 }
     }
 

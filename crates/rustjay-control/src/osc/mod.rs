@@ -115,6 +115,9 @@ pub struct OscState {
     pub last_message: Option<(String, f32)>,
     /// Message history (recent messages)
     pub message_log: Vec<(String, f32, f64)>,
+    /// String arguments, which are not parameters: `(address, text)`, drained
+    /// by the host each frame. A text layer's copy arrives this way.
+    pub text_inbox: Vec<(String, String)>,
     /// Controller feedback target, adopted from the last `<base>/sync` sender
     #[cfg(feature = "osc-feedback")]
     feedback: Option<(UdpSocket, std::net::SocketAddr)>,
@@ -136,6 +139,7 @@ impl OscState {
             base_address: base,
             last_message: None,
             message_log: Vec::with_capacity(100),
+            text_inbox: Vec::new(),
             #[cfg(feature = "osc-feedback")]
             feedback: None,
         }
@@ -467,6 +471,20 @@ impl OscServer {
                 st.send_all_feedback();
                 return;
             }
+
+        // A string argument is not a parameter — park it for the host to read.
+        if let Some(OscType::String(text)) = msg.args.first()
+            && let Ok(mut state) = state.lock()
+        {
+            // Bounded: a controller left sending into a host that never drains
+            // must not grow this without limit.
+            if state.text_inbox.len() >= 32 {
+                state.text_inbox.remove(0);
+            }
+            state.text_inbox.push((msg.addr.clone(), text.clone()));
+            log::debug!("OSC: {} = {:?}", msg.addr, text);
+            return;
+        }
 
         // Extract value from arguments
         let value = msg.args.first().and_then(|arg| match arg {

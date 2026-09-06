@@ -1038,6 +1038,10 @@ pub struct EngineState {
     pub osc_port: u16,
     /// Recent OSC messages received (address, normalized value, timestamp).
     pub osc_message_log: Vec<(String, f32, f64)>,
+    /// OSC messages carrying a string, `(address, text)`, refreshed every
+    /// frame. Consumed the frame they arrive — an app that wants one must read
+    /// it in `prepare`.
+    pub osc_text: Vec<(String, String)>,
 
     /// Pending preset command.
     pub preset_command: PresetCommand,
@@ -1238,6 +1242,7 @@ impl EngineState {
             osc_host: "127.0.0.1".to_string(),
             osc_port: 9001,
             osc_message_log: Vec::new(),
+            osc_text: Vec::new(),
             preset_command: PresetCommand::None,
             preset_names: Vec::new(),
             preset_quick_slot_names: Default::default(),
