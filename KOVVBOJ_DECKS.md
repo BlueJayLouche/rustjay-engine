@@ -165,8 +165,20 @@ Two traps:
    (`rustjay-mixer/src/lib.rs:429`) serves stale bindings and layers render each
    other's textures. Presents as a GPU driver bug.
 2. **`SourceEntry` equality is the rebuild trigger** — compare `kind`, `path`,
-   `device_index` only. `id` and `name` differing must **not** force a decoder
-   rebuild, so do not blanket-derive `PartialEq` and forget.
+   `device_index` **and `text`**. `id` and `name` differing must **not** force a
+   decoder rebuild, so do not blanket-derive `PartialEq` and forget. (`text` was
+   missed when this plan was written: it is what a text layer rasterises, not a
+   label, so editing it *must* rebuild.)
+
+**Done** — `f6a91ca`. `plan_layers` / `plan_chain` are pure decision functions
+with 11 headless tests; `apply_topology` executes them. Deciding whether to
+build a channel needs no GPU, so the load-bearing logic is testable without one.
+
+Fixed a pre-existing leak on the way past: the old code cleared `channels` and
+`master` but **never `groups`**, while the group loop pushed a fresh
+`ChannelGroup` every time — so every undo, redo and scene load duplicated every
+group, at four full-resolution textures each. Rebuilding the groups vec from the
+desired set makes that structurally impossible.
 
 ### Solo scopes to its deck subtree
 
@@ -323,11 +335,10 @@ nine transitions, confirm nothing pops and both previews stay live.
 The first two are independently useful and mergeable before any deck work
 exists.
 
-1. **`input_b`** — forward the second input through `RenderHookCtx`, bind by
-   declaration order in `rustjay-isf`, GPU pixel test. *Engine, standalone;
-   unlocks every two-input ISF.*
-2. **Diff-based apply** replacing full topology replay, with unit tests.
-   *kovvboj, standalone; fixes undo hitching today, single deck or not.*
+1. ~~**`input_b`** — forward the second input through `RenderHookCtx`, bind by
+   declaration order in `rustjay-isf`, GPU pixel test.~~ **Done** `ca7bcb4`.
+2. ~~**Diff-based apply** replacing full topology replay, with unit tests.~~
+   **Done** `f6a91ca`.
 3. **Nested groups** — `parent` on `ChannelGroup` / `GroupDesc`, depth-first
    render, cycle guard, 8-group cap, lazy allocation, per-subtree solo.
 4. **Deck roles** — two permanent top-level groups, transition pass between
