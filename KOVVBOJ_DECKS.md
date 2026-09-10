@@ -59,10 +59,10 @@ exotic shader is accepted rather than paying a pass every frame forever.
 
 `crates/kovvboj/shaders/transition_*.fs` — nine shaders (dissolve, four wipes,
 push, iris, zoom, luma_key) with `startImage` / `endImage` / `progress` — have
-been dead assets since the varda port. They cannot run: an ISF effect binds
-exactly one texture, `ctx.input` matched against `primary_texture`
-(`rustjay-isf/src/effect.rs:1514`), and every other image input gets the black
-placeholder. `endImage` would be black.
+been dead assets since the varda port. They cannot run: an ISF effect bound
+every image input to the one primary texture (`rustjay-isf/src/effect.rs`), so
+`startImage` and `endImage` were the same image — a transition mixed a frame
+with itself and `progress` did nothing visible.
 
 The second texture **already reaches the plugin boundary**:
 `plugin_renderer.rs:604` does `let feedback = inputs.get(1)` and carries it into
@@ -76,6 +76,19 @@ name conventions differ across corpora (`startImage`/`endImage`,
 `inputImage`/`inputImage2`, `from`/`to`).
 
 This is additive and generally useful: any two-input ISF works afterwards.
+
+**Done** — `ca7bcb4`. `RenderHookCtx.input_b`, `IsfEffect::secondary_texture`,
+and `m_second_image_input_binds_to_input_b` in `render_pixels.rs` asserting
+progress 0 / 1 / 0.5. Verified non-vacuous: with the bind arm disabled,
+progress 1 renders the *first* input.
+
+**Open, for step 4:** the nine shipped `transition_*.fs` are **not in ISF
+idiom** — they are pre-transpiled GLSL 450 with hand-written
+`layout(set=0, binding=N)` declarations, written for varda's own pipeline.
+`rustjay-isf` generates those bindings itself from an ISF JSON header. Whether
+they load at all is untested; assume they need porting to the idiom
+(`crates/rustjay-isf/tests/shaders/twoinput.fs` is the shape that works) and
+budget for it.
 
 ## Budget
 
