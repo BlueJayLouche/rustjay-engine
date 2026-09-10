@@ -1283,6 +1283,116 @@ fn warn_stale_topology(topo: &crate::scene::Topology, engine: &EngineState) {
 ///
 /// Chains live on `rustjay_mixer::Channel` now, so every caller prefixes.
 #[cfg(feature = "mixer")]
+/// Does this entry name the same underlying resource?
+///
+/// Only the fields that decide what gets instantiated. `id` and `name` are
+/// labels — a rename must not tear down a running decoder. `text` is not a
+/// label: it is what a text layer rasterises, so changing it does have to
+/// rebuild the source.
+#[cfg(feature = "mixer")]
+fn same_resource(a: &crate::sources::SourceEntry, b: &crate::sources::SourceEntry) -> bool {
+    a.kind == b.kind && a.path == b.path && a.device_index == b.device_index && a.text == b.text
+}
+
+/// What reconciling decided to do with one desired layer.
+#[cfg(feature = "mixer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LayerPlan {
+    /// A live channel has this uuid: keep it, and with it the source instance,
+    /// its GPU textures and its place in the modulation graph. `swap_source` is
+    /// set when the entry now names a different resource, which re-points that
+    /// one channel without rebuilding it.
+    Keep { uuid: String, swap_source: bool },
+    /// Nothing live has this uuid — build the whole channel.
+    Build { uuid: String },
+}
+
+/// What reconciling decided to do with one desired effect slot.
+#[cfg(feature = "mixer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlotPlan {
+    Keep { uuid: String },
+    Build { uuid: String },
+}
+
+/// Decide, without touching the GPU, what the live layer stack must become.
+///
+/// Split out from [`KovvbojRootPlugin::apply_topology`] so the decision is
+/// testable headless — building a channel needs a device, deciding whether to
+/// build one does not.
+///
+/// Returns the per-desired-layer plan in desired order, plus the uuids of live
+/// channels that are no longer wanted.
+#[cfg(feature = "mixer")]
+pub(crate) fn plan_layers(
+    live: &[(String, Option<crate::sources::SourceEntry>)],
+    desired: &[crate::scene::LayerDesc],
+) -> (Vec<LayerPlan>, Vec<String>) {
+    let plans = desired
+        .iter()
+        .map(|d| {
+            match live.iter().find(|(uuid, _)| *uuid == d.uuid) {
+                // No record of what it was built from: assume it still matches
+                // rather than rebuild on a missing bookkeeping entry.
+                Some((_, entry)) => LayerPlan::Keep {
+                    uuid: d.uuid.clone(),
+                    swap_source: entry
+                        .as_ref()
+                        .is_some_and(|e| !same_resource(e, &d.source)),
+                },
+                None => LayerPlan::Build {
+                    uuid: d.uuid.clone(),
+                },
+            }
+        })
+        .collect();
+    let remove = live
+        .iter()
+        .filter(|(uuid, _)| !desired.iter().any(|d| &d.uuid == uuid))
+        .map(|(uuid, _)| uuid.clone())
+        .collect();
+    (plans, remove)
+}
+
+/// [`plan_layers`] for an effect chain. A slot is kept when its uuid and its
+/// resolved shader path both still match; a changed path rebuilds that slot
+/// alone, and `enabled` is a flag the caller sets on a kept slot.
+#[cfg(feature = "mixer")]
+pub(crate) fn plan_chain(
+    live: &[(String, Option<std::path::PathBuf>)],
+    desired: &[crate::scene::FxDesc],
+    base: &std::path::Path,
+) -> (Vec<SlotPlan>, Vec<String>) {
+    let wanted = |d: &crate::scene::FxDesc| crate::scene::resolve(&d.path, base);
+    let plans = desired
+        .iter()
+        .map(|d| {
+            let keep = live
+                .iter()
+                .any(|(uuid, path)| *uuid == d.uuid && path.as_deref() == Some(&*wanted(d)));
+            if keep {
+                SlotPlan::Keep {
+                    uuid: d.uuid.clone(),
+                }
+            } else {
+                SlotPlan::Build {
+                    uuid: d.uuid.clone(),
+                }
+            }
+        })
+        .collect();
+    let remove = live
+        .iter()
+        .filter(|(uuid, path)| {
+            !desired
+                .iter()
+                .any(|d| &d.uuid == uuid && path.as_deref() == Some(&*wanted(d)))
+        })
+        .map(|(uuid, _)| uuid.clone())
+        .collect();
+    (plans, remove)
+}
+
 fn build_fx_slot(
     fx: &crate::scene::FxDesc,
     base: &std::path::Path,
@@ -1552,67 +1662,137 @@ impl KovvbojRootPlugin {
     /// [`Scene::apply_to_mixer`](crate::scene::Scene::apply_to_mixer). Runs in
     /// `init()` with a throwaway engine, mirroring `build_default_graph`; the
     /// real engine wires params on the next `params_dirty` registration.
+    /// Reconcile the live graph to `topo`, rebuilding only what actually
+    /// changed.
+    ///
+    /// This used to clear the mixer and rebuild every layer from scratch, which
+    /// cost a hitch and restarted video playback on every undo — acceptable for
+    /// a structural edit, not acceptable once one deck is live while you edit
+    /// the other. Matching by uuid keeps the source instance, its decoder, its
+    /// GPU textures and its modulation wiring wherever the description still
+    /// agrees with what is running.
+    ///
+    /// Loading a scene whose uuids are all new degenerates to "build
+    /// everything", which is exactly what a load should do — so this is the
+    /// only path, and replay no longer exists as a separate one.
+    ///
+    /// `live_sources` records what each live channel was built from;
+    /// [`KovvbojAppState::layer_sources`] owns it. Pass an empty map when there
+    /// is no live graph to compare against (`init`).
     fn apply_topology(
         &mut self,
         topo: &crate::scene::Topology,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        live_sources: &std::collections::HashMap<String, crate::sources::SourceEntry>,
     ) {
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
         let dummy_engine = EngineState::new();
         let base = crate::scene::topology_base();
 
-        // Idempotent: replace whatever graph is live (empty at `init`, the old
-        // graph when switching presets at runtime). Dropping the old channels
-        // releases their sources (cameras, decoders, GPU textures).
-        mixer.channels.clear();
-        mixer.master.clear();
         // Channels are a free-standing layer stack here, so the two-channel
         // crossfader special case must not apply — see `Mixer::use_crossfader`.
         mixer.use_crossfader = false;
-        let mut sources = std::collections::HashMap::new();
 
-        for desc in &topo.layers {
+        let live: Vec<(String, Option<crate::sources::SourceEntry>)> = mixer
+            .channels
+            .iter()
+            .map(|c| (c.uuid.clone(), live_sources.get(&c.uuid).cloned()))
+            .collect();
+        let (plans, dropped) = plan_layers(&live, &topo.layers);
+
+        // Take the live channels out so a kept one can be moved into the new
+        // order; whatever is left at the end was not wanted and is dropped here,
+        // releasing its camera / decoder / textures.
+        let mut old: Vec<Channel> = std::mem::take(&mut mixer.channels);
+        let mut next: Vec<Channel> = Vec::with_capacity(topo.layers.len());
+        let mut sources = std::collections::HashMap::new();
+        let mut rebuilt = 0usize;
+
+        for (desc, plan) in topo.layers.iter().zip(plans.iter()) {
             // Resolve the source path back to absolute before instantiating.
             let mut entry = desc.source.clone();
             if let Some(p) = entry.path.take() {
                 entry.path = Some(crate::scene::resolve(&p, &base));
             }
-            let source = match instantiate_source(&entry, device, queue, &dummy_engine) {
-                Ok(source) => source,
-                Err(e) => {
-                    log::warn!("[Topology] failed to rebuild layer '{}': {}", desc.name, e);
-                    continue;
+            let prefix = format!("ch_{}_", desc.uuid);
+
+            let mut channel = match plan {
+                LayerPlan::Keep { swap_source, .. } => {
+                    let idx = old
+                        .iter()
+                        .position(|c| c.uuid == desc.uuid)
+                        .expect("plan_layers only keeps a uuid it found live");
+                    let mut ch = old.remove(idx);
+                    if *swap_source {
+                        match instantiate_source(&entry, device, queue, &dummy_engine) {
+                            Ok(source) => {
+                                ch.effect = source;
+                                ch.effect.set_param_prefix(&prefix);
+                                rebuilt += 1;
+                            }
+                            Err(e) => log::warn!(
+                                "[Topology] failed to re-point layer '{}': {}",
+                                desc.name,
+                                e
+                            ),
+                        }
+                    }
+                    ch
+                }
+                LayerPlan::Build { .. } => {
+                    let source = match instantiate_source(&entry, device, queue, &dummy_engine) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            log::warn!(
+                                "[Topology] failed to rebuild layer '{}': {}",
+                                desc.name,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    rebuilt += 1;
+                    let mut ch = Channel::new(desc.uuid.clone(), desc.name.clone(), source);
+                    ch.effect.set_param_prefix(&prefix);
+                    ch
                 }
             };
 
-            let mut channel = Channel::new(desc.uuid.clone(), desc.name.clone(), source);
+            channel.name = desc.name.clone();
             channel.opacity = desc.opacity;
             channel.blend_mode = desc.blend_mode;
             channel.solo = desc.solo;
             channel.mute = desc.mute;
+            // Membership is re-derived from the groups below; clearing here
+            // means a layer dragged out of a group does not keep claiming it.
+            channel.group = None;
+            reconcile_chain(
+                &mut channel.chain,
+                &desc.fx,
+                &prefix,
+                &base,
+                device,
+                queue,
+                &dummy_engine,
+            );
 
-            let prefix = format!("ch_{}_", desc.uuid);
-            channel.effect.set_param_prefix(&prefix);
-            for fx in &desc.fx {
-                if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
-                    slot.effect
-                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
-                    channel.chain.push(slot);
-                }
-            }
-
-            let uuid = desc.uuid.clone();
-            if let Err(e) = mixer.add_channel(channel) {
-                log::warn!("[Topology] failed to add layer '{}': {}", desc.name, e);
+            if next.len() >= rustjay_mixer::MAX_CHANNELS {
+                log::warn!("[Topology] layer '{}' over the channel cap", desc.name);
                 continue;
             }
-            sources.insert(uuid, desc.source.clone());
+            sources.insert(desc.uuid.clone(), desc.source.clone());
+            next.push(channel);
         }
+
+        mixer.channels = next;
 
         // Groups after the layers: membership names them, so they all have to
         // exist first. Their uuids are reproduced so `grp_<uuid>_…` params —
         // opacity, blend, and every effect in the chain — land back on them.
+        // A group kept by uuid keeps its accumulators and its composited output,
+        // which is four full-resolution textures not reallocated.
+        let mut live_groups: Vec<rustjay_mixer::ChannelGroup> = std::mem::take(&mut mixer.groups);
         for desc in &topo.groups {
             let present: Vec<String> = desc
                 .members
@@ -1631,49 +1811,104 @@ impl KovvbojRootPlugin {
                 );
                 continue;
             }
-            if mixer
-                .group_channels(desc.uuid.clone(), desc.name.clone(), &present)
-                .is_none()
-            {
-                continue;
-            }
-            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
-                g.opacity = desc.opacity;
-                g.blend_mode = desc.blend_mode;
-                g.solo = desc.solo;
-                g.mute = desc.mute;
-                g.collapsed = desc.collapsed;
-            }
-            let prefix = format!("grp_{}_", desc.uuid);
-            let mut chain = Vec::new();
-            for fx in &desc.fx {
-                if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
-                    slot.effect
-                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
-                    chain.push(slot);
+            for u in &present {
+                if let Some(c) = mixer.channels.iter_mut().find(|c| &c.uuid == u) {
+                    c.group = Some(desc.uuid.clone());
                 }
             }
-            if let Some(g) = mixer.groups.iter_mut().find(|g| g.uuid == desc.uuid) {
-                g.chain = chain;
-            }
+            let mut group = match live_groups.iter().position(|g| g.uuid == desc.uuid) {
+                Some(i) => live_groups.remove(i),
+                None => rustjay_mixer::ChannelGroup::new(desc.uuid.clone(), desc.name.clone()),
+            };
+            group.name = desc.name.clone();
+            group.opacity = desc.opacity;
+            group.blend_mode = desc.blend_mode;
+            group.solo = desc.solo;
+            group.mute = desc.mute;
+            group.collapsed = desc.collapsed;
+            reconcile_chain(
+                &mut group.chain,
+                &desc.fx,
+                &format!("grp_{}_", desc.uuid),
+                &base,
+                device,
+                queue,
+                &dummy_engine,
+            );
+            mixer.groups.push(group);
         }
 
-        for fx in &topo.master_fx {
-            if let Some(mut slot) = build_fx_slot(fx, &base, device, queue, &dummy_engine) {
-                slot.effect
-                    .set_param_prefix(&format!("master_fx{}_", slot.uuid));
-                mixer.master.push(slot);
-            }
-        }
+        reconcile_chain(
+            &mut mixer.master,
+            &topo.master_fx,
+            "master_",
+            &base,
+            device,
+            queue,
+            &dummy_engine,
+        );
+
+        // Unconditional: every path into here has moved channels between
+        // indices or replaced what sits behind one, and the composite cache is
+        // keyed by index. Skipping it makes a layer's fader drive its
+        // neighbour — see `Mixer::invalidate_composite_cache`. A spurious bump
+        // costs one frame of bind-group rebuilds, on an edit, not per frame.
+        mixer.invalidate_composite_cache();
 
         log::info!(
-            "[Topology] rebuilt {} layers, {} master FX",
-            topo.layers.len(),
+            "[Topology] {} layers ({rebuilt} rebuilt, {} dropped), {} groups, {} master FX",
+            mixer.channels.len(),
+            dropped.len(),
+            mixer.groups.len(),
             topo.master_fx.len()
         );
         drop(mixer);
         self.layer_sources_init = sources;
         self.params_dirty = true;
+    }
+}
+
+/// Reconcile one effect chain in place, rebuilding only slots that changed.
+///
+/// `prefix` is the owner's parameter prefix — `ch_<uuid>_`, `grp_<uuid>_`, or
+/// `master_` — and each slot lands under `<prefix>fx<slot uuid>_`, which is what
+/// keeps saved modulation pointing at the right effect.
+#[cfg(feature = "mixer")]
+fn reconcile_chain(
+    chain: &mut Vec<rustjay_mixer::EffectSlot>,
+    desired: &[crate::scene::FxDesc],
+    prefix: &str,
+    base: &std::path::Path,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    engine: &EngineState,
+) {
+    let live: Vec<(String, Option<std::path::PathBuf>)> = chain
+        .iter()
+        .map(|s| (s.uuid.clone(), s.source_path.clone()))
+        .collect();
+    let (plans, _dropped) = plan_chain(&live, desired, base);
+
+    let mut old = std::mem::take(chain);
+    for (fx, plan) in desired.iter().zip(plans.iter()) {
+        match plan {
+            SlotPlan::Keep { uuid } => {
+                let idx = old
+                    .iter()
+                    .position(|s| &s.uuid == uuid)
+                    .expect("plan_chain only keeps a uuid it found live");
+                let mut slot = old.remove(idx);
+                slot.enabled = fx.enabled;
+                chain.push(slot);
+            }
+            SlotPlan::Build { .. } => {
+                if let Some(mut slot) = build_fx_slot(fx, base, device, queue, engine) {
+                    slot.effect
+                        .set_param_prefix(&format!("{prefix}fx{}_", slot.uuid));
+                    chain.push(slot);
+                }
+            }
+        }
     }
 }
 
@@ -1988,7 +2223,7 @@ impl EffectPlugin for KovvbojRootPlugin {
             // usual params_dirty pass re-register everything under the restored
             // uuids.
             if let Some(topo) = state.pending_topology.take() {
-                self.apply_topology(&topo, device, queue);
+                self.apply_topology(&topo, device, queue, &state.layer_sources);
                 state.params_dirty_request = true;
             }
 
@@ -2013,7 +2248,7 @@ impl EffectPlugin for KovvbojRootPlugin {
                 // match channels by UUID) and modulation (keyed by param id).
                 match scene.topology.as_ref() {
                     Some(topo) if usable_topology(topo) => {
-                        self.apply_topology(topo, device, queue);
+                        self.apply_topology(topo, device, queue, &state.layer_sources);
                     }
                     Some(topo) => warn_stale_topology(topo, engine),
                     None => {}
@@ -3461,7 +3696,11 @@ impl EffectPlugin for KovvbojRootPlugin {
                 .and_then(|s| s.topology.as_ref())
                 .filter(|t| usable_topology(t))
             {
-                Some(topo) => self.apply_topology(topo, device, queue),
+                // `init` has no live graph to compare against, so every layer
+                // plans as a build — which is what a cold start is.
+                Some(topo) => {
+                    self.apply_topology(topo, device, queue, &Default::default())
+                }
                 None => self.build_default_graph(device, queue),
             }
 
@@ -4139,6 +4378,259 @@ mod tests {
                 .assignments
                 .contains_key(&format!("{prefix}angle")),
             "bindings are keyed to the layer, so a source swap must not touch them"
+        );
+    }
+}
+
+/// Reconciling a topology onto the live graph — the decisions, without a GPU.
+///
+/// These guard the property the whole two-deck model rests on: editing one part
+/// of the stack must not rebuild the rest. A regression here does not fail
+/// loudly; it shows up as video restarting on a deck nobody touched.
+#[cfg(all(test, feature = "mixer"))]
+mod reconcile_tests {
+    use super::*;
+    use crate::scene::{FxDesc, LayerDesc};
+    use crate::sources::{SourceEntry, SourceKind};
+    use std::path::PathBuf;
+
+    fn entry(id: &str, kind: SourceKind) -> SourceEntry {
+        SourceEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind,
+            path: Some(PathBuf::from(format!("/clips/{id}.mov"))),
+            device_index: 0,
+            text: None,
+        }
+    }
+
+    fn layer(uuid: &str, source: SourceEntry) -> LayerDesc {
+        LayerDesc {
+            uuid: uuid.to_string(),
+            name: uuid.to_string(),
+            source,
+            opacity: 1.0,
+            blend_mode: rustjay_mixer::BlendMode::Normal,
+            solo: false,
+            mute: false,
+            fx: Vec::new(),
+        }
+    }
+
+    fn live(descs: &[LayerDesc]) -> Vec<(String, Option<SourceEntry>)> {
+        descs
+            .iter()
+            .map(|d| (d.uuid.clone(), Some(d.source.clone())))
+            .collect()
+    }
+
+    #[test]
+    fn an_unchanged_topology_rebuilds_nothing() {
+        let descs = vec![
+            layer("a", entry("one", SourceKind::Video)),
+            layer("b", entry("two", SourceKind::Video)),
+        ];
+        let (plans, remove) = plan_layers(&live(&descs), &descs);
+        assert!(remove.is_empty());
+        assert!(
+            plans.iter().all(|p| matches!(
+                p,
+                LayerPlan::Keep {
+                    swap_source: false,
+                    ..
+                }
+            )),
+            "{plans:?}"
+        );
+    }
+
+    #[test]
+    fn reordering_keeps_every_instance() {
+        let a = layer("a", entry("one", SourceKind::Video));
+        let b = layer("b", entry("two", SourceKind::Video));
+        let before = vec![a.clone(), b.clone()];
+        let after = vec![b, a];
+        let (plans, remove) = plan_layers(&live(&before), &after);
+        assert!(remove.is_empty());
+        // Order is carried by the plan's own order, not by rebuilding.
+        assert_eq!(
+            plans,
+            vec![
+                LayerPlan::Keep {
+                    uuid: "b".into(),
+                    swap_source: false
+                },
+                LayerPlan::Keep {
+                    uuid: "a".into(),
+                    swap_source: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_knob_change_keeps_the_instance() {
+        let descs = vec![layer("a", entry("one", SourceKind::Video))];
+        let mut edited = descs.clone();
+        edited[0].opacity = 0.25;
+        edited[0].blend_mode = rustjay_mixer::BlendMode::Add;
+        edited[0].mute = true;
+        let (plans, _) = plan_layers(&live(&descs), &edited);
+        assert_eq!(
+            plans,
+            vec![LayerPlan::Keep {
+                uuid: "a".into(),
+                swap_source: false
+            }]
+        );
+    }
+
+    #[test]
+    fn a_renamed_entry_does_not_restart_the_decoder() {
+        let descs = vec![layer("a", entry("one", SourceKind::Video))];
+        let mut edited = descs.clone();
+        edited[0].name = "a new label".into();
+        edited[0].source.name = "Clip One (renamed)".into();
+        edited[0].source.id = "regenerated-id".into();
+        let (plans, _) = plan_layers(&live(&descs), &edited);
+        assert_eq!(
+            plans,
+            vec![LayerPlan::Keep {
+                uuid: "a".into(),
+                swap_source: false
+            }],
+            "id and name are labels; renaming must not tear down a running decoder"
+        );
+    }
+
+    #[test]
+    fn a_new_clip_swaps_the_source_without_rebuilding_the_channel() {
+        let descs = vec![layer("a", entry("one", SourceKind::Video))];
+        let mut edited = descs.clone();
+        edited[0].source.path = Some(PathBuf::from("/clips/other.mov"));
+        let (plans, _) = plan_layers(&live(&descs), &edited);
+        assert_eq!(
+            plans,
+            vec![LayerPlan::Keep {
+                uuid: "a".into(),
+                swap_source: true
+            }]
+        );
+    }
+
+    #[test]
+    fn editing_a_text_layer_rebuilds_it() {
+        let mut src = entry("caption", SourceKind::Text);
+        src.path = None;
+        src.text = Some("hello".into());
+        let descs = vec![layer("a", src)];
+        let mut edited = descs.clone();
+        edited[0].source.text = Some("goodbye".into());
+        let (plans, _) = plan_layers(&live(&descs), &edited);
+        assert_eq!(
+            plans,
+            vec![LayerPlan::Keep {
+                uuid: "a".into(),
+                swap_source: true
+            }],
+            "a text layer's string is what it rasterises, not a label"
+        );
+    }
+
+    #[test]
+    fn added_and_removed_layers_are_reported() {
+        let before = vec![
+            layer("a", entry("one", SourceKind::Video)),
+            layer("gone", entry("two", SourceKind::Video)),
+        ];
+        let after = vec![
+            layer("a", entry("one", SourceKind::Video)),
+            layer("fresh", entry("three", SourceKind::Video)),
+        ];
+        let (plans, remove) = plan_layers(&live(&before), &after);
+        assert_eq!(remove, vec!["gone".to_string()]);
+        assert_eq!(
+            plans,
+            vec![
+                LayerPlan::Keep {
+                    uuid: "a".into(),
+                    swap_source: false
+                },
+                LayerPlan::Build {
+                    uuid: "fresh".into()
+                },
+            ]
+        );
+    }
+
+    // -- chains ------------------------------------------------------------
+
+    fn fx(uuid: &str, path: &str) -> FxDesc {
+        FxDesc {
+            uuid: uuid.to_string(),
+            path: PathBuf::from(path),
+            enabled: true,
+        }
+    }
+
+    fn live_chain(descs: &[FxDesc], base: &std::path::Path) -> Vec<(String, Option<PathBuf>)> {
+        descs
+            .iter()
+            .map(|d| (d.uuid.clone(), Some(crate::scene::resolve(&d.path, base))))
+            .collect()
+    }
+
+    #[test]
+    fn an_unchanged_chain_rebuilds_no_slot() {
+        let base = PathBuf::from("/base");
+        let descs = vec![fx("f1", "blur.fs"), fx("f2", "kaleido.fs")];
+        let (plans, remove) = plan_chain(&live_chain(&descs, &base), &descs, &base);
+        assert!(remove.is_empty());
+        assert!(plans.iter().all(|p| matches!(p, SlotPlan::Keep { .. })));
+    }
+
+    #[test]
+    fn toggling_a_slot_off_does_not_rebuild_it() {
+        let base = PathBuf::from("/base");
+        let descs = vec![fx("f1", "blur.fs")];
+        let mut edited = descs.clone();
+        edited[0].enabled = false;
+        let (plans, _) = plan_chain(&live_chain(&descs, &base), &edited, &base);
+        assert_eq!(plans, vec![SlotPlan::Keep { uuid: "f1".into() }]);
+    }
+
+    #[test]
+    fn a_changed_shader_rebuilds_only_that_slot() {
+        let base = PathBuf::from("/base");
+        let descs = vec![fx("f1", "blur.fs"), fx("f2", "kaleido.fs")];
+        let mut edited = descs.clone();
+        edited[1].path = PathBuf::from("mirror.fs");
+        let (plans, remove) = plan_chain(&live_chain(&descs, &base), &edited, &base);
+        assert_eq!(
+            plans,
+            vec![
+                SlotPlan::Keep { uuid: "f1".into() },
+                SlotPlan::Build { uuid: "f2".into() },
+            ]
+        );
+        assert_eq!(remove, vec!["f2".to_string()]);
+    }
+
+    #[test]
+    fn reordering_a_chain_keeps_both_slots() {
+        let base = PathBuf::from("/base");
+        let a = fx("f1", "blur.fs");
+        let b = fx("f2", "kaleido.fs");
+        let before = vec![a.clone(), b.clone()];
+        let (plans, remove) = plan_chain(&live_chain(&before, &base), &[b, a], &base);
+        assert!(remove.is_empty());
+        assert_eq!(
+            plans,
+            vec![
+                SlotPlan::Keep { uuid: "f2".into() },
+                SlotPlan::Keep { uuid: "f1".into() },
+            ]
         );
     }
 }
