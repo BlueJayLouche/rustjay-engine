@@ -82,13 +82,25 @@ and `m_second_image_input_binds_to_input_b` in `render_pixels.rs` asserting
 progress 0 / 1 / 0.5. Verified non-vacuous: with the bind arm disabled,
 progress 1 renders the *first* input.
 
-**Open, for step 4:** the nine shipped `transition_*.fs` are **not in ISF
-idiom** — they are pre-transpiled GLSL 450 with hand-written
-`layout(set=0, binding=N)` declarations, written for varda's own pipeline.
-`rustjay-isf` generates those bindings itself from an ISF JSON header. Whether
-they load at all is untested; assume they need porting to the idiom
-(`crates/rustjay-isf/tests/shaders/twoinput.fs` is the shape that works) and
-budget for it.
+**The nine shipped shaders need no port.** They are varda-era GLSL 450 with
+hand-written `layout(set=0, binding=N)` declarations rather than ISF idiom,
+which looked like a problem; it is not. All nine transpile and render correctly
+through `rustjay-isf` with the second input bound. Checked directly, red as A
+and blue as B:
+
+| | progress 0 | progress 1 |
+|---|---|---|
+| dissolve, wipe ×4, push, zoom, luma_key | exactly A | exactly B |
+| iris | (253,0,2) — 2/255 off | exactly B |
+
+`ISF_CORPUS_DIR=crates/kovvboj/shaders cargo test -p rustjay-isf --test
+batch_compile corpus` also compiles 129/130 of the whole kovvboj shader
+directory (the one failure, `gs_25363.1.fs`, is not a transition).
+
+**This settles the early-out.** `transition(A,B,0.0) == A` holds exactly for
+eight of nine, and `iris` deviates by 2/255 from edge softness at the iris
+boundary — imperceptible. Skipping the pass at 0.0/1.0 is safe for the shipped
+set.
 
 ## Budget
 
