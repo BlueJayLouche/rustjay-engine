@@ -127,6 +127,9 @@ fn render_shader(
 /// The same render against an effect that is already loaded, so successive
 /// frames see the state the last one left — which is the only way to watch
 /// anything the runtime integrates over time.
+// A harness that hands a shader everything the engine would: two inputs, a
+// size, and both halves of the effect's state.
+#[allow(clippy::too_many_arguments)]
 fn render_loaded(
     gpu: &Gpu,
     effect: &mut IsfEffect,
