@@ -267,6 +267,7 @@ impl LaserDeck {
                     generation: 0,
                     texture: Some(&targets_front.texture),
                 }),
+                input_b: None,
                 target_view: &targets_back.view,
                 engine_state: engine,
                 vertex_buffer: quad,

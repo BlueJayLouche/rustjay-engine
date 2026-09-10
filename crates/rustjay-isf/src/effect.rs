@@ -226,6 +226,14 @@ pub struct IsfEffect {
     /// Texture input that receives the upstream frame: "inputImage" when present,
     /// else the first image/audio input. None for pure generators.
     primary_texture: Option<String>,
+    /// The next image input after `primary_texture`, in declaration order.
+    ///
+    /// Bound to `RenderHookCtx::input_b` when the host supplies one, so a
+    /// transition gets two distinct images instead of the same one twice.
+    /// Order, not name: corpora disagree on the naming
+    /// (`startImage`/`endImage`, `inputImage2`, `from`/`to`), but they all
+    /// declare the incoming image first and the other second.
+    secondary_texture: Option<String>,
 }
 
 /// One `PASSES` target: an offscreen texture the shader renders into and can
@@ -465,6 +473,7 @@ impl IsfEffect {
             generators: Vec::new(),
             pack_fields: Vec::new(),
             primary_texture: None,
+            secondary_texture: None,
         })
     }
 
@@ -1324,6 +1333,15 @@ impl EffectPlugin for IsfEffect {
                 .map(|i| i.name.clone())
         };
 
+        // The first image input that is not the primary — declaration order.
+        self.secondary_texture = self
+            .isf
+            .inputs
+            .iter()
+            .filter(|i| matches!(i.ty, isf::InputType::Image))
+            .map(|i| i.name.clone())
+            .find(|name| Some(name) != self.primary_texture.as_ref());
+
         self.pipeline = Some(pipeline);
         self.bind_group_layout = Some(bgl);
         self.vertex_buffer = Some(vb);
@@ -1506,11 +1524,21 @@ impl EffectPlugin for IsfEffect {
                         placeholder
                     }
                     Some(target) => target.read_view(ping),
-                    // The engine has one video input, so every image input of
-                    // a shader gets it — a two-input shader (a datamosh driven
-                    // by a `motionImage`, a transition) is otherwise dead in
-                    // the water with a black second input. Audio inputs, which
-                    // have no frame to give them, still sample black.
+                    // The second image input takes the host's second texture
+                    // when there is one — that is what makes a transition
+                    // actually transition rather than blend a frame with
+                    // itself.
+                    None if ctx.input_b.is_some()
+                        && self.secondary_texture.as_deref() == Some(t.name.as_str()) =>
+                    {
+                        ctx.input_b.as_ref().unwrap().view
+                    }
+                    // Otherwise the engine has one video input, so every image
+                    // input of a shader gets it — a two-input shader (a
+                    // datamosh driven by a `motionImage`, a transition) is
+                    // otherwise dead in the water with a black second input.
+                    // Audio inputs, which have no frame to give them, still
+                    // sample black.
                     None => match (&ctx.input, &self.primary_texture) {
                         (Some(input), Some(primary))
                             if *primary == t.name || self.is_image_input(&t.name) =>

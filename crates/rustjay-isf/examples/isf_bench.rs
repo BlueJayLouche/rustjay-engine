@@ -194,6 +194,7 @@ fn render_frame(
                 generation: 0,
                 texture: None,
             }),
+            input_b: None,
             target_view: &gpu.target_view,
             engine_state: engine,
             vertex_buffer: &gpu.quad_vb,

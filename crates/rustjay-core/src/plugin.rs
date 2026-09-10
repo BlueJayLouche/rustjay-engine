@@ -18,6 +18,12 @@ pub struct RenderHookCtx<'a> {
     pub queue: &'a wgpu::Queue,
     /// Primary input texture (carries view, sampler, generation, and raw texture).
     pub input: Option<EffectInput<'a>>,
+    /// Second input texture, when the caller supplied one.
+    ///
+    /// A two-input effect — a transition sampling `startImage`/`endImage`, a
+    /// datamosh driven by a `motionImage` — needs a texture the primary input
+    /// cannot give it. `None` for the single-input case, which is most of them.
+    pub input_b: Option<EffectInput<'a>>,
     /// View to render into.
     pub target_view: &'a wgpu::TextureView,
     /// Engine state (params, time, audio, etc.).

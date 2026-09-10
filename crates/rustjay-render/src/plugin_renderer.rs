@@ -668,6 +668,19 @@ impl<P: EffectPlugin> PluginRenderer<P> {
                 }),
                 _ => None,
             },
+            // `generation` and `texture` are not carried for the second input:
+            // the only consumer rebuilds its bind group every frame, so there is
+            // nothing for a generation to invalidate, and no caller has a
+            // standalone texture handle for it.
+            input_b: match (frame.feedback_view, frame.feedback_sampler) {
+                (Some(view), Some(sampler)) => Some(rustjay_core::EffectInput {
+                    view,
+                    sampler,
+                    generation: 0,
+                    texture: None,
+                }),
+                _ => None,
+            },
             target_view,
             engine_state,
             vertex_buffer,

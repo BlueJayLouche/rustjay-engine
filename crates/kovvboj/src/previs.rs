@@ -761,6 +761,7 @@ impl Analyzer {
                 device,
                 queue,
                 input: Some(input),
+                input_b: None,
                 target_view: &self.target.view,
                 engine_state: engine,
                 vertex_buffer: quad,

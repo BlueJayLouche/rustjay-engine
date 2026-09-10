@@ -112,7 +112,16 @@ fn render_shader(
     height: u32,
 ) -> Frame {
     let (mut effect, _) = load_effect(gpu, shader);
-    render_loaded(gpu, &mut effect, shader, engine, state, input, (width, height))
+    render_loaded(
+        gpu,
+        &mut effect,
+        shader,
+        engine,
+        state,
+        input,
+        None,
+        (width, height),
+    )
 }
 
 /// The same render against an effect that is already loaded, so successive
@@ -125,6 +134,7 @@ fn render_loaded(
     engine: &EngineState,
     state: &mut IsfState,
     input: Option<rustjay_core::EffectInput<'_>>,
+    input_b: Option<rustjay_core::EffectInput<'_>>,
     (width, height): (u32, u32),
 ) -> Frame {
     let format = rustjay_core::working_format();
@@ -162,6 +172,7 @@ fn render_loaded(
             device: &gpu.device,
             queue: &gpu.queue,
             input,
+            input_b,
             target_view: &target_view,
             engine_state: engine,
             vertex_buffer: &gpu.quad_vb,
@@ -509,9 +520,9 @@ fn i_time_base_generator_advances() {
     engine.param_descriptors = Arc::new(descs);
     engine.set_param_base("mat_speed", 1.0);
 
-    let first = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, (8, 8));
+    let first = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, None, (8, 8));
     std::thread::sleep(std::time::Duration::from_millis(120));
-    let second = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, (8, 8));
+    let second = render_loaded(&gpu, &mut effect, "material.fs", &engine, &mut state, None, None, (8, 8));
 
     let (_, _, b_first, _) = first.rgba(4, 4);
     let (_, _, b_second, _) = second.rgba(4, 4);
@@ -582,6 +593,7 @@ fn i_persistent_pass_delays_one_frame() {
             &engine,
             &mut state,
             Some(input),
+            None,
             (1, 1),
         )
         .rgba(0, 0)
@@ -659,6 +671,7 @@ fn j_delta_extracts_motion() {
             &engine,
             &mut state,
             Some(input),
+            None,
             (1, 1),
         )
         .rgba(0, 0)
@@ -742,6 +755,7 @@ fn k_last_pass_target_reaches_the_screen() {
             &engine,
             &mut state,
             Some(input),
+            None,
             (4, 4),
         )
         .rgba(1, 1)
@@ -813,4 +827,112 @@ fn n_companion_vertex_shader_keeps_orientation() {
     assert_eq!(f.rgba(1, 0), (0, 255, 0, 255), "top-right must be green");
     assert_eq!(f.rgba(0, 1), (0, 0, 255, 255), "bottom-left must be blue");
     assert_eq!(f.rgba(1, 1), (255, 255, 255, 255), "bottom-right must be white");
+}
+
+/// A 2×2 texture of one flat colour.
+fn solid_texture(
+    gpu: &Gpu,
+    label: &str,
+    rgba: [u8; 4],
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let texels: Vec<u8> = rgba.iter().copied().cycle().take(4 * 4).collect();
+    gpu.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &texels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(8),
+            rows_per_image: Some(2),
+        },
+        wgpu::Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    (texture, view, sampler)
+}
+
+/// (m) Two-input binding: the *second* declared image input must sample the
+/// host's second texture.
+///
+/// Without this the engine bound every image input to the primary texture, so a
+/// transition mixed a frame with itself and `progress` did nothing visible.
+/// Red as `startImage`, blue as `endImage`: progress 0 is pure red, 1 is pure
+/// blue, and 0.5 is the midpoint. Asserting all three is what separates "both
+/// inputs bind correctly" from "something differs".
+#[test]
+fn m_second_image_input_binds_to_input_b() {
+    let Some(gpu) = init_gpu() else { return };
+    let (_a, view_a, samp_a) = solid_texture(&gpu, "Deck A (red)", [255, 0, 0, 255]);
+    let (_b, view_b, samp_b) = solid_texture(&gpu, "Deck B (blue)", [0, 0, 255, 255]);
+
+    let (effect, _) = load_effect(&gpu, "twoinput.fs");
+    let descs = effect.parameters();
+    let mut engine = engine_at(16, 16);
+    engine.custom_param_bases = descs.iter().map(|d| d.default).collect();
+    engine.custom_params = engine.custom_param_bases.clone();
+    engine.param_descriptors = Arc::new(descs);
+
+    for (progress, expect, what) in [
+        (0.0f32, (255u8, 0u8, 0u8), "progress 0 → startImage"),
+        (1.0, (0, 0, 255), "progress 1 → endImage"),
+        (0.5, (128, 0, 128), "progress 0.5 → midpoint"),
+    ] {
+        engine.set_param_base("progress", progress);
+        let (mut fx, mut state) = load_effect(&gpu, "twoinput.fs");
+        let frame = render_loaded(
+            &gpu,
+            &mut fx,
+            "twoinput.fs",
+            &engine,
+            &mut state,
+            Some(rustjay_core::EffectInput {
+                view: &view_a,
+                sampler: &samp_a,
+                generation: 0,
+                texture: None,
+            }),
+            Some(rustjay_core::EffectInput {
+                view: &view_b,
+                sampler: &samp_b,
+                generation: 0,
+                texture: None,
+            }),
+            (16, 16),
+        );
+        let (r, g, b, _) = frame.rgba(8, 8);
+        eprintln!("{what}: ({r}, {g}, {b})");
+        assert_channel(r, expect.0, &format!("{what} (R)"));
+        assert_channel(g, expect.1, &format!("{what} (G)"));
+        assert_channel(b, expect.2, &format!("{what} (B)"));
+    }
 }
