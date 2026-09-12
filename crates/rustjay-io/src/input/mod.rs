@@ -129,6 +129,20 @@ pub struct InputManager {
     frame_receiver: Option<mpsc::Receiver<WebcamFrame>>,
     #[cfg(feature = "ndi")]
     ndi_receiver: Option<NdiReceiver>,
+    /// Set by [`initialize`](Self::initialize). Needed to hand the NDI receive
+    /// thread buffers to write into, and to poll their re-maps.
+    device: Option<std::sync::Arc<wgpu::Device>>,
+    /// The NDI frame now in GPU-visible memory, and its row stride. Handed to
+    /// the consumer by reference; the buffer goes back to the ring from here,
+    /// never from the consumer, so a frame nobody uploads cannot leak one.
+    #[cfg(feature = "ndi")]
+    ndi_staged: Option<(wgpu::Buffer, u32)>,
+    /// Staged buffers whose copy has been submitted, waiting to be mapped again.
+    #[cfg(feature = "ndi")]
+    ndi_pending_remap: Vec<wgpu::Buffer>,
+    /// Layout of the NDI frames arriving now; a sender can change it mid-stream.
+    #[cfg(feature = "ndi")]
+    ndi_layout: NdiPixelLayout,
 
     // Syphon (macOS only)
     #[cfg(target_os = "macos")]
@@ -178,6 +192,13 @@ impl InputManager {
             frame_receiver: None,
             #[cfg(feature = "ndi")]
             ndi_receiver: None,
+            device: None,
+            #[cfg(feature = "ndi")]
+            ndi_staged: None,
+            #[cfg(feature = "ndi")]
+            ndi_pending_remap: Vec::new(),
+            #[cfg(feature = "ndi")]
+            ndi_layout: NdiPixelLayout::Bgra,
             #[cfg(target_os = "macos")]
             syphon_receiver: None,
             #[cfg(target_os = "macos")]
@@ -215,9 +236,16 @@ impl InputManager {
         self.v4l2_output_devices.as_deref().unwrap_or(&[])
     }
 
-    /// Initialize with wgpu device/queue (required for Syphon on macOS)
-    #[allow(unused_variables)] // device/queue are consumed only by the macOS Syphon path
+    /// Initialize with wgpu device/queue.
+    ///
+    /// Without this the NDI path still works, through the CPU upload; with it,
+    /// frames land straight in GPU-visible memory.
+    #[allow(unused_variables)] // queue is consumed only by the macOS Syphon path
     pub fn initialize(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.device = Some(std::sync::Arc::new(device.clone()));
+        // ponytail: the Syphon path keeps its own handles rather than sharing
+        // this one — folding them together is macOS code this machine cannot
+        // compile. Merge them when someone is building there.
         #[cfg(target_os = "macos")]
         {
             self.syphon_device = Some(std::sync::Arc::new(device.clone()));
@@ -585,10 +613,15 @@ impl InputManager {
             let _ = webcam.stop();
         }
 
-        // Stop NDI
+        // Stop NDI. The staging buffers go with the receiver: the ring they
+        // belong to is inside it.
         #[cfg(feature = "ndi")]
-        if let Some(mut ndi) = self.ndi_receiver.take() {
-            ndi.stop();
+        {
+            if let Some(mut ndi) = self.ndi_receiver.take() {
+                ndi.stop();
+            }
+            self.ndi_staged = None;
+            self.ndi_pending_remap.clear();
         }
 
         // Stop Syphon
@@ -629,15 +662,53 @@ impl InputManager {
 
         // Handle NDI frames
         #[cfg(feature = "ndi")]
-        if let Some(ref mut ndi) = self.ndi_receiver
-            && let Some(frame) = ndi.get_latest_frame()
-        {
-            self.resolution = (frame.width, frame.height);
-            // A frame nobody took before this one arrived goes back for reuse.
-            if let Some(stale) = self.current_frame.replace(frame.data) {
-                ndi.recycle(stale);
+        if let Some(ref mut ndi) = self.ndi_receiver {
+            // Offer the receive thread buffers to write frames straight into, so
+            // this thread only encodes a copy instead of paying for a memcpy.
+            if let Some(ref device) = self.device {
+                // Last frame's copies have been submitted, so those buffers can
+                // be mapped again. The callbacks only run while the device is
+                // polled, and nothing else on this path polls it.
+                for buffer in self.ndi_pending_remap.drain(..) {
+                    ndi.remap_staged(buffer);
+                }
+                device.poll(wgpu::PollType::Poll).ok();
+                // BGRA only. Packed 4:2:2 is not colour — it needs a shader to
+                // decode, and the engine's input texture is BGRA, so those
+                // frames have always gone down the CPU path (where
+                // InputTexture::update drops them on the size check). Offering
+                // buffers for them would just have the receive thread discard
+                // each one for the wrong size.
+                if self.ndi_layout == NdiPixelLayout::Bgra {
+                    let (width, height) = ndi.resolution();
+                    ndi.provide_staging(device, width, height, NdiPixelLayout::Bgra);
+                }
             }
-            self.has_new_frame = true;
+
+            if let Some(frame) = ndi.get_latest_frame() {
+                self.resolution = (frame.width, frame.height);
+                self.ndi_layout = frame.layout;
+                match frame.staged {
+                    // Already in GPU-visible memory. A staged frame nobody
+                    // uploaded before this one arrived goes back to the ring —
+                    // dropping it would take a buffer out for good.
+                    Some(staged) => {
+                        if let Some((buffer, _)) = self
+                            .ndi_staged
+                            .replace((staged.buffer, staged.bytes_per_row))
+                        {
+                            self.ndi_pending_remap.push(buffer);
+                        }
+                    }
+                    // A frame nobody took before this one arrived goes back for reuse.
+                    None => {
+                        if let Some(stale) = self.current_frame.replace(frame.data) {
+                            ndi.recycle(stale);
+                        }
+                    }
+                }
+                self.has_new_frame = true;
+            }
         }
 
         // Handle Syphon frames (zero-copy texture path)
@@ -690,6 +761,38 @@ impl InputManager {
     #[cfg(target_os = "macos")]
     pub fn clear_syphon_frame(&mut self) {
         self.has_new_frame = false;
+    }
+
+    /// The NDI frame sitting in GPU-visible memory, as `(buffer, bytes_per_row)`.
+    ///
+    /// `Some` only when [`initialize`](Self::initialize) supplied a device and the
+    /// receive thread had a buffer free; otherwise the frame is on the CPU path and
+    /// [`take_frame`](Self::take_frame) has it. Upload it with
+    /// `InputTexture::update_from_buffer`, then call
+    /// [`clear_ndi_frame`](Self::clear_ndi_frame).
+    ///
+    /// The handle is cheap to clone and the buffer returns to the ring from here on
+    /// a later `update`, so a caller that takes one and never uploads it costs a
+    /// frame, not a buffer.
+    #[cfg(feature = "ndi")]
+    pub fn ndi_staged_frame(&self) -> Option<(wgpu::Buffer, u32)> {
+        self.ndi_staged
+            .as_ref()
+            .map(|(buffer, bytes_per_row)| (buffer.clone(), *bytes_per_row))
+    }
+
+    /// Done with the staged NDI frame: clears the new-frame flag and sends the
+    /// buffer back to the ring.
+    ///
+    /// Call it after uploading, so the copy has been submitted by the time the
+    /// buffer is mapped again on the next [`update`](Self::update). Skipping the
+    /// upload is fine too — the contents are simply overwritten.
+    #[cfg(feature = "ndi")]
+    pub fn clear_ndi_frame(&mut self) {
+        self.has_new_frame = false;
+        if let Some((buffer, _)) = self.ndi_staged.take() {
+            self.ndi_pending_remap.push(buffer);
+        }
     }
 
     /// Borrow the Spout pixel buffer without moving it (Windows only).
