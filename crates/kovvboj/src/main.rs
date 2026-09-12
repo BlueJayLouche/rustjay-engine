@@ -2,12 +2,17 @@
 use rustjay_engine::EffectPlugin;
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_default_env()
+    // Warn by default: from_default_env() alone leaves the level at Error with
+    // RUST_LOG unset, which hides every warning the engine emits. parse_default_env()
+    // last so RUST_LOG still overrides both the default and the module filters below.
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Warn)
         .filter_module("wgpu_hal::metal", log::LevelFilter::Warn)
         .filter_module("naga", log::LevelFilter::Warn)
         .filter_module("wgpu_core", log::LevelFilter::Warn)
         .filter_module("winit", log::LevelFilter::Warn)
         .filter_module("tracing::span", log::LevelFilter::Warn)
+        .parse_default_env()
         .init();
 
     log::info!("Starting KOVVBOJ v{}", env!("CARGO_PKG_VERSION"));
