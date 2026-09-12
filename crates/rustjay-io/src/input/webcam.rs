@@ -84,6 +84,7 @@ impl WebcamCapture {
             );
 
             // Capture loop
+            let mut capture_errors = 0u32;
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -91,6 +92,7 @@ impl WebcamCapture {
 
                 match camera.frame() {
                     Ok(frame) => {
+                        capture_errors = 0;
                         let buffer = frame.buffer();
 
                         // Convert YUY2 to BGRA.  v4l2loopback (and some UVC
@@ -149,7 +151,13 @@ impl WebcamCapture {
                         }
                     }
                     Err(e) => {
-                        log::warn!("[Webcam] Frame capture error: {:?}", e);
+                        // The retry sleeps 10ms, so an unplugged or faulting camera
+                        // errors ~100x a second, forever. Warn on the first of a
+                        // streak only; a frame that arrives resets it.
+                        capture_errors += 1;
+                        if capture_errors == 1 {
+                            log::warn!("[Webcam] Frame capture error: {:?}", e);
+                        }
                         thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
