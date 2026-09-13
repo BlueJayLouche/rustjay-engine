@@ -43,6 +43,13 @@ and MAP modes; everything else opens as windows from the View menu.
   `NDI…` / `Syphon…` / `Spout…` entry so you can build the layer before the
   sender exists — pick the actual server in the inspector, which can also
   re-point a live layer without losing its chain or mappings.
+- **NDI over a slow link** — full-bandwidth NDI at 1080p runs ~100-125 Mbps, and
+  a link that cannot carry it does not degrade gently: you get a couple of
+  frames a second rather than a softer picture. Set
+  `RUSTJAY_NDI_LOW_BANDWIDTH=1` to receive NDI's proxy stream instead (roughly
+  640x360, a few Mbps), which is what WiFi can actually carry. It is read once
+  at startup and applies to every receiver; the log says which stream a source
+  connected on.
 - **Text layers** — a Text layer draws a string one quad per glyph, out of a
   font atlas. The atlas is either a TTF/OTF rasterised on load, or an image you
   drew. A drawn atlas gets its characters from a text file beside it with the

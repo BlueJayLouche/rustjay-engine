@@ -4,7 +4,7 @@ use std::sync::mpsc;
 #[cfg(feature = "ndi")]
 pub mod ndi;
 #[cfg(feature = "ndi")]
-pub use ndi::{list_ndi_sources, NdiPixelLayout, NdiReceiver};
+pub use ndi::{list_ndi_sources, low_bandwidth, set_low_bandwidth, NdiPixelLayout, NdiReceiver};
 
 #[cfg(not(feature = "ndi"))]
 #[allow(dead_code)]
@@ -29,6 +29,16 @@ pub struct NdiFrame {
 pub fn list_ndi_sources(_timeout_ms: u64) -> Vec<String> {
     vec![]
 }
+/// Keeps the API one shape without the feature; nothing receives, so nothing
+/// has a bandwidth to choose.
+#[cfg(not(feature = "ndi"))]
+#[allow(dead_code)]
+pub fn low_bandwidth() -> bool {
+    false
+}
+#[cfg(not(feature = "ndi"))]
+#[allow(dead_code)]
+pub fn set_low_bandwidth(_on: bool) {}
 
 #[cfg(feature = "webcam")]
 pub mod webcam;

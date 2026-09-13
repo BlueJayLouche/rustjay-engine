@@ -12,7 +12,7 @@ use grafton_ndi::{
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Once,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -101,6 +101,52 @@ pub struct NdiReceiver {
     /// for good — dropped for the wrong size, or awaiting a re-map — so the
     /// count bounds how many replacements get made.
     staging_made: usize,
+}
+
+/// Ask NDI for its low-bandwidth proxy stream instead of the full-rate one.
+///
+/// Full-bandwidth NDI at 1080p runs ~100-125 Mbps, and a link that cannot carry
+/// that does not degrade gently: the runtime delivers a couple of frames a
+/// second while the ring, the upload path and the renderer all sit idle waiting
+/// for data that is not coming. The proxy stream is roughly 640x360 at a few
+/// Mbps — a far better picture than 2 fps of a sharp one.
+///
+/// ponytail: process-global, because the constraint is the machine's link, not
+/// the source. Per-source if anyone ever runs one feed over ethernet and
+/// another over WiFi at the same time.
+static LOW_BANDWIDTH: AtomicBool = AtomicBool::new(false);
+
+/// Whether an env var's value reads as "on". Anything else, including an empty
+/// or unset value, leaves the default alone.
+fn env_says_on(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn low_bandwidth_flag() -> &'static AtomicBool {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        if let Ok(raw) = std::env::var("RUSTJAY_NDI_LOW_BANDWIDTH") {
+            LOW_BANDWIDTH.store(env_says_on(&raw), Ordering::Relaxed);
+        }
+    });
+    &LOW_BANDWIDTH
+}
+
+/// Whether receivers will ask for the proxy stream. See [`set_low_bandwidth`].
+pub fn low_bandwidth() -> bool {
+    low_bandwidth_flag().load(Ordering::Relaxed)
+}
+
+/// Choose the proxy stream for receivers started from now on.
+///
+/// Bandwidth is fixed when a receiver connects, so this takes effect the next
+/// time one starts — re-select the source, or restart. Initialised from
+/// `RUSTJAY_NDI_LOW_BANDWIDTH` (`1`/`true`/`yes`/`on`).
+pub fn set_low_bandwidth(on: bool) {
+    low_bandwidth_flag().store(on, Ordering::Relaxed);
 }
 
 /// Buffers the ring starts with. Two are in flight at most (one being written,
@@ -242,9 +288,14 @@ impl NdiReceiver {
             // dispatch_apply left ~14 worker threads spinning in root-queue
             // contention — 25x more time yielding than converting. The unpack is
             // a shader's job.
+            let proxy = low_bandwidth();
             let options = ReceiverOptions::builder(source)
                 .color(ReceiverColorFormat::UYVY_BGRA)
-                .bandwidth(ReceiverBandwidth::Highest)
+                .bandwidth(if proxy {
+                    ReceiverBandwidth::Lowest
+                } else {
+                    ReceiverBandwidth::Highest
+                })
                 .build();
 
             let receiver = match Receiver::new(&ndi, &options) {
@@ -256,6 +307,11 @@ impl NdiReceiver {
             };
 
             log::info!("[NDI] Connected to: {}", source_name);
+            if proxy {
+                log::info!(
+                    "[NDI] '{source_name}' is on the low-bandwidth proxy stream (~640x360).                      Unset RUSTJAY_NDI_LOW_BANDWIDTH for full rate."
+                );
+            }
 
             // Receive loop
             let mut consecutive_errors = 0u32;
@@ -657,5 +713,33 @@ pub fn list_ndi_sources(timeout_ms: u32) -> Vec<String> {
             log::error!("Failed to get NDI sources: {:?}", e);
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod low_bandwidth_tests {
+    use super::{env_says_on, low_bandwidth, set_low_bandwidth};
+
+    #[test]
+    fn env_value_parsing_is_forgiving_but_not_loose() {
+        for on in ["1", "true", "TRUE", "  yes  ", "On"] {
+            assert!(env_says_on(on), "{on:?} should read as on");
+        }
+        // Anything that is not an explicit yes leaves full bandwidth alone —
+        // silently dropping to a 640x360 proxy because of a typo would look
+        // like the sender degraded.
+        for off in ["0", "false", "no", "off", "", "   ", "lowest", "2"] {
+            assert!(!env_says_on(off), "{off:?} should not read as on");
+        }
+    }
+
+    #[test]
+    fn the_switch_round_trips() {
+        let before = low_bandwidth();
+        set_low_bandwidth(true);
+        assert!(low_bandwidth());
+        set_low_bandwidth(false);
+        assert!(!low_bandwidth());
+        set_low_bandwidth(before);
     }
 }

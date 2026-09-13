@@ -26,7 +26,7 @@ pub use input::InputManager;
 pub use input::SpoutSenderInfo;
 pub use input::SyphonServerInfo;
 #[cfg(feature = "ndi")]
-pub use input::{NdiPixelLayout, NdiReceiver, list_ndi_sources};
+pub use input::{NdiPixelLayout, NdiReceiver, list_ndi_sources, low_bandwidth, set_low_bandwidth};
 #[cfg(target_os = "macos")]
 pub use input::{SyphonInputReceiver, SyphonDiscovery};
 #[cfg(target_os = "windows")]
