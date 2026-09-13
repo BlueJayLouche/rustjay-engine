@@ -893,6 +893,8 @@ pub struct StreamDecoder {
     context: Option<DecodeContext>,
     last_frame: Option<VideoFrame>,
     connected: bool,
+    /// Consecutive failed connection attempts; see `decode_frame`.
+    connect_errors: u32,
 }
 
 unsafe impl Send for StreamDecoder {}
@@ -926,6 +928,7 @@ impl StreamDecoder {
             context: None,
             last_frame: None,
             connected: false,
+            connect_errors: 0,
         })
     }
 
@@ -953,11 +956,18 @@ impl StreamDecoder {
     pub fn decode_frame(&mut self) -> Option<VideoFrame> {
         if self.context.is_none() {
             if let Err(e) = self.init_context() {
-                log::warn!("StreamDecoder failed to connect to {}: {}", self.url, e);
+                // Callers poll this every frame without checking is_connected(), so an
+                // unreachable URL retries — and warned — at frame rate. First failure
+                // of a streak only; connecting resets it.
+                self.connect_errors += 1;
+                if self.connect_errors == 1 {
+                    log::warn!("StreamDecoder failed to connect to {}: {}", self.url, e);
+                }
                 self.connected = false;
                 return self.last_frame.clone();
             }
             self.connected = true;
+            self.connect_errors = 0;
         }
 
         let ctx = self.context.as_mut().unwrap();
@@ -980,7 +990,9 @@ impl StreamDecoder {
                         let frame = match ctx.convert_to_rgba(&decoded, &mut rgba_frame) {
                             Ok(f) => f,
                             Err(e) => {
-                                log::warn!("StreamDecoder convert error: {}", e);
+                                // debug, like the send_packet error above: same class of
+                                // per-frame decode hiccup, and this is inside the loop.
+                                log::debug!("StreamDecoder convert error: {}", e);
                                 continue;
                             }
                         };

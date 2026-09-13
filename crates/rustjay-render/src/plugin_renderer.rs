@@ -1048,7 +1048,14 @@ impl<P: EffectPlugin> PluginRenderer<P> {
             let bind_group = match self.cached_pass_bind_groups[i].as_ref() {
                 Some(bg) => bg,
                 None => {
-                    log::warn!("Pass {} bind group missing, skipping render", i);
+                    // ponytail: once for the process, not once per pass. This sits in
+                    // the per-frame pass loop, so repeating it buries every other line
+                    // at 60fps x pass count. Ceiling: only the first broken pass is
+                    // named; per-pass flags if that ever stops being enough.
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        log::warn!("Pass {i} bind group missing, skipping render")
+                    });
                     continue;
                 }
             };
