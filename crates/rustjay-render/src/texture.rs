@@ -279,6 +279,56 @@ impl InputTexture {
         }
     }
 
+    /// Upload from a buffer the producer already filled in GPU-visible memory.
+    ///
+    /// The NDI receive thread writes frames straight into mapped buffers, so this
+    /// only encodes the copy rather than paying for a memcpy the way
+    /// [`update`](Self::update) does. `bytes_per_row` is the buffer's row stride,
+    /// which the producer has already aligned for a copy and which is normally
+    /// wider than `width * 4`.
+    pub fn update_from_buffer(
+        &mut self,
+        buffer: &wgpu::Buffer,
+        bytes_per_row: u32,
+        width: u32,
+        height: u32,
+    ) {
+        if self.ext_view.is_some() {
+            self.ext_view = None;
+            self.ext_sampler = None;
+        }
+        self.ensure_size(width, height);
+        let Some(ref dest) = self.texture else { return };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Input Texture Buffer Copy"),
+            });
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &dest.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.has_data = true;
+    }
+
     /// Take ownership of an existing wgpu texture.
     pub fn swap_texture(&mut self, source: wgpu::Texture) {
         let width = source.width();

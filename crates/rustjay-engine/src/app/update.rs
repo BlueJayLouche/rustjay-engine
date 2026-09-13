@@ -71,6 +71,39 @@ impl<P: EffectPlugin> App<P> {
 
         manager.update();
 
+        // An NDI frame that landed in GPU-visible memory uploads straight from
+        // there, so this thread encodes a copy instead of paying for a memcpy.
+        // Nothing platform-specific about it, so it runs ahead of the per-OS
+        // branches; when no buffer was free the frame is on the CPU path below
+        // exactly as before.
+        #[cfg(feature = "ndi")]
+        if manager.input_type() == InputType::Ndi
+            && manager.has_frame()
+            && let Some((buffer, bytes_per_row)) = manager.ndi_staged_frame()
+        {
+            let (width, height) = manager.resolution();
+            if upload_texture
+                && let Some(ref mut engine) = self.output_engine
+            {
+                let texture = if is_second {
+                    &mut engine.second_input_texture
+                } else {
+                    &mut engine.input_texture
+                };
+                texture.update_from_buffer(&buffer, bytes_per_row, width, height);
+            }
+            manager.clear_ndi_frame();
+            let input = if is_second {
+                &mut state.second_input
+            } else {
+                &mut state.input
+            };
+            input.width = width;
+            input.height = height;
+            input.frame_seq += 1;
+            return;
+        }
+
         #[cfg(target_os = "macos")]
         if manager.input_type() == InputType::Syphon {
             if manager.has_frame() {
