@@ -90,6 +90,11 @@ pub struct NdiReceiver {
     /// frames into directly; see [`Self::provide_staging`].
     staging_tx: Sender<wgpu::Buffer>,
     staging_rx: CrossbeamReceiver<wgpu::Buffer>,
+    /// Buffers the receive thread wrote but could not deliver, because the
+    /// frame channel was full. They are unmapped, so they rejoin the ring
+    /// through [`Self::remap_staged`] rather than going straight back.
+    undelivered_tx: Sender<wgpu::Buffer>,
+    undelivered_rx: CrossbeamReceiver<wgpu::Buffer>,
     /// What the buffers now in circulation were sized for.
     staging_key: Option<(u32, u32, NdiPixelLayout)>,
     /// How many buffers have been made for that size. Buffers leave the ring
@@ -98,26 +103,33 @@ pub struct NdiReceiver {
     staging_made: usize,
 }
 
-/// Buffers in the staging ring. Two are in flight at most (one being written,
+/// Buffers the ring starts with. Two are in flight at most (one being written,
 /// one being copied); the third covers the frame a re-map is still pending on.
 const STAGING_BUFFERS: usize = 3;
 
-/// Ceiling on replacements for one frame size, so a path that keeps losing
-/// buffers can't allocate without end.
-const STAGING_MAX: usize = 6;
+/// Ceiling on buffers for one frame size, so a path that keeps losing them
+/// can't allocate without end. A sender faster than the renderer needs more
+/// than the starting three: every frame it delivers between two renders takes
+/// one, and each is out of circulation until its re-map lands.
+const STAGING_MAX: usize = 8;
 
 impl NdiReceiver {
     /// Create a new NDI receiver (does not start receiving yet)
     pub fn new(source_name: impl Into<String>) -> Self {
         let (frame_tx, frame_rx) = channel::bounded(5);
         let (spare_tx, spare_rx) = channel::bounded(4);
-        let (staging_tx, staging_rx) = channel::bounded(STAGING_BUFFERS);
+        // Room for every buffer that can exist at once: a return refused here
+        // is a buffer gone from the ring for good.
+        let (staging_tx, staging_rx) = channel::bounded(STAGING_MAX);
+        let (undelivered_tx, undelivered_rx) = channel::bounded(STAGING_MAX);
 
         Self {
             spare_tx,
             spare_rx,
             staging_tx,
             staging_rx,
+            undelivered_tx,
+            undelivered_rx,
             staging_key: None,
             staging_made: 0,
             source_name: source_name.into(),
@@ -147,6 +159,7 @@ impl NdiReceiver {
         let frame_tx = self.frame_tx.clone();
         let spare_rx = self.spare_rx.clone();
         let staging_rx = self.staging_rx.clone();
+        let undelivered_tx = self.undelivered_tx.clone();
         let running = Arc::clone(&self.running);
         let source_lost = Arc::clone(&self.source_lost);
         running.store(true, Ordering::SeqCst);
@@ -326,14 +339,23 @@ impl NdiReceiver {
                             log::info!("[NDI] frames are landing straight in GPU memory");
                         }
 
-                        let _ = frame_tx.try_send(NdiFrame {
-                            width,
-                            height,
-                            data,
-                            staged,
-                            layout,
-                            timestamp: Instant::now(),
-                        });
+                        // A frame the consumer is too busy to take is dropped,
+                        // but its buffer is not: without this the ring bleeds
+                        // dry exactly when the sender outruns the renderer,
+                        // which is when staging is worth the most.
+                        if let Err(channel::TrySendError::Full(rejected)) =
+                            frame_tx.try_send(NdiFrame {
+                                width,
+                                height,
+                                data,
+                                staged,
+                                layout,
+                                timestamp: Instant::now(),
+                            })
+                            && let Some(staged) = rejected.staged
+                        {
+                            let _ = undelivered_tx.try_send(staged.buffer);
+                        }
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -416,6 +438,12 @@ impl NdiReceiver {
         if width == 0 || height == 0 {
             return;
         }
+        // Buffers the receive thread wrote but couldn't deliver are unmapped;
+        // map them again and they rejoin the ring.
+        while let Ok(buffer) = self.undelivered_rx.try_recv() {
+            self.remap_staged(buffer);
+        }
+
         let key = (width, height, layout);
         let fresh = self.staging_key != Some(key);
         if fresh {
@@ -455,8 +483,16 @@ impl NdiReceiver {
         let tx = self.staging_tx.clone();
         let returned = buffer.clone();
         buffer.map_async(wgpu::MapMode::Write, .., move |result| {
-            if result.is_ok() {
-                let _ = tx.try_send(returned);
+            match result {
+                // The channel holds every buffer that can exist, so a refusal
+                // here means the accounting is wrong — and a silent one would
+                // look like the ring mysteriously starving.
+                Ok(()) => {
+                    if tx.try_send(returned).is_err() {
+                        log::warn!("[NDI] staging ring full on return — buffer dropped");
+                    }
+                }
+                Err(e) => log::warn!("[NDI] staging buffer could not be mapped again: {e}"),
             }
         });
     }
