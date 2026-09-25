@@ -4,7 +4,7 @@ Icon slot for release packaging (picked up by .github/workflows/release-apps.yml
 - `icon.ico` — Windows Start-menu shortcut icon
 - `icon-256.png` — runtime window/taskbar icon (Windows + X11), embedded by `src/main.rs`
 
-Both are generated from `icon.svg` (Workbench KVJ outlined to paths — no font needed):
+All three are generated from `icon.svg` (Workbench KVJ outlined to paths — no font needed):
 
 ```sh
 mkdir AppIcon.iconset && for s in 16 32 128 256 512; do
