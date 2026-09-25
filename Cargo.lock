@@ -5499,6 +5499,7 @@ dependencies = [
  "env_logger",
  "gbm",
  "glow",
+ "image",
  "imgui",
  "khronos-egl",
  "libc",
