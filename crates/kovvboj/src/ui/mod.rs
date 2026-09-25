@@ -7650,7 +7650,7 @@ mod egui_impl {
                             any_guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>()
                         {
                             let proj = &state.stage.projectors[new_idx];
-                            let attrs = winit::window::WindowAttributes::default()
+                            let attrs = rustjay_engine::window_attributes()
                                 .with_title(format!(
                                     "KOVVBOJ Projector {} - {}",
                                     new_idx + 1,

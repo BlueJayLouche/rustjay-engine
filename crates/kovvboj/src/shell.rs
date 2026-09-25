@@ -1816,7 +1816,7 @@ impl KovvbojShell {
         let Some(sub) = guard.downcast_mut::<rustjay_engine::ProjectionSubsystem>() else {
             return;
         };
-        let attrs = winit::window::WindowAttributes::default()
+        let attrs = rustjay_engine::window_attributes()
             .with_title(format!("KOVVBOJ — Deck {}", ["A", "B"][deck]))
             .with_inner_size(winit::dpi::LogicalSize::new(480.0, 270.0));
         sub.add_preview(attrs, move |device, format| {

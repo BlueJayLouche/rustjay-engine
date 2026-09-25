@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::window::WindowAttributes;
 
 /// Minimum interval between control-window UI rebuilds (~30 Hz). Independent of
 /// the output `target_fps`: the output keeps rendering at full rate, only the
@@ -254,7 +253,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 )
             };
 
-            let window_attrs = WindowAttributes::default()
+            let window_attrs = crate::window_attributes()
                 .with_title("RustJay Output")
                 .with_inner_size(winit::dpi::LogicalSize::new(output_width, output_height))
                 .with_resizable(true)
@@ -436,7 +435,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                 let device = Arc::clone(&engine.device);
                 let queue = Arc::clone(&engine.queue);
 
-                let window_attrs = WindowAttributes::default()
+                let window_attrs = crate::window_attributes()
                     .with_title(format!("{} - Control", self.config_manager.app_name))
                     .with_inner_size(winit::dpi::LogicalSize::new(1200u32, 800u32))
                     .with_resizable(true)

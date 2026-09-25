@@ -34,7 +34,21 @@ pub use rustjay_render::PreviousFrameTexture;
 pub use rustjay_io::list_audio_devices;
 
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+static WINDOW_ICON: OnceLock<winit::window::Icon> = OnceLock::new();
+
+/// Icon for every window opened via [`window_attributes`] (the engine's own
+/// windows included). Call before `run*`. Windows + X11 only — macOS takes the
+/// bundle's `.icns`, Wayland a `.desktop` file.
+pub fn set_window_icon(icon: winit::window::Icon) {
+    let _ = WINDOW_ICON.set(icon);
+}
+
+/// `WindowAttributes::default()` carrying the icon from [`set_window_icon`].
+pub fn window_attributes() -> winit::window::WindowAttributes {
+    winit::window::WindowAttributes::default().with_window_icon(WINDOW_ICON.get().cloned())
+}
 
 /// Run the engine with the given plugin and no custom GUI tabs.
 ///
