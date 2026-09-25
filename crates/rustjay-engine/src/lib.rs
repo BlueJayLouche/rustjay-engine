@@ -38,11 +38,21 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static WINDOW_ICON: OnceLock<winit::window::Icon> = OnceLock::new();
 
-/// Icon for every window opened via [`window_attributes`] (the engine's own
-/// windows included). Call before `run*`. Windows + X11 only — macOS takes the
-/// bundle's `.icns`, Wayland a `.desktop` file.
-pub fn set_window_icon(icon: winit::window::Icon) {
-    let _ = WINDOW_ICON.set(icon);
+/// Icon (PNG bytes, e.g. `include_bytes!`) for every window opened via
+/// [`window_attributes`] (the engine's own windows included). Call before `run*`.
+/// Windows + X11 only — macOS takes the bundle's `.icns`, Wayland a `.desktop` file.
+pub fn set_window_icon(png: &[u8]) {
+    let icon = image::load_from_memory(png).map_err(|e| e.to_string()).and_then(|img| {
+        let img = img.into_rgba8();
+        let (w, h) = img.dimensions();
+        winit::window::Icon::from_rgba(img.into_raw(), w, h).map_err(|e| e.to_string())
+    });
+    match icon {
+        Ok(icon) => {
+            let _ = WINDOW_ICON.set(icon);
+        }
+        Err(e) => log::warn!("window icon: {e}"),
+    }
 }
 
 /// `WindowAttributes::default()` carrying the icon from [`set_window_icon`].
@@ -316,4 +326,15 @@ pub mod prelude {
     };
     pub use rustjay_gui::{AnyGuiTab, BuiltinTab};
     pub use rustjay_render::{InputTexture, PreviousFrameTexture, Texture, WgpuEngine};
+}
+
+#[cfg(test)]
+mod window_icon_tests {
+    #[test]
+    fn png_icon_reaches_window_attributes() {
+        super::set_window_icon(b"not a png"); // warns, leaves the icon unset
+        assert!(super::window_attributes().window_icon.is_none());
+        super::set_window_icon(include_bytes!("../../kovvboj/packaging/icon-256.png"));
+        assert!(super::window_attributes().window_icon.is_some());
+    }
 }

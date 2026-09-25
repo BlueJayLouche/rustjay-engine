@@ -16,13 +16,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     // Title-bar/taskbar icon on Windows + X11; the macOS bundle uses AppIcon.icns.
-    if let Ok(img) = image::load_from_memory(include_bytes!("../packaging/icon-256.png")) {
-        let img = img.into_rgba8();
-        let (w, h) = img.dimensions();
-        if let Ok(icon) = winit::window::Icon::from_rgba(img.into_raw(), w, h) {
-            rustjay_engine::set_window_icon(icon);
-        }
-    }
+    rustjay_engine::set_window_icon(include_bytes!("../packaging/icon-256.png"));
 
     log::info!("Starting KOVVBOJ v{}", env!("CARGO_PKG_VERSION"));
 

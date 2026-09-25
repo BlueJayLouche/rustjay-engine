@@ -930,6 +930,9 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Title-bar/taskbar icon on Windows + X11; the macOS bundle uses AppIcon.icns.
+    rustjay_engine::set_window_icon(include_bytes!("../packaging/icon-256.png"));
+
     let handle = BankHandle::new();
     let grid_tab = PadGridTab::new(handle.clone());
     let seq_tab = SequencerTab::new(handle.clone());
