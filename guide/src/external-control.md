@@ -150,9 +150,17 @@ ParameterDescriptor::float("flow_scale", ...)
     .category(ParamCategory::Flux)
 ```
 
-The address is `/rustjay/flux/flow_scale`. Send a float value in the parameter's `[min, max]` range.
+The address is `/rustjay/flux/flow_scale`. Send a float from `0.0` to `1.0`; the engine scales it onto the parameter's `[min, max]` range. An integer argument is read MIDI-style, as `0`–`127`.
+
+Parameters that appear while the app is running, such as those of an effect added to a layer, are addressable as soon as they exist.
 
 The OSC tab in the desktop GUI (or a plain `cat /proc/<pid>/net/udp6` on the Pi) shows the active port.
+
+### Copying an address
+
+There is no need to work an address out by hand. Click **📋 OSC COPY** in the top bar and every mappable control gets a blue outline. Hover over a control to see its address, and click it to copy the address to the clipboard; the outline turns green to confirm. Click **OSC COPY** again to leave the mode.
+
+OSC COPY is a map mode like **MIDI MAP** and **LFO MAP**, and only one of the three is on at a time. An app that draws its own controls takes part the same way it does for the other two: check `map_mode_active` and call `apply_param_map_overlay`.
 
 ### Changing the port
 

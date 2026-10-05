@@ -374,6 +374,7 @@ impl EguiControlGui {
             output_sinks,
             lfo_assign_mode,
             midi_learn_mode,
+            osc_copy_mode,
         ) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             let perf = state.performance.lock().unwrap_or_else(|e| e.into_inner());
@@ -399,6 +400,7 @@ impl EguiControlGui {
                     .unwrap_or_default(),
                 state.lfo_assign_mode,
                 state.midi_learn_mode,
+                state.osc_copy_mode,
             )
         };
 
@@ -561,6 +563,7 @@ impl EguiControlGui {
                             state.lfo_assign_mode = !state.lfo_assign_mode;
                             if state.lfo_assign_mode {
                                 state.midi_learn_mode = false;
+                                state.osc_copy_mode = false;
                             }
                         }
                         ui.add_space(6.0);
@@ -579,9 +582,33 @@ impl EguiControlGui {
                             state.midi_learn_mode = !state.midi_learn_mode;
                             if state.midi_learn_mode {
                                 state.lfo_assign_mode = false;
+                                state.osc_copy_mode = false;
                             } else {
                                 // Leaving map mode cancels any pending arm.
                                 state.midi_command = rustjay_core::MidiCommand::CancelLearn;
+                            }
+                        }
+                        ui.add_space(6.0);
+                        // OSC-copy mode: click a param to put its address on the clipboard.
+                        if ui
+                            .button(
+                                egui::RichText::new("📋 OSC COPY")
+                                    .size(11.0)
+                                    .color(if osc_copy_mode { amber() } else { ink_2() }),
+                            )
+                            .on_hover_text("Click a parameter to copy its OSC address")
+                            .clicked()
+                        {
+                            let mut state =
+                                self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                            state.osc_copy_mode = !state.osc_copy_mode;
+                            state.osc_copied_param = None;
+                            if state.osc_copy_mode {
+                                state.lfo_assign_mode = false;
+                                if state.midi_learn_mode {
+                                    state.midi_learn_mode = false;
+                                    state.midi_command = rustjay_core::MidiCommand::CancelLearn;
+                                }
                             }
                         }
                         ui.add_space(6.0);
@@ -1590,7 +1617,7 @@ impl EguiControlGui {
             ParamType::Float => {
                 let mut v = value;
                 let id_tag = format!("{}/{}", desc.category.name().to_lowercase(), desc.id);
-                if state.midi_learn_mode || state.lfo_assign_mode {
+                if map_mode_active(state) {
                     let scope = ui.scope(|ui| {
                         ui.disable();
                         crate::egui_widgets::parameter_card_f32(
@@ -1633,7 +1660,7 @@ impl EguiControlGui {
                 let min = desc.min as i32;
                 let max = desc.max as i32;
                 log::trace!("Int slider {}: {} (range {}..{})", desc.id, v, min, max);
-                if state.midi_learn_mode || state.lfo_assign_mode {
+                if map_mode_active(state) {
                     let scope = ui.scope(|ui| {
                         ui.disable();
                         ui.add(
@@ -1709,13 +1736,13 @@ impl EguiControlGui {
     }
 }
 
-/// True when either top-bar map mode (MIDI learn / LFO assign) is active.
+/// True when a top-bar map mode (MIDI learn / LFO assign / OSC copy) is active.
 ///
 /// Custom egui tabs that render their own param sliders should check this and,
 /// when true, render the slider disabled and call [`apply_param_map_overlay`]
 /// so their params participate in the map modes like the built-in tabs do.
 pub fn map_mode_active(engine: &EngineState) -> bool {
-    engine.midi_learn_mode || engine.lfo_assign_mode
+    engine.midi_learn_mode || engine.lfo_assign_mode || engine.osc_copy_mode
 }
 
 /// Draw the active map-mode outline over `rect` and handle clicks on a param.
@@ -1723,8 +1750,8 @@ pub fn map_mode_active(engine: &EngineState) -> bool {
 /// In MIDI-learn mode a click arms `StartLearn` for the param; in LFO-assign
 /// mode a click opens a popup listing modulation sources to bind. `midi_path`
 /// is the learn target path (conventionally `"<category>/<id>"`), `id` is the
-/// engine param id (also the modulation-assignment key). No-op when neither
-/// mode is active.
+/// engine param id (also the modulation-assignment key). In OSC-copy mode a
+/// click copies the param's OSC address. No-op when no mode is active.
 #[allow(deprecated)] // egui::Popup builder migration is project-wide; tracked separately
 #[allow(clippy::too_many_arguments)] // overlay needs full param context; bundling adds no clarity
 pub fn apply_param_map_overlay(
@@ -1738,6 +1765,37 @@ pub fn apply_param_map_overlay(
     max: f32,
 ) {
     use crate::egui_theme::colors::*;
+
+    if engine.osc_copy_mode {
+        // The "<category>/<id>" path MIDI learn uses is also the param's OSC
+        // address under the server's base (see `param_osc_addresses`).
+        let address = format!("/rustjay/{midi_path}");
+        let copied = engine.osc_copied_param.as_deref() == Some(id);
+        let color = if copied {
+            accent_green() // just copied
+        } else {
+            egui::Color32::from_rgb(90, 160, 255) // copyable: blue
+        };
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            0.0,
+            egui::Stroke::new(2.0_f32, color),
+            egui::StrokeKind::Outside,
+        );
+        let click_id = ui.make_persistent_id(("osc_copy_click", id));
+        let resp = ui
+            .interact(rect, click_id, egui::Sense::click())
+            .on_hover_text(if copied {
+                format!("Copied {address}")
+            } else {
+                format!("{address}\nClick to copy")
+            });
+        if resp.clicked() {
+            ui.ctx().copy_text(address);
+            engine.osc_copied_param = Some(id.to_string());
+        }
+        return;
+    }
 
     if engine.midi_learn_mode {
         let armed = engine.midi_learn_active
