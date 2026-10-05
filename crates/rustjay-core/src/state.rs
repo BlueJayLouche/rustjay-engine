@@ -1041,6 +1041,10 @@ pub struct EngineState {
     pub midi_learn_mode: bool,
     /// UI map mode: clicking a mappable param opens an LFO-assign popup.
     pub lfo_assign_mode: bool,
+    /// UI map mode: clicking a mappable param copies its OSC address.
+    pub osc_copy_mode: bool,
+    /// Id of the param whose address was copied last, so its outline can confirm it.
+    pub osc_copied_param: Option<String>,
     /// Active mappings, synced each frame from MidiState (includes min/max for preset round-trip).
     pub midi_mappings: Vec<MidiMappingSnapshot>,
     /// Last MIDI message received, for the MIDI monitor display:
@@ -1254,6 +1258,8 @@ impl EngineState {
             midi_learning_param_name: None,
             midi_learn_mode: false,
             lfo_assign_mode: false,
+            osc_copy_mode: false,
+            osc_copied_param: None,
             midi_last_input: None,
             midi_mappings: Vec::new(),
             osc_command: OscCommand::None,
