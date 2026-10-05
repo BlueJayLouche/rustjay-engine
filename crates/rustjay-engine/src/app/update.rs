@@ -500,6 +500,7 @@ impl<P: EffectPlugin> App<P> {
                     if !descriptors.is_empty() {
                         log::trace!("OSC checking {} custom params", descriptors.len());
                     }
+                    osc_state.sync_parameters(&descriptors, &shared.param_osc_addresses);
                     for (i, desc) in descriptors.iter().enumerate() {
                         if let Some(addr) = shared.param_osc_addresses.get(i) {
                             if let Some(v) = osc_state.get_value_if_dirty(addr) {
