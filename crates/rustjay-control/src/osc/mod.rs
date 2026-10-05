@@ -206,6 +206,25 @@ impl OscState {
         }
     }
 
+    /// Register any of an app's current parameters the server does not know yet.
+    ///
+    /// `addresses[i]` is the full address of `descriptors[i]`. An app's
+    /// parameter list changes while it runs (an FX is added, a scene loads),
+    /// and a port change rebuilds the server with only the defaults, so the
+    /// startup registration alone leaves such a parameter listed as
+    /// addressable while every message to it is dropped.
+    pub fn sync_parameters(
+        &mut self,
+        descriptors: &[rustjay_core::ParameterDescriptor],
+        addresses: &[String],
+    ) {
+        for (d, address) in descriptors.iter().zip(addresses) {
+            if !self.parameters.contains_key(address) {
+                self.register_parameters(std::slice::from_ref(d));
+            }
+        }
+    }
+
     /// Update parameter value from OSC input
     pub fn update_parameter(&mut self, address: &str, value: f32) {
         let full_address = if address.starts_with(&self.base_address) {
@@ -561,5 +580,42 @@ mod feedback_tests {
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
         assert!(controller.recv_from(&mut buf).is_err(), "unexpected echo");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustjay_core::{ParamCategory, ParameterDescriptor};
+
+    #[test]
+    fn parameter_added_after_startup_accepts_messages() {
+        let mut state = OscState::new("127.0.0.1", 0, "/rustjay");
+        state.register_default_parameters();
+
+        // What an app hands the engine when an FX is added at runtime.
+        let added = [ParameterDescriptor::float(
+            "master_fx1_feedback",
+            "Feedback",
+            ParamCategory::Custom("ISF".to_string()),
+            0.0,
+            2.0,
+            0.0,
+            0.01,
+        )];
+        let addresses = ["/rustjay/isf/master_fx1_feedback".to_string()];
+
+        // Unknown to the server: the message is dropped.
+        state.update_parameter(&addresses[0], 0.5);
+        assert_eq!(state.get_value_if_dirty(&addresses[0]), None);
+
+        state.sync_parameters(&added, &addresses);
+        state.update_parameter(&addresses[0], 0.5);
+        assert_eq!(state.get_value_if_dirty(&addresses[0]), Some(1.0));
+
+        // Syncing again must not reset a parameter that is already known.
+        state.update_parameter(&addresses[0], 0.25);
+        state.sync_parameters(&added, &addresses);
+        assert_eq!(state.get_value_if_dirty(&addresses[0]), Some(0.5));
     }
 }
