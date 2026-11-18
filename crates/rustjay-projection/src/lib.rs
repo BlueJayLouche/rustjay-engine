@@ -15,7 +15,10 @@ pub mod dome;
 pub use dome::{DomeStage, DomemasterConfig, DomemasterParams, DomemasterResolution};
 
 pub mod warp;
-pub use warp::{compute_forward_homography, MeshPoint, WarpMesh, WarpMode, WarpStage};
+pub use warp::{
+    apply_homography, compute_forward_homography, BezierWarp, MeshPoint, WarpMesh, WarpMode,
+    WarpStage, DEFAULT_BEZIER_TESS, MAX_WARP_SUBDIVISIONS,
+};
 
 pub mod rotation;
 pub use rotation::{RotationStage, RotationSync};

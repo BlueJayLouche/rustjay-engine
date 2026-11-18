@@ -89,6 +89,8 @@ pub enum WarpMode {
     },
     /// Arbitrary XYUV mesh warp grid.
     Mesh(WarpMesh),
+    /// Bezier patch grid, tessellated into a [`WarpMesh`] for rendering.
+    Bezier(BezierWarp),
 }
 
 impl WarpMode {
@@ -112,7 +114,390 @@ impl WarpMode {
                     .all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6)
             }
             Self::Mesh(mesh) => mesh.is_identity(),
+            Self::Bezier(b) => b.is_identity(),
         }
+    }
+}
+
+// ── Bezier patch-grid warp ───────────────────────────────────────────────
+//
+// Ported from varda (`src/internal/surface/warp.rs`, MIT); same JSON shape, so
+// warps round-trip between the two. An `anchor_cols × anchor_rows` cage of
+// anchors with cubic tangent handles on each edge; each cell is a Coons patch
+// bounded by four cubics. Added here: `perspective`, which evaluates the cage
+// in the projective frame of its four outer corners so a straight-edged cage
+// is exactly the `CornerPin` homography instead of a bilinear quad.
+
+/// Maximum tessellated grid resolution (columns or rows) of a bezier warp.
+pub const MAX_WARP_SUBDIVISIONS: u32 = 64;
+
+/// Default tessellation steps per patch edge for a new bezier warp.
+pub const DEFAULT_BEZIER_TESS: u32 = 6;
+
+const UNIT_SQUARE: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+
+/// A smooth warp defined by a grid of cubic-bezier patches with tangent handles.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BezierWarp {
+    /// Anchor columns in the control cage (≥2).
+    pub anchor_cols: u32,
+    /// Anchor rows in the control cage (≥2).
+    pub anchor_rows: u32,
+    /// Anchor positions, row-major, output space [0..1].
+    pub anchors: Vec<[f32; 2]>,
+    /// Horizontal-edge handles `[near-left, near-right]`, row-major over rows
+    /// then per-row edges. Length `anchor_rows · (anchor_cols − 1)`.
+    pub h_horiz: Vec<[[f32; 2]; 2]>,
+    /// Vertical-edge handles `[near-top, near-bottom]`, row-major over
+    /// edge-rows then cols. Length `anchor_cols · (anchor_rows − 1)`.
+    pub h_vert: Vec<[[f32; 2]; 2]>,
+    /// Tessellation steps per patch edge (≥1). Controls output mesh density.
+    pub tess: u32,
+    /// Evaluate in the perspective frame of the four outer corners (exact
+    /// corner-pin when edges are straight). Absent in varda files → bilinear.
+    #[serde(default)]
+    pub perspective: bool,
+}
+
+fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Apply a row-major 3×3 homography to a point.
+pub fn apply_homography(h: &[f32; 9], p: [f32; 2]) -> [f32; 2] {
+    let w = h[6] * p[0] + h[7] * p[1] + h[8];
+    [
+        (h[0] * p[0] + h[1] * p[1] + h[2]) / w,
+        (h[3] * p[0] + h[4] * p[1] + h[5]) / w,
+    ]
+}
+
+fn cubic_point(p0: [f32; 2], c1: [f32; 2], c2: [f32; 2], p1: [f32; 2], t: f32) -> [f32; 2] {
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    [
+        a * p0[0] + b * c1[0] + c * c2[0] + d * p1[0],
+        a * p0[1] + b * c1[1] + c * c2[1] + d * p1[1],
+    ]
+}
+
+/// Transfinite (Coons) blend of a patch's four boundary points at `(s, t)`.
+#[allow(clippy::too_many_arguments, clippy::many_single_char_names)]
+fn coons_blend(
+    l: [f32; 2],
+    r: [f32; 2],
+    tp: [f32; 2],
+    bt: [f32; 2],
+    c00: [f32; 2],
+    c10: [f32; 2],
+    c01: [f32; 2],
+    c11: [f32; 2],
+    s: f32,
+    t: f32,
+) -> [f32; 2] {
+    let mut pos = [0.0f32; 2];
+    for d in 0..2 {
+        let lc = (1.0 - s) * l[d] + s * r[d];
+        let ld = (1.0 - t) * tp[d] + t * bt[d];
+        let b = (1.0 - s) * (1.0 - t) * c00[d]
+            + s * (1.0 - t) * c10[d]
+            + (1.0 - s) * t * c01[d]
+            + s * t * c11[d];
+        pos[d] = lc + ld - b;
+    }
+    pos
+}
+
+/// `(forward, inverse)` homography between the unit square and a cage frame.
+type Frame = ([f32; 9], [f32; 9]);
+
+impl BezierWarp {
+    /// Straight-edge handles between `a` and `b`: the ⅓/⅔ chord points, taken
+    /// in the perspective frame when there is one.
+    fn straight(a: [f32; 2], b: [f32; 2], frame: Option<&Frame>) -> [[f32; 2]; 2] {
+        match frame {
+            None => [lerp2(a, b, 1.0 / 3.0), lerp2(a, b, 2.0 / 3.0)],
+            Some((h, inv)) => {
+                let (ua, ub) = (apply_homography(inv, a), apply_homography(inv, b));
+                [
+                    apply_homography(h, lerp2(ua, ub, 1.0 / 3.0)),
+                    apply_homography(h, lerp2(ua, ub, 2.0 / 3.0)),
+                ]
+            }
+        }
+    }
+
+    /// Build a bezier warp from an anchor grid with all edges straight. Anchor
+    /// count must equal `anchor_cols · anchor_rows` (padded if short). `tess` ≥1.
+    pub fn from_anchors(
+        anchor_cols: u32,
+        anchor_rows: u32,
+        mut anchors: Vec<[f32; 2]>,
+        tess: u32,
+        perspective: bool,
+    ) -> Self {
+        let ac = anchor_cols.clamp(2, MAX_WARP_SUBDIVISIONS);
+        let ar = anchor_rows.clamp(2, MAX_WARP_SUBDIVISIONS);
+        anchors.resize((ac * ar) as usize, [0.0, 0.0]);
+        let mut w = Self {
+            anchor_cols: ac,
+            anchor_rows: ar,
+            anchors,
+            h_horiz: Vec::new(),
+            h_vert: Vec::new(),
+            tess: tess.max(1),
+            perspective,
+        };
+        let frame = w.frame();
+        let aci = ac as usize;
+        for r in 0..ar as usize {
+            for c in 0..aci - 1 {
+                let h = Self::straight(w.anchor(r, c), w.anchor(r, c + 1), frame.as_ref());
+                w.h_horiz.push(h);
+            }
+        }
+        for r in 0..ar as usize - 1 {
+            for c in 0..aci {
+                let h = Self::straight(w.anchor(r, c), w.anchor(r + 1, c), frame.as_ref());
+                w.h_vert.push(h);
+            }
+        }
+        w
+    }
+
+    /// A 2×2 perspective cage on `corners` (TL, TR, BR, BL) with straight
+    /// edges — an exact corner-pin that can then be curved.
+    pub fn corner_pin(corners: [[f32; 2]; 4], tess: u32) -> Self {
+        let anchors = vec![corners[0], corners[1], corners[3], corners[2]];
+        Self::from_anchors(2, 2, anchors, tess, true)
+    }
+
+    /// Seed a bezier warp from a mesh: anchors are the mesh points, edges
+    /// straight, bilinear. At `tess = 1` it tessellates back to the same mesh.
+    pub fn from_mesh(mesh: &WarpMesh, tess: u32) -> Self {
+        let anchors = mesh.points.iter().map(|p| p.position).collect();
+        Self::from_anchors(mesh.cols, mesh.rows, anchors, tess, false)
+    }
+
+    /// Check array lengths and bounds. Call on anything loaded from a file:
+    /// the other methods index without checking.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let (ac, ar) = (self.anchor_cols as usize, self.anchor_rows as usize);
+        let max = MAX_WARP_SUBDIVISIONS as usize;
+        if !(2..=max).contains(&ac) || !(2..=max).contains(&ar) {
+            anyhow::bail!("bezier warp: cage must be 2..={max} anchors per side");
+        }
+        if self.anchors.len() != ac * ar
+            || self.h_horiz.len() != ar * (ac - 1)
+            || self.h_vert.len() != ac * (ar - 1)
+        {
+            anyhow::bail!("bezier warp: anchor/handle counts do not match the cage size");
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn ac(&self) -> usize {
+        self.anchor_cols.max(2) as usize
+    }
+    #[inline]
+    fn ar(&self) -> usize {
+        self.anchor_rows.max(2) as usize
+    }
+
+    /// Anchor position at grid `(row, col)`.
+    pub fn anchor(&self, r: usize, c: usize) -> [f32; 2] {
+        self.anchors[r * self.ac() + c]
+    }
+
+    /// The four outer corners, TL, TR, BR, BL.
+    pub fn outer_corners(&self) -> [[f32; 2]; 4] {
+        let (ac, ar) = (self.ac(), self.ar());
+        [
+            self.anchor(0, 0),
+            self.anchor(0, ac - 1),
+            self.anchor(ar - 1, ac - 1),
+            self.anchor(ar - 1, 0),
+        ]
+    }
+
+    /// Unit square ↔ outer-corner homographies; `None` when bilinear.
+    fn frame(&self) -> Option<Frame> {
+        if !self.perspective {
+            return None;
+        }
+        let outer = self.outer_corners();
+        Some((
+            solve_homography(&UNIT_SQUARE, &outer),
+            solve_homography(&outer, &UNIT_SQUARE),
+        ))
+    }
+
+    /// This cage with every anchor and handle mapped through `h`.
+    fn mapped(&self, h: &[f32; 9]) -> Self {
+        let m = |p: [f32; 2]| apply_homography(h, p);
+        Self {
+            anchors: self.anchors.iter().map(|&p| m(p)).collect(),
+            h_horiz: self.h_horiz.iter().map(|&[a, b]| [m(a), m(b)]).collect(),
+            h_vert: self.h_vert.iter().map(|&[a, b]| [m(a), m(b)]).collect(),
+            ..self.clone()
+        }
+    }
+
+    /// Evaluate patch `(pr, pc)` at local `(s, t)` ∈ [0,1]² via Coons
+    /// interpolation of its four cubic-bezier boundary edges.
+    fn patch_point(&self, pr: usize, pc: usize, s: f32, t: f32) -> [f32; 2] {
+        let ac = self.ac();
+        let c00 = self.anchor(pr, pc);
+        let c10 = self.anchor(pr, pc + 1);
+        let c01 = self.anchor(pr + 1, pc);
+        let c11 = self.anchor(pr + 1, pc + 1);
+        let hh_top = self.h_horiz[pr * (ac - 1) + pc];
+        let hh_bot = self.h_horiz[(pr + 1) * (ac - 1) + pc];
+        let hv_left = self.h_vert[pr * ac + pc];
+        let hv_right = self.h_vert[pr * ac + pc + 1];
+        let tp = cubic_point(c00, hh_top[0], hh_top[1], c10, s);
+        let bt = cubic_point(c01, hh_bot[0], hh_bot[1], c11, s);
+        let l = cubic_point(c00, hv_left[0], hv_left[1], c01, t);
+        let r = cubic_point(c10, hv_right[0], hv_right[1], c11, t);
+        coons_blend(l, r, tp, bt, c00, c10, c01, c11, s, t)
+    }
+
+    /// The warped surface as a function of global `(u, v)` ∈ [0,1]² — what
+    /// editors sample to draw the cage's (possibly perspective) curves.
+    pub fn surface(&self) -> impl Fn(f32, f32) -> [f32; 2] + use<> {
+        let frame = self.frame();
+        let cage = match &frame {
+            Some((_, inv)) => self.mapped(inv),
+            None => self.clone(),
+        };
+        move |u, v| {
+            let (ac, ar) = (cage.ac(), cage.ar());
+            let gu = u * (ac as f32 - 1.0);
+            let pc = (gu.floor() as usize).min(ac - 2);
+            let gv = v * (ar as f32 - 1.0);
+            let pr = (gv.floor() as usize).min(ar - 2);
+            let p = cage.patch_point(pr, pc, gu - pc as f32, gv - pr as f32);
+            match &frame {
+                Some((h, _)) => apply_homography(h, p),
+                None => p,
+            }
+        }
+    }
+
+    /// Tessellate the control cage into a dense `WarpMesh`:
+    /// `((anchor_cols−1)·tess + 1)` × `((anchor_rows−1)·tess + 1)`, clamped to
+    /// `[2, MAX_WARP_SUBDIVISIONS]`. UVs are the uniform unit-square grid. An
+    /// invalid cage (see [`Self::validate`]) yields an identity mesh.
+    pub fn tessellate(&self) -> WarpMesh {
+        if let Err(e) = self.validate() {
+            log::warn!("{e}; drawing identity");
+            return WarpMesh::identity(2, 2);
+        }
+        let (ac, ar) = (self.ac() as u32, self.ar() as u32);
+        let tess = self.tess.max(1);
+        let cols = ((ac - 1) * tess + 1).clamp(2, MAX_WARP_SUBDIVISIONS);
+        let rows = ((ar - 1) * tess + 1).clamp(2, MAX_WARP_SUBDIVISIONS);
+        let f = self.surface();
+        let mut points = Vec::with_capacity((cols * rows) as usize);
+        for r in 0..rows {
+            let v = r as f32 / (rows - 1) as f32;
+            for c in 0..cols {
+                let u = c as f32 / (cols - 1) as f32;
+                points.push(MeshPoint {
+                    position: f(u, v),
+                    uv: [u, v],
+                });
+            }
+        }
+        WarpMesh { cols, rows, points }
+    }
+
+    /// Whether this warp tessellates to an identity mesh (no warp effect).
+    pub fn is_identity(&self) -> bool {
+        self.tessellate().is_identity()
+    }
+
+    /// Move anchor `(row, col)` to `pos`, shifting its tangent handles by the
+    /// same delta to keep local curvature. With `perspective`, moving an outer
+    /// corner instead re-projects the whole cage — a corner-pin drag that keeps
+    /// every curve. Out-of-range indices are ignored.
+    pub fn move_anchor(&mut self, r: usize, c: usize, pos: [f32; 2]) {
+        let (ac, ar) = (self.ac(), self.ar());
+        if r >= ar || c >= ac {
+            return;
+        }
+        let corner = (r == 0 || r == ar - 1) && (c == 0 || c == ac - 1);
+        if corner && let Some((_, inv)) = self.frame() {
+            let unit = self.mapped(&inv);
+            let mut outer = self.outer_corners();
+            outer[match (r == 0, c == 0) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, false) => 2,
+                (false, true) => 3,
+            }] = pos;
+            let h = solve_homography(&UNIT_SQUARE, &outer);
+            *self = unit.mapped(&h);
+            // Re-pin the corners exactly so float drift can't accumulate.
+            for (k, &(rr, cc)) in [(0, 0), (0, ac - 1), (ar - 1, ac - 1), (ar - 1, 0)].iter().enumerate() {
+                self.anchors[rr * ac + cc] = outer[k];
+            }
+            return;
+        }
+        let old = self.anchor(r, c);
+        let d = [pos[0] - old[0], pos[1] - old[1]];
+        self.anchors[r * ac + c] = pos;
+        let shift = |h: &mut [f32; 2]| *h = [h[0] + d[0], h[1] + d[1]];
+        if c + 1 < ac {
+            shift(&mut self.h_horiz[r * (ac - 1) + c][0]);
+        }
+        if c > 0 {
+            shift(&mut self.h_horiz[r * (ac - 1) + (c - 1)][1]);
+        }
+        if r + 1 < ar {
+            shift(&mut self.h_vert[r * ac + c][0]);
+        }
+        if r > 0 {
+            shift(&mut self.h_vert[(r - 1) * ac + c][1]);
+        }
+    }
+
+    /// Move a single tangent handle to `pos`. `horizontal` selects a horizontal
+    /// edge (anchor `(r,c)→(r,c+1)`) vs a vertical edge (`(r,c)→(r+1,c)`);
+    /// `which` is 0 (near start anchor) or 1 (near end anchor). No-op if the
+    /// addressed edge does not exist.
+    pub fn move_handle(&mut self, horizontal: bool, r: usize, c: usize, which: usize, pos: [f32; 2]) {
+        let (ac, ar) = (self.ac(), self.ar());
+        let which = which.min(1);
+        if horizontal {
+            if r < ar && c + 1 < ac {
+                self.h_horiz[r * (ac - 1) + c][which] = pos;
+            }
+        } else if r + 1 < ar && c < ac {
+            self.h_vert[r * ac + c][which] = pos;
+        }
+    }
+
+    /// Rebuild the cage at `cols × rows` anchors, resampled onto the current
+    /// warped surface with straight handles. Curvature between anchors is lost.
+    /// Dims clamp to `[2, MAX_WARP_SUBDIVISIONS]`.
+    pub fn set_cage_subdivisions(&mut self, cols: u32, rows: u32) {
+        let nc = cols.clamp(2, MAX_WARP_SUBDIVISIONS);
+        let nr = rows.clamp(2, MAX_WARP_SUBDIVISIONS);
+        let f = self.surface();
+        let mut anchors = Vec::with_capacity((nc * nr) as usize);
+        for r in 0..nr {
+            for c in 0..nc {
+                anchors.push(f(c as f32 / (nc - 1) as f32, r as f32 / (nr - 1) as f32));
+            }
+        }
+        *self = Self::from_anchors(nc, nr, anchors, self.tess, self.perspective);
+    }
+
+    /// Set the per-patch tessellation density (≥1).
+    pub fn set_tess(&mut self, tess: u32) {
+        self.tess = tess.max(1);
     }
 }
 
@@ -425,6 +810,10 @@ impl WarpStage {
             }
             WarpMode::Mesh(mesh) => {
                 let (vertices, indices) = build_mesh_buffers(mesh);
+                Self::new(device, format, &vertices, &indices, false, None)
+            }
+            WarpMode::Bezier(b) => {
+                let (vertices, indices) = build_mesh_buffers(&b.tessellate());
                 Self::new(device, format, &vertices, &indices, false, None)
             }
         };
@@ -811,6 +1200,46 @@ fn build_mesh_buffers(mesh: &WarpMesh) -> (Vec<WarpVertex>, Vec<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_matches_homography(b: &BezierWarp, corners: &[[f32; 2]; 4]) {
+        let h = compute_forward_homography(&UNIT_SQUARE, corners);
+        for p in &b.tessellate().points {
+            let want = apply_homography(&h, p.uv);
+            let d = (p.position[0] - want[0]).abs().max((p.position[1] - want[1]).abs());
+            assert!(d < 1e-5, "uv {:?}: got {:?}, want {:?}", p.uv, p.position, want);
+        }
+    }
+
+    #[test]
+    fn straight_perspective_bezier_is_exact_corner_pin() {
+        let corners = [[0.1, 0.05], [0.95, 0.2], [0.8, 0.9], [0.05, 0.7]];
+        let mut b = BezierWarp::corner_pin(corners, 8);
+        assert_matches_homography(&b, &corners);
+
+        // Dragging a corner stays an exact corner-pin of the new quad.
+        b.move_anchor(1, 1, [0.9, 0.95]);
+        assert_matches_homography(&b, &[corners[0], corners[1], [0.9, 0.95], corners[3]]);
+
+        // ...and so does a finer cage resampled from it.
+        b.set_cage_subdivisions(4, 3);
+        assert!(b.validate().is_ok());
+        assert_matches_homography(&b, &[corners[0], corners[1], [0.9, 0.95], corners[3]]);
+    }
+
+    #[test]
+    fn bezier_warp_mode_round_trips_and_loads_varda_shape() {
+        let mode = WarpMode::Bezier(BezierWarp::corner_pin(UNIT_SQUARE, 4));
+        let json = serde_json::to_string(&mode).unwrap();
+        assert_eq!(serde_json::from_str::<WarpMode>(&json).unwrap(), mode);
+
+        // varda files have no `perspective` field → bilinear.
+        let varda = json.replace(",\"perspective\":true", "");
+        let WarpMode::Bezier(b) = serde_json::from_str::<WarpMode>(&varda).unwrap() else {
+            panic!("not bezier")
+        };
+        assert!(!b.perspective);
+        assert!(b.is_identity());
+    }
 
     #[test]
     fn identity_mesh_positions_equal_uvs() {
