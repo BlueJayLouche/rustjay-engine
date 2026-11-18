@@ -157,6 +157,28 @@ pub struct BezierWarp {
     /// corner-pin when edges are straight). Absent in varda files → bilinear.
     #[serde(default)]
     pub perspective: bool,
+    /// Source-space `u` (increasing, 0 → 1) of each anchor column; empty means
+    /// evenly spaced. Set by row/column insert and delete so the video mapping
+    /// doesn't shift.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub col_u: Vec<f32>,
+    /// Source-space `v` of each anchor row, like [`Self::col_u`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_v: Vec<f32>,
+}
+
+type Edge = [[f32; 2]; 2];
+
+fn add2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] + b[0], a[1] + b[1]]
+}
+
+fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] - b[0], a[1] - b[1]]
+}
+
+fn scale2(a: [f32; 2], k: f32) -> [f32; 2] {
+    [a[0] * k, a[1] * k]
 }
 
 fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
@@ -179,6 +201,13 @@ fn cubic_point(p0: [f32; 2], c1: [f32; 2], c2: [f32; 2], p1: [f32; 2], t: f32) -
         a * p0[0] + b * c1[0] + c * c2[0] + d * p1[0],
         a * p0[1] + b * c1[1] + c * c2[1] + d * p1[1],
     ]
+}
+
+/// Split a cubic at `t` (de Casteljau): left handles, split point, right handles.
+fn split_cubic(p0: [f32; 2], c1: [f32; 2], c2: [f32; 2], p3: [f32; 2], t: f32) -> (Edge, [f32; 2], Edge) {
+    let (a, b, c) = (lerp2(p0, c1, t), lerp2(c1, c2, t), lerp2(c2, p3, t));
+    let (d, e) = (lerp2(a, b, t), lerp2(b, c, t));
+    ([a, d], lerp2(d, e, t), [e, c])
 }
 
 /// Transfinite (Coons) blend of a patch's four boundary points at `(s, t)`.
@@ -208,13 +237,32 @@ fn coons_blend(
     pos
 }
 
+/// Parameter of grid line `i` of `n`: from `knots`, or evenly spaced when empty.
+fn knot(knots: &[f32], i: usize, n: usize) -> f32 {
+    if knots.len() == n {
+        knots[i]
+    } else {
+        i as f32 / (n - 1) as f32
+    }
+}
+
+/// The patch containing global parameter `x`, and `x`'s local parameter in it.
+fn locate(knots: &[f32], n: usize, x: f32) -> (usize, f32) {
+    let mut i = 0;
+    while i + 2 < n && knot(knots, i + 1, n) <= x {
+        i += 1;
+    }
+    let (a, b) = (knot(knots, i, n), knot(knots, i + 1, n));
+    (i, (x - a) / (b - a))
+}
+
 /// `(forward, inverse)` homography between the unit square and a cage frame.
 type Frame = ([f32; 9], [f32; 9]);
 
 impl BezierWarp {
     /// Straight-edge handles between `a` and `b`: the ⅓/⅔ chord points, taken
     /// in the perspective frame when there is one.
-    fn straight(a: [f32; 2], b: [f32; 2], frame: Option<&Frame>) -> [[f32; 2]; 2] {
+    fn straight(a: [f32; 2], b: [f32; 2], frame: Option<&Frame>) -> Edge {
         match frame {
             None => [lerp2(a, b, 1.0 / 3.0), lerp2(a, b, 2.0 / 3.0)],
             Some((h, inv)) => {
@@ -247,6 +295,8 @@ impl BezierWarp {
             h_vert: Vec::new(),
             tess: tess.max(1),
             perspective,
+            col_u: Vec::new(),
+            row_v: Vec::new(),
         };
         let frame = w.frame();
         let aci = ac as usize;
@@ -293,6 +343,13 @@ impl BezierWarp {
         {
             anyhow::bail!("bezier warp: anchor/handle counts do not match the cage size");
         }
+        for (k, n, name) in [(&self.col_u, ac, "col_u"), (&self.row_v, ar, "row_v")] {
+            if !k.is_empty()
+                && (k.len() != n || k[0] != 0.0 || k[n - 1] != 1.0 || k.windows(2).any(|w| w[0] >= w[1]))
+            {
+                anyhow::bail!("bezier warp: {name} must be empty or {n} increasing values from 0 to 1");
+            }
+        }
         Ok(())
     }
 
@@ -310,6 +367,25 @@ impl BezierWarp {
         self.anchors[r * self.ac() + c]
     }
 
+    /// Source-space `u` of anchor column `c`.
+    pub fn col_u(&self, c: usize) -> f32 {
+        knot(&self.col_u, c, self.ac())
+    }
+
+    /// Source-space `v` of anchor row `r`.
+    pub fn row_v(&self, r: usize) -> f32 {
+        knot(&self.row_v, r, self.ar())
+    }
+
+    fn handle_mut(&mut self, horizontal: bool, r: usize, c: usize) -> &mut Edge {
+        let ac = self.ac();
+        if horizontal {
+            &mut self.h_horiz[r * (ac - 1) + c]
+        } else {
+            &mut self.h_vert[r * ac + c]
+        }
+    }
+
     /// The four outer corners, TL, TR, BR, BL.
     pub fn outer_corners(&self) -> [[f32; 2]; 4] {
         let (ac, ar) = (self.ac(), self.ar());
@@ -319,6 +395,15 @@ impl BezierWarp {
             self.anchor(ar - 1, ac - 1),
             self.anchor(ar - 1, 0),
         ]
+    }
+
+    /// Set the outer corners exactly (after a round trip through the
+    /// perspective frame) so float drift can't accumulate.
+    fn pin_corners(&mut self, outer: [[f32; 2]; 4]) {
+        let (ac, ar) = (self.ac(), self.ar());
+        for (k, (r, c)) in [(0, 0), (0, ac - 1), (ar - 1, ac - 1), (ar - 1, 0)].into_iter().enumerate() {
+            self.anchors[r * ac + c] = outer[k];
+        }
     }
 
     /// Unit square ↔ outer-corner homographies; `None` when bilinear.
@@ -342,6 +427,31 @@ impl BezierWarp {
             h_vert: self.h_vert.iter().map(|&[a, b]| [m(a), m(b)]).collect(),
             ..self.clone()
         }
+    }
+
+    /// Rows and columns swapped. Coons patches are symmetric in `s`/`t`, so
+    /// the row operations are the column operations on the transpose.
+    fn transposed(&self) -> Self {
+        let (ac, ar) = (self.ac(), self.ar());
+        Self {
+            anchor_cols: ar as u32,
+            anchor_rows: ac as u32,
+            anchors: (0..ac).flat_map(|c| (0..ar).map(move |r| self.anchor(r, c))).collect(),
+            h_horiz: (0..ac).flat_map(|c| (0..ar - 1).map(move |r| self.h_vert[r * ac + c])).collect(),
+            h_vert: (0..ac - 1).flat_map(|c| (0..ar).map(move |r| self.h_horiz[r * (ac - 1) + c])).collect(),
+            col_u: self.row_v.clone(),
+            row_v: self.col_u.clone(),
+            ..self.clone()
+        }
+    }
+
+    fn via_transpose(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
+        let mut t = self.transposed();
+        let ok = f(&mut t);
+        if ok {
+            *self = t.transposed();
+        }
+        ok
     }
 
     /// Evaluate patch `(pr, pc)` at local `(s, t)` ∈ [0,1]² via Coons
@@ -372,12 +482,9 @@ impl BezierWarp {
             None => self.clone(),
         };
         move |u, v| {
-            let (ac, ar) = (cage.ac(), cage.ar());
-            let gu = u * (ac as f32 - 1.0);
-            let pc = (gu.floor() as usize).min(ac - 2);
-            let gv = v * (ar as f32 - 1.0);
-            let pr = (gv.floor() as usize).min(ar - 2);
-            let p = cage.patch_point(pr, pc, gu - pc as f32, gv - pr as f32);
+            let (pc, s) = locate(&cage.col_u, cage.ac(), u);
+            let (pr, t) = locate(&cage.row_v, cage.ar(), v);
+            let p = cage.patch_point(pr, pc, s, t);
             match &frame {
                 Some((h, _)) => apply_homography(h, p),
                 None => p,
@@ -418,6 +525,26 @@ impl BezierWarp {
         self.tessellate().is_identity()
     }
 
+    /// Move anchor `(r, c)` and the near ends of its handles by `d`.
+    fn shift_anchor(&mut self, r: usize, c: usize, d: [f32; 2]) {
+        let (ac, ar) = (self.ac(), self.ar());
+        let i = r * ac + c;
+        self.anchors[i] = add2(self.anchors[i], d);
+        let shift = |h: &mut [f32; 2]| *h = add2(*h, d);
+        if c + 1 < ac {
+            shift(&mut self.h_horiz[r * (ac - 1) + c][0]);
+        }
+        if c > 0 {
+            shift(&mut self.h_horiz[r * (ac - 1) + (c - 1)][1]);
+        }
+        if r + 1 < ar {
+            shift(&mut self.h_vert[r * ac + c][0]);
+        }
+        if r > 0 {
+            shift(&mut self.h_vert[(r - 1) * ac + c][1]);
+        }
+    }
+
     /// Move anchor `(row, col)` to `pos`, shifting its tangent handles by the
     /// same delta to keep local curvature. With `perspective`, moving an outer
     /// corner instead re-projects the whole cage — a corner-pin drag that keeps
@@ -437,51 +564,269 @@ impl BezierWarp {
                 (false, false) => 2,
                 (false, true) => 3,
             }] = pos;
-            let h = solve_homography(&UNIT_SQUARE, &outer);
-            *self = unit.mapped(&h);
-            // Re-pin the corners exactly so float drift can't accumulate.
-            for (k, &(rr, cc)) in [(0, 0), (0, ac - 1), (ar - 1, ac - 1), (ar - 1, 0)].iter().enumerate() {
-                self.anchors[rr * ac + cc] = outer[k];
-            }
+            *self = unit.mapped(&solve_homography(&UNIT_SQUARE, &outer));
+            self.pin_corners(outer);
             return;
         }
-        let old = self.anchor(r, c);
-        let d = [pos[0] - old[0], pos[1] - old[1]];
-        self.anchors[r * ac + c] = pos;
-        let shift = |h: &mut [f32; 2]| *h = [h[0] + d[0], h[1] + d[1]];
-        if c + 1 < ac {
-            shift(&mut self.h_horiz[r * (ac - 1) + c][0]);
+        self.shift_anchor(r, c, sub2(pos, self.anchor(r, c)));
+    }
+
+    /// Move a group of anchors by `d`. A single anchor behaves exactly like
+    /// [`Self::move_anchor`] (a perspective corner re-projects the cage);
+    /// several are translated with their handles and the rest of the cage
+    /// stays put. Out-of-range entries are ignored.
+    pub fn move_anchors(&mut self, sel: &[(usize, usize)], d: [f32; 2]) {
+        let (ac, ar) = (self.ac(), self.ar());
+        let sel: Vec<_> = sel.iter().copied().filter(|&(r, c)| r < ar && c < ac).collect();
+        if let [(r, c)] = sel[..] {
+            self.move_anchor(r, c, add2(self.anchor(r, c), d));
+            return;
         }
-        if c > 0 {
-            shift(&mut self.h_horiz[r * (ac - 1) + (c - 1)][1]);
-        }
-        if r + 1 < ar {
-            shift(&mut self.h_vert[r * ac + c][0]);
-        }
-        if r > 0 {
-            shift(&mut self.h_vert[(r - 1) * ac + c][1]);
+        for (r, c) in sel {
+            self.shift_anchor(r, c, d);
         }
     }
 
     /// Move a single tangent handle to `pos`. `horizontal` selects a horizontal
     /// edge (anchor `(r,c)→(r,c+1)`) vs a vertical edge (`(r,c)→(r+1,c)`);
-    /// `which` is 0 (near start anchor) or 1 (near end anchor). No-op if the
-    /// addressed edge does not exist.
-    pub fn move_handle(&mut self, horizontal: bool, r: usize, c: usize, which: usize, pos: [f32; 2]) {
+    /// `which` is 0 (near start anchor) or 1 (near end anchor). With `mirror`,
+    /// the handle on the other side of the same anchor turns to stay collinear
+    /// (keeping its length), so the curve stays smooth through the anchor.
+    /// No-op if the addressed edge does not exist.
+    pub fn move_handle(&mut self, horizontal: bool, r: usize, c: usize, which: usize, pos: [f32; 2], mirror: bool) {
         let (ac, ar) = (self.ac(), self.ar());
         let which = which.min(1);
-        if horizontal {
-            if r < ar && c + 1 < ac {
-                self.h_horiz[r * (ac - 1) + c][which] = pos;
-            }
-        } else if r + 1 < ar && c < ac {
-            self.h_vert[r * ac + c][which] = pos;
+        let exists = if horizontal { r < ar && c + 1 < ac } else { r + 1 < ar && c < ac };
+        if !exists {
+            return;
         }
+        self.handle_mut(horizontal, r, c)[which] = pos;
+        if !mirror {
+            return;
+        }
+        // The partner continues this edge's line on the far side of its anchor.
+        let (anchor, partner) = match (horizontal, which) {
+            (true, 0) => ((r, c), c.checked_sub(1).map(|pc| (r, pc))),
+            (true, _) => ((r, c + 1), (c + 2 < ac).then_some((r, c + 1))),
+            (false, 0) => ((r, c), r.checked_sub(1).map(|pr| (pr, c))),
+            (false, _) => ((r + 1, c), (r + 2 < ar).then_some((r + 1, c))),
+        };
+        let Some((pr, pc)) = partner else { return };
+        let a = self.anchor(anchor.0, anchor.1);
+        let dir = sub2(pos, a);
+        let len = dir[0].hypot(dir[1]);
+        if len < 1e-9 {
+            return;
+        }
+        let other = &mut self.handle_mut(horizontal, pr, pc)[1 - which];
+        let keep = sub2(*other, a);
+        let keep = keep[0].hypot(keep[1]);
+        let keep = if keep < 1e-9 { len } else { keep };
+        *other = sub2(a, scale2(dir, keep / len));
     }
 
-    /// Rebuild the cage at `cols × rows` anchors, resampled onto the current
-    /// warped surface with straight handles. Curvature between anchors is lost.
-    /// Dims clamp to `[2, MAX_WARP_SUBDIVISIONS]`.
+    /// Catmull-Rom handles for every edge (central-difference tangents,
+    /// one-sided at the cage border), in the perspective frame when there is
+    /// one — so an evenly spaced straight grid gets exact straight handles.
+    /// ponytail: tangents ignore uneven `col_u`/`row_v` spacing (G1, not C1)
+    /// — scale by knot gaps if seams show after many inserts.
+    fn smooth_baseline(&self) -> (Vec<Edge>, Vec<Edge>) {
+        let (ac, ar) = (self.ac(), self.ar());
+        let pts: Vec<[f32; 2]> = match self.frame() {
+            Some((_, inv)) => self.anchors.iter().map(|&p| apply_homography(&inv, p)).collect(),
+            None => self.anchors.clone(),
+        };
+        let at = |r: usize, c: usize| pts[r * ac + c];
+        let tan = |f: &dyn Fn(usize) -> [f32; 2], i: usize, n: usize| {
+            let d = sub2(f((i + 1).min(n - 1)), f(i.saturating_sub(1)));
+            scale2(d, if i == 0 || i == n - 1 { 1.0 } else { 0.5 })
+        };
+        let edge = |p0, t0, p1, t1| [add2(p0, scale2(t0, 1.0 / 3.0)), sub2(p1, scale2(t1, 1.0 / 3.0))];
+        let mut hh = Vec::with_capacity(ar * (ac - 1));
+        for r in 0..ar {
+            let f = |c: usize| at(r, c);
+            for c in 0..ac - 1 {
+                hh.push(edge(at(r, c), tan(&f, c, ac), at(r, c + 1), tan(&f, c + 1, ac)));
+            }
+        }
+        let mut hv = Vec::with_capacity((ar - 1) * ac);
+        for r in 0..ar - 1 {
+            for c in 0..ac {
+                let f = |r: usize| at(r, c);
+                hv.push(edge(at(r, c), tan(&f, r, ar), at(r + 1, c), tan(&f, r + 1, ar)));
+            }
+        }
+        (hh, hv)
+    }
+
+    /// Reset every handle to the smooth Catmull-Rom baseline, discarding manual
+    /// handle shaping.
+    pub fn smooth_all(&mut self) {
+        let frame = self.frame();
+        let out = |p| frame.as_ref().map_or(p, |(h, _)| apply_homography(h, p));
+        let (hh, hv) = self.smooth_baseline();
+        self.h_horiz = hh.into_iter().map(|[a, b]| [out(a), out(b)]).collect();
+        self.h_vert = hv.into_iter().map(|[a, b]| [out(a), out(b)]).collect();
+    }
+
+    /// Run `edit` (anchor moves), then shift every handle by however much its
+    /// smooth baseline moved: curves follow the anchors smoothly and any manual
+    /// handle shaping is kept as an offset. Baselines are compared in the
+    /// perspective frame, so a corner-pin drag (which keeps that frame's shape)
+    /// leaves the curves exactly as they were. Skipped if `edit` resizes the cage.
+    pub fn with_auto_smooth(&mut self, edit: impl FnOnce(&mut Self)) {
+        let dims = (self.ac(), self.ar());
+        // Each handle's offset from its baseline, in the (pre-edit) frame.
+        let f0 = self.frame();
+        let unit = |p| f0.as_ref().map_or(p, |(_, inv)| apply_homography(inv, p));
+        let (bh, bv) = self.smooth_baseline();
+        let offsets = |hs: &[Edge], base: &[Edge]| -> Vec<Edge> {
+            hs.iter().zip(base).map(|(h, b)| [sub2(unit(h[0]), b[0]), sub2(unit(h[1]), b[1])]).collect()
+        };
+        let (oh, ov) = (offsets(&self.h_horiz, &bh), offsets(&self.h_vert, &bv));
+        edit(self);
+        if (self.ac(), self.ar()) != dims {
+            return;
+        }
+        // Re-seat every handle on the new baseline with its old offset.
+        let f1 = self.frame();
+        let out = |p| f1.as_ref().map_or(p, |(h, _)| apply_homography(h, p));
+        let (ah, av) = self.smooth_baseline();
+        let place = |base: Vec<Edge>, off: Vec<Edge>| -> Vec<Edge> {
+            base.into_iter().zip(off).map(|(b, o)| [out(add2(b[0], o[0])), out(add2(b[1], o[1]))]).collect()
+        };
+        self.h_horiz = place(ah, oh);
+        self.h_vert = place(av, ov);
+    }
+
+    /// Insert an anchor column at source-space `u` without changing the
+    /// surface or the video mapping — the patch split is exact. Returns false
+    /// when `u` is on (or within 0.1 % of) an existing column or the cage is
+    /// at `MAX_WARP_SUBDIVISIONS`.
+    pub fn insert_col(&mut self, u: f32) -> bool {
+        let (ac, ar) = (self.ac(), self.ar());
+        let (pc, s) = locate(&self.col_u, ac, u);
+        if ac >= MAX_WARP_SUBDIVISIONS as usize || !(1e-3..=1.0 - 1e-3).contains(&s) {
+            return false;
+        }
+        let frame = self.frame();
+        let outer = self.outer_corners();
+        let w = match &frame {
+            Some((_, inv)) => self.mapped(inv),
+            None => self.clone(),
+        };
+        let mut anchors = Vec::with_capacity((ac + 1) * ar);
+        let mut h_horiz = Vec::with_capacity(ac * ar);
+        let mut mids = Vec::with_capacity(ar);
+        for r in 0..ar {
+            for c in 0..ac - 1 {
+                let e = w.h_horiz[r * (ac - 1) + c];
+                if c == pc {
+                    let (a, m, b) = split_cubic(w.anchor(r, c), e[0], e[1], w.anchor(r, c + 1), s);
+                    h_horiz.extend([a, b]);
+                    mids.push(m);
+                } else {
+                    h_horiz.push(e);
+                }
+            }
+            for c in 0..ac {
+                anchors.push(w.anchor(r, c));
+                if c == pc {
+                    anchors.push(mids[r]);
+                }
+            }
+        }
+        let mut h_vert = Vec::with_capacity((ac + 1) * (ar - 1));
+        for r in 0..ar - 1 {
+            for c in 0..ac {
+                h_vert.push(w.h_vert[r * ac + c]);
+                if c == pc {
+                    // The Coons iso-curve at `s` is an exact cubic in `t`: the
+                    // left/right edges blended at `s`, plus a linear term that
+                    // carries the top/bottom curves' bulge at `s`.
+                    let (l, rt) = (w.h_vert[r * ac + c], w.h_vert[r * ac + c + 1]);
+                    let ca = sub2(mids[r], lerp2(w.anchor(r, c), w.anchor(r, c + 1), s));
+                    let cb = sub2(mids[r + 1], lerp2(w.anchor(r + 1, c), w.anchor(r + 1, c + 1), s));
+                    let q = |k: usize| add2(lerp2(l[k], rt[k], s), lerp2(ca, cb, (k + 1) as f32 / 3.0));
+                    h_vert.push([q(0), q(1)]);
+                }
+            }
+        }
+        let mut col_u: Vec<f32> = (0..ac).map(|c| w.col_u(c)).collect();
+        col_u.insert(pc + 1, u);
+        let mut out = Self { anchor_cols: ac as u32 + 1, anchors, h_horiz, h_vert, col_u, ..w };
+        if let Some((h, _)) = frame {
+            out = out.mapped(&h);
+            out.pin_corners(outer);
+        }
+        *self = out;
+        true
+    }
+
+    /// Insert an anchor row at source-space `v`; see [`Self::insert_col`].
+    pub fn insert_row(&mut self, v: f32) -> bool {
+        self.via_transpose(|t| t.insert_col(v))
+    }
+
+    /// Remove inner anchor column `c`, merging its two patches. Exactly undoes
+    /// an `insert_col`; otherwise the merged edges approximate the two curves.
+    /// Returns false for an outer column.
+    pub fn remove_col(&mut self, c: usize) -> bool {
+        let (ac, ar) = (self.ac(), self.ar());
+        if c == 0 || c + 1 >= ac {
+            return false;
+        }
+        let frame = self.frame();
+        let outer = self.outer_corners();
+        let w = match &frame {
+            Some((_, inv)) => self.mapped(inv),
+            None => self.clone(),
+        };
+        let (u0, u1, u2) = (w.col_u(c - 1), w.col_u(c), w.col_u(c + 1));
+        let s = (u1 - u0) / (u2 - u0);
+        let mut anchors = Vec::with_capacity((ac - 1) * ar);
+        let mut h_horiz = Vec::with_capacity((ac - 2) * ar);
+        for r in 0..ar {
+            anchors.extend((0..ac).filter(|&cc| cc != c).map(|cc| w.anchor(r, cc)));
+            for cc in 0..ac - 1 {
+                let e = w.h_horiz[r * (ac - 1) + cc];
+                if cc == c - 1 {
+                    // Invert de Casteljau: the split scaled the outer handles
+                    // toward their anchors by `s` and `1 − s`.
+                    let f = w.h_horiz[r * (ac - 1) + c];
+                    let (p0, p3) = (w.anchor(r, c - 1), w.anchor(r, c + 1));
+                    h_horiz.push([
+                        add2(p0, scale2(sub2(e[0], p0), 1.0 / s)),
+                        add2(p3, scale2(sub2(f[1], p3), 1.0 / (1.0 - s))),
+                    ]);
+                } else if cc != c {
+                    h_horiz.push(e);
+                }
+            }
+        }
+        let h_vert: Vec<Edge> = (0..ar - 1)
+            .flat_map(|r| (0..ac).filter(move |&cc| cc != c).map(move |cc| (r, cc)))
+            .map(|(r, cc)| w.h_vert[r * ac + cc])
+            .collect();
+        let mut col_u: Vec<f32> = (0..ac).map(|cc| w.col_u(cc)).collect();
+        col_u.remove(c);
+        let mut out = Self { anchor_cols: ac as u32 - 1, anchors, h_horiz, h_vert, col_u, ..w };
+        if let Some((h, _)) = frame {
+            out = out.mapped(&h);
+            out.pin_corners(outer);
+        }
+        *self = out;
+        true
+    }
+
+    /// Remove inner anchor row `r`; see [`Self::remove_col`].
+    pub fn remove_row(&mut self, r: usize) -> bool {
+        self.via_transpose(|t| t.remove_col(r))
+    }
+
+    /// Rebuild the cage at `cols × rows` evenly spaced anchors sampled from
+    /// the current surface, with smooth handles. Detail between the new
+    /// anchors is approximated. Dims clamp to `[2, MAX_WARP_SUBDIVISIONS]`.
     pub fn set_cage_subdivisions(&mut self, cols: u32, rows: u32) {
         let nc = cols.clamp(2, MAX_WARP_SUBDIVISIONS);
         let nr = rows.clamp(2, MAX_WARP_SUBDIVISIONS);
@@ -493,6 +838,7 @@ impl BezierWarp {
             }
         }
         *self = Self::from_anchors(nc, nr, anchors, self.tess, self.perspective);
+        self.smooth_all();
     }
 
     /// Set the per-patch tessellation density (≥1).
@@ -1224,6 +1570,68 @@ mod tests {
         b.set_cage_subdivisions(4, 3);
         assert!(b.validate().is_ok());
         assert_matches_homography(&b, &[corners[0], corners[1], [0.9, 0.95], corners[3]]);
+    }
+
+    fn assert_same_surface(a: &BezierWarp, b: &BezierWarp) {
+        let (fa, fb) = (a.surface(), b.surface());
+        for i in 0..=20 {
+            for j in 0..=20 {
+                let (u, v) = (i as f32 / 20.0, j as f32 / 20.0);
+                let (p, q) = (fa(u, v), fb(u, v));
+                let d = (p[0] - q[0]).abs().max((p[1] - q[1]).abs());
+                assert!(d < 1e-4, "({u}, {v}): {p:?} vs {q:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn inserting_rows_and_cols_is_exact_and_removing_undoes_it() {
+        let anchors = vec![
+            [0.0, 0.0], [0.5, 0.05], [1.0, 0.0],
+            [0.05, 0.5], [0.5, 0.5], [0.95, 0.55],
+            [0.0, 1.0], [0.5, 0.9], [1.0, 1.0],
+        ];
+        for perspective in [false, true] {
+            let mut b = BezierWarp::from_anchors(3, 3, anchors.clone(), 8, perspective);
+            b.move_handle(true, 0, 0, 0, [0.2, -0.1], false);
+            b.move_handle(false, 1, 2, 1, [1.1, 0.8], false);
+            let original = b.clone();
+
+            assert!(b.insert_col(0.3) && b.insert_row(0.8) && b.insert_col(0.62));
+            assert!(!b.insert_col(0.62), "an existing column is not re-inserted");
+            assert!(b.validate().is_ok());
+            assert_eq!((b.anchor_cols, b.anchor_rows), (5, 4));
+            assert_same_surface(&original, &b);
+
+            let col = |b: &BezierWarp, u: f32| (0..5).find(|&c| b.col_u(c) == u).unwrap();
+            assert!(b.remove_col(col(&b, 0.62)) && b.remove_col(col(&b, 0.3)));
+            assert!(b.remove_row((0..4).find(|&r| b.row_v(r) == 0.8).unwrap()));
+            assert!(!b.remove_col(0), "outer columns stay");
+            assert_same_surface(&original, &b);
+        }
+    }
+
+    #[test]
+    fn auto_smooth_keeps_corner_pins_exact_and_mirror_keeps_handles_collinear() {
+        let corners = [[0.1, 0.05], [0.95, 0.2], [0.8, 0.9], [0.05, 0.7]];
+        let mut b = BezierWarp::corner_pin(corners, 8);
+        b.set_cage_subdivisions(4, 3);
+        b.with_auto_smooth(|w| w.move_anchors(&[(2, 3)], [0.05, 0.02]));
+        assert_matches_homography(&b, &[corners[0], corners[1], [0.85, 0.92], corners[3]]);
+
+        let cross = |a: [f32; 2], p: [f32; 2], q: [f32; 2]| {
+            let (x, y) = (sub2(p, a), sub2(q, a));
+            (x[0] * y[1] - x[1] * y[0], x[0] * y[0] + x[1] * y[1])
+        };
+        // Dragging an inner anchor with auto-smooth leaves the row smooth through it.
+        b.with_auto_smooth(|w| w.move_anchors(&[(1, 1)], [0.03, -0.04]));
+        let (c, dot) = cross(b.anchor(1, 1), b.h_horiz[3][1], b.h_horiz[4][0]);
+        assert!(c.abs() < 1e-6 && dot < 0.0, "kink at (1,1): cross {c}");
+
+        // A mirrored handle drag swings the partner to stay collinear.
+        b.move_handle(true, 1, 1, 0, [0.6, 0.3], true);
+        let (c, dot) = cross(b.anchor(1, 1), b.h_horiz[4][0], b.h_horiz[3][1]);
+        assert!(c.abs() < 1e-6 && dot < 0.0, "mirror broke at (1,1): cross {c}");
     }
 
     #[test]
