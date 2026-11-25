@@ -82,3 +82,14 @@ use utoipa::OpenApi;
     )
 )]
 pub struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    // Guards utoipa major bumps: the spec must still generate with its routes.
+    #[test]
+    fn spec_lists_routes() {
+        let json = <super::ApiDoc as utoipa::OpenApi>::openapi().to_json().unwrap();
+        assert!(json.contains("\"/api/health\""), "health route missing from spec");
+        assert!(json.contains("\"paths\""));
+    }
+}
