@@ -16,7 +16,6 @@ rustjay-control = { workspace = true }
 rustjay-presets = { workspace = true }
 rustjay-gui     = { workspace = true }
 rustjay-render  = { workspace = true }
-rustjay-mixer   = { workspace = true, optional = true }
 rustjay-sync    = { path = "../rustjay-sync", version = "0.1.0", optional = true }
 rustjay-api     = { workspace = true, optional = true }
 rustjay-projection = { workspace = true, optional = true }
@@ -46,7 +45,7 @@ glow         = { workspace = true, optional = true }
 khronos-egl  = { workspace = true, optional = true }
 wayland-sys  = { version = "0.31", features = ["egl"], optional = true }
 gbm          = { version = "0.18", features = ["drm-support"], optional = true }
-drm          = { version = "0.14", optional = true }
+drm          = { version = "0.15", optional = true }
 libc         = { version = "0.2", optional = true }
 
 [features]
@@ -58,7 +57,6 @@ webcam  = ["rustjay-io/webcam"]
 egui    = ["rustjay-gui/egui"]
 # Dear ImGui renderer backend; see rustjay-gui. imgui *tabs* build either way.
 imgui-renderer = ["rustjay-gui/imgui-renderer"]
-mixer   = ["dep:rustjay-mixer"]
 api     = ["dep:rustjay-api"]
 # Push parameter changes back to an OSC controller (Maschine Mk1 bridge).
 osc-feedback = ["rustjay-control/osc-feedback"]

@@ -1121,7 +1121,7 @@ fn run_drm_gles2_loop<P: rustjay_core::EffectPlugin>(
                                     shared_state.lock().unwrap_or_else(|e| e.into_inner());
                                 let mut mod_eng = state.modulation.lock().unwrap_or_else(|e| e.into_inner());
                                 if let Some(idx) = mod_eng.sources.iter().position(|s| s.uuid == uuid) {
-                                    if let rustjay_core::modulation::ModulationSource::LFO { ref mut enabled: e, .. } = mod_eng.sources[idx].source {
+                                    if let rustjay_core::modulation::ModulationSource::LFO { enabled: ref mut e, .. } = mod_eng.sources[idx].source {
                                         *e = enabled;
                                     }
                                 }

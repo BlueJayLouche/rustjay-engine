@@ -42,7 +42,7 @@ prodj  = ["rustjay-core/prodj"]
 mtc    = []
 
 [dev-dependencies]
-egui_kittest = { version = "=0.36.1", features = ["snapshot", "wgpu"] }
+egui_kittest = { version = "=0.37.0", features = ["snapshot", "wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Not used in code: a direct dependency is what makes syphon-core's

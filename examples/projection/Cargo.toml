@@ -24,3 +24,7 @@ image          = { workspace = true }
 log            = { workspace = true }
 env_logger     = "0.11"
 pollster       = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Not called directly: gives build.rs DEP_SYPHON_FRAMEWORK_DIR for the runtime rpath.
+syphon-core = { workspace = true }

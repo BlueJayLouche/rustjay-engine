@@ -16,6 +16,15 @@
 use egui::{Color32, Context, CornerRadius, FontFamily, FontId, Stroke, Style, TextStyle, Visuals};
 
 /// Apply the HUD theme to the egui context.
+/// egui's bundled fonts, plus Hack (already bundled as the monospace face) as the
+/// last Proportional fallback. Ubuntu-Light has no arrows or shapes (→ ← ▼ ●), so
+/// without this they draw as boxes. Install once per context, before the first frame.
+pub fn install_fonts(ctx: &Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.families.entry(FontFamily::Proportional).or_default().push("Hack".to_owned());
+    ctx.set_fonts(fonts);
+}
+
 pub fn apply_professional_theme(ctx: &Context) {
     let mut style = Style::default();
 

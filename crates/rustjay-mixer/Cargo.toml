@@ -20,7 +20,7 @@ uuid           = { workspace = true }
 
 [dev-dependencies]
 # WGSL front-end only, for the shader-validation test (no GPU required).
-naga = { version = "29", features = ["wgsl-in"] }
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -106,7 +106,7 @@ impl EguiControlGui {
                             };
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕").clicked() {
+                            if ui.small_button("×").clicked() {
                                 let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                                 mod_eng.remove_source(uuid);
                                 if self.modulation_expanded_source.as_ref() == Some(uuid) {
@@ -582,7 +582,7 @@ impl EguiControlGui {
                         }
                     }
                 }
-                if ui.small_button("✕").clicked() {
+                if ui.small_button("×").clicked() {
                     let mut mod_eng = mod_arc.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(mods) = mod_eng.assignments.get_mut(param_id) {
                         mods.retain(|m| m.source_id != uuid);

@@ -34,7 +34,7 @@ jobs:
       # v4l/udev webcam path (nokhwa). mesa-vulkan-drivers gives wgpu a software
       # (lavapipe) adapter so rustjay-projection's GPU tests run on the headless runner.
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang ninja-build mesa-vulkan-drivers libvulkan1
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config clang ninja-build mesa-vulkan-drivers libvulkan1 libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -42,6 +42,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The Linux-only GLES2/EGL path (Raspberry Pi) is off by default, so the
+      # workspace run never compiles it; it once shipped a syntax error unnoticed.
+      - run: cargo clippy -p rustjay-engine --lib --features gles2 -- -D warnings
       - run: cargo test --workspace
       # The kittest UI suites hide behind off-by-default features, so the
       # workspace run above never executes them: rustjay-gui's tests need `egui`.

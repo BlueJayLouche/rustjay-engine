@@ -54,7 +54,7 @@ pub fn build_stream_f32(
         .collect();
 
     let stream = device.build_input_stream(
-        config,
+        *config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             if !running.load(Ordering::Acquire) {
                 return;
@@ -128,7 +128,7 @@ pub fn build_stream_i16(
         .collect();
 
     let stream = device.build_input_stream(
-        config,
+        *config,
         move |data: &[i16], _: &cpal::InputCallbackInfo| {
             if !running.load(Ordering::Acquire) {
                 return;
@@ -202,7 +202,7 @@ pub fn build_stream_u16(
         .collect();
 
     let stream = device.build_input_stream(
-        config,
+        *config,
         move |data: &[u16], _: &cpal::InputCallbackInfo| {
             if !running.load(Ordering::Acquire) {
                 return;

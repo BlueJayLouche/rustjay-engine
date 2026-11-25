@@ -15,9 +15,10 @@ impl EguiControlGui {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.ui_scale
         };
-        ui.label("UI Scale:");
+        let scale_label = ui.label("UI Scale:");
         if ui
             .add(egui::Slider::new(&mut ui_scale, 0.5..=2.0).trailing_fill(true))
+            .labelled_by(scale_label.id)
             .changed()
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -55,7 +56,7 @@ impl EguiControlGui {
             .collect();
 
         // Internal Resolution
-        ui.label("Internal Resolution (Processing):");
+        let int_res_label = ui.label("Internal Resolution (Processing):");
         let mut internal_preset_idx = self.internal_resolution_preset;
         let old_internal = internal_preset_idx;
         egui::ComboBox::from_id_salt("int_res")
@@ -70,7 +71,9 @@ impl EguiControlGui {
                         internal_preset_idx = i;
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(int_res_label.id);
         if internal_preset_idx != old_internal {
             self.internal_resolution_preset = internal_preset_idx;
             if let Some((width, height)) = preset_dimensions(internal_preset_idx) {
@@ -85,12 +88,14 @@ impl EguiControlGui {
             ui.add_enabled(
                 self.internal_resolution_preset == 0,
                 egui::DragValue::new(&mut w).speed(1).range(320..=8192),
-            );
+            )
+            .on_hover_text("Internal width");
             ui.label("×");
             ui.add_enabled(
                 self.internal_resolution_preset == 0,
                 egui::DragValue::new(&mut h).speed(1).range(240..=4320),
-            );
+            )
+            .on_hover_text("Internal height");
             ui.label("Custom");
             self.pending_internal_width = w.max(320) as u32;
             self.pending_internal_height = h.max(240) as u32;
@@ -98,7 +103,7 @@ impl EguiControlGui {
 
         // Output Resolution
         ui.add_space(8.0);
-        ui.label("Output Resolution (Display/NDI):");
+        let out_res_label = ui.label("Output Resolution (Display/NDI):");
         let mut output_preset_idx = self.output_resolution_preset;
         let old_output = output_preset_idx;
         egui::ComboBox::from_id_salt("out_res")
@@ -110,7 +115,9 @@ impl EguiControlGui {
                         output_preset_idx = i;
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(out_res_label.id);
         if output_preset_idx != old_output {
             self.output_resolution_preset = output_preset_idx;
             if let Some((width, height)) = preset_dimensions(output_preset_idx) {
@@ -125,12 +132,14 @@ impl EguiControlGui {
             ui.add_enabled(
                 self.output_resolution_preset == 0,
                 egui::DragValue::new(&mut ow).speed(1).range(320..=8192),
-            );
+            )
+            .on_hover_text("Output width");
             ui.label("×");
             ui.add_enabled(
                 self.output_resolution_preset == 0,
                 egui::DragValue::new(&mut oh).speed(1).range(240..=4320),
-            );
+            )
+            .on_hover_text("Output height");
             ui.label("Custom");
             self.pending_output_width = ow.max(320) as u32;
             self.pending_output_height = oh.max(240) as u32;
@@ -212,7 +221,7 @@ impl EguiControlGui {
         });
 
         ui.add_space(8.0);
-        ui.label("Target FPS:");
+        let fps_label = ui.label("Target FPS:");
         let fps_options = [24u32, 30, 48, 60, 90, 120];
         let fps_labels = [
             "24 fps",
@@ -239,7 +248,9 @@ impl EguiControlGui {
                         current_idx = i;
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(fps_label.id);
         if fps_options[current_idx] != target_fps_val {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.target_fps = fps_options[current_idx];
@@ -247,7 +258,7 @@ impl EguiControlGui {
         }
 
         ui.horizontal(|ui| {
-            ui.label("Present mode:");
+            let present_label = ui.label("Present mode:");
             let present_mode = {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.present_mode
@@ -266,7 +277,9 @@ impl EguiControlGui {
                             state.save_settings_requested = true;
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(present_label.id);
         });
         ui.label(
             egui::RichText::new(

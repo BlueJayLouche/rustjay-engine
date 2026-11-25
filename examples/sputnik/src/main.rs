@@ -382,10 +382,10 @@ impl EffectPlugin for SputnikEffect {
             bands_b[i] = engine.audio.fft[i + 4] * audio_reactivity;
         }
 
-        let projection = glam::Mat4::perspective_rh(60.0f32.to_radians(), aspect, 0.1, 100.0);
+        let projection = glam::camera::rh::proj::directx::perspective(60.0f32.to_radians(), aspect, 0.1, 100.0);
         let dist = camera_distance.max(0.1);
         let eye = glam::Vec3::new(0.0, camera_tilt.sin() * dist, camera_tilt.cos() * dist);
-        let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, glam::Vec3::Y);
+        let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
         let mvp = projection * view;
 
         let tex_width = engine.resolution.input_width.max(1) as f32;

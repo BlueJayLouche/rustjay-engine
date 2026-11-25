@@ -6,7 +6,7 @@ edition = "2024"
 description = "2-channel mixer example demonstrating rustjay-mixer"
 
 [dependencies]
-rustjay-engine = { workspace = true, features = ["mixer"] }
+rustjay-engine = { workspace = true }
 rustjay-mixer  = { workspace = true }
 rustjay-render = { workspace = true }
 rustjay-core   = { workspace = true }

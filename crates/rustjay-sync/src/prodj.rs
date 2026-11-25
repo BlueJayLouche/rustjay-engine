@@ -45,7 +45,7 @@ impl ProDjManager {
         let mut has_master = false;
 
         for device in &snap.devices {
-            let bpm = device.bpm.map(|b| b as f32).unwrap_or(0.0);
+            let bpm = device.bpm.unwrap_or(0.0);
             if device.is_master {
                 master_bpm = bpm;
                 has_master = true;
@@ -55,7 +55,7 @@ impl ProDjManager {
                 name: device.name.clone(),
                 is_playing: device.is_playing,
                 is_master: device.is_master,
-                bpm: device.bpm.map(|b| b as f32),
+                bpm: device.bpm,
             });
         }
 
@@ -80,11 +80,10 @@ impl ProDjManager {
             state.current_track_artist.clone_from(&track.artist);
             state.current_track_title.clone_from(&track.title);
             // Prefer track BPM if master BPM is missing
-            if state.master_bpm == 0.0 {
-                if let Some(bpm) = track.bpm {
-                    state.master_bpm = bpm as f32;
+            if state.master_bpm == 0.0
+                && let Some(bpm) = track.bpm {
+                    state.master_bpm = bpm;
                 }
-            }
         } else {
             state.current_track_artist.clear();
             state.current_track_title.clear();

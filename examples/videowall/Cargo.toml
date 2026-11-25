@@ -25,7 +25,7 @@ log                = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 env_logger         = "0.11"
-rfd                = "0.15"
+rfd                = "0.18"
 image              = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
