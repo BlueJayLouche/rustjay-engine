@@ -66,6 +66,7 @@ impl EguiRenderer {
 
         // Create egui context
         let context = egui::Context::default();
+        crate::egui_theme::install_fonts(&context);
 
         // Set up winit state
         let native_pixels_per_point = Some(scale_factor as f32);

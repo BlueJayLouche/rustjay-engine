@@ -211,11 +211,19 @@ mod internal {
         NSObject, OSType,
     };
 
-    use block::ConcreteBlock;
-    use cocoa_foundation::{
-        base::Nil,
-        foundation::{NSArray, NSDictionary, NSInteger, NSString, NSUInteger},
-    };
+    // rustjay patch: local stand-ins for the cocoa-foundation items this file used
+    // (cocoa-foundation and block 0.1 pull in block 0.1.6, which cargo flags as
+    // code a future Rust will reject). Same msg_sends cocoa-foundation made.
+    #[allow(non_upper_case_globals)]
+    const Nil: *mut Object = std::ptr::null_mut();
+    type NSInteger = std::os::raw::c_long;
+    type NSUInteger = std::os::raw::c_ulong;
+    unsafe fn ns_count(arr: *mut Object) -> NSUInteger {
+        unsafe { msg_send![arr, count] }
+    }
+    unsafe fn ns_at(arr: *mut Object, index: NSUInteger) -> *mut Object {
+        unsafe { msg_send![arr, objectAtIndex: index] }
+    }
     use core_media_sys::{
         kCMPixelFormat_24RGB, kCMPixelFormat_422YpCbCr8_yuvs,
         kCMPixelFormat_8IndexedGray_WhiteIsZero, kCMVideoCodecType_422YpCbCr8,
@@ -343,7 +351,8 @@ mod internal {
     }
 
     fn nsstr_to_str<'a>(nsstr: *mut Object) -> Cow<'a, str> {
-        let data = unsafe { CStr::from_ptr(nsstr.UTF8String()) };
+        let utf8: *const std::os::raw::c_char = unsafe { msg_send![nsstr, UTF8String] };
+        let data = unsafe { CStr::from_ptr(utf8) };
         data.to_string_lossy()
     }
 
@@ -359,11 +368,11 @@ mod internal {
     }
 
     fn ns_arr_to_vec<T: From<*mut Object>>(data: *mut Object) -> Vec<T> {
-        let length = unsafe { NSArray::count(data) };
+        let length = unsafe { ns_count(data) };
 
         let mut out_vec: Vec<T> = Vec::with_capacity(length as usize);
         for index in 0..length {
-            let item = unsafe { NSArray::objectAtIndex(data, index) };
+            let item = unsafe { ns_at(data, index) };
             out_vec.push(T::from(item));
         }
         out_vec
@@ -374,11 +383,11 @@ mod internal {
         TE: Error,
         T: TryFrom<*mut Object, Error = TE>,
     {
-        let length = unsafe { NSArray::count(data) };
+        let length = unsafe { ns_count(data) };
 
         let mut out_vec: Vec<T> = Vec::with_capacity(length as usize);
         for index in 0..length {
-            let item = unsafe { NSArray::objectAtIndex(data, index) };
+            let item = unsafe { ns_at(data, index) };
             out_vec.push(T::try_from(item)?);
         }
         Ok(out_vec)
@@ -553,8 +562,10 @@ mod internal {
             callback(bool == YES);
         };
 
-        let objc_fn_block: ConcreteBlock<(BOOL,), (), _> = ConcreteBlock::new(wrapper);
-        let objc_fn_pass = objc_fn_block.copy();
+        let objc_fn_block = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+            wrapper(granted.as_raw())
+        });
+        let objc_fn_pass = block2::RcBlock::as_ptr(&objc_fn_block).cast::<Object>();
 
         unsafe {
             let _: () = msg_send![cls, requestAccessForMediaType:(AVMediaTypeVideo.clone()) completionHandler:objc_fn_pass];
@@ -879,10 +890,10 @@ mod internal {
 
         pub fn devices(&self) -> Vec<CameraInfo> {
             let device_ns_array: *mut Object = unsafe { msg_send![self.inner, devices] };
-            let objects_len: NSUInteger = unsafe { NSArray::count(device_ns_array) };
+            let objects_len: NSUInteger = unsafe { ns_count(device_ns_array) };
             let mut devices = Vec::with_capacity(objects_len as usize);
             for index in 0..objects_len {
-                let device = unsafe { device_ns_array.objectAtIndex(index) };
+                let device = unsafe { ns_at(device_ns_array, index) };
                 devices.push(get_raw_device_info(
                     CameraIndex::Index(index as u32),
                     device,
@@ -2406,13 +2417,13 @@ mod internal {
             let obj = CFNumber::from(cmpixelfmt as i32);
             let obj = obj.as_CFTypeRef() as *mut Object;
             let key = unsafe { kCVPixelBufferPixelFormatTypeKey } as *mut Object;
-            let dict = unsafe { NSDictionary::dictionaryWithObject_forKey_(nil, obj, key) };
+            let dict: *mut Object =
+                unsafe { msg_send![class!(NSDictionary), dictionaryWithObject: obj forKey: key] };
             let _: () = unsafe { msg_send![self.inner, setVideoSettings:dict] };
             Ok(())
         }
     }
 
-    use cocoa_foundation::base::nil;
     use core_foundation::base::TCFType;
     use core_foundation::number::CFNumber;
     use core_video_sys::kCVPixelBufferPixelFormatTypeKey;

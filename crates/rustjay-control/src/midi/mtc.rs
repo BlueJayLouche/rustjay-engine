@@ -174,6 +174,8 @@ pub struct MtcReceiver {
 
 impl MtcReceiver {
     /// Create a receiver and immediately connect to all currently visible ports.
+    // No `Default`: construction opens MIDI ports, which `default()` shouldn't hide.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let mut r = Self {
             published: Arc::new(MtcPublished::new()),
@@ -211,7 +213,7 @@ impl MtcReceiver {
 
         for name in new_names {
             // Each connection needs its own MidiInput.
-            let Ok(mut input) = MidiInput::new(&format!("RustJay MTC [{}]", &name)) else {
+            let Ok(mut input) = MidiInput::new(&format!("RustJay MTC [{}]", name)) else {
                 continue;
             };
             input.ignore(Ignore::None);
@@ -247,12 +249,11 @@ impl MtcReceiver {
                                 log::debug!("[MTC] {} from {}", tc, device);
                                 // Update source device name — try_lock avoids any
                                 // block if the reader happens to hold it.
-                                if let Ok(mut src) = published.source_device.try_lock() {
-                                    if src.as_str() != device {
+                                if let Ok(mut src) = published.source_device.try_lock()
+                                    && src.as_str() != device {
                                         src.clear();
                                         src.push_str(&device);
                                     }
-                                }
                                 published
                                     .smpte
                                     .store(pack_smpte(&tc, true, true), Ordering::Release);
@@ -266,12 +267,11 @@ impl MtcReceiver {
                         0xF0 if msg.len() >= 10 && msg[3] == 0x01 && msg[4] == 0x01 => {
                             if let Some(tc) = MtcDecoder::parse_full_frame(msg) {
                                 log::info!("[MTC] Full-frame locate: {} from {}", tc, device);
-                                if let Ok(mut src) = published.source_device.try_lock() {
-                                    if src.as_str() != device {
+                                if let Ok(mut src) = published.source_device.try_lock()
+                                    && src.as_str() != device {
                                         src.clear();
                                         src.push_str(&device);
                                     }
-                                }
                                 // Full-frame is a locate — running but not playing.
                                 published
                                     .smpte

@@ -39,6 +39,7 @@ fn control_harness(size: [f32; 2], pixels_per_point: f32) -> Harness<'static> {
     let mut app_state = ();
 
     let mut harness = Harness::builder()
+        .with_context_setup(rustjay_gui::egui_theme::install_fonts)
         .with_size(size)
         .with_pixels_per_point(pixels_per_point)
         .with_theme(egui::Theme::Dark)
@@ -198,6 +199,7 @@ fn map_mode_popup_creates_and_assigns_a_source() {
 
     let drawn = shared.clone();
     let mut harness = Harness::builder()
+        .with_context_setup(rustjay_gui::egui_theme::install_fonts)
         .with_size([420.0, 320.0])
         .with_theme(egui::Theme::Dark)
         .build_ui(move |ui| {
@@ -270,6 +272,7 @@ fn map_mode_popup_stacks_sources_on_one_param() {
 
     let drawn = shared.clone();
     let mut harness = Harness::builder()
+        .with_context_setup(rustjay_gui::egui_theme::install_fonts)
         .with_size([420.0, 420.0])
         .with_theme(egui::Theme::Dark)
         .build_ui(move |ui| {
@@ -343,6 +346,7 @@ fn routing_window_add_route_creates_source_and_assignment() {
         EguiControlGui::new(shared.clone()).expect("default engine state is valid");
     let mut app_state = ();
     let mut harness = Harness::builder()
+        .with_context_setup(rustjay_gui::egui_theme::install_fonts)
         .with_size([1100.0, 1700.0])
         .with_theme(egui::Theme::Dark)
         .build_ui(move |ui| gui.build_ui(ui, &mut app_state));

@@ -17,7 +17,7 @@ thiserror  = { workspace = true }
 log        = { workspace = true }
 pollster   = { workspace = true }
 shaderc    = { version = "0.10", features = ["build-from-source"] }
-naga       = { version = "29", features = ["spv-in", "wgsl-out", "wgsl-in"] }
+naga       = { version = "30", features = ["spv-in", "wgsl-out", "wgsl-in"] }
 
 [dev-dependencies]
 pollster = { workspace = true }

@@ -25,7 +25,7 @@ rustjay-isf  = { workspace = true }
 # features add an audio-out backend (cpal) and ASIO, which needs the Steinberg
 # SDK on Windows. `idn` is the one that matters most for reach — it is the open
 # standard, so open DACs like ILDAWaveX16 need no driver of their own.
-laser-dac    = { version = "0.13", optional = true, default-features = false, features = [
+laser-dac    = { version = "0.14", optional = true, default-features = false, features = [
     "helios",
     "ether-dream",
     "idn",

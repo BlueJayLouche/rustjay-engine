@@ -21,3 +21,10 @@ CMAKE_GENERATOR = "Ninja"
 # fix is off. It applies in every profile too, so a debuggable C++ dependency
 # on Windows means building with CL cleared.
 CL = "/O2"
+
+# The vendored wgpu-hal / imgui-wgpu declare rust-version 1.87 (their upstream
+# MSRV), and resolver 3 then holds every dependency back to versions that
+# build on 1.87 — silently, including security fixes (time 0.3.47). This
+# workspace builds and tests on current stable, so resolve against that.
+[resolver]
+incompatible-rust-versions = "allow"

@@ -734,7 +734,7 @@ impl EguiControlGui {
             ui.ctx().request_repaint_after(remaining);
         }
 
-        egui::Area::new(egui::Id::new("toast_overlay"))
+        egui::Area::new(egui::Id::unique("toast_overlay"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 72.0))
             .order(egui::Order::Foreground)
             .show(ui, |ui| {
@@ -1420,7 +1420,7 @@ impl EguiControlGui {
                                         crate::egui_theme::colors::accent_green(),
                                         format!("{:.2}", row.current),
                                     );
-                                    if ui.button("✕").clicked() {
+                                    if ui.button("×").clicked() {
                                         let state = self
                                             .shared_state
                                             .lock()
@@ -1963,7 +1963,7 @@ pub fn apply_param_map_overlay(
                     }
                 }
                 if bound.len() > 1
-                    && ui.button(egui::RichText::new("✕ Clear all").small()).clicked()
+                    && ui.button(egui::RichText::new("× Clear all").small()).clicked()
                 {
                     let mut mod_eng =
                         engine.modulation.lock().unwrap_or_else(|e| e.into_inner());

@@ -1,7 +1,10 @@
 # Local patches: `nokhwa-bindings-macos` 0.2.4
 
-**One file differs from the published crate: `src/lib.rs`.** Everything else is
-pristine.
+**Two files differ from the published crate: `src/lib.rs`, and `Cargo.toml`, which
+turns off `core-video-sys`'s default features.** Everything else is pristine.
+nokhwa only uses `core-video-sys`'s pixel-format constants, and its default
+`metal` feature pulled in metal 0.18 → cocoa 0.20 → block 0.1.6, which cargo
+flags as code a future Rust will reject.
 
 All of the changes are in `AVCaptureDevice::set_all()`, and all of them exist
 because USB capture devices (and Continuity cameras — anything reporting as

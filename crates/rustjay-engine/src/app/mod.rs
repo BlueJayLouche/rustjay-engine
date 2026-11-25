@@ -171,7 +171,7 @@ pub(crate) fn run_gles2_app<P: EffectPlugin>(
     shared_state: Arc<std::sync::Mutex<EngineState>>,
     plugin: P,
     gles2: Box<dyn crate::gles2::Gles2EffectDyn>,
-    drm_mode: bool,
+    #[cfg_attr(not(feature = "drm-gles2"), allow(unused_variables))] drm_mode: bool,
 ) -> Result<()> {
     let event_loop = EventLoop::<WindowAction>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);

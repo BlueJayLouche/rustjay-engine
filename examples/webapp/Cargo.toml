@@ -8,7 +8,8 @@ description = "Delta effect in browser — WASM + WebGPU + React"
 [lib]
 crate-type = ["cdylib"]
 
-[dependencies]
+# The whole crate is `#![cfg(target_arch = "wasm32")]`; natively it builds empty.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30.0", default-features = false, features = ["webgpu", "wgsl"] }
 wasm-bindgen = "0.2.99"
 wasm-bindgen-futures = "0.4.49"

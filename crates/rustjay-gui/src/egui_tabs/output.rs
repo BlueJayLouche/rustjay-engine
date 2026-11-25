@@ -42,7 +42,8 @@ impl EguiControlGui {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.ndi_output.is_active
             };
-            ui.text_edit_singleline(&mut self.ndi_output_name);
+            ui.text_edit_singleline(&mut self.ndi_output_name)
+                .on_hover_text("NDI sender name");
             if !ndi_active {
                 if ui.button("▶ Start NDI Output").clicked() {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -73,7 +74,8 @@ impl EguiControlGui {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.syphon_output.enabled
             };
-            ui.text_edit_singleline(&mut self.syphon_output_name);
+            ui.text_edit_singleline(&mut self.syphon_output_name)
+                .on_hover_text("Syphon server name");
             if !syphon_enabled {
                 if ui.button("▶ Start Syphon Output").clicked() {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -104,7 +106,8 @@ impl EguiControlGui {
                 let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.spout_output.enabled
             };
-            ui.text_edit_singleline(&mut self.spout_output_name);
+            ui.text_edit_singleline(&mut self.spout_output_name)
+                .on_hover_text("Spout sender name");
             if !spout_active {
                 if ui.button("▶ Start Spout Output").clicked() {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -175,7 +178,8 @@ impl EguiControlGui {
                     egui::RichText::new("No v4l2loopback devices found — see README for setup")
                         .color(text_secondary()),
                 );
-                ui.text_edit_singleline(&mut self.v4l2_device_path);
+                ui.text_edit_singleline(&mut self.v4l2_device_path)
+                .on_hover_text("V4L2 loopback device path");
             }
 
             if !v4l2_active {

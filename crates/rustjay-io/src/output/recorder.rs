@@ -489,7 +489,7 @@ impl AudioCapture {
         let capture = std::thread::spawn(move || {
             use cpal::traits::StreamTrait;
             let err = |e| log::error!("[Recorder] audio stream error: {e}");
-            let cfg = &config.clone().into();
+            let cfg: cpal::StreamConfig = config.into();
             let stream = match format {
                 cpal::SampleFormat::F32 => {
                     let tx = tx.clone();

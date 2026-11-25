@@ -8,7 +8,7 @@ description = "VP-404 — SP-404-style video sampler (port of rustjay-404)."
 [features]
 default = ["egui", "mixer"]
 egui    = ["rustjay-engine/egui"]
-mixer   = ["rustjay-engine/mixer", "dep:rustjay-mixer"]
+mixer   = ["dep:rustjay-mixer"]
 # Live sampling pulls in rustjay-io capture (webcam / platform Syphon/Spout).
 # Keep it off the default build so headless/Pi builds stay lean.
 capture = ["rustjay-io/webcam"]
@@ -29,14 +29,16 @@ rustjay-core   = { workspace = true }
 rustjay-io     = { workspace = true, default-features = false, features = ["hap-encode"] }
 wgpu           = { workspace = true }
 egui           = { workspace = true }
-hap-wgpu       = "0.3.0"
+# ponytail: pinned. 0.3.1's prefetch thread measured worse on a live set (CPU
+# 89.7% -> 107.4%); revisit when hap-rs reworks its prefetch policy.
+hap-wgpu       = "=0.3.0"
 anyhow         = { workspace = true }
 log            = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 bytemuck       = { version = "1.14", features = ["derive"] }
 env_logger     = "0.11"
-rfd            = "0.15"
+rfd            = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Not used in code: a direct dependency is what makes syphon-core's
