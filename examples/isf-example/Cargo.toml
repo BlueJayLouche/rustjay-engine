@@ -1,6 +1,7 @@
 [package]
 name = "isf-example"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "ISF (Interactive Shader Format) viewer — loads any .fs file via file picker"
 

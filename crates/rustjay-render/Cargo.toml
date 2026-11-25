@@ -16,7 +16,6 @@ anyhow       = { workspace = true }
 wgpu         = { workspace = true }
 winit        = { workspace = true }
 bytemuck     = { workspace = true }
-image        = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 syphon-core = { workspace = true }

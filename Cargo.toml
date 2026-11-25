@@ -57,7 +57,8 @@ khronos-egl = { version = "6", features = ["dynamic"] }
 
 # GUI
 imgui               = "0.12"
-imgui-wgpu          = "0.28"
+# ponytail: upstream master has wgpu 30 but no release yet; back to plain "0.29" once it ships.
+imgui-wgpu          = { package = "rustjay-imgui-wgpu", path = "vendor/imgui-wgpu", version = "0.28.0" }
 imgui-winit-support = "0.13"
 egui                = "0.36"
 egui-wgpu           = "0.36"
@@ -106,7 +107,6 @@ syphon-wgpu     = "0.4.3"
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
 nokhwa-bindings-macos = { path = "vendor/nokhwa-bindings-macos" }
-imgui-wgpu = { path = "vendor/imgui-wgpu" }
 
 [profile.release]
 opt-level     = 3

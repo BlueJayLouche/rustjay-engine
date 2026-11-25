@@ -1,6 +1,7 @@
 [package]
 name = "template"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "HSB color template — reference example for rustjay-engine"
 

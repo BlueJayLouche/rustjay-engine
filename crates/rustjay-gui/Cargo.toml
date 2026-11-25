@@ -25,7 +25,7 @@ egui-wgpu           = { workspace = true, optional = true }
 egui-winit          = { workspace = true, optional = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
-qrcode          = { workspace = true }
+qrcode          = { workspace = true, optional = true }
 
 [features]
 default = ["imgui-renderer"]
@@ -35,7 +35,7 @@ default = ["imgui-renderer"]
 # dependency, so imgui tabs build regardless of this flag.
 imgui-renderer = ["dep:imgui-wgpu"]
 ndi     = ["rustjay-core/ndi"]
-egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
+egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:qrcode"]
 
 link   = ["rustjay-core/link"]
 prodj  = ["rustjay-core/prodj"]

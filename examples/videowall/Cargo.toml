@@ -1,6 +1,7 @@
 [package]
 name = "videowall"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "Video-wall / HDMI-matrix mapper — N projector outputs, each a grid of source→cell mappings with AprilTag auto-calibration"
 
