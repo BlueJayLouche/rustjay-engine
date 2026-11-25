@@ -31,6 +31,10 @@ pub trait Gles2Effect: Send + 'static {
     }
 }
 
+// ponytail: on_resize / handle_input_command / get_input_state are part of the
+// public Gles2Effect hooks but the GLES2 run loop never calls them yet, so effects
+// miss resizes and web input commands. Wire them into app/events.rs when needed.
+#[allow(dead_code)]
 pub(crate) trait Gles2EffectDyn: Send + 'static {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()>;
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool>;
@@ -76,9 +80,9 @@ fn egl_init_and_config(
         .map_err(|e| anyhow::anyhow!("eglBindAPI: {e}"))?;
     let attribs = [
         egl_crate::SURFACE_TYPE,
-        egl_crate::WINDOW_BIT as i32,
+        egl_crate::WINDOW_BIT,
         egl_crate::RENDERABLE_TYPE,
-        egl_crate::OPENGL_ES2_BIT as i32,
+        egl_crate::OPENGL_ES2_BIT,
         egl_crate::RED_SIZE,
         8,
         egl_crate::GREEN_SIZE,

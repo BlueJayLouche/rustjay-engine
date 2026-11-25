@@ -309,19 +309,19 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                     size.width,
                     size.height,
                 ) {
-                    Ok(mut gles2_state) => {
+                    Ok(gles2_state) => {
                         let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(effect) = self.gles2_effect.as_mut() {
-                            if let Err(e) = effect.init_gl(
+                        if let Some(effect) = self.gles2_effect.as_mut()
+                            && let Err(e) = effect.init_gl(
                                 &gles2_state.gl,
                                 gles2_state.width,
                                 gles2_state.height,
                                 &state,
-                            ) {
-                                log::error!("GLES 2.0 effect init failed: {e}");
-                                event_loop.exit();
-                                return;
-                            }
+                            )
+                        {
+                            log::error!("GLES 2.0 effect init failed: {e}");
+                            event_loop.exit();
+                            return;
                         }
                         drop(state);
                         self.gles2_state = Some(gles2_state);
@@ -924,15 +924,11 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
         }
 
         #[cfg(feature = "gles2")]
-        let gles2_rendered = if self.gles2_effect.is_some() && self.gles2_state.is_some() {
-            let gl = self.gles2_state.as_ref().unwrap().gl.clone();
+        let gles2_rendered = if let (Some(effect), Some(gles2_state)) =
+            (self.gles2_effect.as_mut(), self.gles2_state.as_mut())
+        {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let keep_running = match self
-                .gles2_effect
-                .as_mut()
-                .unwrap()
-                .render_frame(&gl, &state)
-            {
+            let keep_running = match effect.render_frame(&gles2_state.gl, &state) {
                 Ok(v) => v,
                 Err(e) => {
                     log::error!("GLES 2.0 render error: {e}");
@@ -941,7 +937,7 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
             };
             drop(state);
             if keep_running {
-                if let Err(e) = self.gles2_state.as_mut().unwrap().present() {
+                if let Err(e) = gles2_state.present() {
                     log::error!("GLES 2.0 present error: {e}");
                 }
             } else {
