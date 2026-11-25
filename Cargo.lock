@@ -2698,12 +2698,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range-header"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2885,6 +2879,16 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "if-addrs"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
@@ -3025,16 +3029,6 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
-
-[[package]]
-name = "isf"
-version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/isf.git#2b9f8cd691b8e473cf10fb2c6b74be76602e914d"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
 
 [[package]]
 name = "isf-example"
@@ -3304,7 +3298,7 @@ checksum = "ce2797d1a7ff34b0caca1a3259eed199527c037f5d7af63382782910909da6d3"
 dependencies = [
  "bitflags 2.13.1",
  "byteorder",
- "if-addrs",
+ "if-addrs 0.15.0",
  "log",
  "rusb",
  "socket2 0.5.10",
@@ -4819,17 +4813,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prodjlink-rs"
-version = "0.1.0"
-source = "git+https://github.com/BlueJayLouche/prodjlink-rs?rev=e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f#e086a448560cf913bb1f2fdfe1bcc7dbd8af1a9f"
-dependencies = [
- "libc",
- "log",
- "parking_lot",
- "socket2 0.5.10",
-]
-
-[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5314,7 +5297,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
- "tower-http",
  "utoipa",
  "utoipa-swagger-ui",
 ]
@@ -5325,7 +5307,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cpal",
- "crossbeam",
  "log",
  "realfft",
  "rustfft",
@@ -5348,14 +5329,12 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
- "tower-http",
 ]
 
 [[package]]
 name = "rustjay-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bytemuck",
  "log",
  "serde",
@@ -5372,7 +5351,6 @@ dependencies = [
  "bytemuck",
  "dirs",
  "drm",
- "env_logger",
  "gbm",
  "glow",
  "image",
@@ -5417,13 +5395,10 @@ dependencies = [
  "imgui-wgpu",
  "imgui-winit-support",
  "log",
- "pollster 0.4.0",
  "qrcode",
  "rustjay-audio",
- "rustjay-control",
  "rustjay-core",
  "rustjay-io",
- "rustjay-presets",
  "serde",
  "serde_json",
  "syphon-core",
@@ -5461,7 +5436,6 @@ dependencies = [
  "serde_json",
  "syphon-core",
  "syphon-wgpu",
- "tokio",
  "v4l",
  "wgpu",
  "wgpu-hal",
@@ -5475,7 +5449,6 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "image",
- "isf",
  "log",
  "naga 29.0.3",
  "pollster 0.4.0",
@@ -5483,6 +5456,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shaderc",
+ "thiserror 2.0.18",
  "wgpu",
 ]
 
@@ -5552,6 +5526,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustjay-prodjlink"
+version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/prodjlink-rs?rev=b48000ff8c7a0dd09c65c91c584da5063701a19c#b48000ff8c7a0dd09c65c91c584da5063701a19c"
+dependencies = [
+ "if-addrs 0.13.4",
+ "libc",
+ "log",
+ "parking_lot",
+ "socket2 0.5.10",
+]
+
+[[package]]
 name = "rustjay-projection"
 version = "0.1.0"
 dependencies = [
@@ -5597,8 +5583,8 @@ name = "rustjay-sync"
 version = "0.1.0"
 dependencies = [
  "log",
- "prodjlink-rs",
  "rustjay-core",
+ "rustjay-prodjlink",
  "rusty_link",
 ]
 
@@ -6407,19 +6393,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-util"
-version = "0.7.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "toml"
 version = "1.1.4+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6476,31 +6449,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
-dependencies = [
- "bitflags 2.13.1",
- "bytes",
- "futures-core",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project-lite",
- "tokio",
- "tokio-util",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]

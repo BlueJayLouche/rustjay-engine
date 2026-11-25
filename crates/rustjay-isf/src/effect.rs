@@ -6,6 +6,7 @@
 //! binding 2 = img_sampler (when textures exist), bindings 3+ = texture2D per
 //! image/audio input, then PASSES targets and IMPORTED names.
 
+use crate::isf;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

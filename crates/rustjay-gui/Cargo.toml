@@ -12,8 +12,6 @@ categories = ["graphics", "gui"]
 rustjay-core    = { workspace = true }
 rustjay-audio   = { workspace = true }
 rustjay-io      = { workspace = true, default-features = false }
-rustjay-control = { workspace = true }
-rustjay-presets = { workspace = true }
 log             = { workspace = true }
 anyhow          = { workspace = true }
 wgpu            = { workspace = true }
@@ -27,7 +25,6 @@ egui-wgpu           = { workspace = true, optional = true }
 egui-winit          = { workspace = true, optional = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
-pollster        = { workspace = true }
 qrcode          = { workspace = true }
 
 [features]
@@ -42,7 +39,7 @@ egui    = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 link   = ["rustjay-core/link"]
 prodj  = ["rustjay-core/prodj"]
-mtc    = ["rustjay-control/mtc"]
+mtc    = []
 
 [dev-dependencies]
 egui_kittest = { version = "=0.36.1", features = ["snapshot", "wgpu"] }

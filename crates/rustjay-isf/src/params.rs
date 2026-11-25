@@ -1,5 +1,6 @@
 //! Bridge ISF input declarations to rustjay-core parameter descriptors.
 
+use crate::isf;
 use std::collections::HashMap;
 
 use isf::InputType;

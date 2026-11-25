@@ -18,7 +18,6 @@ serde           = { workspace = true }
 serde_json      = { workspace = true }
 log             = { workspace = true }
 anyhow          = { workspace = true }
-tower-http      = { workspace = true }
 
 utoipa          = { version = "5.5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
