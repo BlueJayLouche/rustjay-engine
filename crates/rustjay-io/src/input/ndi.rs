@@ -8,7 +8,8 @@
 
 use crossbeam::channel::{self, Receiver as CrossbeamReceiver, Sender};
 use grafton_ndi::{
-    Finder, FinderOptions, Receiver, ReceiverBandwidth, ReceiverColorFormat, ReceiverOptions, NDI,
+    Finder, FinderOptions, Ndi, PixelFormat, Receiver, ReceiverBandwidth, ReceiverColorFormat,
+    ReceiverOptions,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -199,7 +200,7 @@ impl NdiReceiver {
             return Err(anyhow::anyhow!("NDI receiver already started"));
         }
 
-        let ndi = NDI::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {:?}", e))?;
+        let ndi = Ndi::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {e}"))?;
 
         let source_name = self.source_name.clone();
         let frame_tx = self.frame_tx.clone();
@@ -213,9 +214,7 @@ impl NdiReceiver {
 
         let thread_handle = thread::spawn(move || {
             // Find the source
-            let options = FinderOptions::builder().show_local_sources(true).build();
-
-            let finder = match Finder::new(&ndi, &options) {
+            let finder = match Finder::new(&ndi, &FinderOptions::new().show_local_sources(true)) {
                 Ok(f) => f,
                 Err(e) => {
                     log::error!("[NDI] Failed to create finder: {:?}", e);
@@ -223,11 +222,7 @@ impl NdiReceiver {
                 }
             };
 
-            // Wait for the specific source.
-            // Strategy: call wait_for_sources() (which blocks until the source
-            // list *changes*), then snapshot with current_sources(). This avoids
-            // the race in sources(timeout) where the change event is consumed by
-            // wait_for_sources but the subsequent get returns stale data.
+            // Short waits, so a stop() during the search is noticed.
             let mut found_source = None;
             let search_start = Instant::now();
             const SEARCH_TIMEOUT_SECS: u64 = 30;
@@ -242,33 +237,14 @@ impl NdiReceiver {
             while running.load(Ordering::SeqCst)
                 && search_start.elapsed().as_secs() < SEARCH_TIMEOUT_SECS
             {
-                // Block up to 500 ms for any change in the source list.
-                let _ = finder.wait_for_sources(Duration::from_millis(500));
-
-                match finder.current_sources() {
-                    Ok(sources) => {
-                        if !sources.is_empty() {
-                            log::debug!(
-                                "[NDI] Visible sources: {}",
-                                sources.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
-                            );
-                        }
-                        for source in sources {
-                            if source.name == source_name {
-                                found_source = Some(source);
-                                break;
-                            }
-                        }
+                match finder.find_source_by_name(&source_name, Duration::from_millis(500)) {
+                    Ok(Some(source)) => {
+                        found_source = Some(source);
+                        break;
                     }
-                    Err(e) => {
-                        log::debug!("[NDI] Error listing sources: {:?}", e);
-                    }
+                    Ok(None) => {}
+                    Err(e) => log::debug!("[NDI] Error listing sources: {e}"),
                 }
-
-                if found_source.is_some() {
-                    break;
-                }
-
             }
 
             let source = match found_source {
@@ -289,14 +265,15 @@ impl NdiReceiver {
             // contention — 25x more time yielding than converting. The unpack is
             // a shader's job.
             let proxy = low_bandwidth();
-            let options = ReceiverOptions::builder(source)
-                .color(ReceiverColorFormat::UYVY_BGRA)
+            let options = ReceiverOptions::new(source)
+                .color_format(ReceiverColorFormat::UyvyBgra)
                 .bandwidth(if proxy {
                     ReceiverBandwidth::Lowest
                 } else {
                     ReceiverBandwidth::Highest
                 })
-                .build();
+                // Interlaced sources arrive as whole frames, as before 3.0.
+                .allow_video_fields(false);
 
             let receiver = match Receiver::new(&ndi, &options) {
                 Ok(r) => r,
@@ -322,11 +299,16 @@ impl NdiReceiver {
                 match receiver.capture_video_ref(Duration::from_millis(100)) {
                     Ok(Some(video_frame)) => {
                         consecutive_errors = 0;
-                        let width = video_frame.width() as u32;
-                        let height = video_frame.height() as u32;
-                        let frame_data = video_frame.data();
+                        let width = video_frame.width();
+                        let height = video_frame.height();
+                        // Both formats we ask for are one plane. Its rows
+                        // exclude the sender's padding (e.g. IOSurface stride
+                        // alignment on macOS), so they upload as they are.
+                        let Some(plane) = video_frame.plane(0) else {
+                            continue;
+                        };
                         let layout = match video_frame.pixel_format() {
-                            grafton_ndi::PixelFormat::UYVY => NdiPixelLayout::Uyvy,
+                            PixelFormat::Uyvy => NdiPixelLayout::Uyvy,
                             _ => NdiPixelLayout::Bgra,
                         };
 
@@ -353,15 +335,15 @@ impl NdiReceiver {
                             })
                             .and_then(|buffer| {
                                 match buffer.get_mapped_range_mut(..) {
+                                    // Rows land `bytes_per_row` apart, the copy
+                                    // alignment wgpu requires. Writes only: the
+                                    // memory is typically write-combined, where
+                                    // reading is glacial.
                                     Ok(mut view) => {
-                                        strip_stride_into_mapped(
-                                            &mut view,
-                                            frame_data,
-                                            width,
-                                            height,
-                                            layout,
-                                            bytes_per_row,
-                                        );
+                                        for (y, row) in plane.rows().enumerate() {
+                                            let dst = y * bytes_per_row as usize;
+                                            view.slice(dst..dst + row.len()).copy_from_slice(row);
+                                        }
                                     }
                                     Err(e) => {
                                         log::warn!("[NDI] staging buffer not mapped: {e}");
@@ -375,12 +357,13 @@ impl NdiReceiver {
                                 })
                             });
 
-                        // Otherwise strip NDI's row padding into a recycled
-                        // Vec, for the consumer to upload itself.
+                        // Otherwise copy the rows into a recycled Vec, for the
+                        // consumer to upload itself.
                         let mut data = Vec::new();
                         if staged.is_none() {
                             data = spare_rx.try_recv().unwrap_or_default();
-                            strip_stride(&mut data, frame_data, width, height, layout);
+                            data.clear();
+                            plane.rows().for_each(|row| data.extend_from_slice(row));
                             fallbacks += 1;
                             if on_gpu_path || fallbacks == 120 {
                                 on_gpu_path = false;
@@ -577,108 +560,22 @@ impl Drop for NdiReceiver {
 
 /// Strip NDI row stride/padding from raw frame data.
 ///
-/// NDI frames may have row-aligned padding (e.g. IOSurface stride alignment on macOS).
-/// This produces tightly-packed rows ready to upload. BGRA needs no channel
-/// swap — it already matches `Bgra8Unorm` — and UYVY is uploaded as-is for the
-/// shader to unpack.
-///
-/// Fills `out` in place, reusing its allocation (see [`NdiReceiver::recycle`]).
-fn strip_stride(out: &mut Vec<u8>, data: &[u8], width: u32, height: u32, layout: NdiPixelLayout) {
-    let row_bytes = layout.row_bytes(width);
-    let rows = height as usize;
-    let actual_stride = if rows > 0 { data.len() / rows } else { row_bytes };
-    out.clear();
-
-    // Unpadded — most senders: one copy.
-    if actual_stride == row_bytes {
-        out.extend_from_slice(&data[..row_bytes * rows]);
-        return;
-    }
-
-    out.reserve(row_bytes * rows);
-    for y in 0..rows {
-        let src = y * actual_stride;
-        match data.get(src..src + row_bytes) {
-            Some(row) => out.extend_from_slice(row),
-            // A short frame keeps its size; the missing rows are black.
-            None => out.resize(out.len() + row_bytes, 0),
-        }
-    }
-}
-
-/// [`strip_stride`], writing into mapped GPU memory instead of a `Vec`.
-///
-/// Rows land `bytes_per_row` apart, the copy alignment wgpu requires, which is
-/// usually wider than the frame's own rows. Writes only, never reads: the
-/// memory is typically write-combined, where reading is glacial.
-fn strip_stride_into_mapped(
-    out: &mut wgpu::BufferViewMut,
-    data: &[u8],
-    width: u32,
-    height: u32,
-    layout: NdiPixelLayout,
-    bytes_per_row: u32,
-) {
-    let row_bytes = layout.row_bytes(width);
-    let rows = height as usize;
-    let stride = if rows > 0 { data.len() / rows } else { row_bytes };
-    for y in 0..rows {
-        let Some(row) = data.get(y * stride..y * stride + row_bytes) else {
-            // A short frame leaves the rest of the buffer as it was.
-            break;
-        };
-        let dst = y * bytes_per_row as usize;
-        out.slice(dst..dst + row_bytes).copy_from_slice(row);
-    }
-}
-
-#[cfg(test)]
-mod strip_stride_tests {
-    use super::{strip_stride, NdiPixelLayout};
-
-    fn stripped(data: &[u8], w: u32, h: u32, layout: NdiPixelLayout, reuse: &mut Vec<u8>) -> Vec<u8> {
-        strip_stride(reuse, data, w, h, layout);
-        reuse.clone()
-    }
-
-    #[test]
-    fn strips_padding_and_passes_tight_frames_through() {
-        // One buffer across all three, as the receive thread reuses it; a
-        // leftover byte from an earlier, bigger frame must not survive.
-        let mut buf = vec![0xAA; 64];
-
-        // 2×2 BGRA: 8-byte rows padded to 12.
-        let padded: Vec<u8> = (0..24).collect();
-        let expected: Vec<u8> = (0..8).chain(12..20).collect();
-        assert_eq!(stripped(&padded, 2, 2, NdiPixelLayout::Bgra, &mut buf), expected);
-
-        let tight: Vec<u8> = (0..16).collect();
-        assert_eq!(stripped(&tight, 2, 2, NdiPixelLayout::Bgra, &mut buf), tight);
-
-        // UYVY rows are width * 2.
-        let uyvy: Vec<u8> = (0..8).collect();
-        assert_eq!(stripped(&uyvy, 2, 2, NdiPixelLayout::Uyvy, &mut buf), uyvy);
-    }
-}
-
 /// Global NDI availability check
 pub fn is_ndi_available() -> bool {
-    NDI::new().is_ok()
+    Ndi::new().is_ok()
 }
 
 /// Quick function to list available NDI sources
 pub fn list_ndi_sources(timeout_ms: u32) -> Vec<String> {
-    let ndi = match NDI::new() {
+    let ndi = match Ndi::new() {
         Ok(ndi) => ndi,
         Err(e) => {
-            log::error!("Failed to initialize NDI: {:?}", e);
+            log::error!("Failed to initialize NDI: {e}");
             return Vec::new();
         }
     };
 
-    let options = FinderOptions::builder().show_local_sources(true).build();
-
-    let finder = match Finder::new(&ndi, &options) {
+    let finder = match Finder::new(&ndi, &FinderOptions::new().show_local_sources(true)) {
         Ok(f) => f,
         Err(e) => {
             log::error!("Failed to create NDI finder: {:?}", e);
@@ -686,28 +583,13 @@ pub fn list_ndi_sources(timeout_ms: u32) -> Vec<String> {
         }
     };
 
-    // Poll using wait_for_sources() + current_sources() in a loop.
-    // A single sources(timeout_ms) call only returns after one change event;
-    // if sources are already known or no new sources arrive, it may time out
-    // without returning everything the SDK has discovered. The loop below
-    // keeps draining change events until the deadline, then returns a final
-    // snapshot so we don't miss sources announced just before the deadline.
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let wait = remaining.min(Duration::from_millis(500));
-        let _ = finder.wait_for_sources(wait);
-    }
-
-    match finder.current_sources() {
+    // Everything seen during the whole window, not just the last snapshot.
+    match finder.find_sources(Duration::from_millis(u64::from(timeout_ms))) {
         Ok(sources) => {
             for s in &sources {
-                log::info!("[NDI] Discovered source: \"{}\"", s.name);
+                log::info!("[NDI] Discovered source: \"{}\"", s.name());
             }
-            sources.into_iter().map(|s| s.name).collect()
+            sources.into_iter().map(|s| s.name().to_owned()).collect()
         }
         Err(e) => {
             log::error!("Failed to get NDI sources: {:?}", e);

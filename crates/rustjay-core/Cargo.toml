@@ -17,7 +17,7 @@ bytemuck   = { workspace = true }
 uuid       = { workspace = true }
 
 [features]
-# NDI output command variants; requires the proprietary NDI SDK.
+# NDI output command variants.
 default = []
 ndi     = []
 link    = []

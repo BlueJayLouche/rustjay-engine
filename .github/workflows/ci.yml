@@ -29,8 +29,7 @@ jobs:
       CFLAGS: -std=gnu17
     steps:
       - uses: actions/checkout@v6
-      # NDI is intentionally opt-in (it needs a proprietary SDK), so CI builds the
-      # default feature set (webcam, no ndi). These deps cover alsa (cpal) and the
+      # These deps cover alsa (cpal) and the
       # v4l/udev webcam path (nokhwa). mesa-vulkan-drivers gives wgpu a software
       # (lavapipe) adapter so rustjay-projection's GPU tests run on the headless runner.
       - name: Install system dependencies
@@ -45,6 +44,9 @@ jobs:
       # The Linux-only GLES2/EGL path (Raspberry Pi) is off by default, so the
       # workspace run never compiles it; it once shipped a syntax error unnoticed.
       - run: cargo clippy -p rustjay-engine --lib --features gles2 -- -D warnings
+      # NDI is opt-in too. grafton-ndi 3 loads the runtime at run time, so it
+      # builds without the SDK (its tests skip when no runtime is installed).
+      - run: cargo clippy -p rustjay-engine --all-targets --features ndi -- -D warnings
       - run: cargo test --workspace
       # The kittest UI suites hide behind off-by-default features, so the
       # workspace run above never executes them: rustjay-gui's tests need `egui`.

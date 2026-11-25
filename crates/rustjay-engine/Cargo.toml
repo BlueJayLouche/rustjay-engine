@@ -49,7 +49,7 @@ drm          = { version = "0.15", optional = true }
 libc         = { version = "0.2", optional = true }
 
 [features]
-# NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
+# NDI loads the proprietary NDI 6 runtime at run time, so it is opt-in (`--features ndi`).
 # Webcam stays on by default. The Pi/GLES2 builds select features explicitly.
 default = ["webcam", "imgui-renderer"]
 ndi     = ["rustjay-io/ndi", "rustjay-gui/ndi", "rustjay-core/ndi"]

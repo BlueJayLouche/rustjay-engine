@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use crossbeam::channel::{self, Receiver, Sender as ChannelSender};
-use grafton_ndi::{PixelFormat, Sender, SenderOptions, VideoFrame, VideoFrameBuilder, NDI};
+use grafton_ndi::{BorrowedVideoFrame, Ndi, PixelFormat, Sender, SenderOptions};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -60,7 +60,7 @@ impl NdiOutputSender {
             return Err(anyhow::anyhow!("Invalid dimensions: {}x{}", width, height));
         }
 
-        let ndi = NDI::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {:?}", e))?;
+        let ndi = Ndi::new().map_err(|e| anyhow::anyhow!("Failed to initialize NDI: {e}"))?;
 
         let (frame_tx, frame_rx) = channel::bounded(2);
         let (return_tx, return_rx) = channel::bounded(2);
@@ -102,7 +102,7 @@ impl NdiOutputSender {
 
     /// Send thread that owns the NDI sender and processes frames
     fn send_thread(
-        ndi: NDI,
+        ndi: Ndi,
         name: String,
         include_alpha: bool,
         frame_rx: Receiver<FrameData>,
@@ -110,10 +110,7 @@ impl NdiOutputSender {
         has_connections: Arc<AtomicBool>,
         running: Arc<AtomicBool>,
     ) {
-        let options = SenderOptions::builder(&name)
-            .clock_video(true)
-            .clock_audio(false)
-            .build();
+        let options = SenderOptions::new(&name).clock_video(true).clock_audio(false);
 
         let sender = match Sender::new(&ndi, &options) {
             Ok(s) => s,
@@ -125,14 +122,11 @@ impl NdiOutputSender {
         };
 
         let pixel_format = if include_alpha {
-            PixelFormat::BGRA
+            PixelFormat::Bgra
         } else {
-            PixelFormat::BGRX
+            PixelFormat::Bgrx
         };
 
-        // Persistent NDI frame: rebuilt only on resolution change, so we
-        // don't alloc+memset a full-size buffer every frame.
-        let mut video_frame: Option<VideoFrame> = None;
         let mut frame_count = 0u64;
         let mut last_log = Instant::now();
         // Check on the first loop iteration.
@@ -140,9 +134,9 @@ impl NdiOutputSender {
 
         while running.load(Ordering::SeqCst) {
             if last_conn_check.elapsed() >= CONNECTION_CHECK_INTERVAL {
-                // Zero timeout = last known count, never blocks. On SDK error
+                // An immediate getter, never blocks. On SDK error
                 // assume connected (keep streaming) rather than go dark.
-                let count = sender.connection_count(Duration::ZERO).unwrap_or(1);
+                let count = sender.connection_count().unwrap_or(1);
                 let connected = count > 0;
                 if has_connections.swap(connected, Ordering::SeqCst) != connected {
                     log::info!(
@@ -165,43 +159,23 @@ impl NdiOutputSender {
 
                     frame_count += 1;
 
-                    let buffer_size =
-                        pixel_format.buffer_size(frame_data.width as i32, frame_data.height as i32);
-
-                    if frame_data.data.len() < buffer_size {
-                        log::warn!("[NDI OUTPUT] Frame {} data too small", frame_count);
-                        let _ = return_tx.try_send(frame_data.data);
-                        continue;
-                    }
-
-                    let rebuild = match &video_frame {
-                        Some(f) => {
-                            f.width != frame_data.width as i32
-                                || f.height != frame_data.height as i32
-                        }
-                        None => true,
-                    };
-                    if rebuild {
-                        video_frame = match VideoFrameBuilder::new()
-                            .resolution(frame_data.width as i32, frame_data.height as i32)
-                            .pixel_format(pixel_format)
-                            .frame_rate(60, 1)
-                            .aspect_ratio(frame_data.width as f32 / frame_data.height as f32)
-                            .build()
-                        {
-                            Ok(f) => Some(f),
-                            Err(e) => {
-                                log::error!("[NDI OUTPUT] Failed to build video frame: {:?}", e);
-                                let _ = return_tx.try_send(frame_data.data);
-                                continue;
+                    // Sent straight from our buffer: no copy into an NDI-owned
+                    // frame. Defaults are 60 fps and square pixels, as before.
+                    match BorrowedVideoFrame::builder(
+                        &frame_data.data,
+                        frame_data.width,
+                        frame_data.height,
+                        pixel_format,
+                    )
+                    .build()
+                    {
+                        Ok(frame) => {
+                            if let Err(e) = sender.send_video(&frame) {
+                                log::warn!("[NDI OUTPUT] Frame {frame_count} not sent: {e}");
                             }
-                        };
+                        }
+                        Err(e) => log::warn!("[NDI OUTPUT] Frame {frame_count} rejected: {e}"),
                     }
-
-                    let frame = video_frame.as_mut().expect("video frame just built");
-                    let copy_len = buffer_size.min(frame.data.len());
-                    frame.data[..copy_len].copy_from_slice(&frame_data.data[..copy_len]);
-                    sender.send_video(frame);
 
                     let _ = return_tx.try_send(frame_data.data);
 
@@ -335,7 +309,7 @@ impl Drop for NdiOutputSender {
 
 /// Check if NDI output is available
 pub fn is_ndi_output_available() -> bool {
-    NDI::new().is_ok()
+    Ndi::new().is_ok()
 }
 
 #[cfg(test)]
@@ -371,5 +345,38 @@ mod tests {
         );
         // Post-gate submit must still succeed (early return) and never block.
         sender.submit_frame(&frame, 64, 64).unwrap();
+    }
+
+    /// Our sender to our receiver through the real runtime. 100 px rows are
+    /// 400 bytes, which macOS pads to its IOSurface alignment, so this also
+    /// checks the receiver hands over tight rows.
+    /// Skips when the NDI runtime is unavailable.
+    #[test]
+    fn loopback_frame_arrives_tight() {
+        if !is_ndi_output_available() {
+            eprintln!("NDI runtime unavailable — skipping");
+            return;
+        }
+        let (w, h) = (100, 50);
+        let mut sender = NdiOutputSender::new("rustjay-ndi-loopback", w, h, true).unwrap();
+        let frame = vec![0x80u8; (w * h * 4) as usize];
+        let source = crate::input::list_ndi_sources(3000)
+            .into_iter()
+            .find(|s| s.ends_with("(rustjay-ndi-loopback)"))
+            .expect("our sender is not visible on the network");
+        let mut receiver = crate::input::NdiReceiver::new(source);
+        receiver.start().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let got = loop {
+            sender.submit_frame(&frame, w, h).unwrap();
+            if let Some(f) = receiver.get_latest_frame() {
+                break f;
+            }
+            assert!(Instant::now() < deadline, "no frame within 10 s");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!((got.width, got.height), (w, h));
+        assert_eq!(got.data.len(), got.layout.row_bytes(w) * h as usize);
     }
 }
