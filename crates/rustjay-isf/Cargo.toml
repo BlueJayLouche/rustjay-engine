@@ -3,15 +3,17 @@ name = "rustjay-isf"
 version = "0.1.0"
 edition = "2024"
 description = "ISF (Interactive Shader Format) support for rustjay-engine — GLSL→WGSL transpiler and EffectPlugin adapter"
+license = "MIT"
+repository = "https://github.com/BlueJayLouche/rustjay-engine"
 
 [dependencies]
 rustjay-core = { workspace = true }
 wgpu       = { workspace = true }
-isf        = { workspace = true }
 bytemuck   = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 anyhow     = { workspace = true }
+thiserror  = { workspace = true }
 log        = { workspace = true }
 pollster   = { workspace = true }
 shaderc    = { version = "0.10", features = ["build-from-source"] }

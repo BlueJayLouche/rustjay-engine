@@ -18,6 +18,6 @@ fn transpiles(name: &str) {
         .join("shaders")
         .join(name);
     let src = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {name}"));
-    let isf = isf::parse(&src).expect("ISF header parses");
+    let isf = rustjay_isf::isf::parse(&src).expect("ISF header parses");
     rustjay_isf::generate_wgsl(&isf, &src).unwrap_or_else(|e| panic!("{name} transpile: {e}"));
 }

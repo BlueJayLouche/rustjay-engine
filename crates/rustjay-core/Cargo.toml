@@ -12,7 +12,6 @@ categories = ["graphics", "multimedia::video"]
 serde      = { workspace = true }
 serde_json = { workspace = true }
 log        = { workspace = true }
-anyhow     = { workspace = true }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
 uuid       = { workspace = true }

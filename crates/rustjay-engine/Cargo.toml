@@ -32,7 +32,6 @@ serde           = { workspace = true }
 serde_json      = { workspace = true }
 dirs            = { workspace = true }
 tokio           = { workspace = true }
-env_logger      = "0.11"
 imgui           = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

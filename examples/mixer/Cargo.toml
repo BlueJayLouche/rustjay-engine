@@ -1,6 +1,7 @@
 [package]
 name = "mixer"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "2-channel mixer example demonstrating rustjay-mixer"
 

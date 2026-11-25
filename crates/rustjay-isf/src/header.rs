@@ -12,6 +12,7 @@
 //! (for what `serde_json` itself will not read) or [`repair`] (for what it
 //! reads but `Isf` will not accept).
 
+use crate::isf;
 use serde_json::{Map, Value};
 
 /// Parse a shader's ISF header, repairing the malformed-but-common shapes.

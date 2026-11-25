@@ -1,6 +1,7 @@
 [package]
 name = "vp404"
 version = "0.1.0"
+publish = false
 edition = "2021"
 description = "VP-404 — SP-404-style video sampler (port of rustjay-404)."
 
