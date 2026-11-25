@@ -1,6 +1,6 @@
 [package]
 name = "rustjay-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Shared types, traits, and state for rustjay-engine"
 license = "MIT"

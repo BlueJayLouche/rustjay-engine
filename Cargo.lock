@@ -3236,7 +3236,7 @@ dependencies = [
 
 [[package]]
 name = "ledmap-studio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -5192,7 +5192,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5212,7 +5212,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5225,7 +5225,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-control"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5242,7 +5242,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "log",
@@ -5254,7 +5254,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5291,7 +5291,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5327,7 +5327,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5359,7 +5359,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-isf"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5377,7 +5377,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-laser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "laser-dac",
@@ -5412,7 +5412,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-mixer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "log",
@@ -5429,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-presets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5454,7 +5454,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-projection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "apriltag",
@@ -5476,7 +5476,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5494,7 +5494,7 @@ dependencies = [
 
 [[package]]
 name = "rustjay-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "rustjay-core",

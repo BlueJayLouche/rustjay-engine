@@ -71,7 +71,7 @@ rustjay-engine/
 ```toml
 # Cargo.toml
 [dependencies]
-rustjay-engine = "0.1"
+rustjay-engine = "0.2"
 bytemuck = { version = "1.21", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"

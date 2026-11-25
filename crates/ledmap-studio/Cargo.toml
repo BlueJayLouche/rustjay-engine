@@ -1,6 +1,6 @@
 [package]
 name = "ledmap-studio"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Standalone CV LED-mapping tool: calibrate addressable strips over sACN and export ledmap.json"
 license = "MIT"

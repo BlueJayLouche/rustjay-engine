@@ -1,6 +1,6 @@
 [package]
 name = "rustjay-engine"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "High-performance cross-platform VJ engine"
 license = "MIT"
@@ -16,7 +16,7 @@ rustjay-control = { workspace = true }
 rustjay-presets = { workspace = true }
 rustjay-gui     = { workspace = true }
 rustjay-render  = { workspace = true }
-rustjay-sync    = { path = "../rustjay-sync", version = "0.1.0", optional = true }
+rustjay-sync    = { path = "../rustjay-sync", version = "0.2.0", optional = true }
 rustjay-api     = { workspace = true, optional = true }
 rustjay-projection = { workspace = true, optional = true }
 log             = { workspace = true }

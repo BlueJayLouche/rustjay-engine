@@ -19,7 +19,7 @@ Add the engine to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustjay-engine = "0.1"
+rustjay-engine = "0.2"
 bytemuck = { version = "1.21", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
@@ -293,7 +293,7 @@ Presets are handled automatically by the engine. The built-in Presets tab lets u
 - Enable feature flags in `Cargo.toml` for optional I/O protocols:
   ```toml
   [dependencies]
-  rustjay-engine = { version = "0.1", features = ["ndi", "webcam"] }
+  rustjay-engine = { version = "0.2", features = ["ndi", "webcam"] }
   ```
 
 ### Tempo sync (Ableton Link + ProDJ Link)
@@ -302,7 +302,7 @@ The engine can lock to external tempo sources. Enable the features you need:
 
 ```toml
 [dependencies]
-rustjay-engine = { version = "0.1", features = ["link", "prodj"] }
+rustjay-engine = { version = "0.2", features = ["link", "prodj"] }
 ```
 
 In your shader code, use [`EngineState::effective_bpm`] and [`EngineState::effective_beat_phase`]
