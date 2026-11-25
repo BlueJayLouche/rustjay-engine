@@ -71,7 +71,7 @@ rustjay-engine/
 ```toml
 # Cargo.toml
 [dependencies]
-rustjay-engine = "0.1"
+rustjay-engine = "0.2"
 bytemuck = { version = "1.21", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
@@ -159,7 +159,7 @@ cargo run -p ledmap-studio
 | Windows  | Vulkan, DX12 fallback (force with `WGPU_BACKEND=dx12`). Spout I/O via DirectX interop. |
 | Linux    | Vulkan. V4L2 loopback output. |
 
-NDI requires the [NDI SDK](https://ndi.video/download-ndi-sdk/) installed and the `ndi` feature enabled (default on).
+NDI needs the `ndi` feature (off by default) and, at run time, the NDI 6 runtime — from [NDI Tools](https://ndi.video/tools/) or the [NDI SDK](https://ndi.video/download-ndi-sdk/). Building needs nothing NDI-specific; without the runtime, NDI sources simply don't appear.
 
 > [!WARNING]
 > **AMD on Windows: turn off Radeon Enhanced Sync.** With it on, the AMD driver

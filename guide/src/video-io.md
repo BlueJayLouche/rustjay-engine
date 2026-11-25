@@ -16,7 +16,7 @@ No feature flag needed.
 
 Network Device Interface — receive video from any NDI source on the LAN (OBS, Resolume, another rustjay-engine instance).
 
-Requires the [NDI SDK](https://ndi.video/download-ndi-sdk/) and the `ndi` feature (on by default).
+Requires the `ndi` feature (off by default) and the NDI 6 runtime at run time — see [Installation](installation.md#ndi-optional).
 
 The Input tab scans the LAN and shows available sources. Low latency, high resolution, suitable for multi-machine setups.
 

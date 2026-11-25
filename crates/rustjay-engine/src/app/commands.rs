@@ -873,6 +873,18 @@ impl<P: EffectPlugin> App<P> {
                             }
                         }
                     }
+                    // A GLES2 effect owns its input, as in the DRM loop.
+                    #[cfg(feature = "gles2")]
+                    WebServerCommand::Input(input_cmd)
+                        if self.gles2_effect.is_some() && self.gles2_state.is_some() =>
+                    {
+                        if let (Some(effect), Some(gles2)) =
+                            (self.gles2_effect.as_mut(), self.gles2_state.as_ref())
+                        {
+                            effect.handle_input_command(&gles2.gl, input_cmd);
+                        }
+                        server.input_dirty = true;
+                    }
                     WebServerCommand::Input(input_cmd) => match input_cmd {
                         rustjay_control::InputWebCommand::SelectDevice {
                             index,

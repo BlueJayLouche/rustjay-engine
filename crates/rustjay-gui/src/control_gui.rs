@@ -96,8 +96,8 @@ pub struct ControlGui {
 
 impl ControlGui {
     pub fn new(shared_state: Arc<Mutex<EngineState>>) -> anyhow::Result<Self> {
-        // `ndi_name` is only read by the `ndi`-gated UI below.
-        #[cfg_attr(not(feature = "ndi"), allow(unused_variables))]
+        // `ndi_name` is only read by the `ndi`-gated UI below, `syphon_name` only on macOS.
+        #[cfg_attr(any(not(feature = "ndi"), not(target_os = "macos")), allow(unused_variables))]
         let (ndi_name, syphon_name) = {
             let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
             #[cfg(target_os = "macos")]

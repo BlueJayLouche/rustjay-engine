@@ -596,14 +596,24 @@ impl<P: EffectPlugin> App<P> {
             }
 
             if server.input_dirty {
-                server.send_input_state(&rustjay_control::InputStateJson {
+                let engine_input = rustjay_control::InputStateJson {
                     devices: state.input.available_devices.clone(),
                     active_index: state.input.device_index,
                     active_name: state.input.source_name.clone(),
                     width: state.input.width,
                     height: state.input.height,
                     fps: state.input.fps,
-                });
+                };
+                // A GLES2 effect that owns its input reports it, as in the DRM loop.
+                #[cfg(feature = "gles2")]
+                let engine_input = match self.gles2_effect.as_ref().and_then(|e| e.get_input_state()) {
+                    Some(effect_input) => rustjay_control::InputStateJson {
+                        devices: engine_input.devices,
+                        ..effect_input
+                    },
+                    None => engine_input,
+                };
+                server.send_input_state(&engine_input);
                 server.input_dirty = false;
             }
             if server.control_dirty {

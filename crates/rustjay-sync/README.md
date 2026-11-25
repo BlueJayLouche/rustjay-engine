@@ -29,7 +29,7 @@ Enable the features you need in your app's `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustjay-engine = { version = "0.1", features = ["link", "prodj"] }
+rustjay-engine = { version = "0.2", features = ["link", "prodj"] }
 ```
 
 Both sync sources feed into the engine's LFO and modulation system automatically.

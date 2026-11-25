@@ -33,7 +33,7 @@ rustjay-engine = {
 | Feature | Description | Extra dependency |
 |---|---|---|
 | `webcam` | Webcam capture input | None |
-| `ndi` | NDI video input and output | NDI SDK installed system-wide |
+| `ndi` | NDI video input and output | NDI 6 runtime at run time (nothing to build) |
 | `link` | Ableton Link tempo sync | CMake ≥ 3.14; makes binary GPL-2.0+ |
 | `prodj` | Pioneer ProDJ Link tempo sync | None (binds UDP 50000/50002) |
 | `mtc` | MIDI Timecode receive | None (uses existing `midir` dep) |

@@ -31,10 +31,6 @@ pub trait Gles2Effect: Send + 'static {
     }
 }
 
-// ponytail: on_resize / handle_input_command / get_input_state are part of the
-// public Gles2Effect hooks but the GLES2 run loop never calls them yet, so effects
-// miss resizes and web input commands. Wire them into app/events.rs when needed.
-#[allow(dead_code)]
 pub(crate) trait Gles2EffectDyn: Send + 'static {
     fn init_gl(&mut self, gl: &glow::Context, w: u32, h: u32, s: &EngineState) -> Result<()>;
     fn render_frame(&mut self, gl: &glow::Context, s: &EngineState) -> Result<bool>;
@@ -172,6 +168,28 @@ impl Drop for Gles2State {
 }
 
 impl Gles2State {
+    /// Follow the window to a new size. Returns false in DRM mode, whose
+    /// display mode is fixed: a window resize there is not the effect's.
+    pub(crate) fn resize(&mut self, width: u32, height: u32) -> bool {
+        if self.wl_egl_win.is_null() {
+            return false;
+        }
+        unsafe {
+            wayland_sys::ffi_dispatch!(
+                wayland_sys::egl::wayland_egl_handle(),
+                wl_egl_window_resize,
+                self.wl_egl_win,
+                width as i32,
+                height as i32,
+                0,
+                0
+            );
+        }
+        self.width = width;
+        self.height = height;
+        true
+    }
+
     /// Present the current frame. Wayland calls eglSwapBuffers; DRM additionally
     /// does a KMS page flip and waits for vblank.
     pub(crate) fn present(&mut self) -> Result<()> {

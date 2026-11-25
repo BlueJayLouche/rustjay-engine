@@ -69,12 +69,19 @@ sudo modprobe v4l2loopback
 
 ## NDI (optional)
 
-NDI video-over-IP requires the [NDI SDK](https://ndi.video/download-ndi-sdk/) to be installed. The `ndi` feature is enabled by default — if you don't have the SDK installed and see linker errors, disable it:
+NDI video-over-IP is behind the `ndi` feature, which is off by default:
 
 ```toml
 [dependencies]
-rustjay-engine = { git = "...", default-features = false }
+rustjay-engine = { version = "0.2", features = ["ndi"] }
 ```
+
+Building needs nothing NDI-specific. At run time the app loads the NDI 6 runtime
+(from [NDI Tools](https://ndi.video/tools/) or the [NDI SDK](https://ndi.video/download-ndi-sdk/)),
+looking next to the executable first, then in `NDI_RUNTIME_DIR_V6`, then on the
+platform's library search path. To ship it, put `libndi.dylib` (macOS, in
+`Contents/Frameworks`), `libndi.so.6` (Linux) or `Processing.NDI.Lib.x64.dll`
+(Windows) beside the binary. Without a runtime, NDI sources simply don't appear.
 
 ## Ableton Link (optional)
 
@@ -117,7 +124,7 @@ Add rustjay-engine to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustjay-engine = "0.1"
+rustjay-engine = "0.2"
 bytemuck = { version = "1.21", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"

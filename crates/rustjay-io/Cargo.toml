@@ -1,6 +1,6 @@
 [package]
 name = "rustjay-io"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Video input and output for rustjay-engine"
 license = "MIT"
@@ -22,7 +22,7 @@ serde        = { workspace = true }
 serde_json   = { workspace = true }
 
 # NDI (optional)
-grafton-ndi = { version = "0.11", optional = true }
+grafton-ndi = { version = "3.0", optional = true }
 
 # HAP encoding (optional)
 hap-qt = { version = "0.3.0", optional = true }
@@ -76,7 +76,7 @@ image    = { workspace = true }
 v4l = "0.14"
 
 [features]
-# NDI needs a proprietary SDK to build, so it is opt-in (enable with `--features ndi`).
+# NDI loads the proprietary NDI 6 runtime at run time, so it is opt-in (`--features ndi`).
 default = ["webcam"]
 webcam  = ["nokhwa"]
 ndi     = ["grafton-ndi", "rustjay-core/ndi"]
