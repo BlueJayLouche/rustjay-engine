@@ -19,8 +19,8 @@ dac = ["dep:laser-dac"]
 anyhow       = { workspace = true }
 log          = { workspace = true }
 wgpu         = { workspace = true }
-rustjay-core = { path = "../rustjay-core" }
-rustjay-isf  = { path = "../rustjay-isf" }
+rustjay-core = { workspace = true }
+rustjay-isf  = { workspace = true }
 # Exactly the transports we want, and none of the rest: the crate's default
 # features add an audio-out backend (cpal) and ASIO, which needs the Steinberg
 # SDK on Windows. `idn` is the one that matters most for reach — it is the open

@@ -16,8 +16,6 @@ anyhow       = { workspace = true }
 wgpu         = { workspace = true }
 winit        = { workspace = true }
 bytemuck     = { workspace = true }
-image        = { workspace = true }
-pollster     = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 syphon-core = { workspace = true }
@@ -37,3 +35,6 @@ windows = { version = "0.62", features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"
+
+[dev-dependencies]
+pollster = { workspace = true }

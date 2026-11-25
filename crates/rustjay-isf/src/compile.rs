@@ -23,7 +23,7 @@
 //! code) can fool them; the corpus shows this is rare. Upgrade path = a real GLSL parser.
 
 use std::collections::HashMap;
-use isf::{InputType, Isf};
+use crate::isf::{InputType, Isf};
 
 /// GPU manifest: everything the runtime needs to build the bind group layout and
 /// pack the inputs uniform buffer.

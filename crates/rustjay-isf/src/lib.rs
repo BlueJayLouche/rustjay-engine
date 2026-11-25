@@ -15,6 +15,7 @@
 pub mod compile;
 pub mod effect;
 pub mod header;
+pub mod isf;
 pub mod params;
 
 pub use compile::{

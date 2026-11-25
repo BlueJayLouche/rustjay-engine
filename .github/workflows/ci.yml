@@ -22,6 +22,11 @@ jobs:
   rust-linux:
     name: Rust (Linux)
     runs-on: ubuntu-latest
+    env:
+      # ponytail: apriltag-sys 0.3's bundled C uses `void (*f)()` callbacks, which the
+      # runner's GCC now compiles as C23 (zero args) and rejects. Drop once apriltag
+      # moves to apriltag-sys 0.4.
+      CFLAGS: -std=gnu17
     steps:
       - uses: actions/checkout@v6
       # NDI is intentionally opt-in (it needs a proprietary SDK), so CI builds the

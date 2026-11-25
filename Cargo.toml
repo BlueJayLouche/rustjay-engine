@@ -57,7 +57,8 @@ khronos-egl = { version = "6", features = ["dynamic"] }
 
 # GUI
 imgui               = "0.12"
-imgui-wgpu          = "0.28"
+# ponytail: upstream master has wgpu 30 but no release yet; back to plain "0.29" once it ships.
+imgui-wgpu          = { package = "rustjay-imgui-wgpu", path = "vendor/imgui-wgpu", version = "0.28.0" }
 imgui-winit-support = "0.13"
 egui                = "0.36"
 egui-wgpu           = "0.36"
@@ -78,12 +79,8 @@ rosc  = "0.11"
 
 # Web server
 axum       = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
 
 # Config / serialisation helpers
-toml    = "1.0"
-chrono  = { version = "0.4", features = ["serde"] }
-instant = "0.1"
 dirs    = "6.0"
 rand    = "0.8"
 qrcode  = "0.14"
@@ -101,18 +98,15 @@ rustjay-mixer   = { path = "crates/rustjay-mixer",   version = "0.1.0" }
 rustjay-engine  = { path = "crates/rustjay-engine",  version = "0.1.0", default-features = false }
 rustjay-isf     = { path = "crates/rustjay-isf",     version = "0.1.0" }
 rustjay-api     = { path = "crates/rustjay-api",     version = "0.1.0" }
-isf             = { git = "https://github.com/BlueJayLouche/isf.git" }
 rustjay-projection = { path = "crates/rustjay-projection", version = "0.1.0" }
 rustjay-lighting   = { path = "crates/rustjay-lighting",   version = "0.1.0" }
 rustjay-ledmap     = { path = "crates/rustjay-ledmap",     version = "0.1.0" }
 syphon-core     = "0.4.0"
-syphon-metal    = "0.4.2"
 syphon-wgpu     = "0.4.3"
 
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
 nokhwa-bindings-macos = { path = "vendor/nokhwa-bindings-macos" }
-imgui-wgpu = { path = "vendor/imgui-wgpu" }
 
 [profile.release]
 opt-level     = 3

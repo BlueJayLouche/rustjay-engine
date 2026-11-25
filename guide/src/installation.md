@@ -117,12 +117,22 @@ Add rustjay-engine to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustjay-engine = { git = "https://github.com/BlueJayLouche/rustjay-engine" }
+rustjay-engine = "0.1"
 bytemuck = { version = "1.21", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
 env_logger = "0.11"
 log = "0.4"
+```
+
+The engine repo carries two runtime fixes that crates.io builds don't get: `wgpu-hal`
+(EGL config selection on Raspberry Pi / Mesa vc4) and `nokhwa-bindings-macos` (USB and
+Continuity cameras that crash AVFoundation). If you target either, pull them in:
+
+```toml
+[patch.crates-io]
+wgpu-hal              = { git = "https://github.com/BlueJayLouche/rustjay-engine" }
+nokhwa-bindings-macos = { git = "https://github.com/BlueJayLouche/rustjay-engine" }
 ```
 
 Build it once to pull dependencies (this takes a few minutes the first time):

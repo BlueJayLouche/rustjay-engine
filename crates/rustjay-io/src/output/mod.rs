@@ -510,6 +510,8 @@ impl OutputManager {
     pub fn set_led_placement(&mut self, _quad: Option<[[f32; 2]; 4]>) {}
 
     /// Returns true if any CPU-path output (NDI, V4L2, Spout, Recorder, LED) needs readback.
+    // The cfg-gated arms compile out on some targets, leaving an `if … { return true } false`.
+    #[allow(clippy::needless_bool)]
     fn needs_readback(&self) -> bool {
         if self.recorder.is_some() {
             return true;
