@@ -703,6 +703,15 @@ impl<P: EffectPlugin> ApplicationHandler<WindowAction> for App<P> {
                         if let Some(ref mut engine) = self.output_engine {
                             engine.resize(size.width, size.height);
                         }
+                        #[cfg(feature = "gles2")]
+                        if size.width > 0
+                            && size.height > 0
+                            && let (Some(effect), Some(gles2)) =
+                                (self.gles2_effect.as_mut(), self.gles2_state.as_mut())
+                            && gles2.resize(size.width, size.height)
+                        {
+                            effect.on_resize(&gles2.gl, size.width, size.height);
+                        }
                     }
                     _ => {}
                 }
