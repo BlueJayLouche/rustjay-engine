@@ -29,7 +29,9 @@ rustjay-core   = { workspace = true }
 rustjay-io     = { workspace = true, default-features = false, features = ["hap-encode"] }
 wgpu           = { workspace = true }
 egui           = { workspace = true }
-hap-wgpu       = "0.3.0"
+# ponytail: pinned. 0.3.1's prefetch thread measured worse on a live set (CPU
+# 89.7% -> 107.4%); revisit when hap-rs reworks its prefetch policy.
+hap-wgpu       = "=0.3.0"
 anyhow         = { workspace = true }
 log            = { workspace = true }
 serde          = { workspace = true }

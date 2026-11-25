@@ -2544,9 +2544,9 @@ dependencies = [
 
 [[package]]
 name = "hap-wgpu"
-version = "0.3.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84c6999292cd60d648677184ec65b3b9a7c27aa4bd58c2ca580df4572f13d49f"
+checksum = "e1bc85d3aa4466a2827e12b60e9a4c1d408ce591f15f7cac0656b032ef0886c7"
 dependencies = [
  "bytemuck",
  "hap-parser",
